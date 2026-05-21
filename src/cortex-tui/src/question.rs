@@ -215,11 +215,7 @@ impl QuestionState {
     pub fn option_count(&self) -> usize {
         if let Some(q) = self.current_question() {
             let base = q.options.len();
-            if q.allow_custom {
-                base + 1
-            } else {
-                base
-            }
+            if q.allow_custom { base + 1 } else { base }
         } else {
             0
         }
