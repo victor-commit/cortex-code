@@ -13,7 +13,7 @@
 //! - Active CLI commands are protected from interference
 //! - Stale locks are automatically detected and removed
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -702,28 +702,9 @@ async fn run_config(args: CompactConfigArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Handle config changes
-    // Note: This would require persistent config storage which is not yet implemented
-    println!("Configuration changes:");
-
-    if args.enable {
-        println!("  Would enable auto-compaction");
-    }
-    if args.disable {
-        println!("  Would disable auto-compaction");
-    }
-    if let Some(hours) = args.interval_hours {
-        println!("  Would set interval to {} hours", hours);
-    }
-    if let Some(days) = args.log_retention_days {
-        println!("  Would set log retention to {} days", days);
-    }
-
-    println!();
-    println!("Note: Configuration persistence not yet implemented.");
-    println!("Settings will use defaults on next run.");
-
-    Ok(())
+    bail!(
+        "Auto-compaction configuration changes are unsupported: this command only displays built-in defaults and does not persist settings."
+    )
 }
 
 /// Auto-compaction configuration (re-exported for use in command).
@@ -734,6 +715,25 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_auto_compaction_config_mutation_is_unsupported() {
+        let args = CompactConfigArgs {
+            enable: true,
+            disable: false,
+            interval_hours: None,
+            log_retention_days: None,
+            json: false,
+        };
+
+        let error = run_config(args)
+            .await
+            .expect_err("config mutation should be unsupported");
+        let message = error.to_string();
+
+        assert!(message.contains("Auto-compaction configuration changes are unsupported"));
+        assert!(message.contains("does not persist settings"));
+    }
 
     // ========================================================================
     // format_size tests
