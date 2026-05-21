@@ -12,7 +12,6 @@ use axum::{
     extract::{Path, Query, State},
     response::Sse,
 };
-use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -21,23 +20,15 @@ use crate::state::AppState;
 use crate::tools::ToolExecutor;
 
 /// Streaming completion handler.
-/// NOTE: This endpoint is temporarily disabled as the providers module was removed.
-/// Use the TUI (cargo run --bin cortex) for LLM completions instead.
+/// This HTTP surface is kept for compatibility, but no app-server provider is wired.
 pub async fn stream_completion(
     State(_state): State<Arc<AppState>>,
     Json(_req): Json<StreamCompletionRequest>,
-) -> AppResult<Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>>
+) -> AppResult<Sse<std::iter::Empty<Result<axum::response::sse::Event, std::convert::Infallible>>>>
 {
-    // Return a stream with a single error message
-    let stream = async_stream::stream! {
-        let error_event = StreamEvent::Error {
-            message: "Streaming completions API endpoint is temporarily disabled. The providers module was removed during dead code cleanup. Please use the TUI (cargo run --bin cortex) for LLM interactions.".to_string()
-        };
-        let data = serde_json::to_string(&error_event).unwrap_or_default();
-        yield Ok(axum::response::sse::Event::default().data(data));
-    };
-
-    Ok(Sse::new(stream))
+    Err(AppError::NotImplemented(
+        "Streaming completions are unsupported in cortex-app-server because no provider runtime is wired; use the TUI for LLM interactions".to_string(),
+    ))
 }
 
 /// Stream completion request.
@@ -610,6 +601,37 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("delta"));
         assert!(json.contains("Hello"));
+    }
+
+    #[tokio::test]
+    async fn test_stream_completion_returns_not_implemented() {
+        let state = Arc::new(
+            AppState::new(crate::config::ServerConfig::default())
+                .await
+                .unwrap(),
+        );
+        let request = StreamCompletionRequest {
+            model: "cortex".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            }],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let error = stream_completion(State(state), Json(request))
+            .await
+            .expect_err("streaming completions should be unsupported");
+
+        assert!(matches!(error, AppError::NotImplemented(_)));
+        assert_eq!(error.status_code(), axum::http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(error.error_code(), "not_implemented");
+        assert!(
+            error
+                .to_string()
+                .contains("Streaming completions are unsupported")
+        );
     }
 
     #[test]

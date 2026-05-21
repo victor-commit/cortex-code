@@ -381,31 +381,41 @@ pub async fn import_agent(Json(req): Json<ImportAgentRequest>) -> AppResult<Json
 }
 
 /// Generate an agent prompt using AI via cortex-core.
-/// NOTE: This endpoint is temporarily disabled as the providers module was removed.
+/// This HTTP surface is kept for compatibility, but no app-server provider is wired.
 pub async fn generate_agent_prompt(
     State(_state): State<Arc<AppState>>,
-    Json(req): Json<GeneratePromptRequest>,
+    Json(_req): Json<GeneratePromptRequest>,
 ) -> AppResult<Json<GeneratePromptResponse>> {
-    // Return a stub response - providers module was removed
-    let name = req.name.unwrap_or_else(|| "custom-agent".to_string());
-    Ok(Json(GeneratePromptResponse {
-        name: name.clone(),
-        description: format!("Agent for: {}", req.description),
-        prompt: format!(
-            "You are an AI assistant specialized in: {}\n\nPlease help the user with tasks related to this domain.",
-            req.description
-        ),
-        tools: if req.tools.is_empty() {
-            vec![
-                "Read".to_string(),
-                "Create".to_string(),
-                "Edit".to_string(),
-                "Execute".to_string(),
-            ]
-        } else {
-            req.tools
-        },
-        model: "inherit".to_string(),
-        permission_mode: "default".to_string(),
-    }))
+    Err(AppError::NotImplemented(
+        "Agent prompt generation is unsupported in cortex-app-server because no provider runtime is wired".to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+
+    #[tokio::test]
+    async fn test_generate_agent_prompt_returns_not_implemented() {
+        let state = Arc::new(AppState::new(ServerConfig::default()).await.unwrap());
+        let request = GeneratePromptRequest {
+            description: "Create a code reviewer".to_string(),
+            tools: vec!["read".to_string()],
+            name: Some("reviewer".to_string()),
+        };
+
+        let error = generate_agent_prompt(State(state), Json(request))
+            .await
+            .expect_err("agent prompt generation should be unsupported");
+
+        assert!(matches!(error, AppError::NotImplemented(_)));
+        assert_eq!(error.status_code(), axum::http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(error.error_code(), "not_implemented");
+        assert!(
+            error
+                .to_string()
+                .contains("Agent prompt generation is unsupported")
+        );
+    }
 }
