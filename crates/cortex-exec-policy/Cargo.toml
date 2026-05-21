@@ -1,12 +1,12 @@
 [package]
-name = "cortex-execpolicy"
+name = "cortex-exec-policy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Execution policy engine for Cortex CLI (Starlark-based)"
 
 [lib]
-name = "cortex_execpolicy"
+name = "cortex_exec_policy"
 path = "src/lib.rs"
 
 [lints]

@@ -35,7 +35,7 @@ cortex-ghost = { path = "../cortex-ghost" }
 cortex-review-ext = { path = "../cortex-review", package = "cortex-review" }
 cortex-resume = { path = "../cortex-resume" }
 cortex-compact-ext = { path = "../cortex-compact", package = "cortex-compact" }
-cortex-ratelimits = { path = "../cortex-ratelimits" }
+cortex-rate-limits = { path = "../cortex-rate-limits" }
 cortex-migrations = { path = "../cortex-migrations" }
 cortex-experimental = { path = "../cortex-experimental" }
 

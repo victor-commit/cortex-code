@@ -1,95 +1,71 @@
 [workspace]
 resolver = "2"
 members = [
-    # ==========================================================================
-    # CLI Application
-    # ==========================================================================
-    "src/cortex-cli",
-    "src/cortex-engine",
-    "src/cortex-protocol",
-    "src/cortex-exec",
-    
-    # CLI - Security
-    "src/cortex-execpolicy",
-    "src/cortex-sandbox",
-    "src/cortex-process-hardening",
-    "src/cortex-linux-sandbox",
-    "src/cortex-windows-sandbox",
-    
-    # CLI - MCP
-    "src/cortex-mcp-server",
-    "src/cortex-mcp-types",
-    "src/cortex-mcp-client",
-    
-    # CLI - Tools
-    "src/cortex-apply-patch",
-    "src/cortex-file-search",
-    "src/cortex-common",
-    
-    # CLI - Storage
-    "src/cortex-storage",
-    
-    # CLI - Authentication
-    "src/cortex-login",
-    "src/cortex-keyring-store",
-    
-    # CLI - Feedback & Telemetry
-    "src/cortex-feedback",
-    "src/cortex-otel",
-    
-    # CLI - Server
-    "src/cortex-app-server",
-    
-    # CLI - Utilities
-    "src/cortex-utils/git",
-    "src/cortex-utils/pty",
-    "src/cortex-utils/image",
-    "src/cortex-utils/string",
-    "src/cortex-utils/cache",
-    "src/cortex-utils/file-safety",
-    
-    # CLI - Features (Phase 1)
-    "src/cortex-lsp",
-    "src/cortex-snapshot",
-    "src/cortex-agents",
-    "src/cortex-hooks",
-    "src/cortex-share",
-    "src/cortex-plugins",
-    "src/cortex-batch",
-    
-    # CLI - Features (Phase 2)
-    "src/cortex-ghost",
-    "src/cortex-review",
-    "src/cortex-resume",
-    "src/cortex-compact",
-    "src/cortex-ratelimits",
-    "src/cortex-migrations",
-    "src/cortex-experimental",
-    "src/cortex-commands",
-    "src/cortex-skills",
-    "src/cortex-prompt-harness",
-    
-    # CLI - Features (Phase 3)
-    "src/cortex-collab",
-    "src/cortex-network-proxy",
-    "src/cortex-shell-snapshot",
-    
-    # CLI - Integrations
-    "src/cortex-slack",
-    
-    # CLI - LM Studio Integration
-    "src/cortex-lmstudio",
-    
-    # CLI - TUI
-    "src/cortex-core",
-    "src/cortex-tui",
-    "src/cortex-tui-capture",
-    "src/cortex-tui-components",
-    
-    # CLI - Auto-Update
-    "src/cortex-update",
-    
-    # CLI - Cortex TUI Framework
+    # Core app crates
+    "crates/cortex-cli",
+    "crates/cortex-engine",
+    "crates/cortex-protocol",
+    "crates/cortex-common",
+    "crates/cortex-core",
+    "crates/cortex-storage",
+    "crates/cortex-commands",
+
+    # Platform and security crates
+    "crates/cortex-exec",
+    "crates/cortex-exec-policy",
+    "crates/cortex-sandbox",
+    "crates/cortex-process-hardening",
+    "crates/cortex-linux-sandbox",
+    "crates/cortex-windows-sandbox",
+    "crates/cortex-login",
+    "crates/cortex-keyring-store",
+
+    # MCP and integrations
+    "crates/cortex-mcp-server",
+    "crates/cortex-mcp-types",
+    "crates/cortex-mcp-client",
+    "crates/cortex-app-server",
+    "crates/cortex-slack",
+    "crates/cortex-lm-studio",
+    "crates/cortex-otel",
+    "crates/cortex-feedback",
+
+    # Tools and feature crates
+    "crates/cortex-apply-patch",
+    "crates/cortex-file-search",
+    "crates/cortex-lsp",
+    "crates/cortex-snapshot",
+    "crates/cortex-agents",
+    "crates/cortex-hooks",
+    "crates/cortex-share",
+    "crates/cortex-plugins",
+    "crates/cortex-batch",
+    "crates/cortex-ghost",
+    "crates/cortex-review",
+    "crates/cortex-resume",
+    "crates/cortex-compact",
+    "crates/cortex-rate-limits",
+    "crates/cortex-migrations",
+    "crates/cortex-experimental",
+    "crates/cortex-skills",
+    "crates/cortex-prompt-harness",
+    "crates/cortex-collab",
+    "crates/cortex-network-proxy",
+    "crates/cortex-shell-snapshot",
+    "crates/cortex-update",
+
+    # Utility crates
+    "crates/cortex-utils-git",
+    "crates/cortex-utils-pty",
+    "crates/cortex-utils-image",
+    "crates/cortex-utils-string",
+    "crates/cortex-utils-cache",
+    "crates/cortex-utils-file-safety",
+
+    # TUI and framework crates
+    "crates/cortex-tui",
+    "crates/cortex-tui-capture",
+    "crates/cortex-tui-components",
     "crates/cortex-tui-framework",
     "crates/cortex-tui-framework/crates/cortex-tui-core",
     "crates/cortex-tui-framework/crates/cortex-tui-buffer",
@@ -164,70 +140,74 @@ dashmap = "6.0"
 once_cell = "1.19"
 
 # ==========================================================================
-# CLI Dependencies
+# Internal workspace crates
 # ==========================================================================
 
-# CLI internal crates
-cortex-cli = { path = "src/cortex-cli" }
-cortex-engine = { path = "src/cortex-engine" }
-cortex-protocol = { path = "src/cortex-protocol" }
-cortex-exec = { path = "src/cortex-exec" }
-cortex-execpolicy = { path = "src/cortex-execpolicy" }
-cortex-sandbox = { path = "src/cortex-sandbox" }
-cortex-mcp-server = { path = "src/cortex-mcp-server" }
-cortex-mcp-types = { path = "src/cortex-mcp-types" }
-cortex-mcp-client = { path = "src/cortex-mcp-client" }
-cortex-apply-patch = { path = "src/cortex-apply-patch" }
-cortex-file-search = { path = "src/cortex-file-search" }
-cortex-common = { path = "src/cortex-common" }
-cortex-utils-git = { path = "src/cortex-utils/git" }
-cortex-utils-pty = { path = "src/cortex-utils/pty" }
-cortex-utils-image = { path = "src/cortex-utils/image" }
-cortex-utils-string = { path = "src/cortex-utils/string" }
-cortex-utils-cache = { path = "src/cortex-utils/cache" }
-cortex-utils-file-safety = { path = "src/cortex-utils/file-safety" }
-cortex-login = { path = "src/cortex-login" }
-cortex-keyring-store = { path = "src/cortex-keyring-store" }
-cortex-feedback = { path = "src/cortex-feedback" }
-cortex-otel = { path = "src/cortex-otel" }
-cortex-process-hardening = { path = "src/cortex-process-hardening" }
-cortex-app-server = { path = "src/cortex-app-server" }
-cortex-commands = { path = "src/cortex-commands" }
-cortex-storage = { path = "src/cortex-storage" }
-cortex-core = { path = "src/cortex-core" }
-cortex-tui = { path = "src/cortex-tui", default-features = false }
-cortex-tui-capture = { path = "src/cortex-tui-capture" }
-cortex-tui-components = { path = "src/cortex-tui-components" }
-cortex-update = { path = "src/cortex-update" }
-cortex-lsp = { path = "src/cortex-lsp" }
-cortex-snapshot = { path = "src/cortex-snapshot" }
-cortex-agents = { path = "src/cortex-agents" }
-cortex-hooks = { path = "src/cortex-hooks" }
-cortex-share = { path = "src/cortex-share" }
-cortex-plugins = { path = "src/cortex-plugins" }
-cortex-batch = { path = "src/cortex-batch" }
-cortex-ghost = { path = "src/cortex-ghost" }
-cortex-review = { path = "src/cortex-review" }
-cortex-resume = { path = "src/cortex-resume" }
-cortex-compact = { path = "src/cortex-compact" }
-cortex-ratelimits = { path = "src/cortex-ratelimits" }
-cortex-migrations = { path = "src/cortex-migrations" }
-cortex-experimental = { path = "src/cortex-experimental" }
-cortex-linux-sandbox = { path = "src/cortex-linux-sandbox" }
-cortex-windows-sandbox = { path = "src/cortex-windows-sandbox" }
-cortex-lmstudio = { path = "src/cortex-lmstudio" }
-cortex-skills = { path = "src/cortex-skills" }
-cortex-prompt-harness = { path = "src/cortex-prompt-harness" }
+# Core app crates
+cortex-cli = { path = "crates/cortex-cli" }
+cortex-engine = { path = "crates/cortex-engine" }
+cortex-protocol = { path = "crates/cortex-protocol" }
+cortex-common = { path = "crates/cortex-common" }
+cortex-core = { path = "crates/cortex-core" }
+cortex-storage = { path = "crates/cortex-storage" }
+cortex-commands = { path = "crates/cortex-commands" }
 
-# Phase 3 crates
-cortex-collab = { path = "src/cortex-collab" }
-cortex-network-proxy = { path = "src/cortex-network-proxy" }
-cortex-shell-snapshot = { path = "src/cortex-shell-snapshot" }
+# Platform and security crates
+cortex-exec = { path = "crates/cortex-exec" }
+cortex-exec-policy = { path = "crates/cortex-exec-policy" }
+cortex-sandbox = { path = "crates/cortex-sandbox" }
+cortex-process-hardening = { path = "crates/cortex-process-hardening" }
+cortex-linux-sandbox = { path = "crates/cortex-linux-sandbox" }
+cortex-windows-sandbox = { path = "crates/cortex-windows-sandbox" }
+cortex-login = { path = "crates/cortex-login" }
+cortex-keyring-store = { path = "crates/cortex-keyring-store" }
 
-# Integrations
-cortex-slack = { path = "src/cortex-slack" }
+# MCP and integrations
+cortex-mcp-server = { path = "crates/cortex-mcp-server" }
+cortex-mcp-types = { path = "crates/cortex-mcp-types" }
+cortex-mcp-client = { path = "crates/cortex-mcp-client" }
+cortex-app-server = { path = "crates/cortex-app-server" }
+cortex-slack = { path = "crates/cortex-slack" }
+cortex-lm-studio = { path = "crates/cortex-lm-studio" }
+cortex-otel = { path = "crates/cortex-otel" }
+cortex-feedback = { path = "crates/cortex-feedback" }
 
-# Cortex TUI Framework crates
+# Tools and feature crates
+cortex-apply-patch = { path = "crates/cortex-apply-patch" }
+cortex-file-search = { path = "crates/cortex-file-search" }
+cortex-lsp = { path = "crates/cortex-lsp" }
+cortex-snapshot = { path = "crates/cortex-snapshot" }
+cortex-agents = { path = "crates/cortex-agents" }
+cortex-hooks = { path = "crates/cortex-hooks" }
+cortex-share = { path = "crates/cortex-share" }
+cortex-plugins = { path = "crates/cortex-plugins" }
+cortex-batch = { path = "crates/cortex-batch" }
+cortex-ghost = { path = "crates/cortex-ghost" }
+cortex-review = { path = "crates/cortex-review" }
+cortex-resume = { path = "crates/cortex-resume" }
+cortex-compact = { path = "crates/cortex-compact" }
+cortex-rate-limits = { path = "crates/cortex-rate-limits" }
+cortex-migrations = { path = "crates/cortex-migrations" }
+cortex-experimental = { path = "crates/cortex-experimental" }
+cortex-skills = { path = "crates/cortex-skills" }
+cortex-prompt-harness = { path = "crates/cortex-prompt-harness" }
+cortex-collab = { path = "crates/cortex-collab" }
+cortex-network-proxy = { path = "crates/cortex-network-proxy" }
+cortex-shell-snapshot = { path = "crates/cortex-shell-snapshot" }
+cortex-update = { path = "crates/cortex-update" }
+
+# Utility crates
+cortex-utils-git = { path = "crates/cortex-utils-git" }
+cortex-utils-pty = { path = "crates/cortex-utils-pty" }
+cortex-utils-image = { path = "crates/cortex-utils-image" }
+cortex-utils-string = { path = "crates/cortex-utils-string" }
+cortex-utils-cache = { path = "crates/cortex-utils-cache" }
+cortex-utils-file-safety = { path = "crates/cortex-utils-file-safety" }
+
+# TUI and framework crates
+cortex-tui = { path = "crates/cortex-tui", default-features = false }
+cortex-tui-capture = { path = "crates/cortex-tui-capture" }
+cortex-tui-components = { path = "crates/cortex-tui-components" }
 cortex-tui-framework = { path = "crates/cortex-tui-framework" }
 cortex-tui-core = { path = "crates/cortex-tui-framework/crates/cortex-tui-core" }
 cortex-tui-buffer = { path = "crates/cortex-tui-framework/crates/cortex-tui-buffer" }

@@ -483,7 +483,7 @@ pub use cortex_compact_ext;
 pub use cortex_experimental;
 pub use cortex_ghost;
 pub use cortex_migrations;
-pub use cortex_ratelimits;
+pub use cortex_rate_limits;
 pub use cortex_resume;
 pub use cortex_review_ext;
 

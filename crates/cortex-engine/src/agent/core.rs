@@ -130,7 +130,7 @@ impl CortexAgent {
     }
 
     /// Get rate limits.
-    pub async fn get_rate_limits(&self) -> Option<crate::cortex_ratelimits::RateLimitInfo> {
+    pub async fn get_rate_limits(&self) -> Option<crate::cortex_rate_limits::RateLimitInfo> {
         self.ratelimits.get_limits().await
     }
 

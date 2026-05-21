@@ -1153,7 +1153,7 @@ dependencies = [
  "cortex-plugins",
  "cortex-prompt-harness",
  "cortex-protocol",
- "cortex-ratelimits",
+ "cortex-rate-limits",
  "cortex-resume",
  "cortex-review",
  "cortex-share",
@@ -1216,7 +1216,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortex-execpolicy"
+name = "cortex-exec-policy"
 version = "0.0.7"
 dependencies = [
  "serde",
@@ -1316,7 +1316,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortex-lmstudio"
+name = "cortex-lm-studio"
 version = "0.0.7"
 dependencies = [
  "reqwest 0.13.1",
@@ -1514,7 +1514,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortex-ratelimits"
+name = "cortex-rate-limits"
 version = "0.1.0"
 dependencies = [
  "chrono",

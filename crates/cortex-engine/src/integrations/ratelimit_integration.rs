@@ -1,9 +1,9 @@
 //! Rate limit integration for cortex-core.
 //!
-//! Connects cortex-ratelimits to track and display API rate limits.
+//! Connects cortex-rate-limits to track and display API rate limits.
 
-use cortex_ratelimits::display::format_rate_limits_compact;
-use cortex_ratelimits::{
+use cortex_rate_limits::display::format_rate_limits_compact;
+use cortex_rate_limits::{
     RateLimitDisplay, RateLimitInfo, RateLimitTracker, UsageStats, format_rate_limits,
 };
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ impl RatelimitIntegration {
 
     /// Update rate limits from response headers.
     pub async fn update_from_headers(&self, provider: &str, headers: &HashMap<String, String>) {
-        let info = cortex_ratelimits::limits::parse_rate_limit_headers(headers);
+        let info = cortex_rate_limits::limits::parse_rate_limit_headers(headers);
         self.tracker.update_limits(provider, info).await;
     }
 

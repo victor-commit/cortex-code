@@ -1,12 +1,12 @@
 [package]
-name = "cortex-lmstudio"
+name = "cortex-lm-studio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "LM Studio client for Cortex CLI - local model management and inference"
 
 [lib]
-name = "cortex_lmstudio"
+name = "cortex_lm_studio"
 path = "src/lib.rs"
 
 [lints]
