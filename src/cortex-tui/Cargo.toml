@@ -8,8 +8,8 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = ["audio"]
-# Audio notifications - disabled on musl targets due to alsa-sys incompatibility
+default = []
+# Audio notifications are opt-in to keep default Linux checks independent of ALSA.
 audio = ["dep:rodio"]
 
 [dependencies]

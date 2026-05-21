@@ -219,16 +219,16 @@ impl ImportCommand {
         if self.resume {
             // Launch resume
             print_info("Resuming session...");
-            let config = cortex_engine::Config::default();
 
             #[cfg(feature = "cortex-tui")]
             {
+                let config = cortex_engine::Config::default();
                 cortex_tui::resume(config, new_conversation_id).await?;
             }
 
             #[cfg(not(feature = "cortex-tui"))]
             {
-                compile_error!("The 'cortex-tui' feature must be enabled");
+                bail!("Import --resume requires the cortex-tui feature to be enabled.");
             }
         }
 

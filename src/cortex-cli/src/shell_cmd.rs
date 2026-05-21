@@ -80,6 +80,7 @@ impl ShellCli {
         }
 
         // Get initial prompt if provided
+        #[cfg(feature = "cortex-tui")]
         let initial_prompt = if !self.prompt.is_empty() {
             Some(self.prompt.join(" "))
         } else {
@@ -102,14 +103,13 @@ impl ShellCli {
         #[cfg(feature = "cortex-tui")]
         {
             cortex_tui::run(config, initial_prompt).await?;
+            Ok(())
         }
 
         #[cfg(not(feature = "cortex-tui"))]
         {
             bail!("Interactive mode requires the cortex-tui feature to be enabled.");
         }
-
-        Ok(())
     }
 }
 
