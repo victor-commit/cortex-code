@@ -414,12 +414,12 @@ async fn handle_issue_comment(
         "help" => get_help_message(),
         "review" => {
             if comment.is_pull_request {
-                "Starting code review... (not yet implemented)".to_string()
+                "`/cortex review` is currently unsupported: GitHub review automation is disabled and no review was started.".to_string()
             } else {
                 "This command is only available on pull requests.".to_string()
             }
         }
-        "fix" => "Analyzing and suggesting fixes... (not yet implemented)".to_string(),
+        "fix" => "`/cortex fix` is currently unsupported: automated fix suggestions are disabled and no analysis was started.".to_string(),
         _ => format!(
             "Unknown command: `{}`\n\nUse `/cortex help` to see available commands.",
             command
@@ -430,9 +430,6 @@ async fn handle_issue_comment(
     client
         .create_comment(comment.issue_number, &response)
         .await?;
-
-    // Add success reaction
-    client.add_reaction(comment.comment_id, "rocket").await?;
 
     println!("   Response posted");
 
@@ -465,11 +462,7 @@ async fn handle_pull_request(
         println!("   New PR opened - preparing welcome message");
 
         let welcome_message = format!(
-            "👋 Thanks for opening this PR, @{}!\n\n\
-            I'm Cortex, your AI coding assistant. I can help with:\n\
-            - `/cortex review` - Get a code review\n\
-            - `/cortex help` - See all available commands\n\n\
-            I'll analyze this PR automatically when ready.",
+            "👋 Thanks for opening this PR, @{}!\n\n            I'm Cortex, your AI coding assistant. GitHub review automation is currently disabled, so I will not analyze this PR automatically.\n\n            Use `/cortex help` to see the currently supported command surface.",
             pr.author
         );
 
@@ -496,10 +489,7 @@ async fn handle_pull_request_review(
     println!("   State: {}", review.state);
     println!("   Action: {}", review.action);
 
-    // Could respond to review requests here
-    println!("   Note: PR review events not yet implemented");
-
-    Ok(())
+    bail!("GitHub pull request review events are unsupported: no review-event automation was run.")
 }
 
 /// Handle issue events.
@@ -532,9 +522,7 @@ async fn handle_issue(
 
     if is_cortex_related {
         let greeting = format!(
-            "👋 Thanks for opening this issue, @{}!\n\n\
-            I'm Cortex, your AI coding assistant. I'll analyze this issue and provide suggestions.\n\n\
-            In the meantime, you can use `/cortex help` to see what I can do.",
+            "👋 Thanks for opening this issue, @{}!\n\n            I'm Cortex, your AI coding assistant. Issue analysis automation is currently disabled, so no analysis was started.\n\n            Use `/cortex help` to see the currently supported command surface.",
             issue.author
         );
 
@@ -570,15 +558,12 @@ fn get_help_message() -> String {
 | Command | Description |
 |---------|-------------|
 | `/cortex help` | Show this help message |
-| `/cortex review` | Request a code review (PRs only) |
-| `/cortex fix` | Suggest fixes for issues |
-| `/cortex explain` | Explain the code changes |
-| `/cortex test` | Suggest tests for changes |
+| `/cortex review` | Unsupported: review automation is disabled |
+| `/cortex fix` | Unsupported: fix automation is disabled |
 
 ### Tips
 - Mention `@cortex` anywhere in your comment to get my attention
-- I automatically review new pull requests when configured
-- Use labels like `cortex:review` to trigger specific actions
+- Unsupported commands return guidance without starting automation
 
 [Learn more](https://docs.cortex.foundation/github)"#
         .to_string()
