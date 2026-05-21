@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::conversation::Conversation;
 use crate::client::types::{Message, MessageRole};
-use crate::error::Result;
+use crate::error::{CortexError, Result};
 
 /// Compaction strategy for reducing context size.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,34 +135,12 @@ impl CompactionStrategy {
         Ok(())
     }
 
-    /// Summarization compaction (placeholder - would need LLM call).
-    fn compact_summarize(&self, conversation: &mut Conversation) -> Result<()> {
-        let messages = conversation.messages_mut();
-        let total = messages.len();
-
-        if total <= self.preserve_recent + 1 {
-            return Ok(());
-        }
-
-        // Calculate how many messages to summarize
-        let summarize_count = total.saturating_sub(self.preserve_recent);
-        if summarize_count == 0 {
-            return Ok(());
-        }
-
-        // Extract messages to summarize
-        let to_summarize: Vec<_> = messages.drain(..summarize_count).collect();
-
-        // Create a simple summary (in real implementation, would use LLM)
-        let summary = create_simple_summary(&to_summarize, self.max_summary_length);
-
-        // Insert summary as system message at start
-        messages.insert(
-            0,
-            Message::system(format!("[Conversation summary]\n{summary}")),
-        );
-
-        Ok(())
+    /// Summarization compaction requires a model-backed summarizer.
+    fn compact_summarize(&self, _conversation: &mut Conversation) -> Result<()> {
+        Err(CortexError::InvalidInput(
+            "summarization compaction is unsupported without a configured LLM summarizer"
+                .to_string(),
+        ))
     }
 
     /// Importance-based compaction.
@@ -198,12 +176,10 @@ impl CompactionStrategy {
         Ok(())
     }
 
-    /// Hybrid compaction.
+    /// Hybrid compaction uses non-summarizing fallbacks until LLM summarization exists.
     fn compact_hybrid(&self, conversation: &mut Conversation) -> Result<()> {
-        // First pass: summarize old messages
-        self.compact_summarize(conversation)?;
+        self.compact_sliding(conversation)?;
 
-        // Second pass: importance-based trimming if still too large
         if conversation.len() > self.preserve_recent * 2 {
             self.compact_importance(conversation)?;
         }
@@ -340,46 +316,67 @@ fn calculate_importance(message: &Message, index: usize, total: usize) -> f32 {
     score
 }
 
-/// Create a simple summary of messages.
-fn create_simple_summary(messages: &[Message], max_length: usize) -> String {
-    let mut summary = String::new();
-
-    for msg in messages {
-        if let Some(text) = msg.content.as_text() {
-            let role = match msg.role {
-                MessageRole::User => "User",
-                MessageRole::Assistant => "Assistant",
-                MessageRole::System => "System",
-                MessageRole::Tool => "Tool",
-            };
-
-            // Truncate long messages
-            let text = if text.len() > 100 {
-                format!("{}...", &text[..97])
-            } else {
-                text.to_string()
-            };
-
-            summary.push_str(&format!("{role}: {text}\n"));
-
-            if summary.len() >= max_length {
-                break;
-            }
-        }
-    }
-
-    if summary.len() > max_length {
-        summary.truncate(max_length - 3);
-        summary.push_str("...");
-    }
-
-    summary
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::context::conversation::ConversationBuilder;
+
+    #[test]
+    fn test_summarization_compaction_requires_configured_llm_summarizer() {
+        let mut conv = ConversationBuilder::new()
+            .user("Old question")
+            .assistant("Old answer")
+            .build();
+        let strategy = CompactionStrategy::summarize(500);
+
+        let error = strategy
+            .compact(&mut conv)
+            .expect_err("summarization should require an LLM summarizer");
+
+        assert!(
+            error
+                .to_string()
+                .contains("summarization compaction is unsupported")
+        );
+        assert_eq!(
+            conv.len(),
+            2,
+            "unsupported summarization must not fabricate messages"
+        );
+    }
+
+    #[test]
+    fn test_hybrid_compaction_uses_non_summarizing_fallback() {
+        let mut conv = ConversationBuilder::new()
+            .system("System")
+            .user("Turn 1")
+            .assistant("Answer 1")
+            .user("Turn 2")
+            .assistant("Answer 2")
+            .user("Turn 3")
+            .assistant("Answer 3")
+            .build();
+        let strategy = CompactionStrategy {
+            strategy: StrategyType::Hybrid,
+            preserve_recent: 4,
+            preserve_system: true,
+            ..CompactionStrategy::default()
+        };
+
+        strategy
+            .compact(&mut conv)
+            .expect("hybrid fallback should compact without summarizer");
+
+        assert!(conv.len() <= 5);
+        assert!(
+            conv.messages().all(|message| !message
+                .content
+                .as_text()
+                .unwrap_or_default()
+                .contains("Summary")),
+            "hybrid fallback must not fabricate summary text"
+        );
+    }
 
     #[test]
     fn test_sliding_compaction() {

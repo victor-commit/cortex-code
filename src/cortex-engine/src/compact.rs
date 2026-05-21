@@ -363,62 +363,11 @@ impl Compactor {
         }
     }
 
-    /// Summarize old messages.
+    /// Summarize old messages by falling back to smart compaction until a summarizer is wired.
     fn summarize(&self, messages: Vec<CompactionMessage>, tokens_before: u32) -> CompactionResult {
-        let mut result = Vec::new();
-        let mut current_tokens = 0u32;
-
-        // Keep system message
-        if self.config.keep_system
-            && let Some(sys_msg) = messages.iter().find(|m| m.is_system)
-        {
-            result.push(sys_msg.clone());
-            current_tokens += sys_msg.tokens;
-        }
-
-        // Keep recent messages
-        let non_system: Vec<_> = messages.iter().filter(|m| !m.is_system).collect();
-
-        let keep_count = self.config.keep_recent.min(non_system.len());
-
-        // Messages to summarize
-        let to_summarize: Vec<_> = non_system
-            .iter()
-            .take(non_system.len().saturating_sub(keep_count))
-            .cloned()
-            .collect();
-
-        // Create summary message (placeholder - would call model in real impl)
-        if !to_summarize.is_empty() {
-            let summary = create_summary_placeholder(&to_summarize);
-            let summary_msg = CompactionMessage::new("system", &summary)
-                .with_tokens(self.config.summary_max_tokens)
-                .with_importance(0.8);
-            result.push(summary_msg);
-            current_tokens += self.config.summary_max_tokens;
-        }
-
-        // Add recent messages
-        for msg in non_system
-            .iter()
-            .skip(non_system.len().saturating_sub(keep_count))
-        {
-            if current_tokens + msg.tokens <= self.config.target_tokens {
-                result.push((*msg).clone());
-                current_tokens += msg.tokens;
-            }
-        }
-
-        let removed = messages.len() - result.len() + if to_summarize.is_empty() { 0 } else { 1 };
-
-        CompactionResult {
-            messages: result,
-            tokens_before,
-            tokens_after: current_tokens,
-            messages_removed: removed,
-            summary_added: !to_summarize.is_empty(),
-            strategy: CompactionStrategy::Summarize,
-        }
+        let mut result = self.smart_compact(messages, tokens_before);
+        result.strategy = CompactionStrategy::Summarize;
+        result
     }
 
     /// Hybrid compaction.
@@ -443,19 +392,6 @@ impl Default for Compactor {
     fn default() -> Self {
         Self::default_compactor()
     }
-}
-
-/// Create a placeholder summary.
-fn create_summary_placeholder(messages: &[&CompactionMessage]) -> String {
-    let count = messages.len();
-    let roles: Vec<_> = messages.iter().map(|m| m.role.as_str()).collect();
-    let user_count = roles.iter().filter(|r| **r == "user").count();
-    let assistant_count = roles.iter().filter(|r| **r == "assistant").count();
-
-    format!(
-        "[Summary of {count} previous messages: {user_count} user messages, {assistant_count} assistant responses. \
-        The conversation covered various topics and tasks.]"
-    )
 }
 
 /// Get current timestamp.

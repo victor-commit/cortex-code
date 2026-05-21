@@ -61,7 +61,7 @@ pub enum TruncateStrategy {
     Middle,
     /// Smart truncation based on content analysis.
     Smart,
-    /// Summarize instead of truncate.
+    /// Use smart truncation as the summarization fallback.
     Summarize,
 }
 
@@ -278,10 +278,8 @@ fn truncate_preserve_structure(text: &str, config: &TruncateConfig) -> String {
     result
 }
 
-/// Summarize instead of truncate (placeholder).
+/// Summarization fallback that avoids fabricating an LLM summary.
 fn truncate_summarize(text: &str, config: &TruncateConfig) -> String {
-    // In a real implementation, this would use an LLM to summarize
-    // For now, fall back to smart truncation
     truncate_smart(text, config)
 }
 
