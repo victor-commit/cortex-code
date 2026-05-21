@@ -105,117 +105,103 @@ impl LspIntegration {
         }
     }
 
-    /// Go to definition (stub - not yet implemented in cortex-lsp).
+    fn unsupported_operation(operation: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "LSP operation '{operation}' is unsupported: cortex-lsp currently exposes diagnostics and hover only"
+        )
+    }
+
+    /// Go to definition.
     pub async fn go_to_definition(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<Location>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("goToDefinition"))
     }
 
-    /// Find references (stub - not yet implemented in cortex-lsp).
+    /// Find references.
     pub async fn find_references(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<Location>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("findReferences"))
     }
 
-    /// Get document symbols (stub - not yet implemented in cortex-lsp).
+    /// Get document symbols.
     pub async fn document_symbols(&self, _path: &str) -> anyhow::Result<Vec<DocumentSymbol>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("documentSymbol"))
     }
 
-    /// Search workspace symbols (stub - not yet implemented in cortex-lsp).
+    /// Search workspace symbols.
     pub async fn workspace_symbols(&self, _query: &str) -> anyhow::Result<Vec<WorkspaceSymbol>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("workspaceSymbol"))
     }
 
-    /// Go to implementation (stub - not yet implemented in cortex-lsp).
+    /// Go to implementation.
     pub async fn go_to_implementation(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<Location>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("goToImplementation"))
     }
 
-    /// Prepare call hierarchy (stub - not yet implemented in cortex-lsp).
+    /// Prepare call hierarchy.
     pub async fn prepare_call_hierarchy(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<CallHierarchyItem>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("prepareCallHierarchy"))
     }
 
-    /// Get incoming calls (stub - not yet implemented in cortex-lsp).
+    /// Get incoming calls.
     pub async fn incoming_calls(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<CallHierarchyIncomingCall>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("incomingCalls"))
     }
 
-    /// Get outgoing calls (stub - not yet implemented in cortex-lsp).
+    /// Get outgoing calls.
     pub async fn outgoing_calls(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<CallHierarchyOutgoingCall>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("outgoingCalls"))
     }
 
-    /// Get completions (stub - not yet implemented in cortex-lsp).
+    /// Get completions.
     pub async fn completions(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<CompletionItem>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("completions"))
     }
 
-    /// Get signature help (stub - not yet implemented in cortex-lsp).
+    /// Get signature help.
     pub async fn signature_help(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Option<SignatureHelp>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(None)
+        Err(Self::unsupported_operation("signatureHelp"))
     }
 
-    /// Rename symbol (stub - not yet implemented in cortex-lsp).
+    /// Rename symbol.
     pub async fn rename(
         &self,
         _path: &str,
@@ -223,21 +209,17 @@ impl LspIntegration {
         _column: u32,
         _new_name: &str,
     ) -> anyhow::Result<WorkspaceEdit> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Value::Null)
+        Err(Self::unsupported_operation("rename"))
     }
 
-    /// Get code actions (stub - not yet implemented in cortex-lsp).
+    /// Get code actions.
     pub async fn code_actions(
         &self,
         _path: &str,
         _line: u32,
         _column: u32,
     ) -> anyhow::Result<Vec<CodeAction>> {
-        // LSP feature not yet implemented - returns empty result
-        // This will be implemented in a future version of cortex-lsp
-        Ok(Vec::new())
+        Err(Self::unsupported_operation("codeActions"))
     }
 
     /// Format diagnostics for display in tool results.
@@ -295,5 +277,43 @@ impl LspIntegration {
 impl Default for LspIntegration {
     fn default() -> Self {
         Self::new(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_unimplemented_lsp_operations_return_unsupported_errors() {
+        let lsp = LspIntegration::new(false);
+
+        let cases = [
+            lsp.go_to_definition("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.find_references("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.document_symbols("src/lib.rs").await.map(|_| ()),
+            lsp.workspace_symbols("query").await.map(|_| ()),
+            lsp.go_to_implementation("src/lib.rs", 1, 1)
+                .await
+                .map(|_| ()),
+            lsp.prepare_call_hierarchy("src/lib.rs", 1, 1)
+                .await
+                .map(|_| ()),
+            lsp.incoming_calls("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.outgoing_calls("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.completions("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.signature_help("src/lib.rs", 1, 1).await.map(|_| ()),
+            lsp.rename("src/lib.rs", 1, 1, "new_name").await.map(|_| ()),
+            lsp.code_actions("src/lib.rs", 1, 1).await.map(|_| ()),
+        ];
+
+        for result in cases {
+            let message = result
+                .expect_err("operation should be unsupported")
+                .to_string();
+            assert!(message.contains("LSP operation"));
+            assert!(message.contains("is unsupported"));
+            assert!(message.contains("diagnostics and hover only"));
+        }
     }
 }

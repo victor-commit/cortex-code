@@ -125,7 +125,7 @@ impl McpClient {
         let result = match self.config.transport {
             TransportType::Stdio => self.connect_stdio().await,
             TransportType::Sse | TransportType::Http => self.connect_http().await,
-            TransportType::WebSocket => Err(anyhow!("WebSocket transport not yet implemented")),
+            TransportType::WebSocket => Err(anyhow!("WebSocket transport is unsupported")),
         };
 
         match result {
@@ -328,7 +328,7 @@ impl McpClient {
             TransportType::Stdio => self.send_stdio_request(&request).await?,
             TransportType::Sse | TransportType::Http => self.send_http_request(&request).await?,
             TransportType::WebSocket => {
-                return Err(anyhow!("WebSocket transport not yet implemented"));
+                return Err(anyhow!("WebSocket transport is unsupported"));
             }
         };
 
@@ -359,7 +359,7 @@ impl McpClient {
             TransportType::Sse | TransportType::Http => {
                 self.send_http_notification(&notification).await
             }
-            TransportType::WebSocket => Err(anyhow!("WebSocket transport not yet implemented")),
+            TransportType::WebSocket => Err(anyhow!("WebSocket transport is unsupported")),
         }
     }
 
@@ -480,6 +480,20 @@ mod tests {
     #[test]
     fn test_connection_state() {
         assert_ne!(ConnectionState::Connected, ConnectionState::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_websocket_transport_connect_is_unsupported() {
+        let config = McpServerConfig::new("ws", "unused").transport(TransportType::WebSocket);
+        let client = McpClient::new(config);
+
+        let error = client
+            .connect()
+            .await
+            .expect_err("websocket transport should be unsupported");
+
+        assert_eq!(error.to_string(), "WebSocket transport is unsupported");
+        assert_eq!(client.state().await, ConnectionState::Failed);
     }
 
     #[tokio::test]

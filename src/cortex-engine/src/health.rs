@@ -516,9 +516,32 @@ impl HealthCheck for DiskSpaceCheck {
     async fn check(&self) -> HealthCheckResult {
         let start = Instant::now();
 
-        // Get available space (platform-specific, simplified here)
-        let available = get_available_space(&self.path).unwrap_or(0);
         let duration = start.elapsed();
+
+        if !self.path.exists() {
+            return HealthCheckResult::unhealthy(
+                &self.name,
+                format!("Disk path not found: {}", self.path.display()),
+                duration,
+            )
+            .with_detail("path", self.path.display().to_string());
+        }
+
+        let Some(available) = get_available_space(&self.path) else {
+            return HealthCheckResult {
+                component: self.name.clone(),
+                status: HealthStatus::Unknown,
+                message: Some(
+                    "Disk space check unsupported: available byte count is not implemented"
+                        .to_string(),
+                ),
+                duration_ms: duration.as_millis() as u64,
+                timestamp: timestamp_now(),
+                details: HashMap::new(),
+            }
+            .with_detail("path", self.path.display().to_string())
+            .with_detail("available_bytes", serde_json::Value::Null);
+        };
 
         if available < self.min_free_bytes {
             HealthCheckResult::unhealthy(
@@ -541,15 +564,9 @@ impl HealthCheck for DiskSpaceCheck {
     }
 }
 
-/// Get available disk space (simplified).
-fn get_available_space(path: &std::path::Path) -> Option<u64> {
-    // This is a simplified implementation
-    // In production, use platform-specific APIs
-    if path.exists() {
-        Some(10 * 1024 * 1024 * 1024) // Placeholder: 10GB
-    } else {
-        None
-    }
+/// Get available disk space.
+fn get_available_space(_path: &std::path::Path) -> Option<u64> {
+    None
 }
 
 /// API connectivity health check.
@@ -638,6 +655,47 @@ impl HealthCheck for ApiConnectivityCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_disk_space_existing_path_reports_unknown_available_bytes() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let check = DiskSpaceCheck::new("disk", temp.path());
+
+        let result = check.check().await;
+
+        assert_eq!(result.status, HealthStatus::Unknown);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Disk space check unsupported: available byte count is not implemented")
+        );
+        assert_eq!(
+            result.details.get("available_bytes"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            result.details.get("path"),
+            Some(&serde_json::Value::String(
+                temp.path().display().to_string()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disk_space_missing_path_remains_unhealthy() {
+        let path = std::path::PathBuf::from("/nonexistent/cortex/disk-health-path");
+        let check = DiskSpaceCheck::new("disk", &path);
+
+        let result = check.check().await;
+
+        assert_eq!(result.status, HealthStatus::Unhealthy);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .expect("message should be set")
+                .contains("Disk path not found")
+        );
+    }
 
     #[test]
     fn test_health_status() {
