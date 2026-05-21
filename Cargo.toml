@@ -90,15 +90,15 @@ members = [
     "src/cortex-update",
     
     # CLI - Cortex TUI Framework
-    "cortex-tui-framework",
-    "cortex-tui-framework/crates/cortex-tui-core",
-    "cortex-tui-framework/crates/cortex-tui-buffer",
-    "cortex-tui-framework/crates/cortex-tui-terminal",
-    "cortex-tui-framework/crates/cortex-tui-layout",
-    "cortex-tui-framework/crates/cortex-tui-widgets",
-    "cortex-tui-framework/crates/cortex-tui-input",
-    "cortex-tui-framework/crates/cortex-tui-text",
-    "cortex-tui-framework/crates/cortex-tui-syntax",
+    "crates/cortex-tui-framework",
+    "crates/cortex-tui-framework/crates/cortex-tui-core",
+    "crates/cortex-tui-framework/crates/cortex-tui-buffer",
+    "crates/cortex-tui-framework/crates/cortex-tui-terminal",
+    "crates/cortex-tui-framework/crates/cortex-tui-layout",
+    "crates/cortex-tui-framework/crates/cortex-tui-widgets",
+    "crates/cortex-tui-framework/crates/cortex-tui-input",
+    "crates/cortex-tui-framework/crates/cortex-tui-text",
+    "crates/cortex-tui-framework/crates/cortex-tui-syntax",
 ]
 
 [workspace.package]
@@ -228,15 +228,15 @@ cortex-shell-snapshot = { path = "src/cortex-shell-snapshot" }
 cortex-slack = { path = "src/cortex-slack" }
 
 # Cortex TUI Framework crates
-cortex-tui-framework = { path = "cortex-tui-framework" }
-cortex-tui-core = { path = "cortex-tui-framework/crates/cortex-tui-core" }
-cortex-tui-buffer = { path = "cortex-tui-framework/crates/cortex-tui-buffer" }
-cortex-tui-terminal = { path = "cortex-tui-framework/crates/cortex-tui-terminal" }
-cortex-tui-layout = { path = "cortex-tui-framework/crates/cortex-tui-layout" }
-cortex-tui-widgets = { path = "cortex-tui-framework/crates/cortex-tui-widgets" }
-cortex-tui-input = { path = "cortex-tui-framework/crates/cortex-tui-input" }
-cortex-tui-text = { path = "cortex-tui-framework/crates/cortex-tui-text" }
-cortex-tui-syntax = { path = "cortex-tui-framework/crates/cortex-tui-syntax" }
+cortex-tui-framework = { path = "crates/cortex-tui-framework" }
+cortex-tui-core = { path = "crates/cortex-tui-framework/crates/cortex-tui-core" }
+cortex-tui-buffer = { path = "crates/cortex-tui-framework/crates/cortex-tui-buffer" }
+cortex-tui-terminal = { path = "crates/cortex-tui-framework/crates/cortex-tui-terminal" }
+cortex-tui-layout = { path = "crates/cortex-tui-framework/crates/cortex-tui-layout" }
+cortex-tui-widgets = { path = "crates/cortex-tui-framework/crates/cortex-tui-widgets" }
+cortex-tui-input = { path = "crates/cortex-tui-framework/crates/cortex-tui-input" }
+cortex-tui-text = { path = "crates/cortex-tui-framework/crates/cortex-tui-text" }
+cortex-tui-syntax = { path = "crates/cortex-tui-framework/crates/cortex-tui-syntax" }
 
 # CLI - Async & concurrency
 tokio-stream = "0.1"

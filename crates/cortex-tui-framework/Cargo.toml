@@ -21,8 +21,3 @@ cortex-tui-text = { path = "crates/cortex-tui-text" }
 cortex-tui-syntax = { path = "crates/cortex-tui-syntax" }
 
 # Part of parent orion workspace - no local [workspace] section
-
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
