@@ -547,11 +547,11 @@ pub struct PluginListArgs {
 /// Arguments for plugin install command.
 #[derive(Debug, Parser)]
 pub struct PluginInstallArgs {
-    /// Plugin name or URL to install
+    /// Local plugin directory to install. Registry names and URLs are unsupported.
     pub name: String,
 
     /// Plugin version (defaults to latest)
-    #[arg(long, short = 'v')]
+    #[arg(long)]
     pub version: Option<String>,
 
     /// Force reinstall if already installed
@@ -666,7 +666,7 @@ pub struct PluginValidateArgs {
     pub json: bool,
 
     /// Show verbose output with all checks
-    #[arg(long, short = 'v')]
+    #[arg(long)]
     pub verbose: bool,
 }
 
@@ -677,7 +677,7 @@ pub struct PluginPublishArgs {
     #[arg(long, short = 'p')]
     pub path: Option<PathBuf>,
 
-    /// Dry-run mode (default, no actual publishing)
+    /// Create a local distribution package without uploading to a registry.
     #[arg(long, default_value = "true")]
     pub dry_run: bool,
 
@@ -1068,60 +1068,45 @@ async fn run_install(args: PluginInstallArgs) -> Result<()> {
         bail!("Plugin name cannot be empty. Please provide a valid plugin name.");
     }
 
-    let plugins_dir = get_plugins_dir();
+    let src_path = std::path::Path::new(&args.name);
+    if !src_path.exists() {
+        bail!(
+            "Plugin registry installation is unsupported: '{}' is not a local directory. No plugin files were created.",
+            args.name
+        );
+    }
+    if !src_path.is_dir() {
+        bail!("Source path is not a directory: {}", args.name);
+    }
 
-    // Create plugins directory if it doesn't exist
+    let plugins_dir = get_plugins_dir();
     if !plugins_dir.exists() {
         std::fs::create_dir_all(&plugins_dir)?;
     }
 
-    let plugin_path = plugins_dir.join(&args.name);
+    let plugin_id = src_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&args.name);
+    let plugin_path = plugins_dir.join(plugin_id);
 
     if plugin_path.exists() && !args.force {
         bail!(
             "Plugin '{}' is already installed. Use --force to reinstall.",
-            args.name
+            plugin_id
         );
     }
 
-    println!("Installing plugin: {}", args.name);
+    println!("Installing plugin: {}", plugin_id);
     if let Some(ref version) = args.version {
         println!("  Version: {}", version);
     }
 
-    // For now, we support local directory installation or create a placeholder
-    // In a full implementation, this would fetch from a plugin registry
-    if std::path::Path::new(&args.name).exists() {
-        // Install from local path
-        let src_path = std::path::Path::new(&args.name);
-        if src_path.is_dir() {
-            // Copy directory
-            copy_dir_recursive(src_path, &plugin_path)?;
-            println!("Plugin installed from local directory.");
-        } else {
-            bail!("Source path is not a directory: {}", args.name);
-        }
-    } else {
-        // Create placeholder plugin structure
-        std::fs::create_dir_all(&plugin_path)?;
+    copy_dir_recursive(src_path, &plugin_path)?;
+    println!("Plugin installed from local directory.");
 
-        let version = args.version.as_deref().unwrap_or("1.0.0");
-        let manifest = format!(
-            r#"# Plugin manifest
-name = "{}"
-version = "{}"
-description = "Placeholder plugin - replace with actual implementation"
-enabled = true
-"#,
-            args.name, version
-        );
-
-        std::fs::write(plugin_path.join("plugin.toml"), manifest)?;
-        println!("Created placeholder plugin structure.");
-        println!("Edit {} to configure your plugin.", plugin_path.display());
-    }
-
-    println!("Plugin '{}' installed successfully.", args.name);
+    println!("Plugin '{}' installed successfully.", plugin_id);
     Ok(())
 }
 
@@ -2071,8 +2056,14 @@ async fn run_publish(args: PluginPublishArgs) -> Result<()> {
         .path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-    println!("Preparing plugin for publication...");
+    println!("Preparing plugin distribution package...");
     println!("  Directory: {}", plugin_dir.display());
+
+    if !args.dry_run {
+        bail!(
+            "Plugin registry publishing is unsupported. Use the default dry-run mode to create a local package without uploading."
+        );
+    }
 
     // First, validate the plugin
     println!("\nStep 1: Validating plugin...");
@@ -2194,14 +2185,11 @@ async fn run_publish(args: PluginPublishArgs) -> Result<()> {
         println!("    - {}", file);
     }
 
-    if args.dry_run {
-        println!("\n[DRY RUN] Would publish:");
-        println!("  Plugin: {}", plugin_id);
-        println!("  Version: {}", plugin_version);
-        println!("  Package: {}", tarball_path.display());
-        println!("\nNote: Actual publishing is not yet implemented.");
-        println!("The tarball has been created and can be manually distributed.");
-    }
+    println!("\nPackage prepared for manual distribution:");
+    println!("  Plugin: {}", plugin_id);
+    println!("  Version: {}", plugin_version);
+    println!("  Package: {}", tarball_path.display());
+    println!("\nRegistry publishing is unsupported; no upload was attempted.");
 
     Ok(())
 }
@@ -2210,6 +2198,49 @@ async fn run_publish(args: PluginPublishArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[tokio::test]
+    async fn test_non_local_plugin_install_is_unsupported_without_creating_files() {
+        let missing_name = "registry-plugin-that-does-not-exist".to_string();
+        let args = PluginInstallArgs {
+            name: missing_name.clone(),
+            version: None,
+            force: false,
+        };
+
+        let error = run_install(args)
+            .await
+            .expect_err("registry plugin install should be unsupported");
+        let message = error.to_string();
+
+        assert!(message.contains("Plugin registry installation is unsupported"));
+        assert!(message.contains(&missing_name));
+        assert!(message.contains("No plugin files were created"));
+        assert!(!PathBuf::from(&missing_name).exists());
+    }
+
+    #[tokio::test]
+    async fn test_non_dry_run_plugin_publish_errors_before_packaging() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let output = temp.path().join("plugin.tar.gz");
+        let args = PluginPublishArgs {
+            path: Some(temp.path().to_path_buf()),
+            dry_run: false,
+            output: Some(output.clone()),
+        };
+
+        let error = run_publish(args)
+            .await
+            .expect_err("registry publish should be unsupported");
+        let message = error.to_string();
+
+        assert!(message.contains("Plugin registry publishing is unsupported"));
+        assert!(message.contains("local package without uploading"));
+        assert!(
+            !output.exists(),
+            "unsupported publish must not create a package"
+        );
+    }
 
     // ==========================================================================
     // PluginInfo serialization tests
