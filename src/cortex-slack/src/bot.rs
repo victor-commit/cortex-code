@@ -580,11 +580,9 @@ impl CortexSlackBot {
 
     /// Process a /cortex command.
     async fn process_cortex_command(&self, prompt: &str, response_url: &str) {
-        // This would integrate with the agent system
-        // For now, send a placeholder response
         let response = DelayedResponse::new()
             .with_text(format!(
-                "🤖 *Cortex Response*\n\nProcessed prompt: {}\n\n_Agent integration pending_",
+                "🤖 *Cortex Response*\n\nSlack agent processing is unsupported in this build; no prompt was processed.\n\nPrompt received: {}",
                 prompt
             ))
             .in_channel()
@@ -597,10 +595,9 @@ impl CortexSlackBot {
 
     /// Process a /cortex-review command.
     async fn process_review_command(&self, pr_url: &str, response_url: &str) {
-        // This would integrate with the review system
         let response = DelayedResponse::new()
             .with_text(format!(
-                "📝 *PR Review*\n\nReviewing: {}\n\n_Review integration pending_",
+                "📝 *PR Review*\n\nSlack PR review automation is unsupported in this build; no review was started.\n\nPR URL received: {}",
                 pr_url
             ))
             .in_channel()
