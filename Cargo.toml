@@ -394,15 +394,23 @@ module_inception = "allow"
 derivable_impls = "allow"
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 panic = "abort"
 strip = "symbols"
 opt-level = 3
 
 [profile.release.build-override]
-opt-level = 3
+opt-level = 0
 
 [profile.dev]
 opt-level = 0
-debug = true
+debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.test]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
