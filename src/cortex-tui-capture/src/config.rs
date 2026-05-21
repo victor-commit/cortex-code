@@ -15,10 +15,10 @@ pub enum StyleRendering {
     /// Include ANSI escape codes for colors
     Ansi,
 
-    /// Include style markers in a separate format
+    /// Capture content as plain text; style annotations are not emitted yet.
     Annotated,
 
-    /// HTML-like tags for styling
+    /// Capture content as plain text; HTML style tags are not emitted yet.
     HtmlTags,
 }
 

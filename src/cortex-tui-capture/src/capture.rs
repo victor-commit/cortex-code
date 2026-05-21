@@ -486,8 +486,9 @@ impl FrameCapture {
         let ascii_content = match self.config.style_rendering {
             StyleRendering::Plain => self.buffer.to_ascii(&self.config),
             StyleRendering::Ansi => self.buffer.to_ansi(&self.config),
-            StyleRendering::Annotated => self.buffer.to_ascii(&self.config), // Fallback to ASCII (specialized rendering not yet implemented)
-            StyleRendering::HtmlTags => self.buffer.to_ascii(&self.config), // Fallback to ASCII (specialized rendering not yet implemented)
+            StyleRendering::Annotated | StyleRendering::HtmlTags => {
+                self.buffer.to_ascii(&self.config)
+            }
         };
 
         let mut frame = CapturedFrame::new(
