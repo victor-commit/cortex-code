@@ -135,7 +135,6 @@ pub enum ModalType {
     Timeline,
     /// Theme picker modal
     ThemePicker,
-    // ProviderPicker removed: provider is now always "cortex"
     /// Model picker modal
     ModelPicker,
     /// File picker modal
@@ -174,7 +173,6 @@ impl ModalType {
             ModalType::Export(_) => "Export",
             ModalType::Timeline => "Timeline",
             ModalType::ThemePicker => "Theme",
-            // ProviderPicker removed: provider is now always "cortex"
             ModalType::ModelPicker => "Model",
             ModalType::FilePicker => "Files",
             ModalType::Confirm(_) => "Confirm",
