@@ -6,7 +6,7 @@
 use anyhow::{Result, bail};
 use clap::CommandFactory;
 use clap_complete::{Shell, generate};
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 use super::args::*;
 use crate::login::{
@@ -34,7 +34,7 @@ pub async fn dispatch_command(cli: Cli) -> Result<()> {
         Some(Commands::Agent(agent_cli)) => agent_cli.run().await,
         Some(Commands::McpServer) => {
             bail!(
-                "MCP server mode is not yet implemented. Use 'cortex mcp' for MCP server management."
+                "MCP server mode is unsupported in this CLI build. Use 'cortex mcp' to manage external MCP servers."
             );
         }
         Some(Commands::Completion(completion_cli)) => handle_completion(completion_cli),
@@ -129,6 +129,7 @@ async fn run_tui(args: InteractiveArgs) -> Result<()> {
         tracing::warn!("Failed to scan custom commands: {}", e);
     }
 
+    #[cfg(feature = "cortex-tui")]
     let initial_prompt = if !args.prompt.is_empty() {
         Some(args.prompt.join(" "))
     } else {
@@ -142,14 +143,13 @@ async fn run_tui(args: InteractiveArgs) -> Result<()> {
         if let Some(msg) = exit_info.exit_message {
             println!("{}", msg);
         }
+        Ok(())
     }
 
     #[cfg(not(feature = "cortex-tui"))]
     {
-        compile_error!("The 'cortex-tui' feature must be enabled");
+        bail!("Interactive mode requires the cortex-tui feature to be enabled.");
     }
-
-    Ok(())
 }
 
 /// Run the init command to create AGENTS.md.
@@ -903,10 +903,9 @@ pub async fn show_config(config_cli: ConfigCommand) -> Result<()> {
 
 /// List features.
 pub async fn list_features() -> Result<()> {
-    println!("Feature flags:");
-    println!("{}", "-".repeat(40));
-    println!("  (Feature flag system not yet implemented)");
-    Ok(())
+    bail!(
+        "Feature flag inspection is unsupported: Cortex does not currently persist or evaluate CLI feature flags."
+    );
 }
 
 /// Run the HTTP server.
@@ -943,61 +942,68 @@ pub async fn run_serve(serve_cli: ServeCommand) -> Result<()> {
 }
 
 /// Discover servers on the network.
-pub async fn run_servers(servers_cli: ServersCommand) -> Result<()> {
-    match servers_cli.action {
-        Some(ServersSubcommand::Refresh(args)) => {
-            println!(
-                "Scanning for Cortex servers (timeout: {}s)...",
-                args.timeout
-            );
-            // Server discovery implementation
-            println!("(mDNS discovery not yet implemented)");
-        }
-        None => {
-            println!(
-                "Scanning for Cortex servers (timeout: {}s)...",
-                servers_cli.timeout
-            );
-            println!("(mDNS discovery not yet implemented)");
-        }
-    }
-    Ok(())
+pub async fn run_servers(_servers_cli: ServersCommand) -> Result<()> {
+    bail!(
+        "Local network server discovery is unsupported: mDNS discovery is not available in this CLI build."
+    );
 }
 
 /// View history.
-pub async fn run_history(history_cli: HistoryCommand) -> Result<()> {
-    match history_cli.action {
-        Some(HistorySubcommand::Search(args)) => {
-            println!("Searching history for: {}", args.pattern);
-            println!("(History search not yet implemented)");
-        }
-        Some(HistorySubcommand::Clear(args)) => {
-            if !args.yes {
-                print!("Clear all history? This cannot be undone. [y/N]: ");
-                io::stdout().flush()?;
-
-                let mut input = String::new();
-                io::stdin().lock().read_line(&mut input)?;
-
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("Cancelled.");
-                    return Ok(());
-                }
-            }
-            println!("(History clear not yet implemented)");
-        }
-        None => {
-            println!("Recent prompts (limit: {}):", history_cli.limit);
-            println!("(History view not yet implemented)");
-        }
-    }
-    Ok(())
+pub async fn run_history(_history_cli: HistoryCommand) -> Result<()> {
+    bail!(
+        "Prompt history commands are unsupported: history view, search, and clear do not have persisted storage in this CLI build."
+    );
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use clap_complete::Shell;
     use std::io::{self, ErrorKind, Write};
+
+    #[tokio::test]
+    async fn test_unsupported_feature_listing_errors() {
+        let error = list_features()
+            .await
+            .expect_err("feature listing should be unsupported");
+        let message = error.to_string();
+
+        assert!(message.contains("Feature flag inspection is unsupported"));
+        assert!(message.contains("does not currently persist or evaluate CLI feature flags"));
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_server_discovery_errors() {
+        let args = ServersCommand {
+            action: None,
+            timeout: 3,
+            json: false,
+        };
+        let error = run_servers(args)
+            .await
+            .expect_err("server discovery should be unsupported");
+        let message = error.to_string();
+
+        assert!(message.contains("Local network server discovery is unsupported"));
+        assert!(message.contains("mDNS discovery is not available"));
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_prompt_history_errors() {
+        let args = HistoryCommand {
+            limit: 20,
+            all: false,
+            json: false,
+            action: None,
+        };
+        let error = run_history(args)
+            .await
+            .expect_err("history should be unsupported without persisted storage");
+        let message = error.to_string();
+
+        assert!(message.contains("Prompt history commands are unsupported"));
+        assert!(message.contains("do not have persisted storage"));
+    }
 
     // =========================================================================
     // Shell name parsing tests (unit test the parsing logic directly)
