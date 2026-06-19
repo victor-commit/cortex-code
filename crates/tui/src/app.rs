@@ -131,6 +131,20 @@ pub struct MentionPicker {
     selected: usize,
 }
 
+/// The open command palette: the search query typed into it and the highlighted row.
+///
+/// The palette is a modal, searchable overlay (opened with `Ctrl+P`) that lists every built-in
+/// command and runs the selected one directly, independent of the prompt's `/` autocomplete. Its
+/// query is kept separate from the prompt so dismissing the palette restores the untouched chat
+/// input and returns focus to it.
+#[derive(Debug, Clone, Default)]
+pub struct Palette {
+    /// The search text typed into the palette (filters the command list).
+    query: String,
+    /// The highlighted match row (clamped to the current match count).
+    selected: usize,
+}
+
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
 const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
     important files, then create (or update) an AGENTS.md file at the project root that documents \
@@ -222,6 +236,10 @@ pub struct App {
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
     mention: Option<MentionPicker>,
+    /// The open command palette (`Ctrl+P`), or `None` when closed. While set it is modal: it owns a
+    /// search query and navigation, runs the highlighted command on Enter, and Esc dismisses it and
+    /// returns focus to the prompt.
+    palette: Option<Palette>,
     /// Set when `/editor` is dispatched, signalling the event loop to suspend the TUI and open the
     /// external `$EDITOR`. Consumed once by [`App::take_editor_request`].
     editor_requested: bool,
@@ -254,6 +272,7 @@ impl App {
             slash_selected: 0,
             dialog: None,
             mention: None,
+            palette: None,
             editor_requested: false,
             shell_mode: false,
             history: Vec::new(),
@@ -705,6 +724,100 @@ impl App {
         }
     }
 
+    /// Open the command palette (`Ctrl+P`): a modal, searchable overlay of every built-in command.
+    fn open_palette(&mut self) {
+        self.palette = Some(Palette::default());
+    }
+
+    /// Whether the command palette is currently open.
+    #[must_use]
+    pub fn palette_open(&self) -> bool {
+        self.palette.is_some()
+    }
+
+    /// The current palette search query (empty before anything is typed), or `None` when closed.
+    #[must_use]
+    pub fn palette_query(&self) -> Option<&str> {
+        self.palette.as_ref().map(|palette| palette.query.as_str())
+    }
+
+    /// The commands matching the palette query, in highlight order. Empty when the palette is closed
+    /// or nothing matches the query.
+    #[must_use]
+    pub fn palette_matches(&self) -> Vec<&'static slash::SlashCommand> {
+        match self.palette.as_ref() {
+            Some(palette) => slash::filter(&palette.query),
+            None => Vec::new(),
+        }
+    }
+
+    /// The highlighted palette row, clamped to the current match count.
+    #[must_use]
+    pub fn palette_selected(&self) -> usize {
+        let len = self.palette_matches().len();
+        let raw = self.palette.as_ref().map_or(0, |palette| palette.selected);
+        if len == 0 { 0 } else { raw.min(len - 1) }
+    }
+
+    /// Move the palette highlight to the next match (wrapping at the end).
+    fn palette_select_next(&mut self) {
+        let len = self.palette_matches().len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.palette_selected() + 1) % len;
+        if let Some(palette) = self.palette.as_mut() {
+            palette.selected = next;
+        }
+    }
+
+    /// Move the palette highlight to the previous match (wrapping at the start).
+    fn palette_select_prev(&mut self) {
+        let len = self.palette_matches().len();
+        if len == 0 {
+            return;
+        }
+        let prev = (self.palette_selected() + len - 1) % len;
+        if let Some(palette) = self.palette.as_mut() {
+            palette.selected = prev;
+        }
+    }
+
+    /// Append a character to the palette query, resetting the highlight to the top match so the
+    /// most relevant command is selected as the query narrows.
+    fn palette_input(&mut self, c: char) {
+        if let Some(palette) = self.palette.as_mut() {
+            palette.query.push(c);
+            palette.selected = 0;
+        }
+    }
+
+    /// Delete the last character of the palette query, resetting the highlight to the top match.
+    fn palette_backspace(&mut self) {
+        if let Some(palette) = self.palette.as_mut() {
+            palette.query.pop();
+            palette.selected = 0;
+        }
+    }
+
+    /// Close the command palette (Esc), returning focus to the prompt without altering its contents.
+    fn close_palette(&mut self) {
+        self.palette = None;
+    }
+
+    /// Run the highlighted palette command (Enter): close the palette, then dispatch the command so
+    /// its effect (a dialog, flow, or action) appears. With no match the palette simply closes.
+    fn dispatch_palette(&mut self) {
+        let matches = self.palette_matches();
+        if matches.is_empty() {
+            self.close_palette();
+            return;
+        }
+        let command = matches[self.palette_selected()];
+        self.close_palette();
+        self.dispatch_command(command);
+    }
+
     /// React to a prompt edit: reset the slash highlight and recompute the mention picker.
     fn on_prompt_edited(&mut self) {
         self.slash_selected = 0;
@@ -1048,6 +1161,24 @@ impl App {
             return;
         }
 
+        // The command palette is a modal, searchable overlay: it owns its own search query and
+        // navigation, runs the highlighted command on Enter, and Esc dismisses it and returns focus
+        // to the prompt (leaving the prompt's contents untouched). Typing edits the palette query
+        // rather than the prompt beneath it; Ctrl+C still quits so the user is never trapped.
+        if self.palette_open() {
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Up => self.palette_select_prev(),
+                KeyCode::Down => self.palette_select_next(),
+                KeyCode::Enter => self.dispatch_palette(),
+                KeyCode::Esc => self.close_palette(),
+                KeyCode::Backspace => self.palette_backspace(),
+                KeyCode::Char(c) if !ctrl && !alt => self.palette_input(c),
+                _ => {}
+            }
+            return;
+        }
+
         // While `!` shell mode is active the prompt runs typed commands locally rather than sending
         // them to the model: Enter executes the command, Shift+Enter inserts a soft newline, Esc
         // exits back to chat, and Backspace on an empty command also exits (otherwise it edits the
@@ -1160,6 +1291,8 @@ impl App {
             }
             // Expand/collapse tool cards to reveal or hide their full arguments and output.
             KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
+            // Ctrl+P opens the searchable command palette overlay.
+            KeyCode::Char('p') if ctrl => self.open_palette(),
             // `!` at the start of an empty prompt enters shell mode (the `!` is the mode trigger,
             // not literal text); typed elsewhere it is ordinary text handled by the arm below.
             KeyCode::Char('!') if !ctrl && !alt && self.input.value().is_empty() => {
@@ -2648,6 +2781,121 @@ mod tests {
         dispatch(&mut a, "themes");
         a.on_key(key(KeyCode::Enter));
         assert!(!a.dialog_open(), "Enter dismisses the dialog");
+    }
+
+    #[test]
+    fn ctrl_p_opens_the_command_palette() {
+        // VAL-TUI-058: Ctrl+P opens a command-palette overlay listing commands.
+        let mut a = app();
+        assert!(!a.palette_open(), "no palette before Ctrl+P");
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(a.palette_open(), "Ctrl+P opens the palette");
+        assert!(
+            !a.palette_matches().is_empty(),
+            "the palette lists commands when opened"
+        );
+        // It opens over the prompt without leaking the `p` keystroke into the input.
+        assert_eq!(a.input_value(), "", "Ctrl+P does not type into the prompt");
+    }
+
+    #[test]
+    fn typing_in_the_palette_filters_to_matches() {
+        // VAL-TUI-059: typing narrows the palette to matching commands.
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "mod");
+        assert_eq!(a.palette_query(), Some("mod"));
+        let names: Vec<&str> = a.palette_matches().iter().map(|c| c.name).collect();
+        assert!(names.contains(&"models"), "models matches: {names:?}");
+        assert!(
+            !names.contains(&"help"),
+            "unrelated commands hidden: {names:?}"
+        );
+        // The query edits the palette, not the prompt beneath it.
+        assert_eq!(a.input_value(), "", "the prompt stays untouched");
+    }
+
+    #[test]
+    fn palette_backspace_widens_the_match_set() {
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "mod");
+        let narrowed = a.palette_matches().len();
+        a.on_key(key(KeyCode::Backspace));
+        assert_eq!(a.palette_query(), Some("mo"));
+        assert!(
+            a.palette_matches().len() >= narrowed,
+            "backspacing widens (or holds) the match set"
+        );
+    }
+
+    #[test]
+    fn palette_arrows_move_the_highlight() {
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(a.palette_selected(), 0);
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.palette_selected(), 1, "Down moves the highlight");
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.palette_selected(), 0, "Up moves it back");
+    }
+
+    #[test]
+    fn selecting_a_palette_entry_executes_the_command() {
+        // VAL-TUI-060: highlighting an entry and pressing Enter runs it and closes the palette.
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "themes");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            !a.palette_open(),
+            "the palette closes after running a command"
+        );
+        let dialog = a.dialog().expect("the selected command's dialog opened");
+        assert_eq!(dialog.kind, DialogKind::Themes);
+    }
+
+    #[test]
+    fn palette_is_modal_and_does_not_edit_the_prompt() {
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "models");
+        assert_eq!(
+            a.input_value(),
+            "",
+            "typing edits the palette, not the prompt"
+        );
+        assert_eq!(a.palette_query(), Some("models"));
+    }
+
+    #[test]
+    fn esc_closes_the_palette_and_returns_focus_to_the_prompt() {
+        // VAL-TUI-061: Esc dismisses the palette and the prompt accepts typing again.
+        let mut a = app();
+        type_str(&mut a, "draft message");
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(a.palette_open());
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.palette_open(), "Esc closes the palette");
+        // Focus is back on the prompt: its prior contents are intact and typing appends to them.
+        assert_eq!(a.input_value(), "draft message", "the prompt is preserved");
+        type_str(&mut a, "!");
+        assert_eq!(
+            a.input_value(),
+            "draft message!",
+            "the prompt accepts typing again"
+        );
+    }
+
+    #[test]
+    fn palette_enter_with_no_match_just_closes() {
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "zzznotreal");
+        assert!(a.palette_matches().is_empty(), "no command matches");
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.palette_open(), "Enter on no-match closes the palette");
+        assert!(!a.dialog_open(), "nothing is executed");
     }
 
     #[test]

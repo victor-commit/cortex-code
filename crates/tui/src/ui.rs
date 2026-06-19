@@ -52,6 +52,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_mention_menu(frame, app, chunks[1]);
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area);
+    // The command palette overlays everything when open (mutually exclusive with a dialog).
+    draw_palette(frame, app, area);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -798,6 +800,121 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(shown), inner);
 }
 
+/// Build the command palette's command rows for the current query: each matching command as
+/// `/name  description` with the highlighted row marked, or a single graceful "no matching
+/// commands" row when the query matches nothing.
+fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
+    let matches = app.palette_matches();
+    if matches.is_empty() {
+        return vec![Line::from(Span::styled(
+            "  no matching commands",
+            Style::default()
+                .fg(style::TEXT_DIM)
+                .add_modifier(Modifier::ITALIC),
+        ))];
+    }
+    let selected = app.palette_selected();
+    let mut lines = Vec::with_capacity(matches.len());
+    for (i, command) in matches.iter().enumerate() {
+        let is_selected = i == selected;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let name_style = if is_selected {
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(style::TEXT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(format!("/{}", command.name), name_style),
+            Span::raw("  "),
+            Span::styled(
+                command.description.to_owned(),
+                Style::default().fg(style::TEXT_DIM),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// Render the command palette as a centered bordered popup: a search line reflecting the typed
+/// query sits atop the filtered command list, which scrolls to keep the highlighted row visible.
+fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(query) = app.palette_query() else {
+        return;
+    };
+    if area.width < 8 || area.height < 6 {
+        return;
+    }
+
+    let command_rows = palette_command_lines(app);
+    // The search line reads as a text input: the typed query followed by a block cursor.
+    let search_line = Line::from(vec![
+        Span::styled(
+            "› ",
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(query.to_owned(), Style::default().fg(style::TEXT)),
+        Span::styled("▏", Style::default().fg(style::INFO)),
+    ]);
+    let hint = "↑/↓ to move · Enter to run · Esc to close";
+
+    let widest = command_rows
+        .iter()
+        .map(Line::width)
+        .max()
+        .unwrap_or(0)
+        .max(search_line.width())
+        .max(hint.chars().count() + 2);
+    let max_w = (area.width as usize) * 9 / 10;
+    let width = (widest + 4).clamp(28, max_w.max(28)) as u16;
+
+    let row_budget = (area.height as usize)
+        .saturating_sub(6)
+        .clamp(1, MAX_DIALOG_ROWS);
+    let visible = command_rows.len().min(row_budget).max(1);
+    // Borders (2) + the search line (1) + the hint row (1) on top of the visible command rows.
+    let height = (visible as u16).saturating_add(4);
+
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(" Command Palette ")
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    // Scroll so the highlighted command stays inside the visible window.
+    let selected = app.palette_selected();
+    let offset = if selected < visible {
+        0
+    } else {
+        selected + 1 - visible
+    };
+    let end = (offset + visible).min(command_rows.len());
+
+    let mut shown: Vec<Line<'static>> = Vec::with_capacity(visible + 2);
+    shown.push(search_line);
+    shown.extend(command_rows[offset..end].iter().cloned());
+    shown.push(Line::from(Span::styled(
+        format!("  {hint}"),
+        Style::default().fg(style::TEXT_DIM),
+    )));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
 /// A rectangle of the given size centered within `area` (clamped to fit).
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let width = width.min(area.width);
@@ -1413,6 +1530,74 @@ mod tests {
         assert!(
             rendered.contains("google/gemini-2.5-flash"),
             "the default model is drawn in the overlay"
+        );
+    }
+
+    #[test]
+    fn palette_command_lines_list_commands_and_highlight_the_selection() {
+        // VAL-TUI-058: the palette lists command entries, with the highlighted row marked.
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let text = rendered(&palette_command_lines(&a));
+        assert!(text.contains("/help"), "a command entry is listed:\n{text}");
+        assert!(text.contains("/models"), "model command listed:\n{text}");
+        assert!(text.contains("▸"), "the highlight marker is drawn:\n{text}");
+    }
+
+    #[test]
+    fn palette_command_lines_filter_to_the_query() {
+        // VAL-TUI-059: typing narrows the rendered list to matching commands.
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        for c in "theme".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let text = rendered(&palette_command_lines(&a));
+        assert!(text.contains("/themes"), "the match is listed:\n{text}");
+        assert!(
+            !text.contains("/help"),
+            "non-matches are filtered out:\n{text}"
+        );
+    }
+
+    #[test]
+    fn opened_palette_renders_over_the_frame() {
+        // VAL-TUI-058: the palette, once opened, renders as a titled overlay listing commands.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert!(a.palette_open(), "the palette opened");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            rendered.contains("Command Palette"),
+            "the palette title is drawn:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("/help"),
+            "command entries are drawn in the overlay"
         );
     }
 }
