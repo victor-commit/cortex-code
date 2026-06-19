@@ -11,6 +11,7 @@ members = [
     "crates/providers",
     "crates/engine",
     "crates/permissions",
+    "crates/policy",
     "crates/checkpoints",
     "crates/tools",
     "crates/tui-core",
@@ -47,6 +48,7 @@ llm = { path = "crates/llm" }
 providers = { path = "crates/providers" }
 engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
+policy = { path = "crates/policy" }
 checkpoints = { path = "crates/checkpoints" }
 tools = { path = "crates/tools" }
 tui-core = { path = "crates/tui-core" }

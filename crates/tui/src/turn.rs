@@ -93,9 +93,19 @@ pub fn spawn(
                                 }
                                 _ => None,
                             };
-                            let mut dispatcher =
-                                TurnDispatcher::new(cwd, &model_id, session_id, tx_events.clone())
-                                    .with_permissions(build_permission_engine(tx_events.clone()));
+                            // Build the per-turn permission engine and its saved-decisions store
+                            // (seeded from the shared on-disk store) so an interactive "always allow"
+                            // is recorded and a previously saved decision is honored without
+                            // re-asking. `loaded` is the on-disk baseline used to detect new saves.
+                            let (engine, saved, loaded) =
+                                build_permission_engine(tx_events.clone(), &cwd);
+                            let mut dispatcher = TurnDispatcher::new(
+                                cwd.clone(),
+                                &model_id,
+                                session_id,
+                                tx_events.clone(),
+                            )
+                            .with_permissions(engine);
                             if let Some(recorder) = &recorder {
                                 dispatcher = dispatcher.with_checkpoints(Arc::new(
                                     crate::checkpoint::RecorderBridge::new(recorder.clone()),
@@ -121,6 +131,13 @@ pub fn spawn(
                             if let Some(recorder) = &recorder {
                                 let _ = recorder.finalize();
                             }
+                            // Persist any "always allow/deny" decision saved this turn to the shared
+                            // per-project store, so a LATER run on this project — in EITHER surface,
+                            // including a headless `cortex run` — honors it without re-asking
+                            // (VAL-CROSS-028). Only a turn that recorded something new rewrites the
+                            // store; a failure degrades to "not remembered" rather than disrupting
+                            // the rendered session.
+                            persist_saved_decisions(&cwd, &saved, &loaded);
                         });
                     }
                     Err(err) => {
@@ -202,25 +219,72 @@ fn build_turn(
     Ok((provider, turn, model_id))
 }
 
-/// Build the per-turn permission engine that gates the TUI's tools with an interactive prompt.
+/// Build the per-turn permission engine that gates the TUI's tools with an interactive prompt,
+/// returning the engine, its shared saved-decisions store, and the on-disk baseline that store was
+/// seeded from (so the caller can detect and persist a new "always" decision after the turn).
 ///
 /// The base policy asks before any effectful tool (`write`/`edit`/`apply_patch`/`bash`) and allows
 /// the read-only tools, so an ungoverned mutation surfaces a prompt rather than running silently;
-/// the project's own `[[permission]]` config layers are applied on top (higher precedence) so an
-/// explicit allow/deny rule governs the matching action. The [`UiResponder`] answers each `ask` by
-/// forwarding it to the UI thread over `events` and blocking on the human's decision (fail-closed
-/// if the UI is gone).
-fn build_permission_engine(events: Sender<TurnMessage>) -> Arc<permissions::PermissionEngine> {
+/// the project's own `[[permission]]` config layers are applied on top (higher precedence), and the
+/// project trust layer is applied last (highest precedence) so an untrusted project denies the
+/// mutating/exec tools identically to headless (VAL-CROSS-030). The engine consults the shared
+/// saved-decisions store (seeded from disk) BEFORE the ruleset, so a decision saved earlier — in
+/// this or another surface — is honored without re-asking (VAL-CROSS-028). The [`UiResponder`]
+/// answers each remaining `ask` by forwarding it to the UI thread over `events` and blocking on the
+/// human's decision (fail-closed if the UI is gone).
+fn build_permission_engine(
+    events: Sender<TurnMessage>,
+    cwd: &std::path::Path,
+) -> (
+    Arc<permissions::PermissionEngine>,
+    Arc<permissions::SavedDecisions>,
+    Vec<permissions::SavedDecision>,
+) {
     let base = default_ruleset();
-    let ruleset = match settings::ConfigInputs::from_process(BTreeMap::new()) {
-        Ok(inputs) => match permissions::load_layered(&inputs) {
-            Ok(config) => permissions::Ruleset::from_layers([base, config]),
-            Err(_) => base,
-        },
-        Err(_) => base,
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).ok();
+    let config = inputs
+        .as_ref()
+        .and_then(|inputs| permissions::load_layered(inputs).ok());
+    let trust = inputs
+        .as_ref()
+        .and_then(|inputs| policy::resolve_trust(inputs).ok())
+        .unwrap_or_default();
+    let trust_layer = policy::trust_ruleset(trust);
+    let ruleset = match config {
+        Some(config) => permissions::Ruleset::from_layers([base, config, trust_layer]),
+        None => permissions::Ruleset::from_layers([base, trust_layer]),
     };
+
+    // Seed the saved-decisions store from the shared per-project store on disk, keyed by the same
+    // workspace key the checkpoint store uses, so the TUI and headless `cortex run` share one store.
+    let loaded = permissions::store::load_for(&checkpoints::workspace_key(cwd));
+    let saved = Arc::new(permissions::SavedDecisions::from_decisions(loaded.clone()));
+
     let responder: Arc<dyn permissions::Responder> = Arc::new(UiResponder::new(events));
-    Arc::new(permissions::PermissionEngine::new(ruleset).with_responder(responder))
+    let engine = Arc::new(
+        permissions::PermissionEngine::new(ruleset)
+            .with_responder(responder)
+            .with_saved_decisions(saved.clone()),
+    );
+    (engine, saved, loaded)
+}
+
+/// Persist any "always allow/deny" decisions recorded this turn to the shared per-project store, so
+/// a later run on this project — in either surface — honors them without re-asking (VAL-CROSS-028).
+///
+/// The store is rewritten only when the turn's snapshot differs from the on-disk `loaded` baseline
+/// (i.e. a new decision was saved), so a turn that records nothing leaves the store untouched and a
+/// read-only/declined turn never clobbers a previously saved decision. A write failure is ignored
+/// (the decision is simply not remembered), never disrupting the rendered session.
+fn persist_saved_decisions(
+    cwd: &std::path::Path,
+    saved: &Arc<permissions::SavedDecisions>,
+    loaded: &[permissions::SavedDecision],
+) {
+    let snapshot = saved.snapshot();
+    if snapshot.as_slice() != loaded {
+        let _ = permissions::store::save_for(&checkpoints::workspace_key(cwd), &snapshot);
+    }
 }
 
 /// The TUI's default permission policy: allow everything, then ask before each effectful tool. With

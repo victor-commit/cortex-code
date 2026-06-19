@@ -11,12 +11,17 @@
 //! Fail-closed by construction: if the UI is gone (channel send fails) or the reply channel is
 //! dropped without an answer, the ask resolves to [`Decision::Deny`], so a tool never proceeds
 //! without an explicit approval.
+//!
+//! The UI answers with a [`ScopedDecision`], so a user can pick "allow once" (apply to this action
+//! only) or "allow always" (remember it). An "always" reply is recorded by the engine into the
+//! shared saved-decisions store, which the turn persists to disk so a later run — including a later
+//! headless `cortex run` on the same project — honors it without re-prompting (VAL-CROSS-028).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
 
-use permissions::{Decision, PermissionRequest, Responder};
+use permissions::{Decision, PermissionRequest, Responder, ScopedDecision};
 
 use crate::turn::TurnMessage;
 
@@ -31,8 +36,8 @@ pub struct PermissionAsk {
     pub tool: String,
     /// The subject the prompt names (the file path for a file tool, the command for `bash`).
     pub subject: String,
-    /// The one-shot channel the UI sends its [`Decision`] back on.
-    reply: Sender<Decision>,
+    /// The one-shot channel the UI sends its [`ScopedDecision`] back on.
+    reply: Sender<ScopedDecision>,
 }
 
 impl PermissionAsk {
@@ -41,7 +46,7 @@ impl PermissionAsk {
     pub(crate) fn new(
         tool: impl Into<String>,
         subject: impl Into<String>,
-        reply: Sender<Decision>,
+        reply: Sender<ScopedDecision>,
     ) -> Self {
         Self {
             tool: tool.into(),
@@ -50,9 +55,11 @@ impl PermissionAsk {
         }
     }
 
-    /// Answer the ask, unblocking the worker thread waiting on the reply channel. A send failure
-    /// (the worker already gave up and failed closed) is ignored.
-    pub fn answer(self, decision: Decision) {
+    /// Answer the ask, unblocking the worker thread waiting on the reply channel. The decision's
+    /// scope ([`once`](ScopedDecision::once) vs [`always`](ScopedDecision::always)) controls whether
+    /// the engine records and the turn persists it. A send failure (the worker already gave up and
+    /// failed closed) is ignored.
+    pub fn answer(self, decision: ScopedDecision) {
         let _ = self.reply.send(decision);
     }
 }
@@ -64,7 +71,7 @@ impl PermissionAsk {
 /// retry stays denied without nagging the user).
 pub struct UiResponder {
     events: Sender<TurnMessage>,
-    answered: Mutex<HashMap<(String, String), Decision>>,
+    answered: Mutex<HashMap<(String, String), ScopedDecision>>,
 }
 
 impl UiResponder {
@@ -78,7 +85,7 @@ impl UiResponder {
     }
 
     /// A decision already given for `key` this turn, if any.
-    fn cached(&self, key: &(String, String)) -> Option<Decision> {
+    fn cached(&self, key: &(String, String)) -> Option<ScopedDecision> {
         self.answered
             .lock()
             .ok()
@@ -86,7 +93,7 @@ impl UiResponder {
     }
 
     /// Remember `decision` for `key` so an identical later ask this turn reuses it.
-    fn remember(&self, key: (String, String), decision: Decision) {
+    fn remember(&self, key: (String, String), decision: ScopedDecision) {
         if let Ok(mut cache) = self.answered.lock() {
             cache.insert(key, decision);
         }
@@ -95,6 +102,10 @@ impl UiResponder {
 
 impl Responder for UiResponder {
     fn respond(&self, request: &PermissionRequest) -> Decision {
+        self.respond_scoped(request).decision
+    }
+
+    fn respond_scoped(&self, request: &PermissionRequest) -> ScopedDecision {
         let key = (request.tool.clone(), request.subject.clone());
         if let Some(decision) = self.cached(&key) {
             return decision;
@@ -108,11 +119,13 @@ impl Responder for UiResponder {
             .send(TurnMessage::Permission(Box::new(ask)))
             .is_err()
         {
-            return Decision::Deny;
+            return ScopedDecision::once(Decision::Deny);
         }
 
         // Block until the UI answers; a dropped reply channel (UI vanished) fails closed.
-        let decision = wait.recv().unwrap_or(Decision::Deny);
+        let decision = wait
+            .recv()
+            .unwrap_or_else(|_| ScopedDecision::once(Decision::Deny));
         self.remember(key, decision);
         decision
     }
@@ -139,7 +152,7 @@ mod tests {
 
         let worker = {
             let responder = responder.clone();
-            thread::spawn(move || responder.respond(&request("write", "marker.txt")))
+            thread::spawn(move || responder.respond_scoped(&request("write", "marker.txt")))
         };
 
         let message = rx.recv().expect("the ask is forwarded to the UI");
@@ -148,9 +161,31 @@ mod tests {
         };
         assert_eq!(ask.tool, "write");
         assert_eq!(ask.subject, "marker.txt");
-        ask.answer(Decision::Allow);
+        ask.answer(ScopedDecision::once(Decision::Allow));
 
-        assert_eq!(worker.join().unwrap(), Decision::Allow);
+        assert_eq!(
+            worker.join().unwrap(),
+            ScopedDecision::once(Decision::Allow)
+        );
+    }
+
+    // An "always allow" reply carries the Always scope back so the engine records and persists it.
+    #[test]
+    fn relays_an_always_allow() {
+        let (tx, rx) = channel();
+        let responder = Arc::new(UiResponder::new(tx));
+        let worker = {
+            let responder = responder.clone();
+            thread::spawn(move || responder.respond_scoped(&request("bash", "echo hi")))
+        };
+        let TurnMessage::Permission(ask) = rx.recv().unwrap() else {
+            panic!("expected a permission ask");
+        };
+        ask.answer(ScopedDecision::always(Decision::Allow));
+        assert_eq!(
+            worker.join().unwrap(),
+            ScopedDecision::always(Decision::Allow)
+        );
     }
 
     // A denial flows back unchanged, blocking the tool.
@@ -165,7 +200,7 @@ mod tests {
         let TurnMessage::Permission(ask) = rx.recv().unwrap() else {
             panic!("expected a permission ask");
         };
-        ask.answer(Decision::Deny);
+        ask.answer(ScopedDecision::once(Decision::Deny));
         assert_eq!(worker.join().unwrap(), Decision::Deny);
     }
 
@@ -194,7 +229,7 @@ mod tests {
         let TurnMessage::Permission(ask) = rx.recv().unwrap() else {
             panic!("expected a permission ask");
         };
-        ask.answer(Decision::Allow);
+        ask.answer(ScopedDecision::once(Decision::Allow));
         assert_eq!(first.join().unwrap(), Decision::Allow);
 
         // The second identical ask resolves from the cache: no new message is forwarded.

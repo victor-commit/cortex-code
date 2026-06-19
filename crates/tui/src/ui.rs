@@ -1320,26 +1320,25 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // The Allow/Deny option row: the highlighted choice carries a `▸` marker and bold styling, and
-    // the options keep their semantic colors (allow = success/green, deny = error/red) so the choice
-    // is unmistakable in a snapshot.
-    let allow_selected = selected == 0;
+    // The option row: Allow once · Allow always (remember) · Deny. The highlighted choice carries a
+    // `▸` marker and bold styling, and the options keep their semantic colors (allow = success/green,
+    // deny = error/red) so the choice is unmistakable in a snapshot.
+    let option = |label: &str, index: usize, color| {
+        let marked = if selected == index {
+            format!("▸ {label}")
+        } else {
+            format!("  {label}")
+        };
+        Span::styled(marked, option_style(color, selected == index))
+    };
     let options = Line::from(vec![
-        Span::styled(
-            if allow_selected {
-                "▸ Allow"
-            } else {
-                "  Allow"
-            },
-            option_style(style::SUCCESS, allow_selected),
-        ),
-        Span::raw("    "),
-        Span::styled(
-            if allow_selected { "  Deny" } else { "▸ Deny" },
-            option_style(style::ERROR, !allow_selected),
-        ),
+        option("Allow once", 0, style::SUCCESS),
+        Span::raw("  "),
+        option("Allow always", 1, style::SUCCESS),
+        Span::raw("  "),
+        option("Deny", 2, style::ERROR),
     ]);
-    let hint = "y allow · n deny · ←/→ select · Enter confirm · Esc deny";
+    let hint = "y once · a always · n deny · ←/→ select · Enter confirm · Esc deny";
 
     let rows: Vec<Line<'static>> = vec![
         Line::from(vec![

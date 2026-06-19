@@ -145,6 +145,18 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // default persona) decides this, so a default run keeps its unchanged top-level behavior.
     let active_agent = args.agent.is_some().then(|| agent.name());
 
+    // Resolve the project's trust level (the layered config's `trust` key) into the highest-
+    // precedence permission layer: an untrusted project denies the mutating/exec tools, so the SAME
+    // action is blocked here that the TUI also blocks under untrusted, and a trusted project
+    // contributes nothing (VAL-CROSS-030). A config error fails fast with the config exit code.
+    let trust_rules = match policy::resolve_trust(&config_inputs) {
+        Ok(level) => policy::trust_ruleset(level).rules().to_vec(),
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Config;
+        }
+    };
+
     // Build the headless permission engine from every source `cortex run` honors: the config-file
     // `[[permission]]` layers (global → project → nested), agent-scoped when an `--agent` is active,
     // as the BASE ruleset, the CLI allow/deny rules appended ON TOP (last-matching-rule-wins), the
@@ -159,6 +171,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         active_agent,
         cli_permission_rules,
         save_specs,
+        trust_rules,
         loaded_decisions,
         bus,
     ) {

@@ -47,6 +47,7 @@ mod rule;
 mod ruleset;
 mod saved;
 mod scope;
+pub mod store;
 
 pub use action::Action;
 pub use agent::{AgentRulesets, narrow_action};

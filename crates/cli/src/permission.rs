@@ -112,8 +112,10 @@ pub struct HeadlessPermissions {
 /// The combined ruleset is, in last-matching-rule-wins order: the (agent-scoped) config base, then
 /// the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an `ask` rule (so
 /// a matching action is surfaced as an ask — recording a `permission.asked` event — and the
-/// [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern). The engine also
-/// carries:
+/// [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern), then the
+/// `trust_rules` (the project trust layer; an untrusted project denies the mutating/exec tools), so
+/// a trust `deny` is the highest-precedence rule and wins over any allow/ask above it (VAL-CROSS-030).
+/// The engine also carries:
 /// - the `saved` store (consulted BEFORE the ruleset, so a previously saved decision is honored
 ///   with no new ask — VAL-CROSS-027), seeded from `loaded`;
 /// - the event `bus`, so `permission.asked`/`permission.replied` are observable;
@@ -132,6 +134,7 @@ pub fn prepare_headless_permissions(
     agent: Option<&str>,
     cli_rules: Vec<Rule>,
     save_specs: Vec<Rule>,
+    trust_rules: Vec<Rule>,
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
 ) -> Result<HeadlessPermissions, RuleError> {
@@ -153,6 +156,13 @@ pub fn prepare_headless_permissions(
             spec.pattern.clone(),
             Action::Ask,
         ));
+    }
+    // The project trust layer is appended LAST so it has the highest precedence: an untrusted
+    // project's `deny` for a mutating/exec tool overrides any allow/ask above it, blocking the same
+    // action headless that the TUI also blocks under untrusted (VAL-CROSS-030). A trusted project
+    // contributes no rules, so behavior is unchanged.
+    for rule in trust_rules {
+        ruleset.push(rule);
     }
 
     let saved = Arc::new(SavedDecisions::from_decisions(loaded));
@@ -341,6 +351,7 @@ mod tests {
             cli_rules,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             Arc::new(EventBus::new()),
         )
         .expect("prepare permissions")
@@ -409,6 +420,61 @@ mod tests {
         assert_eq!(engine.classify("write", "secrets/k.txt"), Action::Deny);
         assert_eq!(engine.classify("write", "src/k.txt"), Action::Allow);
         assert_eq!(engine.classify("read", "secrets/k.txt"), Action::Allow);
+    }
+
+    // VAL-CROSS-030 (headless half): the trust layer is appended last, so an untrusted project's
+    // `deny bash` overrides a config-file `allow bash`, blocking the mutating/exec action; a trusted
+    // project contributes no rules so the same action stays allowed.
+    #[test]
+    fn untrusted_trust_layer_denies_a_config_allowed_action() {
+        let scratch = Scratch::new("trust-untrusted");
+        scratch.write_project(ALLOW_RM);
+        let trust_rules = policy::trust_ruleset(policy::TrustLevel::Untrusted)
+            .rules()
+            .to_vec();
+        let engine = prepare_headless_permissions(
+            &scratch.inputs(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            trust_rules,
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("untrusted trust rules attach an engine");
+        assert_eq!(
+            engine.classify("bash", "rm x"),
+            Action::Deny,
+            "an untrusted project denies bash even though the config allowed `rm *`"
+        );
+    }
+
+    #[test]
+    fn trusted_trust_layer_leaves_a_config_allow_intact() {
+        let scratch = Scratch::new("trust-trusted");
+        scratch.write_project(ALLOW_RM);
+        let trust_rules = policy::trust_ruleset(policy::TrustLevel::Trusted)
+            .rules()
+            .to_vec();
+        let engine = prepare_headless_permissions(
+            &scratch.inputs(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            trust_rules,
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("the config allow attaches an engine");
+        assert_eq!(
+            engine.classify("bash", "rm x"),
+            Action::Allow,
+            "a trusted project contributes no trust rules, so the config allow stands"
+        );
     }
 
     /// A project config declaring per-agent `[[agent.<name>.permission]]` overrides: agent `plan`
@@ -537,6 +603,7 @@ mod tests {
         let err = match prepare_headless_permissions(
             &scratch.inputs(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -703,6 +770,7 @@ mod tests {
             Vec::new(),
             rules_from_save_flags(&flags(&["bash:echo *"])).expect("save specs"),
             Vec::new(),
+            Vec::new(),
             bus1,
         )
         .expect("prepare run 1");
@@ -725,10 +793,10 @@ mod tests {
             vec![SavedDecision::new("bash", "echo *", Decision::Allow)],
             "the saved decision carries the SPEC's precise pattern, not the broad default"
         );
-        crate::permission_store::write(&store, &snapshot).expect("persist run 1");
+        permissions::store::write(&store, &snapshot).expect("persist run 1");
 
         // --- Run 2: a fully separate process loads the decision and honors it with no re-ask. ---
-        let loaded = crate::permission_store::read(&store);
+        let loaded = permissions::store::read(&store);
         assert_eq!(loaded, snapshot, "the decision survives the persist/reload");
 
         let bus2 = Arc::new(EventBus::new());
@@ -737,6 +805,7 @@ mod tests {
         let prepared2 = prepare_headless_permissions(
             &scratch.inputs(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             loaded,

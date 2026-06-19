@@ -19,6 +19,7 @@ redaction = { workspace = true }
 protocol = { workspace = true }
 tools = { workspace = true }
 permissions = { workspace = true }
+policy = { workspace = true }
 checkpoints = { workspace = true }
 tui-widgets = { workspace = true }
 tui-components = { workspace = true }
