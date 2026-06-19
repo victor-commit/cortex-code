@@ -4,6 +4,7 @@
 //! readline-style editing and multi-line text. Rendering is done with `ratatui`
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
@@ -54,9 +55,29 @@ pub enum Entry {
     /// A system notice (e.g. a dispatched slash command's acknowledgment, or an
     /// unknown-command message) shown distinctly from chat content.
     Notice(String),
+    /// The `/help` command reference: the built-in slash commands and keybindings, rendered as a
+    /// distinct panel. Its content is generated at render time from the command registry, so the
+    /// entry itself carries no data.
+    Help,
     /// A turn-level error surfaced to the user.
     Error(String),
 }
+
+/// The instruction sent to the model when the `/init` flow runs (project initialization).
+const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
+    important files, then create (or update) an AGENTS.md file at the project root that documents \
+    the project's purpose, layout, key build/test/lint commands, and conventions. Read the \
+    existing files first so the summary is accurate.";
+
+/// The instruction sent to the model when the `/review` flow runs (code review).
+const REVIEW_PROMPT: &str = "Review the current state of the code in this repository. Inspect the \
+    recent changes and the relevant files, then report any bugs, correctness problems, security \
+    issues, and concrete improvements you find, grouped by severity.";
+
+/// The instruction sent to the model when the `/compact` flow runs (conversation compaction).
+const COMPACTION_PROMPT: &str = "Summarize our conversation so far into a concise summary that \
+    preserves the key facts, decisions, code changes, and any open tasks. Respond with only the \
+    summary.";
 
 /// Cumulative token/cost usage shown in the footer, accumulated across the session's turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -98,8 +119,17 @@ pub struct App {
     pub transcript: Vec<Entry>,
     /// Cumulative usage shown in the footer.
     pub usage: UsageSummary,
-    /// A prompt accepted by `submit` and waiting for the event loop to start a turn.
+    /// A prompt accepted by `submit` (or a slash flow) and waiting for the event loop to start a
+    /// turn. For a flow this is the expanded instruction sent to the model, which may differ from
+    /// the concise header shown in the transcript ([`App::pending_header`]).
     pending_prompt: Option<String>,
+    /// The user-visible header for the queued turn, set by a slash flow so the transcript shows a
+    /// concise label (e.g. `/init`) rather than the verbose instruction. `None` for a plain chat
+    /// prompt, where the typed text is shown verbatim.
+    pending_header: Option<String>,
+    /// Whether the queued turn compacts the conversation into its summary on completion (set by the
+    /// `/compact` flow). Consumed when the turn begins.
+    pending_compaction: bool,
     /// The active turn's event channel, present only while a turn is in flight.
     turn_rx: Option<Receiver<TurnMessage>>,
     /// When the active turn started, used to animate the busy indicator. `None` when idle.
@@ -108,6 +138,9 @@ pub struct App {
     turn_prompt: Option<String>,
     /// Whether the in-flight turn already surfaced an error (so finalization skips the answer).
     turn_errored: bool,
+    /// Whether the in-flight turn is a compaction (its summary replaces the conversation history
+    /// when it finishes). Set from [`App::pending_compaction`] when the turn begins.
+    turn_compaction: bool,
     /// Whether tool cards are expanded to reveal their full arguments and output. Toggled by the
     /// expand/collapse keybind; applies to every tool card so the detail view is unambiguous.
     pub expand_tools: bool,
@@ -128,10 +161,13 @@ impl App {
             transcript: Vec::new(),
             usage: UsageSummary::default(),
             pending_prompt: None,
+            pending_header: None,
+            pending_compaction: false,
             turn_rx: None,
             spinner_start: None,
             turn_prompt: None,
             turn_errored: false,
+            turn_compaction: false,
             expand_tools: false,
             slash_selected: 0,
             history: Vec::new(),
@@ -167,12 +203,18 @@ impl App {
 
     /// Begin a streaming turn for `prompt`: record the user message, open an in-progress assistant
     /// entry, attach the worker's event channel, and start the busy indicator.
+    ///
+    /// A slash flow may set a concise [header](App::pending_header) (shown in the transcript) and
+    /// the [compaction](App::pending_compaction) flag (so the turn's summary replaces history when
+    /// it finishes); both are consumed here. A plain chat prompt shows its text verbatim.
     pub fn begin_turn(&mut self, prompt: String, rx: Receiver<TurnMessage>) {
-        self.transcript.push(Entry::User(prompt.clone()));
+        let header = self.pending_header.take().unwrap_or_else(|| prompt.clone());
+        self.transcript.push(Entry::User(header));
         self.transcript
             .push(Entry::Assistant(AssistantTurn::default()));
         self.turn_prompt = Some(prompt);
         self.turn_errored = false;
+        self.turn_compaction = std::mem::take(&mut self.pending_compaction);
         self.turn_rx = Some(rx);
         self.spinner_start = Some(Instant::now());
     }
@@ -318,25 +360,48 @@ impl App {
 
     /// Finalize a completed turn: clear the busy indicator and fold the exchange into history so the
     /// next turn carries conversational context.
+    ///
+    /// A compaction turn (`/compact`) instead replaces the conversation history with its summary so
+    /// subsequent turns carry a compact context, and annotates the transcript so the compaction is
+    /// visible. A failed turn of either kind leaves history untouched.
     fn finish_turn(&mut self) {
         self.turn_rx = None;
         self.spinner_start = None;
         let prompt = self.turn_prompt.take();
         let errored = std::mem::take(&mut self.turn_errored);
+        let compaction = std::mem::take(&mut self.turn_compaction);
+
+        if compaction {
+            if !errored {
+                if let Some(summary) = self.latest_assistant_answer() {
+                    self.history = vec![Message::system(format!(
+                        "Summary of the conversation so far:\n{summary}"
+                    ))];
+                    self.transcript.push(Entry::Notice(
+                        "Conversation compacted into a summary.".to_owned(),
+                    ));
+                }
+            }
+            return;
+        }
+
         if let Some(prompt) = prompt {
             self.history.push(Message::user(prompt));
             if !errored {
-                // Fold the turn's assistant answer into history. A tool/diff entry may sit after the
-                // answer, so scan back to the most recent assistant entry rather than only the last.
-                let answer = self.transcript.iter().rev().find_map(|entry| match entry {
-                    Entry::Assistant(turn) if !turn.answer.is_empty() => Some(turn.answer.clone()),
-                    _ => None,
-                });
-                if let Some(answer) = answer {
+                if let Some(answer) = self.latest_assistant_answer() {
                     self.history.push(Message::assistant(answer));
                 }
             }
         }
+    }
+
+    /// The most recent assistant entry's answer text, if any. A tool/diff entry may sit after the
+    /// answer, so this scans back rather than reading only the last entry.
+    fn latest_assistant_answer(&self) -> Option<String> {
+        self.transcript.iter().rev().find_map(|entry| match entry {
+            Entry::Assistant(turn) if !turn.answer.is_empty() => Some(turn.answer.clone()),
+            _ => None,
+        })
     }
 
     /// The current prompt text (all lines joined with `\n`).
@@ -433,17 +498,121 @@ impl App {
         self.dispatch_command(command);
     }
 
-    /// Apply a dispatched slash command's effect. `/exit` quits; every other built-in surfaces a
-    /// notice acknowledging the dispatch (its dedicated dialog/flow is wired by later features).
+    /// Apply a dispatched slash command's effect. The action/flow built-ins (`/help`, `/new`,
+    /// `/init`, `/review`, `/compact`, `/export`, `/exit`) run their handler or flow; the remaining
+    /// built-ins (pickers/dialogs wired by other features) surface a notice acknowledging the
+    /// dispatch.
     fn dispatch_command(&mut self, command: &'static slash::SlashCommand) {
-        if command.name == "exit" {
-            self.should_quit = true;
+        match command.name {
+            "exit" => self.should_quit = true,
+            "help" => self.transcript.push(Entry::Help),
+            "new" => self.new_session(),
+            "export" => self.export_session(),
+            "init" => self.start_flow(
+                "/init",
+                "/init — analyzing the repository to create AGENTS.md…",
+                INIT_PROMPT,
+            ),
+            "review" => self.start_flow(
+                "/review",
+                "/review — reviewing the current code…",
+                REVIEW_PROMPT,
+            ),
+            "compact" => self.start_compaction(),
+            _ => self.transcript.push(Entry::Notice(format!(
+                "/{} — {}",
+                command.name, command.description
+            ))),
+        }
+    }
+
+    /// Start a fresh session (`/new`): clear the transcript, the conversational history, and the
+    /// usage totals so the view returns to the empty home state. Ignored while a turn streams.
+    fn new_session(&mut self) {
+        if self.is_busy() {
             return;
         }
-        self.transcript.push(Entry::Notice(format!(
-            "/{} — {}",
-            command.name, command.description
-        )));
+        self.transcript.clear();
+        self.history.clear();
+        self.usage = UsageSummary::default();
+    }
+
+    /// Queue a slash flow turn (`/init`, `/review`): push a notice describing the flow, then queue
+    /// the expanded instruction (shown in the transcript under the concise `header`). The event
+    /// loop turns the queued prompt into a real streaming turn. Ignored while a turn streams.
+    fn start_flow(&mut self, header: &str, notice: &str, prompt: &str) {
+        if self.is_busy() {
+            return;
+        }
+        self.transcript.push(Entry::Notice(notice.to_owned()));
+        self.pending_header = Some(header.to_owned());
+        self.pending_prompt = Some(prompt.to_owned());
+    }
+
+    /// Start conversation compaction (`/compact`): queue a summarization turn whose summary replaces
+    /// the history when it finishes. Ignored while a turn streams, and a no-op (with a notice) when
+    /// there is no conversation yet to compact.
+    fn start_compaction(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        if self.history.is_empty() {
+            self.transcript.push(Entry::Notice(
+                "Nothing to compact yet — start a conversation first.".to_owned(),
+            ));
+            return;
+        }
+        self.transcript.push(Entry::Notice(
+            "/compact — compacting the conversation…".to_owned(),
+        ));
+        self.pending_header = Some("/compact".to_owned());
+        self.pending_prompt = Some(COMPACTION_PROMPT.to_owned());
+        self.pending_compaction = true;
+    }
+
+    /// Export the current session (`/export`): render the transcript to Markdown, write it to a
+    /// file under the data directory's `exports/` folder, and confirm with the path. A write
+    /// failure surfaces a clear error instead of crashing.
+    fn export_session(&mut self) {
+        let markdown = self.render_session_markdown();
+        match write_export(&markdown) {
+            Ok(path) => self.transcript.push(Entry::Notice(format!(
+                "Exported session to {}",
+                path.display()
+            ))),
+            Err(err) => self
+                .transcript
+                .push(Entry::Error(format!("Export failed: {err}"))),
+        }
+    }
+
+    /// Render the current transcript to a self-contained Markdown document for `/export`.
+    fn render_session_markdown(&self) -> String {
+        let mut out = String::from("# Cortex Code session export\n\n");
+        for entry in &self.transcript {
+            match entry {
+                Entry::User(text) => out.push_str(&format!("## You\n\n{text}\n\n")),
+                Entry::Assistant(turn) => {
+                    out.push_str("## Cortex\n\n");
+                    if !turn.reasoning.trim().is_empty() {
+                        out.push_str(&format!("> reasoning: {}\n\n", turn.reasoning.trim()));
+                    }
+                    if !turn.answer.trim().is_empty() {
+                        out.push_str(&format!("{}\n\n", turn.answer.trim()));
+                    }
+                }
+                Entry::Diff(diff) => {
+                    out.push_str(&format!("### Change: {}\n\n", diff.path));
+                }
+                Entry::Tool(card) => {
+                    out.push_str(&format!("### Tool: {} — {}\n\n", card.name, card.summary));
+                }
+                Entry::Notice(text) => out.push_str(&format!("> {text}\n\n")),
+                Entry::Help => {}
+                Entry::Error(text) => out.push_str(&format!("> Error: {text}\n\n")),
+            }
+        }
+        out
     }
 
     /// Handles a single key press, mutating prompt or app state as appropriate.
@@ -553,6 +722,43 @@ impl App {
 /// Builds [`TextAreaModifiers`] from a shift flag (ctrl/alt are never forwarded here).
 fn modifiers(shift: bool) -> TextAreaModifiers {
     TextAreaModifiers::new(shift, false, false)
+}
+
+/// Write a session export Markdown document to a timestamped file under the data directory's
+/// `exports/` folder, returning the path written. The directory is created if needed.
+fn write_export(markdown: &str) -> std::io::Result<PathBuf> {
+    let dir = export_dir();
+    std::fs::create_dir_all(&dir)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let path = dir.join(format!("cortex-session-{nanos}.md"));
+    std::fs::write(&path, markdown)?;
+    Ok(path)
+}
+
+/// Resolve the export directory, mirroring the data-directory precedence used elsewhere:
+/// `CORTEX_DATA_DIR/exports`, else `XDG_DATA_HOME/cortex/exports`, else
+/// `$HOME/.local/share/cortex/exports`, else a `cortex-exports` folder in the OS temp dir.
+fn export_dir() -> PathBuf {
+    if let Some(dir) = env_non_empty("CORTEX_DATA_DIR") {
+        return PathBuf::from(dir).join("exports");
+    }
+    if let Some(dir) = env_non_empty("XDG_DATA_HOME") {
+        return PathBuf::from(dir).join("cortex").join("exports");
+    }
+    if let Some(home) = env_non_empty("HOME") {
+        return PathBuf::from(home).join(".local/share/cortex/exports");
+    }
+    std::env::temp_dir().join("cortex-exports")
+}
+
+/// A trimmed, non-empty environment variable value, or `None`.
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -1126,9 +1332,10 @@ mod tests {
         let mut a = app();
         a.on_key(key(KeyCode::Char('/')));
         a.on_key(key(KeyCode::Down)); // help -> new
+        a.on_key(key(KeyCode::Down)); // new -> sessions
         a.on_key(key(KeyCode::Enter));
         match a.transcript.last() {
-            Some(Entry::Notice(text)) => assert!(text.contains("/new"), "notice: {text}"),
+            Some(Entry::Notice(text)) => assert!(text.contains("/sessions"), "notice: {text}"),
             other => panic!("expected a dispatch notice, got {other:?}"),
         }
     }
@@ -1198,5 +1405,211 @@ mod tests {
         assert!(!a.slash_menu_open());
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.take_pending_prompt().as_deref(), Some("just chatting"));
+    }
+
+    /// Run a complete throwaway turn so the app accumulates transcript + history state.
+    fn run_turn(a: &mut App, prompt: &str, answer: &str) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt.to_owned(), rx);
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: answer.to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+    }
+
+    #[test]
+    fn dispatching_help_shows_a_help_entry() {
+        // VAL-TUI-032: `/help` shows a help / command reference.
+        let mut a = app();
+        type_str(&mut a, "/help");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "help is not a model turn"
+        );
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Help)),
+            "a help entry is shown: {:?}",
+            a.transcript.last()
+        );
+    }
+
+    #[test]
+    fn dispatching_new_clears_the_session() {
+        // VAL-TUI-033: `/new` starts a fresh session (empty transcript + history).
+        let mut a = app();
+        run_turn(&mut a, "remember the word marmalade", "noted");
+        assert!(!a.transcript.is_empty(), "a populated transcript first");
+        assert!(!a.history_snapshot().is_empty(), "history populated first");
+
+        type_str(&mut a, "/new");
+        a.on_key(key(KeyCode::Enter));
+
+        assert!(a.transcript.is_empty(), "transcript cleared after /new");
+        assert!(
+            a.history_snapshot().is_empty(),
+            "history cleared after /new"
+        );
+        assert!(!a.usage.reported, "usage reset after /new");
+    }
+
+    #[test]
+    fn dispatching_init_queues_a_real_flow_turn() {
+        // VAL-TUI-038: `/init` triggers project initialization (a real turn, not an ack).
+        let mut a = app();
+        type_str(&mut a, "/init");
+        a.on_key(key(KeyCode::Enter));
+
+        // A notice marks the flow starting.
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("/init"))),
+            "an /init flow notice is shown"
+        );
+        // The expanded instruction is queued for the model.
+        let prompt = a.take_pending_prompt().expect("an /init turn is queued");
+        assert!(
+            prompt.contains("AGENTS.md"),
+            "the init instruction is sent: {prompt}"
+        );
+        // The transcript shows the concise header, not the verbose instruction.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt, rx);
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::User(t) if t == "/init")),
+            "the concise /init header is shown as the user message"
+        );
+    }
+
+    #[test]
+    fn dispatching_review_queues_a_real_flow_turn() {
+        // VAL-TUI-039: `/review` triggers a code-review flow.
+        let mut a = app();
+        type_str(&mut a, "/review");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("/review"))),
+            "a /review flow notice is shown"
+        );
+        let prompt = a.take_pending_prompt().expect("a /review turn is queued");
+        assert!(
+            prompt.to_lowercase().contains("review"),
+            "the review instruction is sent: {prompt}"
+        );
+    }
+
+    #[test]
+    fn dispatching_compact_queues_a_compaction_turn_that_replaces_history() {
+        // VAL-TUI-040: `/compact` compacts the conversation.
+        let mut a = app();
+        run_turn(&mut a, "fact one", "ok");
+        run_turn(&mut a, "fact two", "ok");
+        assert_eq!(a.history_snapshot().len(), 4, "two turns of history");
+
+        type_str(&mut a, "/compact");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("compacting"))),
+            "a compaction-in-progress marker is shown"
+        );
+
+        let prompt = a
+            .take_pending_prompt()
+            .expect("a compaction turn is queued");
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt, rx);
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "Summary: discussed fact one and fact two.".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        // History is replaced by a single compact summary message.
+        let history = a.history_snapshot();
+        assert_eq!(history.len(), 1, "history compacted to one message");
+        assert!(
+            history[0].content.contains("Summary: discussed"),
+            "the summary becomes the new context: {}",
+            history[0].content
+        );
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("compacted"))),
+            "a compaction-complete marker is shown"
+        );
+    }
+
+    #[test]
+    fn compact_with_no_history_is_a_clear_no_op() {
+        let mut a = app();
+        type_str(&mut a, "/compact");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "no turn is queued without a conversation"
+        );
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("Nothing to compact"))),
+            "a clear no-op notice is shown"
+        );
+    }
+
+    #[test]
+    fn dispatching_export_confirms_with_a_path() {
+        // VAL-TUI-041: `/export` exports the current session and confirms with a path.
+        let mut a = app();
+        run_turn(&mut a, "hello", "hi there");
+        type_str(&mut a, "/export");
+        a.on_key(key(KeyCode::Enter));
+        match a.transcript.last() {
+            Some(Entry::Notice(text)) => {
+                assert!(
+                    text.contains("Exported session to"),
+                    "an export confirmation with a path: {text}"
+                );
+            }
+            other => panic!("expected an export confirmation notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_markdown_captures_the_exchange() {
+        let mut a = app();
+        a.transcript.push(Entry::User("a question".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "an answer".to_owned(),
+        }));
+        let md = a.render_session_markdown();
+        assert!(md.contains("# Cortex Code session export"));
+        assert!(md.contains("## You") && md.contains("a question"));
+        assert!(md.contains("## Cortex") && md.contains("an answer"));
+    }
+
+    #[test]
+    fn flows_are_ignored_while_a_turn_is_in_flight() {
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx);
+        assert!(a.is_busy());
+        type_str(&mut a, "/init");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "no flow turn is queued while busy"
+        );
     }
 }

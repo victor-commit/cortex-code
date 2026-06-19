@@ -92,6 +92,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 );
             }
             Entry::Notice(message) => push_notice(&mut lines, message, width),
+            Entry::Help => push_help(&mut lines),
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
     }
@@ -293,6 +294,57 @@ fn push_notice(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
         lines.push(Line::from(vec![
             Span::styled(marker, style),
             Span::styled(wrapped, style),
+        ]));
+    }
+    lines.push(Line::from(""));
+}
+
+/// The keybindings shown in the `/help` reference, paired with what each does.
+const KEYBINDINGS: &[(&str, &str)] = &[
+    ("Enter", "Send the prompt / run the highlighted command"),
+    ("Shift+Enter", "Insert a newline without sending"),
+    ("/", "Open the slash-command menu"),
+    ("Up / Down", "Move the slash-menu highlight"),
+    ("Esc", "Close the slash-command menu"),
+    ("Ctrl+A / Ctrl+E", "Jump to line start / end"),
+    ("Ctrl+O", "Expand / collapse tool cards"),
+    ("Ctrl+C", "Quit Cortex Code"),
+];
+
+/// Append the `/help` command reference: a titled panel listing every built-in slash command (from
+/// the registry) with its description, then the keybindings. This is the visible effect of `/help`.
+fn push_help(lines: &mut Vec<Line<'static>>) {
+    let title = Style::default()
+        .fg(style::INFO)
+        .add_modifier(Modifier::BOLD);
+    let section = Style::default()
+        .fg(style::WARNING)
+        .add_modifier(Modifier::BOLD);
+    let name = Style::default()
+        .fg(style::TEXT)
+        .add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(style::TEXT_DIM);
+
+    lines.push(Line::from(Span::styled(
+        "Help — commands & keybindings",
+        title,
+    )));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("Commands", section)));
+    for command in crate::slash::BUILTINS {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  /{:<9}", command.name), name),
+            Span::styled(format!("  {}", command.description), desc),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("Keybindings", section)));
+    for (keys, what) in KEYBINDINGS {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {keys:<16}"), name),
+            Span::styled(format!("  {what}"), desc),
         ]));
     }
     lines.push(Line::from(""));
@@ -933,6 +985,19 @@ mod tests {
         let mut a = app();
         a.input.set_value("hello world");
         assert!(slash_menu_lines(&a).is_none(), "no menu for a chat message");
+    }
+
+    #[test]
+    fn help_entry_renders_commands_and_keybindings() {
+        // VAL-TUI-032: the `/help` view lists commands and keybindings.
+        let mut a = app();
+        a.transcript.push(Entry::Help);
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(text.contains("Commands"), "commands section:\n{text}");
+        assert!(text.contains("/help"), "help command listed:\n{text}");
+        assert!(text.contains("/export"), "export command listed:\n{text}");
+        assert!(text.contains("Keybindings"), "keybindings section:\n{text}");
+        assert!(text.contains("Ctrl+C"), "a keybinding listed:\n{text}");
     }
 
     #[test]
