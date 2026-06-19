@@ -85,7 +85,7 @@ fn restore<B: Backend + Write>(terminal: &mut Terminal<B>) -> io::Result<()> {
     Ok(())
 }
 
-fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
         if app.should_quit {
@@ -122,12 +122,53 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Resu
             }
         }
 
+        // Honor a `/editor` request: suspend the TUI, open the external editor, and land the
+        // composed text back in the prompt before the next draw.
+        if app.take_editor_request() {
+            compose_in_editor(terminal, app)?;
+        }
+
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
 
         if app.should_quit {
             break;
         }
+    }
+    Ok(())
+}
+
+/// Suspend the TUI, open the user's external editor to compose prompt text, then restore the TUI
+/// and land the composed text back in the prompt.
+///
+/// The terminal is handed back to the editor (raw mode + alternate screen left), the editor runs to
+/// completion, and the TUI's terminal modes are re-entered with a forced full redraw. A clean editor
+/// exit replaces the prompt with the composed text; an aborted edit (non-zero exit) leaves it
+/// unchanged, and an I/O failure surfaces a transcript error rather than crashing the loop.
+fn compose_in_editor<B: Backend + Write>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> io::Result<()> {
+    let seed = app.input_value();
+
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    let result = app::run_editor(&seed);
+
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    let _ = execute!(
+        terminal.backend_mut(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
+    terminal.clear()?;
+
+    match result {
+        Ok(Some(text)) => app.set_input_value(&text),
+        Ok(None) => {}
+        Err(err) => app.note_error(format!("editor failed: {err}")),
     }
     Ok(())
 }

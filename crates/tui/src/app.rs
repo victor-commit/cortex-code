@@ -4,12 +4,14 @@
 //! readline-style editing and multi-line text. Rendering is done with `ratatui`
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
+use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use engine::RunnerEvent;
+use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
@@ -61,6 +63,52 @@ pub enum Entry {
     Help,
     /// A turn-level error surfaced to the user.
     Error(String),
+}
+
+/// The kind of modal picker/view opened by a dialog-opening slash command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    /// The session picker (`/sessions`).
+    Sessions,
+    /// The model picker (`/models`).
+    Models,
+    /// The agent picker (`/agents`).
+    Agents,
+    /// The theme picker (`/themes`).
+    Themes,
+    /// The MCP status/list view (`/mcp`).
+    Mcp,
+}
+
+/// A modal list dialog (a picker or status view) floating over the transcript.
+///
+/// The dialog opening built-ins populate it with their respective items; navigation moves the
+/// highlight and Esc/Enter dismiss it. Item selection that mutates state (switching the active
+/// model/agent/session) is a separate feature; opening and listing is this one's responsibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dialog {
+    /// Which picker/view this is.
+    pub kind: DialogKind,
+    /// The dialog title shown in its border.
+    pub title: String,
+    /// The selectable rows, in display order.
+    pub items: Vec<String>,
+    /// The highlighted row (clamped to `items`), initialized to the active item where one applies.
+    pub selected: usize,
+    /// A message shown in place of an empty list (e.g. the MCP "no servers configured" state).
+    pub empty: Option<String>,
+}
+
+impl Dialog {
+    /// The highlighted row index, clamped to the current item count.
+    #[must_use]
+    pub fn selected(&self) -> usize {
+        if self.items.is_empty() {
+            0
+        } else {
+            self.selected.min(self.items.len() - 1)
+        }
+    }
 }
 
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
@@ -147,6 +195,12 @@ pub struct App {
     /// Highlighted row in the open slash-command menu (index into the filtered matches). Reset to
     /// the top whenever the typed query changes; only meaningful while the menu is open.
     slash_selected: usize,
+    /// The open modal dialog (a picker or status view), or `None` when no dialog is shown. While
+    /// set it captures navigation/dismissal keys so the prompt is not edited beneath it.
+    dialog: Option<Dialog>,
+    /// Set when `/editor` is dispatched, signalling the event loop to suspend the TUI and open the
+    /// external `$EDITOR`. Consumed once by [`App::take_editor_request`].
+    editor_requested: bool,
     /// Canonical prior-turn messages projected into each new turn for conversational context.
     history: Vec<Message>,
 }
@@ -170,6 +224,8 @@ impl App {
             turn_compaction: false,
             expand_tools: false,
             slash_selected: 0,
+            dialog: None,
+            editor_requested: false,
             history: Vec::new(),
         }
     }
@@ -499,9 +555,10 @@ impl App {
     }
 
     /// Apply a dispatched slash command's effect. The action/flow built-ins (`/help`, `/new`,
-    /// `/init`, `/review`, `/compact`, `/export`, `/exit`) run their handler or flow; the remaining
-    /// built-ins (pickers/dialogs wired by other features) surface a notice acknowledging the
-    /// dispatch.
+    /// `/init`, `/review`, `/compact`, `/export`, `/exit`) run their handler or flow; the
+    /// dialog-opening built-ins (`/sessions`, `/models`, `/agents`, `/themes`, `/mcp`) open their
+    /// modal picker/view; `/editor` requests the external editor and `/share` produces a local
+    /// share reference. Any unhandled name surfaces a notice acknowledging the dispatch.
     fn dispatch_command(&mut self, command: &'static slash::SlashCommand) {
         match command.name {
             "exit" => self.should_quit = true,
@@ -519,11 +576,185 @@ impl App {
                 REVIEW_PROMPT,
             ),
             "compact" => self.start_compaction(),
+            "sessions" => self.open_sessions_dialog(),
+            "models" => self.open_models_dialog(),
+            "agents" => self.open_agents_dialog(),
+            "themes" => self.open_themes_dialog(),
+            "mcp" => self.open_mcp_dialog(),
+            "editor" => self.editor_requested = true,
+            "share" => self.share_session(),
             _ => self.transcript.push(Entry::Notice(format!(
                 "/{} — {}",
                 command.name, command.description
             ))),
         }
+    }
+
+    /// Open the session picker (`/sessions`): the active (current) session followed by any
+    /// persisted sessions, newest-first. Listing the database is best-effort — if no database
+    /// exists yet or it cannot be read, only the current session is shown, so the picker always
+    /// opens with at least the current session listed.
+    fn open_sessions_dialog(&mut self) {
+        let mut items = vec![format!("● current — {} session", self.status.session)];
+        items.extend(persisted_session_labels());
+        self.open_dialog(Dialog {
+            kind: DialogKind::Sessions,
+            title: "Sessions".to_owned(),
+            items,
+            selected: 0,
+            empty: None,
+        });
+    }
+
+    /// Open the model picker (`/models`): every model the OpenRouter catalogue serves, by id, with
+    /// the active model pre-highlighted. The list always contains the default model.
+    fn open_models_dialog(&mut self) {
+        let items: Vec<String> = providers::Catalogue::embedded()
+            .provider(providers::OPENROUTER_ID)
+            .map(|provider| {
+                provider
+                    .models
+                    .values()
+                    .map(|model| model.id.clone())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let selected = items
+            .iter()
+            .position(|id| *id == self.status.model)
+            .unwrap_or(0);
+        self.open_dialog(Dialog {
+            kind: DialogKind::Models,
+            title: "Models".to_owned(),
+            items,
+            selected,
+            empty: Some("No models in the catalogue.".to_owned()),
+        });
+    }
+
+    /// Open the agent picker (`/agents`): the built-in agent personas, with the active agent
+    /// pre-highlighted.
+    fn open_agents_dialog(&mut self) {
+        let items: Vec<String> = Agent::ALL
+            .iter()
+            .map(|agent| format!("{}  —  {}", agent.name(), agent_description(agent.name())))
+            .collect();
+        let selected = Agent::ALL
+            .iter()
+            .position(|agent| agent.name() == self.status.agent)
+            .unwrap_or(0);
+        self.open_dialog(Dialog {
+            kind: DialogKind::Agents,
+            title: "Agents".to_owned(),
+            items,
+            selected,
+            empty: None,
+        });
+    }
+
+    /// Open the theme picker (`/themes`): the selectable themes, with the active theme
+    /// pre-highlighted.
+    fn open_themes_dialog(&mut self) {
+        let items: Vec<String> = frame::style::ThemeColors::available_themes()
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        let active = active_theme_name();
+        let selected = items.iter().position(|name| *name == active).unwrap_or(0);
+        self.open_dialog(Dialog {
+            kind: DialogKind::Themes,
+            title: "Themes".to_owned(),
+            items,
+            selected,
+            empty: None,
+        });
+    }
+
+    /// Open the MCP status/list view (`/mcp`): the configured MCP servers and their status. With no
+    /// servers configured the view opens to a clear empty state rather than failing.
+    fn open_mcp_dialog(&mut self) {
+        let items = configured_mcp_servers();
+        self.open_dialog(Dialog {
+            kind: DialogKind::Mcp,
+            title: "MCP servers".to_owned(),
+            items,
+            selected: 0,
+            empty: Some("No MCP servers configured.".to_owned()),
+        });
+    }
+
+    /// Produce a local (loopback) share reference for the current session (`/share`): mint a stable
+    /// share id, persist a small reference file under the data directory (best-effort), and surface
+    /// the loopback URL and identifier. Only local share is in scope (no external upload).
+    fn share_session(&mut self) {
+        let id = local_share_id();
+        let url = format!("http://127.0.0.1:3200/share/{id}");
+        let notice = match write_share_reference(&id, &self.status.session) {
+            Ok(path) => format!(
+                "Local share reference created: {url}  ·  id {id}  ·  saved to {}",
+                path.display()
+            ),
+            Err(_) => format!("Local share reference created: {url}  ·  id {id}"),
+        };
+        self.transcript.push(Entry::Notice(notice));
+    }
+
+    /// Open a modal dialog, replacing any currently-open one and closing the slash menu.
+    fn open_dialog(&mut self, dialog: Dialog) {
+        self.dialog = Some(dialog);
+    }
+
+    /// The open modal dialog, if any (for rendering).
+    #[must_use]
+    pub fn dialog(&self) -> Option<&Dialog> {
+        self.dialog.as_ref()
+    }
+
+    /// Whether a modal dialog is currently open.
+    #[must_use]
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
+    /// Close the open dialog, returning focus to the prompt.
+    fn close_dialog(&mut self) {
+        self.dialog = None;
+    }
+
+    /// Move the dialog highlight to the next row (wrapping at the end).
+    fn dialog_select_next(&mut self) {
+        if let Some(dialog) = self.dialog.as_mut() {
+            let len = dialog.items.len();
+            if len > 0 {
+                dialog.selected = (dialog.selected() + 1) % len;
+            }
+        }
+    }
+
+    /// Move the dialog highlight to the previous row (wrapping at the start).
+    fn dialog_select_prev(&mut self) {
+        if let Some(dialog) = self.dialog.as_mut() {
+            let len = dialog.items.len();
+            if len > 0 {
+                dialog.selected = (dialog.selected() + len - 1) % len;
+            }
+        }
+    }
+
+    /// Take the `/editor` request (if any), clearing it so the editor opens exactly once.
+    #[must_use]
+    pub fn take_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.editor_requested)
+    }
+
+    /// Replace the prompt contents (used to land editor-composed text back in the prompt).
+    pub fn set_input_value(&mut self, value: &str) {
+        self.input.set_value(value);
+    }
+
+    /// Surface a transient error in the transcript (used when the external editor fails).
+    pub fn note_error(&mut self, message: String) {
+        self.transcript.push(Entry::Error(message));
     }
 
     /// Start a fresh session (`/new`): clear the transcript, the conversational history, and the
@@ -624,6 +855,20 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        // A modal dialog (picker/status view) is modal: it owns navigation and dismissal, and
+        // swallows other keys so the prompt is not edited beneath it. Ctrl+C still quits so the
+        // user is never trapped, and Esc/Enter both close the dialog and return focus to the prompt.
+        if self.dialog_open() {
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Up => self.dialog_select_prev(),
+                KeyCode::Down => self.dialog_select_next(),
+                KeyCode::Esc | KeyCode::Enter => self.close_dialog(),
+                _ => {}
+            }
+            return;
+        }
 
         // While the slash menu is open it owns vertical navigation, dispatch, and dismissal so the
         // arrows move the highlight (not the caret) and Enter runs the command (not submit). All
@@ -759,6 +1004,172 @@ fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+/// A short, human-readable description for a built-in agent persona, shown in the agent picker.
+fn agent_description(name: &str) -> &'static str {
+    match name {
+        "build" => "Default coding agent",
+        "plan" => "Investigate and produce a plan",
+        "general" => "General-purpose assistant",
+        _ => "",
+    }
+}
+
+/// The configured active theme name, read from the effective configuration's `theme` key, falling
+/// back to the first available theme when unset or unreadable.
+fn active_theme_name() -> String {
+    let default = frame::style::ThemeColors::available_themes()
+        .first()
+        .copied()
+        .unwrap_or("dark")
+        .to_owned();
+    effective_config()
+        .as_ref()
+        .and_then(|cfg| cfg.get("theme"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+        .unwrap_or(default)
+}
+
+/// The configured MCP servers as display rows (`name — status`), read from the effective
+/// configuration's `[mcp]` table. Empty when no servers are configured (M4 wires the live client;
+/// here the view lists configured names with a configured/connection-pending status).
+fn configured_mcp_servers() -> Vec<String> {
+    let Some(config) = effective_config() else {
+        return Vec::new();
+    };
+    let Some(table) = config.get("mcp").and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+    table
+        .keys()
+        .map(|name| format!("{name}  —  configured"))
+        .collect()
+}
+
+/// Session labels for the picker: persisted sessions newest-first as `id — title`, best-effort.
+/// Returns an empty list when no database exists yet or it cannot be read, so the picker still
+/// opens with just the current session.
+fn persisted_session_labels() -> Vec<String> {
+    let Some(path) = db::DbPathInputs::from_process().resolve() else {
+        return Vec::new();
+    };
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(database) = db::Database::open(&path) else {
+        return Vec::new();
+    };
+    let Ok(sessions) = database.sessions().list() else {
+        return Vec::new();
+    };
+    sessions
+        .into_iter()
+        .map(|session| match session.title {
+            Some(title) if !title.trim().is_empty() => format!("{}  —  {title}", session.id),
+            _ => session.id,
+        })
+        .collect()
+}
+
+/// Load the effective configuration with no CLI overrides, or `None` if it cannot be resolved.
+fn effective_config() -> Option<settings::EffectiveConfig> {
+    settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
+        .ok()
+        .and_then(|inputs| settings::load(inputs).ok())
+}
+
+/// Mint a stable, unique local share identifier for the current session.
+fn local_share_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("local-{}-{nanos}", std::process::id())
+}
+
+/// Persist a small local share reference file under the data directory's `shares/` folder, returning
+/// the path written. Local share only (loopback); no external upload.
+fn write_share_reference(id: &str, session: &str) -> io::Result<PathBuf> {
+    let dir = data_subdir("shares");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{id}.json"));
+    let body = format!(
+        "{{\"id\":\"{id}\",\"session\":\"{session}\",\"url\":\"http://127.0.0.1:3200/share/{id}\"}}"
+    );
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+/// Resolve a named subdirectory under the data directory, mirroring [`export_dir`]'s precedence.
+fn data_subdir(name: &str) -> PathBuf {
+    if let Some(dir) = env_non_empty("CORTEX_DATA_DIR") {
+        return PathBuf::from(dir).join(name);
+    }
+    if let Some(dir) = env_non_empty("XDG_DATA_HOME") {
+        return PathBuf::from(dir).join("cortex").join(name);
+    }
+    if let Some(home) = env_non_empty("HOME") {
+        return PathBuf::from(home).join(".local/share/cortex").join(name);
+    }
+    std::env::temp_dir().join("cortex").join(name)
+}
+
+/// Open the user's external editor to compose prompt text, seeded with the current prompt contents,
+/// and return the composed text. Returns `Ok(None)` if the editor exits non-zero (composition
+/// aborted), in which case the prompt is left unchanged.
+///
+/// The editor is resolved from `$VISUAL`, then `$EDITOR`, falling back to `vi`.
+pub(crate) fn run_editor(seed: &str) -> io::Result<Option<String>> {
+    run_editor_with(&resolve_editor(), seed)
+}
+
+/// The editor command string: `$VISUAL`, else `$EDITOR`, else `vi`.
+fn resolve_editor() -> String {
+    env_non_empty("VISUAL")
+        .or_else(|| env_non_empty("EDITOR"))
+        .unwrap_or_else(|| "vi".to_owned())
+}
+
+/// Run `editor` against a temporary file seeded with `seed`, returning the file's contents (with a
+/// single trailing newline trimmed) when the editor exits cleanly, or `Ok(None)` when it aborts.
+///
+/// The editor command is launched through `sh -c "<editor> \"$1\""` with the file path passed as a
+/// positional argument, so editors carrying flags (e.g. `code -w`) and paths with spaces are both
+/// handled without manual quoting.
+fn run_editor_with(editor: &str, seed: &str) -> io::Result<Option<String>> {
+    let path = std::env::temp_dir().join(format!(
+        "cortex-compose-{}-{}.md",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&path, seed)?;
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(&path)
+        .status()?;
+
+    let contents = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+
+    if !status.success() {
+        return Ok(None);
+    }
+    let mut text = contents?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    Ok(Some(text))
 }
 
 #[cfg(test)]
@@ -1320,11 +1731,9 @@ mod tests {
         // The prompt is cleared and the menu closed.
         assert_eq!(a.input_value(), "");
         assert!(!a.slash_menu_open());
-        // A visible notice records the dispatched command.
-        match a.transcript.last() {
-            Some(Entry::Notice(text)) => assert!(text.contains("/models"), "notice: {text}"),
-            other => panic!("expected a dispatch notice, got {other:?}"),
-        }
+        // The dispatched command's effect appears: the model picker opens.
+        let dialog = a.dialog().expect("the model picker opened");
+        assert_eq!(dialog.kind, DialogKind::Models);
     }
 
     #[test]
@@ -1334,10 +1743,8 @@ mod tests {
         a.on_key(key(KeyCode::Down)); // help -> new
         a.on_key(key(KeyCode::Down)); // new -> sessions
         a.on_key(key(KeyCode::Enter));
-        match a.transcript.last() {
-            Some(Entry::Notice(text)) => assert!(text.contains("/sessions"), "notice: {text}"),
-            other => panic!("expected a dispatch notice, got {other:?}"),
-        }
+        let dialog = a.dialog().expect("the session picker opened");
+        assert_eq!(dialog.kind, DialogKind::Sessions);
     }
 
     #[test]
@@ -1611,5 +2018,192 @@ mod tests {
             a.take_pending_prompt().is_none(),
             "no flow turn is queued while busy"
         );
+    }
+
+    /// Dispatch a slash command end-to-end (type it then press Enter).
+    fn dispatch(a: &mut App, name: &str) {
+        type_str(a, &format!("/{name}"));
+        a.on_key(key(KeyCode::Enter));
+    }
+
+    #[test]
+    fn dispatching_sessions_opens_the_session_picker() {
+        // VAL-TUI-034: `/sessions` opens a session-picker listing at least the current session.
+        let mut a = app();
+        dispatch(&mut a, "sessions");
+        let dialog = a.dialog().expect("the session picker opened");
+        assert_eq!(dialog.kind, DialogKind::Sessions);
+        assert!(
+            dialog.items.iter().any(|item| item.contains("current")),
+            "the current session is listed: {:?}",
+            dialog.items
+        );
+        // Dispatch did not submit anything to the model.
+        assert!(a.take_pending_prompt().is_none());
+        assert_eq!(a.input_value(), "");
+    }
+
+    #[test]
+    fn dispatching_models_opens_the_model_picker_including_the_default() {
+        // VAL-TUI-035: `/models` opens a model picker listing models incl. the default.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let dialog = a.dialog().expect("the model picker opened");
+        assert_eq!(dialog.kind, DialogKind::Models);
+        assert!(
+            dialog.items.iter().any(|m| m == "google/gemini-2.5-flash"),
+            "the default model is listed: {:?}",
+            dialog.items
+        );
+        // The active model is pre-highlighted.
+        assert_eq!(dialog.items[dialog.selected()], "google/gemini-2.5-flash");
+    }
+
+    #[test]
+    fn dispatching_agents_opens_the_agent_picker() {
+        // VAL-TUI-036: `/agents` opens an agent picker with multiple agents.
+        let mut a = app();
+        dispatch(&mut a, "agents");
+        let dialog = a.dialog().expect("the agent picker opened");
+        assert_eq!(dialog.kind, DialogKind::Agents);
+        for expected in ["build", "plan", "general"] {
+            assert!(
+                dialog.items.iter().any(|item| item.contains(expected)),
+                "agent {expected} listed: {:?}",
+                dialog.items
+            );
+        }
+    }
+
+    #[test]
+    fn dispatching_themes_opens_the_theme_picker() {
+        // VAL-TUI-037: `/themes` opens a theme picker enumerating selectable themes.
+        let mut a = app();
+        dispatch(&mut a, "themes");
+        let dialog = a.dialog().expect("the theme picker opened");
+        assert_eq!(dialog.kind, DialogKind::Themes);
+        assert!(
+            dialog.items.len() > 1,
+            "multiple themes: {:?}",
+            dialog.items
+        );
+        assert!(dialog.items.iter().any(|t| t == "dark"));
+    }
+
+    #[test]
+    fn dispatching_mcp_opens_the_status_view_with_an_empty_state() {
+        // VAL-TUI-046: `/mcp` opens the MCP view; with no servers it shows a clear empty state.
+        let mut a = app();
+        dispatch(&mut a, "mcp");
+        let dialog = a.dialog().expect("the MCP view opened");
+        assert_eq!(dialog.kind, DialogKind::Mcp);
+        assert!(
+            dialog.empty.as_deref() == Some("No MCP servers configured.")
+                || !dialog.items.is_empty(),
+            "an empty state or configured servers are shown"
+        );
+    }
+
+    #[test]
+    fn dispatching_editor_requests_the_external_editor_once() {
+        // VAL-TUI-042: `/editor` requests the external editor (the event loop opens it).
+        let mut a = app();
+        dispatch(&mut a, "editor");
+        assert!(!a.dialog_open(), "the editor is not a dialog");
+        assert!(a.take_editor_request(), "an editor request is raised");
+        assert!(
+            !a.take_editor_request(),
+            "the request is consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn dispatching_share_produces_a_local_loopback_reference() {
+        // VAL-TUI-045: `/share` produces a local (loopback) share reference.
+        let mut a = app();
+        dispatch(&mut a, "share");
+        match a.transcript.last() {
+            Some(Entry::Notice(text)) => {
+                assert!(text.contains("share"), "a share reference: {text}");
+                assert!(text.contains("127.0.0.1"), "a loopback reference: {text}");
+            }
+            other => panic!("expected a share notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dialog_arrow_keys_move_the_highlight_and_esc_closes() {
+        let mut a = app();
+        dispatch(&mut a, "agents");
+        assert!(a.dialog_open());
+        assert_eq!(a.dialog().unwrap().selected(), 0);
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(
+            a.dialog().unwrap().selected(),
+            1,
+            "Down moves the highlight"
+        );
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.dialog().unwrap().selected(), 0, "Up moves it back");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open(), "Esc closes the dialog");
+    }
+
+    #[test]
+    fn an_open_dialog_is_modal_and_swallows_typing() {
+        let mut a = app();
+        dispatch(&mut a, "models");
+        assert!(a.dialog_open());
+        // Typing does not edit the prompt while the dialog is modal.
+        type_str(&mut a, "hello");
+        assert_eq!(
+            a.input_value(),
+            "",
+            "the prompt is untouched beneath the dialog"
+        );
+        assert!(a.dialog_open(), "the dialog stays open");
+    }
+
+    #[test]
+    fn enter_closes_an_open_dialog() {
+        let mut a = app();
+        dispatch(&mut a, "themes");
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.dialog_open(), "Enter dismisses the dialog");
+    }
+
+    #[test]
+    fn run_editor_with_lands_composed_text_in_the_prompt() {
+        // VAL-TUI-042: a deterministic editor command composes text returned to the caller.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-editor-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("ed.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'composed via editor' > \"$1\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let composed = run_editor_with(script.to_str().unwrap(), "seed text")
+            .expect("the editor runs")
+            .expect("a clean exit returns composed text");
+        assert_eq!(composed, "composed via editor");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_editor_with_returns_none_when_the_editor_aborts() {
+        // A non-zero editor exit leaves the prompt unchanged (no composed text).
+        let aborted = run_editor_with("false", "seed").expect("the editor runs");
+        assert!(aborted.is_none(), "an aborted edit composes nothing");
     }
 }

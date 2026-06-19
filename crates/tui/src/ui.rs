@@ -12,12 +12,15 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
 
-use crate::app::{App, AssistantTurn, Entry, UsageSummary};
+use crate::app::{App, AssistantTurn, Dialog, Entry, UsageSummary};
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
 /// Maximum number of slash-command rows shown before the menu scrolls.
 const MAX_SLASH_ROWS: usize = 10;
+
+/// Maximum number of list rows shown inside a modal dialog before it scrolls.
+const MAX_DIALOG_ROWS: usize = 14;
 
 /// Maximum number of visible prompt text rows before the box stops growing.
 const MAX_PROMPT_ROWS: usize = 8;
@@ -45,6 +48,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, app, chunks[2]);
     // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
     draw_slash_menu(frame, app, chunks[1]);
+    // A modal dialog (picker/status view) overlays everything else when open.
+    draw_dialog(frame, app, area);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -566,6 +571,114 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
     frame.render_widget(Paragraph::new(shown), inner);
 }
 
+/// Build a modal dialog's item rows: each selectable item with a `▸` marker and bold name on the
+/// highlighted row, or a single italic empty-state row when the list is empty (e.g. the MCP
+/// "no servers configured" view).
+fn dialog_lines(dialog: &Dialog) -> Vec<Line<'static>> {
+    if dialog.items.is_empty() {
+        let message = dialog
+            .empty
+            .clone()
+            .unwrap_or_else(|| "(nothing to show)".to_owned());
+        return vec![Line::from(Span::styled(
+            format!("  {message}"),
+            Style::default()
+                .fg(style::TEXT_DIM)
+                .add_modifier(Modifier::ITALIC),
+        ))];
+    }
+
+    let selected = dialog.selected();
+    let mut lines = Vec::with_capacity(dialog.items.len());
+    for (i, item) in dialog.items.iter().enumerate() {
+        let is_selected = i == selected;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let item_style = if is_selected {
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(style::TEXT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(item.clone(), item_style),
+        ]));
+    }
+    lines
+}
+
+/// Render the open modal dialog as a centered bordered popup over the whole frame. The list scrolls
+/// to keep the highlighted row visible, and a footer hint reminds the user how to navigate/close.
+fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(dialog) = app.dialog() else {
+        return;
+    };
+    if area.width < 8 || area.height < 6 {
+        return;
+    }
+
+    let rows = dialog_lines(dialog);
+    let widest = rows.iter().map(Line::width).max().unwrap_or(0);
+    let hint = "↑/↓ to move · Esc to close";
+    let content_w = widest.max(hint.chars().count() + 2);
+    let max_w = (area.width as usize) * 9 / 10;
+    let width = (content_w + 4).clamp(24, max_w.max(24)) as u16;
+
+    let row_budget = (area.height as usize)
+        .saturating_sub(4)
+        .clamp(1, MAX_DIALOG_ROWS);
+    let visible = rows.len().min(row_budget).max(1);
+    // Borders (2) + the hint row (1) on top of the visible item rows.
+    let height = (visible as u16).saturating_add(3);
+
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(format!(" {} ", dialog.title))
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    // Scroll so the highlighted row stays inside the visible window.
+    let selected = dialog.selected();
+    let offset = if selected < visible {
+        0
+    } else {
+        selected + 1 - visible
+    };
+    let end = (offset + visible).min(rows.len());
+    let mut shown: Vec<Line<'static>> = rows[offset..end].to_vec();
+    shown.push(Line::from(Span::styled(
+        format!("  {hint}"),
+        Style::default().fg(style::TEXT_DIM),
+    )));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// A rectangle of the given size centered within `area` (clamped to fit).
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let footer = Paragraph::new(footer_line(app)).style(Style::default().bg(Color::Indexed(236)));
     frame.render_widget(footer, area);
@@ -616,7 +729,7 @@ fn usage_text(usage: &UsageSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AssistantTurn, Status};
+    use crate::app::{App, AssistantTurn, DialogKind, Status};
     use std::sync::mpsc::channel;
 
     fn app() -> App {
@@ -1036,5 +1149,89 @@ mod tests {
         assert!(after.contains("↑12"), "input tokens shown: {after}");
         assert!(after.contains("↓34"), "output tokens shown: {after}");
         assert!(after.contains("$0.0021"), "cost shown: {after}");
+    }
+
+    #[test]
+    fn dialog_lines_list_items_and_highlight_the_selection() {
+        // VAL-TUI-035: the model picker lists models (incl. the default) with the active highlighted.
+        let dialog = Dialog {
+            kind: DialogKind::Models,
+            title: "Models".to_owned(),
+            items: vec![
+                "google/gemini-2.5-flash".to_owned(),
+                "anthropic/claude-sonnet-4".to_owned(),
+            ],
+            selected: 0,
+            empty: None,
+        };
+        let text = rendered(&dialog_lines(&dialog));
+        assert!(
+            text.contains("google/gemini-2.5-flash"),
+            "default model listed:\n{text}"
+        );
+        assert!(
+            text.contains("anthropic/claude-sonnet-4"),
+            "second model listed:\n{text}"
+        );
+        assert!(
+            text.contains("▸"),
+            "selection marker on the highlight:\n{text}"
+        );
+    }
+
+    #[test]
+    fn dialog_lines_render_an_empty_state() {
+        // VAL-TUI-046: the MCP view opens to a clear empty state when no servers are configured.
+        let dialog = Dialog {
+            kind: DialogKind::Mcp,
+            title: "MCP servers".to_owned(),
+            items: Vec::new(),
+            selected: 0,
+            empty: Some("No MCP servers configured.".to_owned()),
+        };
+        let text = rendered(&dialog_lines(&dialog));
+        assert!(
+            text.contains("No MCP servers configured."),
+            "empty state shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn opened_dialog_renders_over_the_frame() {
+        // The model picker, once opened, renders as a titled overlay listing models.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        // Open the model picker through dispatch.
+        for c in "/models".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.dialog_open(), "the model picker opened");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            rendered.contains("Models"),
+            "the dialog title is drawn:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("google/gemini-2.5-flash"),
+            "the default model is drawn in the overlay"
+        );
     }
 }

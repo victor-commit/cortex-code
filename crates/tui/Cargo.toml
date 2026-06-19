@@ -12,6 +12,7 @@ workspace = true
 errors = { workspace = true }
 settings = { workspace = true }
 providers = { workspace = true }
+db = { workspace = true }
 engine = { workspace = true }
 llm = { workspace = true }
 redaction = { workspace = true }
