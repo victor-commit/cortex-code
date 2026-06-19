@@ -17,6 +17,7 @@ members = [
     "crates/tui-buffer",
     "crates/tui-text",
     "crates/tui-widgets",
+    "crates/frame",
     "crates/tui",
     "crates/cli",
 ]
@@ -50,6 +51,7 @@ tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }
 tui-text = { path = "crates/tui-text" }
 tui-widgets = { path = "crates/tui-widgets" }
+frame = { path = "crates/frame" }
 tui = { path = "crates/tui" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
@@ -71,3 +73,5 @@ smallvec = { version = "1", features = ["union", "const_generics"] }
 thiserror = "2"
 unicode-width = "0.2"
 unicode-segmentation = "1"
+pulldown-cmark = "0.13"
+ahash = "0.8"

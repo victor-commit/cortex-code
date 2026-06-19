@@ -121,8 +121,15 @@ fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: u
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD),
     )));
-    for wrapped in wrap(&turn.answer, width) {
-        lines.push(Line::from(Span::raw(wrapped)));
+    // Render the assistant answer as markdown so headings, emphasis, lists, inline code, fenced
+    // code blocks, tables, and blockquotes display as structured elements rather than raw markup.
+    // Re-rendered every frame from the accumulated answer, so it updates incrementally as the
+    // turn streams.
+    if turn.answer.trim().is_empty() {
+        lines.push(Line::from(""));
+    } else {
+        let md_width = width.clamp(1, u16::MAX as usize) as u16;
+        lines.extend(frame::markdown::render_markdown(&turn.answer, md_width));
     }
     lines.push(Line::from(""));
 }
@@ -386,6 +393,36 @@ mod tests {
         let text = rendered(&transcript_lines(&a, 80));
         assert!(!text.contains("Thinking"), "indicator cleared:\n{text}");
         assert!(text.contains("the full reply"), "reply present:\n{text}");
+    }
+
+    #[test]
+    fn assistant_answer_is_markdown_rendered() {
+        let mut lines = Vec::new();
+        let answer = "## Overview\n\nThis is **bold** and `code`.\n\n- one\n- two\n- three";
+        push_assistant(
+            &mut lines,
+            &AssistantTurn {
+                reasoning: String::new(),
+                answer: answer.to_owned(),
+            },
+            80,
+        );
+        let text = rendered(&lines);
+        // Markers are consumed; structured elements render.
+        assert!(text.contains("Overview"), "heading text:\n{text}");
+        assert!(!text.contains("##"), "heading markers consumed:\n{text}");
+        assert!(
+            text.contains("bold") && !text.contains("**"),
+            "bold markers consumed:\n{text}"
+        );
+        assert!(
+            text.contains("code") && !text.contains('`'),
+            "inline code backticks consumed:\n{text}"
+        );
+        assert!(
+            text.contains("• one") && text.contains("• two") && text.contains("• three"),
+            "three bulleted list items:\n{text}"
+        );
     }
 
     #[test]

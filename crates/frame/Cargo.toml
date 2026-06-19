@@ -1,0 +1,27 @@
+# Provenance: ported source (direct-port-allowed), adapted to this workspace
+# Source-Repo: CortexLM/cortex-code
+# Source-Commit: 7954d0218faf6f26aa84df0f6d8b09ea9f2e5ac9
+# Source-Path: src/cortex-core/Cargo.toml
+# Target-Path: crates/frame/Cargo.toml
+# Upstream-License: MIT
+# See: NOTICE (Direct-Port Provenance Ledger)
+[package]
+name = "frame"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish = false
+description = "Markdown rendering for Cortex TUI (ported from upstream cortex-core markdown module)"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ratatui = { workspace = true }
+pulldown-cmark = { workspace = true }
+unicode-width = { workspace = true }
+ahash = { workspace = true }
