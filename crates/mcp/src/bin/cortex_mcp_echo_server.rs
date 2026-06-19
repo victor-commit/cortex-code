@@ -2,7 +2,9 @@
 //!
 //! It speaks the Model Context Protocol over stdio (via `rmcp`) and advertises a small set of real
 //! tools: `add` (sum two integers), `echo` (echo a message), `search` (a labelled stub used to prove
-//! cross-server id namespacing), and `big` (emit an oversized payload to prove output truncation).
+//! cross-server id namespacing), `big` (emit an oversized payload to prove output truncation), and
+//! `env` (report the child's working directory and a named environment variable, used to prove the
+//! configured `cwd`/`environment` are applied and that host secrets do not leak into the child).
 //! Every `tools/call` it receives is logged with its arguments to stderr and, when
 //! `CORTEX_MCP_ECHO_LOG` is set, appended to that file, so a black-box validator can confirm the real
 //! call reached the server. An optional `CORTEX_MCP_ECHO_LABEL` distinguishes two instances of this
@@ -87,6 +89,18 @@ impl EchoServer {
                     "type": "object",
                     "properties": { "size": { "type": "integer" } },
                     "required": ["size"],
+                    "additionalProperties": false
+                })),
+            ),
+            Tool::new(
+                Cow::Borrowed("env"),
+                Cow::Borrowed(
+                    "Report the server child's working directory and the value of a named \
+                     environment variable.",
+                ),
+                Self::schema(json!({
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
                     "additionalProperties": false
                 })),
             ),
@@ -183,6 +197,29 @@ impl ServerHandler for EchoServer {
                 Ok(CallToolResult::success(vec![Content::text(
                     "x".repeat(size),
                 )]))
+            }
+            "env" => {
+                // The working directory the child was actually spawned in (proves the configured
+                // `cwd` is applied) and the value of an optional named env var (proves the
+                // configured `environment` is applied while host secrets like the OpenRouter key
+                // are stripped, so querying that name reports it absent).
+                let cwd = std::env::current_dir()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                let name = Self::arg_str(&request.arguments, "name").ok();
+                let value = name.as_ref().and_then(|name| std::env::var(name).ok());
+                let rendered = match (&name, &value) {
+                    (Some(name), Some(value)) => format!("cwd={cwd} {name}={value}"),
+                    (Some(name), None) => format!("cwd={cwd} {name}=(unset)"),
+                    (None, _) => format!("cwd={cwd}"),
+                };
+                let mut result = CallToolResult::success(vec![Content::text(rendered)]);
+                result.structured_content = Some(json!({
+                    "cwd": cwd,
+                    "name": name,
+                    "value": value,
+                }));
+                Ok(result)
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),

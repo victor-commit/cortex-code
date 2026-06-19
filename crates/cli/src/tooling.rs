@@ -68,6 +68,9 @@ impl RegistryDispatcher {
     /// Without this the headless context runs ungated (every action proceeds, as before this wiring
     /// landed). With it attached, each tool consults the engine via `ctx.permits` before producing
     /// an effect, so a denied `write`/`edit`/`apply_patch`/`bash`/`read` produces no side effect.
+    /// MCP tool calls are gated the same way, by their namespaced qualified id (`<server>_<tool>`):
+    /// a denied MCP tool is refused before the manager is consulted, so the server receives zero
+    /// `tools/call`.
     #[must_use]
     pub fn with_permissions(mut self, engine: Arc<PermissionEngine>) -> Self {
         self.context = self.context.with_permissions(engine);
@@ -128,9 +131,19 @@ impl ToolDispatcher for RegistryDispatcher {
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
         Box::pin(async move {
             // Route a call to a connected MCP tool (matched by its server-qualified id) through the
-            // manager as a real `tools/call`; everything else goes to the built-in registry.
+            // manager as a real `tools/call`; everything else goes to the built-in registry. The
+            // MCP call is permission-gated by its namespaced qualified id BEFORE the manager is
+            // consulted, so a denied tool is refused here and the server receives zero `tools/call`.
             if let Some(manager) = &self.mcp {
                 if manager.has_tool(&call.name) {
+                    if !self.context.permits(&call.name, &call.name) {
+                        let message = format!("{}: permission denied", call.name);
+                        return ToolDispatchResult {
+                            content: message.clone(),
+                            parts: vec![protocol::ToolResultPart::text(message)],
+                            is_error: true,
+                        };
+                    }
                     return dispatch_mcp(manager, call).await;
                 }
             }
@@ -437,5 +450,120 @@ mod tests {
             "an allowed read returns its content: {}",
             allowed.content
         );
+    }
+
+    /// Resolve the compiled echo-server fixture next to the test runner's target dir, or `None`
+    /// when it has not been built (so the gating test skips cleanly rather than failing).
+    fn echo_server_bin() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        // .../target/debug/deps/<test-bin>  ->  .../target/debug/cortex-mcp-echo-server
+        let bin = exe.parent()?.parent()?.join("cortex-mcp-echo-server");
+        bin.exists().then_some(bin)
+    }
+
+    // VAL-MCP-017: an MCP tool call is gated by the permission engine on its namespaced qualified
+    // id — a deny rule blocks it before any `tools/call` reaches the server, and an allow rule lets
+    // the real call through. Proven against the real stdio echo-server fixture (no LLM needed): the
+    // server log records exactly the allowed call and never the denied one.
+    #[test]
+    fn mcp_tool_calls_are_permission_gated() {
+        let Some(bin) = echo_server_bin() else {
+            eprintln!("skipping: cortex-mcp-echo-server fixture not built");
+            return;
+        };
+        let log = std::env::temp_dir().join(format!(
+            "cortex-mcp-gate-log-{}-{:?}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log);
+
+        let servers = mcp::servers_from_value(&serde_json::json!({
+            "demo": {
+                "type": "local",
+                "command": [bin.to_string_lossy()],
+                "environment": { "CORTEX_MCP_ECHO_LOG": log.to_string_lossy() }
+            }
+        }))
+        .expect("valid mcp config");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let manager = Arc::new(McpManager::connect(servers).await);
+            assert!(
+                manager.has_tool("demo_echo"),
+                "the echo server exposes demo_echo"
+            );
+
+            // Deny: the call is refused here; the server must receive zero `tools/call`.
+            let deny = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+                "demo_echo",
+                "*",
+                Action::Deny,
+            )]));
+            let denied_dispatcher = RegistryDispatcher::for_model(
+                std::env::temp_dir(),
+                "google/gemini-2.5-flash",
+                "ses_deny".to_owned(),
+                Arc::new(NoopTodos),
+            )
+            .with_permissions(Arc::new(deny))
+            .with_mcp(manager.clone());
+            let denied = denied_dispatcher
+                .dispatch(&call("demo_echo", r#"{"message":"hi"}"#))
+                .await;
+            assert!(
+                denied.is_error,
+                "a denied MCP tool returns an error: {}",
+                denied.content
+            );
+            assert!(
+                denied.content.contains("permission denied"),
+                "got: {}",
+                denied.content
+            );
+
+            // Allow: the same call now reaches the server and returns its real result.
+            let allow = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+                "demo_echo",
+                "*",
+                Action::Allow,
+            )]));
+            let allowed_dispatcher = RegistryDispatcher::for_model(
+                std::env::temp_dir(),
+                "google/gemini-2.5-flash",
+                "ses_allow".to_owned(),
+                Arc::new(NoopTodos),
+            )
+            .with_permissions(Arc::new(allow))
+            .with_mcp(manager.clone());
+            let allowed = allowed_dispatcher
+                .dispatch(&call("demo_echo", r#"{"message":"hi"}"#))
+                .await;
+            assert!(
+                !allowed.is_error,
+                "an allowed MCP tool succeeds: {}",
+                allowed.content
+            );
+            assert!(allowed.content.contains("hi"), "got: {}", allowed.content);
+
+            manager.shutdown().await;
+
+            // The log proves exactly one `tools/call` reached the server: the allowed one, never
+            // the denied one.
+            let contents = std::fs::read_to_string(&log).unwrap_or_default();
+            let calls = contents.matches("tools/call name=echo").count();
+            assert_eq!(
+                calls, 1,
+                "only the allowed call reaches the server; log:\n{contents}"
+            );
+        });
+        let _ = std::fs::remove_file(&log);
     }
 }

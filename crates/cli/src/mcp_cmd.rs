@@ -10,15 +10,137 @@ use std::io::{self, Write};
 
 use errors::Exit;
 use serde::Serialize;
-use settings::ConfigInputs;
+use settings::{ConfigInputs, McpServerPersist, McpServerSpec};
 
-use crate::cli::{McpArgs, McpCommand, McpListArgs, OutputFormat};
+use crate::cli::{McpAddArgs, McpArgs, McpCommand, McpListArgs, OutputFormat};
 
 /// Dispatch the `cortex mcp` subcommands.
 pub fn run(args: McpArgs) -> Exit {
     match args.command {
         McpCommand::List(list) => list_servers(list),
+        McpCommand::Add(add) => add_server(add),
     }
+}
+
+/// The single JSON document emitted by `cortex mcp add --format json`.
+#[derive(Serialize)]
+struct AddDocument<'a> {
+    r#type: &'a str,
+    name: &'a str,
+    status: &'a str,
+    path: String,
+}
+
+/// Register a new MCP server in the global config file and report the result.
+///
+/// The definition is persisted under `[mcp.<name>]`. Re-adding the identical definition is
+/// idempotent (status `unchanged`); adding a different definition under an existing name errors with
+/// a clear message (unless `--force`) and leaves the existing config untouched, so a duplicate add
+/// never corrupts the file.
+fn add_server(args: McpAddArgs) -> Exit {
+    let environment = match parse_env_assignments(&args.env) {
+        Ok(environment) => environment,
+        Err(message) => {
+            eprintln!("cortex mcp add: {message}");
+            return Exit::Usage;
+        }
+    };
+
+    let spec = McpServerSpec {
+        command: args.command,
+        cwd: args.cwd,
+        environment,
+        enabled: !args.disabled,
+    };
+
+    let inputs = match ConfigInputs::from_process(BTreeMap::new()) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            eprintln!("cortex mcp add: cannot determine the working directory: {err}");
+            return Exit::Failure;
+        }
+    };
+
+    let outcome = match settings::persist_global_mcp_server(&inputs, &args.name, &spec, args.force)
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            eprintln!("cortex mcp add: {err}");
+            return Exit::Config;
+        }
+    };
+
+    let (status, path) = match outcome {
+        McpServerPersist::Added(path) => ("added", path),
+        McpServerPersist::Unchanged(path) => ("unchanged", path),
+        McpServerPersist::Conflict(path) => {
+            eprintln!(
+                "cortex mcp add: an MCP server named '{}' already exists in {} with a different \
+                 definition; pass --force to overwrite it",
+                args.name,
+                path.display()
+            );
+            return Exit::Failure;
+        }
+    };
+
+    emit_add(
+        &args.name,
+        status,
+        path.display().to_string(),
+        args.format.format,
+    )
+}
+
+/// Render the `add` result on stdout in the requested format.
+fn emit_add(name: &str, status: &str, path: String, format: OutputFormat) -> Exit {
+    let mut body = match format {
+        OutputFormat::Text => match status {
+            "unchanged" => format!("MCP server '{name}' is already present in {path} (unchanged)"),
+            _ => format!("added MCP server '{name}' to {path}"),
+        },
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let document = AddDocument {
+                r#type: "mcp-add",
+                name,
+                status,
+                path,
+            };
+            serde_json::to_string(&document).expect("mcp-add output is always serializable")
+        }
+    };
+    body.push('\n');
+
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    if handle
+        .write_all(body.as_bytes())
+        .and_then(|()| handle.flush())
+        .is_err()
+    {
+        return Exit::Failure;
+    }
+    Exit::Success
+}
+
+/// Parse repeatable `--env KEY=VALUE` assignments into ordered pairs.
+///
+/// Each entry must contain `=`; the key (before the first `=`) must be non-empty. The value (after
+/// the first `=`) may be empty and may itself contain `=`.
+fn parse_env_assignments(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid --env '{entry}': expected KEY=VALUE"))?;
+        if key.is_empty() {
+            return Err(format!(
+                "invalid --env '{entry}': the variable name is empty"
+            ));
+        }
+        pairs.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(pairs)
 }
 
 /// One server's reported status in the machine-readable listing.

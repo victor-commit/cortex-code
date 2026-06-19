@@ -97,10 +97,46 @@ pub struct McpArgs {
 pub enum McpCommand {
     /// List configured MCP servers with their connection status, PID, and tools.
     List(McpListArgs),
+    /// Register a new MCP server in the global config file.
+    ///
+    /// The definition is written under `[mcp.<name>]` and is picked up by `cortex mcp list` and
+    /// `cortex run` on the next invocation. Re-adding the same definition is idempotent; adding a
+    /// different one under an existing name errors (unless `--force`) without corrupting the config.
+    Add(McpAddArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct McpListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct McpAddArgs {
+    /// The name to register the server under (its `mcp.<name>` config key and tool-id prefix).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// The command to launch the stdio server: the program followed by its arguments.
+    #[arg(long = "command", num_args = 1.., required = true, value_name = "CMD")]
+    pub command: Vec<String>,
+
+    /// The working directory the server child is spawned in.
+    #[arg(long = "cwd", value_name = "DIR")]
+    pub cwd: Option<String>,
+
+    /// An environment variable to set on the server child, as `KEY=VALUE` (repeatable).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+
+    /// Register the server but leave it disabled (it is recorded but never spawned).
+    #[arg(long = "disabled")]
+    pub disabled: bool,
+
+    /// Overwrite an existing server of the same name instead of erroring on a conflict.
+    #[arg(long = "force")]
+    pub force: bool,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }

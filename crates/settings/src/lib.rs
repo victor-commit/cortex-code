@@ -257,6 +257,119 @@ pub fn persist_global_string(
     Ok(path)
 }
 
+/// A declarative MCP server entry to persist under `[mcp.<name>]` in the global config file.
+///
+/// This mirrors the subset of the `mcp` crate's server config that the `cortex mcp add` CLI
+/// surface lets a user set; it is expressed in primitive types here so the `settings` crate (which
+/// owns the on-disk config representation) stays decoupled from the `mcp` crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerSpec {
+    /// The command to launch the local stdio server: the program followed by its arguments.
+    pub command: Vec<String>,
+    /// The working directory the server child is spawned in, when set.
+    pub cwd: Option<String>,
+    /// Extra environment variables set on the server child, in declared order.
+    pub environment: Vec<(String, String)>,
+    /// Whether the server is enabled. A disabled entry is recorded but never spawned.
+    pub enabled: bool,
+}
+
+impl McpServerSpec {
+    /// Render this spec as the `[mcp.<name>]` TOML table that is written to (and compared against
+    /// what is read back from) the config file. `enabled = true` is the default and is omitted, so
+    /// re-adding an identical server is detected as unchanged rather than as a conflict.
+    fn to_table(&self) -> Table {
+        let mut table = Table::new();
+        table.insert(
+            "command".to_owned(),
+            Value::Array(
+                self.command
+                    .iter()
+                    .map(|arg| Value::String(arg.clone()))
+                    .collect(),
+            ),
+        );
+        if let Some(cwd) = &self.cwd {
+            table.insert("cwd".to_owned(), Value::String(cwd.clone()));
+        }
+        if !self.environment.is_empty() {
+            let mut env = Table::new();
+            for (key, value) in &self.environment {
+                env.insert(key.clone(), Value::String(value.clone()));
+            }
+            table.insert("environment".to_owned(), Value::Table(env));
+        }
+        if !self.enabled {
+            table.insert("enabled".to_owned(), Value::Boolean(false));
+        }
+        table
+    }
+}
+
+/// The result of persisting an MCP server definition into the global config file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerPersist {
+    /// A new server entry was written to the config file at the returned path.
+    Added(PathBuf),
+    /// An identical server entry was already present; the config file was left untouched.
+    Unchanged(PathBuf),
+    /// A different server of the same name already exists and `overwrite` was not set; the config
+    /// file was left untouched so the existing definition is not corrupted.
+    Conflict(PathBuf),
+}
+
+/// Persist an MCP server definition into the user's global config file under `[mcp.<name>]`,
+/// preserving every other key (and every other MCP server) already present. Returns the outcome.
+///
+/// Re-adding the *same* definition is idempotent ([`McpServerPersist::Unchanged`], file untouched);
+/// adding a *different* definition under an existing name is refused unless `overwrite` is set
+/// ([`McpServerPersist::Conflict`], file untouched), so a duplicate add never corrupts the config.
+///
+/// # Errors
+/// Returns [`ConfigError::NoConfigHome`] when no global config location can be resolved,
+/// [`ConfigError::Parse`] when the existing file holds invalid TOML (or its `mcp` key is not a
+/// table), or [`ConfigError::Write`] when the file cannot be (re)written.
+pub fn persist_global_mcp_server(
+    inputs: &ConfigInputs,
+    name: &str,
+    spec: &McpServerSpec,
+    overwrite: bool,
+) -> Result<McpServerPersist, ConfigError> {
+    let path =
+        discovery::global_config_file(inputs.home.as_deref(), inputs.xdg_config_home.as_deref())
+            .ok_or(ConfigError::NoConfigHome)?;
+
+    let mut root = read_layer(&path)?.unwrap_or_default();
+    let entry = spec.to_table();
+
+    let mcp_value = root
+        .entry("mcp".to_owned())
+        .or_insert_with(|| Value::Table(Table::new()));
+    let Value::Table(servers) = mcp_value else {
+        return Err(ConfigError::Parse {
+            path,
+            message: "the `mcp` config key is not a table of named servers".to_owned(),
+        });
+    };
+
+    match servers.get(name) {
+        Some(Value::Table(existing)) if *existing == entry => {
+            return Ok(McpServerPersist::Unchanged(path));
+        }
+        Some(_) if !overwrite => return Ok(McpServerPersist::Conflict(path)),
+        _ => {}
+    }
+    servers.insert(name.to_owned(), Value::Table(entry));
+
+    let body = toml::to_string_pretty(&root)
+        .map_err(|error| ConfigError::write(&path, io::Error::other(error.to_string())))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ConfigError::write(&path, error))?;
+    }
+    std::fs::write(&path, body).map_err(|error| ConfigError::write(&path, error))?;
+    Ok(McpServerPersist::Added(path))
+}
+
 /// Read each present config file as a raw, un-merged layer, in ascending precedence order
 /// (global, then project root, then nested directories closer to the CWD).
 ///
@@ -485,5 +598,149 @@ impl std::error::Error for ConfigError {
             | Self::TypeMismatch { .. }
             | Self::NoConfigHome => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod persist_mcp_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A unique, freshly created scratch HOME so the global config write is hermetic.
+    fn scratch_home(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-settings-mcp-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch home");
+        dir
+    }
+
+    fn inputs_with_home(home: &Path) -> ConfigInputs {
+        ConfigInputs {
+            home: Some(home.to_path_buf()),
+            xdg_config_home: None,
+            cwd: home.to_path_buf(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        }
+    }
+
+    fn spec() -> McpServerSpec {
+        McpServerSpec {
+            command: vec!["/abs/echo-server".to_owned(), "--flag".to_owned()],
+            cwd: Some("/work".to_owned()),
+            environment: vec![("FOO".to_owned(), "bar".to_owned())],
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn add_persists_a_server_that_loads_back() {
+        let home = scratch_home("add");
+        let inputs = inputs_with_home(&home);
+
+        let outcome = persist_global_mcp_server(&inputs, "demo", &spec(), false).expect("persist");
+        assert!(matches!(outcome, McpServerPersist::Added(_)));
+
+        // The written definition is read back through the normal load path under `mcp.demo`.
+        let effective = load(inputs_with_home(&home)).expect("load");
+        let mcp = effective.get("mcp").expect("mcp table present");
+        let demo = mcp.get("demo").expect("demo entry present");
+        assert_eq!(
+            demo.get("command")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str()),
+            Some("/abs/echo-server")
+        );
+        assert_eq!(demo.get("cwd").and_then(|v| v.as_str()), Some("/work"));
+        assert_eq!(
+            demo.get("environment")
+                .and_then(|e| e.get("FOO"))
+                .and_then(|v| v.as_str()),
+            Some("bar")
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn re_adding_an_identical_server_is_idempotent_unchanged() {
+        let home = scratch_home("idem");
+        let inputs = inputs_with_home(&home);
+        persist_global_mcp_server(&inputs, "demo", &spec(), false).expect("first add");
+        let again = persist_global_mcp_server(&inputs_with_home(&home), "demo", &spec(), false)
+            .expect("second add");
+        assert!(
+            matches!(again, McpServerPersist::Unchanged(_)),
+            "re-adding the same definition is idempotent"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn adding_a_different_server_under_an_existing_name_conflicts_without_corruption() {
+        let home = scratch_home("conflict");
+        persist_global_mcp_server(&inputs_with_home(&home), "demo", &spec(), false)
+            .expect("first add");
+
+        let mut different = spec();
+        different.command = vec!["/abs/other-server".to_owned()];
+        let conflict =
+            persist_global_mcp_server(&inputs_with_home(&home), "demo", &different, false)
+                .expect("conflict result");
+        assert!(matches!(conflict, McpServerPersist::Conflict(_)));
+
+        // The original definition is left intact (no corruption).
+        let effective = load(inputs_with_home(&home)).expect("load");
+        let command = effective
+            .get("mcp")
+            .and_then(|m| m.get("demo"))
+            .and_then(|d| d.get("command"))
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str());
+        assert_eq!(command, Some("/abs/echo-server"), "the original survives");
+
+        // With overwrite, the new definition replaces the old.
+        let overwritten =
+            persist_global_mcp_server(&inputs_with_home(&home), "demo", &different, true)
+                .expect("overwrite");
+        assert!(matches!(overwritten, McpServerPersist::Added(_)));
+        let effective = load(inputs_with_home(&home)).expect("reload");
+        let command = effective
+            .get("mcp")
+            .and_then(|m| m.get("demo"))
+            .and_then(|d| d.get("command"))
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str());
+        assert_eq!(command, Some("/abs/other-server"), "force overwrites");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn add_preserves_other_existing_config_keys() {
+        let home = scratch_home("preserve");
+        let config_dir = home.join(".config").join("cortex");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "model = \"anthropic/claude-sonnet-4\"\n",
+        )
+        .expect("seed config");
+
+        persist_global_mcp_server(&inputs_with_home(&home), "demo", &spec(), false).expect("add");
+
+        let effective = load(inputs_with_home(&home)).expect("load");
+        assert_eq!(
+            effective.get("model").and_then(|v| v.as_str()),
+            Some("anthropic/claude-sonnet-4"),
+            "the pre-existing model key must survive the mcp add"
+        );
+        assert!(effective.get("mcp").is_some(), "the mcp entry was added");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

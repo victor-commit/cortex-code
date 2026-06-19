@@ -44,7 +44,13 @@ async fn connects_lists_calls_and_kills_child_on_shutdown() {
     ids.sort();
     assert_eq!(
         ids,
-        vec!["demo_add", "demo_big", "demo_echo", "demo_search"]
+        vec![
+            "demo_add",
+            "demo_big",
+            "demo_echo",
+            "demo_env",
+            "demo_search"
+        ]
     );
     // Schemas are relayed (no fabrication): the `add` tool advertises its a/b integer params.
     let add = manager.tools().iter().find(|t| t.id == "demo_add").unwrap();
@@ -179,6 +185,71 @@ async fn a_bad_command_is_reported_failed_without_panicking() {
     assert!(status.error.is_some());
     assert!(manager.tools().is_empty());
     manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn stdio_server_observes_configured_cwd_and_env_without_host_secret_leak() {
+    // VAL-MCP-015: a stdio server declared with a specific cwd and environment is launched with
+    // exactly that working directory and those env vars, and the host OPENROUTER_API_KEY does not
+    // leak into the child. The child inherits the test process environment (which, under live
+    // validation, carries the real key) minus the stripped host secrets, so querying the key in the
+    // child reports it absent.
+    let bin = echo_server_bin();
+    let work = std::env::temp_dir().join(format!("cortex-mcp-cwd-{}", std::process::id()));
+    std::fs::create_dir_all(&work).expect("create work dir");
+    let canonical_work = std::fs::canonicalize(&work).expect("canonicalize work dir");
+
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "cwd": canonical_work.to_string_lossy(),
+            "environment": { "FOO": "bar" }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+
+    // The child reports the configured cwd and the configured FOO env var.
+    let report = manager
+        .call("demo_env", json!({ "name": "FOO" }))
+        .await
+        .expect("env call succeeds");
+    assert!(
+        report
+            .content
+            .contains(&canonical_work.to_string_lossy().to_string()),
+        "the child must report the configured cwd, got: {}",
+        report.content
+    );
+    assert!(
+        report.content.contains("FOO=bar"),
+        "the child must observe the configured FOO env var, got: {}",
+        report.content
+    );
+
+    // The host OPENROUTER_API_KEY is stripped from the child: querying it reports it unset, and the
+    // parent's value (present under live validation) never appears in the child's environment.
+    let key_report = manager
+        .call("demo_env", json!({ "name": "OPENROUTER_API_KEY" }))
+        .await
+        .expect("env call succeeds");
+    assert!(
+        key_report.content.contains("OPENROUTER_API_KEY=(unset)"),
+        "the host OpenRouter key must be stripped from the child, got: {}",
+        key_report.content
+    );
+    if let Ok(parent_key) = std::env::var("OPENROUTER_API_KEY") {
+        if !parent_key.is_empty() {
+            assert!(
+                !key_report.content.contains(&parent_key),
+                "the host OpenRouter key value must never leak into the child's environment"
+            );
+        }
+    }
+
+    manager.shutdown().await;
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 #[tokio::test]
