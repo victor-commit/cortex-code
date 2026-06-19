@@ -1,6 +1,7 @@
 mod checkpoint;
 mod cli;
 mod config;
+mod mcp_cmd;
 mod net;
 mod observe;
 mod permission;
@@ -55,6 +56,7 @@ fn main() -> ExitCode {
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
+        Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
@@ -68,6 +70,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Session(_)) => Surface::Session,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
+        Some(Command::Mcp(_)) => Surface::Mcp,
         Some(Command::Serve(_)) => Surface::Serve,
     }
 }

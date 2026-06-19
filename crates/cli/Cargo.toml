@@ -26,6 +26,7 @@ tools = { workspace = true }
 permissions = { workspace = true }
 policy = { workspace = true }
 checkpoints = { workspace = true }
+mcp = { workspace = true }
 tui = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }

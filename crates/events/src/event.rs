@@ -20,6 +20,8 @@ pub enum Surface {
     Net,
     /// The checkpoint undo/redo path (`cortex undo`/`cortex redo`).
     Checkpoint,
+    /// The MCP server management path (`cortex mcp`).
+    Mcp,
 }
 
 impl Surface {
@@ -34,6 +36,7 @@ impl Surface {
             Surface::Session => "session",
             Surface::Net => "net",
             Surface::Checkpoint => "checkpoint",
+            Surface::Mcp => "mcp",
         }
     }
 }

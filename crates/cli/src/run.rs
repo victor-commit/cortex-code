@@ -261,6 +261,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         return Exit::Failure;
     }
 
+    // The configured MCP servers for this run, taken before the model id is moved out of the config.
+    let mcp_servers = std::mem::take(&mut run_config.mcp_servers);
+
     // Derive the compaction policy from the resolved model's context window before the model id is
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
     let compaction = compaction_policy(&run_config.model);
@@ -281,6 +284,18 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             eprintln!("cortex run: failed to start the async runtime: {err}");
             return Exit::Failure;
         }
+    };
+
+    // Connect every configured MCP server (spawn the stdio child, handshake, list tools) before the
+    // turn so its server-qualified tools materialize into the per-turn catalogue. A failed/disabled
+    // server is recorded and skipped — it never blocks the turn. Connection happens on the runtime
+    // because it is async. With no configured servers this is a clean no-op (no children spawned).
+    let mcp_manager: Option<std::sync::Arc<mcp::McpManager>> = if mcp_servers.is_empty() {
+        None
+    } else {
+        Some(std::sync::Arc::new(
+            runtime.block_on(mcp::McpManager::connect(mcp_servers)),
+        ))
     };
 
     // Materialize the per-turn tool set for the model's family, scoped to the process working
@@ -319,6 +334,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         )),
         None => dispatcher,
     };
+    // Attach the connected MCP manager so its server-qualified tools are advertised and callable
+    // alongside the built-in tools this turn.
+    let dispatcher = match &mcp_manager {
+        Some(manager) => dispatcher.with_mcp(manager.clone()),
+        None => dispatcher,
+    };
     let tool_names = dispatcher.tool_names();
 
     let exit = runtime.block_on(async {
@@ -353,6 +374,11 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         // Reap any background `bash` jobs spawned this turn by exact PID, so no orphan process
         // outlives the run.
         dispatcher.background_jobs().shutdown().await;
+        // Terminate every spawned MCP server (cancel its session, killing the stdio child by PID),
+        // so no MCP server process outlives the run.
+        if let Some(manager) = &mcp_manager {
+            manager.shutdown().await;
+        }
         exit
     });
 
@@ -948,6 +974,7 @@ struct RunConfig {
     model: ResolvedModel,
     base_url: Option<String>,
     api_key: Option<String>,
+    mcp_servers: std::collections::BTreeMap<String, mcp::McpServerConfig>,
 }
 
 /// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
@@ -963,7 +990,27 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
         model: providers::resolve_model(Some(effective.model())),
         base_url: openrouter_base_url_override(&effective),
         api_key: openrouter_api_key(&effective),
+        mcp_servers: mcp_servers_from_config(&effective),
     })
+}
+
+/// Extract the configured MCP servers from the effective config's `mcp` table. A malformed `mcp`
+/// entry is surfaced as a stderr warning and skipped rather than failing the whole run, so a broken
+/// server definition never blocks an otherwise-valid turn.
+pub(crate) fn mcp_servers_from_config(
+    effective: &EffectiveConfig,
+) -> std::collections::BTreeMap<String, mcp::McpServerConfig> {
+    let Some(value) = effective.get("mcp") else {
+        return std::collections::BTreeMap::new();
+    };
+    let json = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+    match mcp::servers_from_value(&json) {
+        Ok(servers) => servers,
+        Err(err) => {
+            eprintln!("cortex run: ignoring invalid MCP configuration: {err}");
+            std::collections::BTreeMap::new()
+        }
+    }
 }
 
 /// Resolve the effective model for the turn (a thin wrapper over [`resolve_run_config`]).

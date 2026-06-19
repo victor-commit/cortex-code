@@ -77,6 +77,32 @@ pub enum Command {
     /// Restores the post-turn state an `undo` reverted. A fresh edit made after an undo advances
     /// history along a new branch, so the abandoned change is no longer redoable.
     Redo(CheckpointArgs),
+
+    /// Manage and inspect Model Context Protocol (MCP) servers.
+    ///
+    /// MCP servers are declared in the layered config under `mcp.<name>` (a local stdio server has
+    /// `type = "local"` and a `command` array). `cortex mcp list` connects to each enabled server,
+    /// completes the MCP handshake, and reports its status (connected/disabled/failed), live PID,
+    /// and advertised tools under their server-qualified ids.
+    Mcp(McpArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    #[command(subcommand)]
+    pub command: McpCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// List configured MCP servers with their connection status, PID, and tools.
+    List(McpListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct McpListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

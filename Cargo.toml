@@ -13,6 +13,7 @@ members = [
     "crates/permissions",
     "crates/policy",
     "crates/checkpoints",
+    "crates/mcp",
     "crates/tools",
     "crates/tui-core",
     "crates/tui-buffer",
@@ -50,6 +51,7 @@ engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
 policy = { path = "crates/policy" }
 checkpoints = { path = "crates/checkpoints" }
+mcp = { path = "crates/mcp" }
 tools = { path = "crates/tools" }
 tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }
@@ -60,6 +62,7 @@ frame = { path = "crates/frame" }
 tui-components = { path = "crates/tui-components" }
 tui = { path = "crates/tui" }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rmcp = { version = "1.7", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util"] }
 tokio-test = "0.4"

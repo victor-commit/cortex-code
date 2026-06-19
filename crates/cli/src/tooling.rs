@@ -12,13 +12,19 @@ use std::sync::Arc;
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
+use mcp::McpManager;
 use permissions::PermissionEngine;
 use tools::{BackgroundJobs, TodoStore, ToolContext, ToolRegistry};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
+///
+/// When an [`McpManager`] is attached, the dispatcher also advertises every connected MCP server's
+/// tools under their server-qualified ids and routes a call to one of those ids through the manager
+/// (a real `tools/call`), so MCP tools materialize alongside the built-in tools for the turn.
 pub struct RegistryDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
+    mcp: Option<Arc<McpManager>>,
 }
 
 impl RegistryDispatcher {
@@ -45,7 +51,16 @@ impl RegistryDispatcher {
             context: ToolContext::new(cwd)
                 .with_session(session_id)
                 .with_todo_store(todos),
+            mcp: None,
         }
+    }
+
+    /// Attach a connected [`McpManager`] so its server-qualified MCP tools are advertised and
+    /// callable this turn (builder style). Without it the dispatcher exposes only built-in tools.
+    #[must_use]
+    pub fn with_mcp(mut self, manager: Arc<McpManager>) -> Self {
+        self.mcp = Some(manager);
+        self
     }
 
     /// Gate every tool effect through `engine` (builder style).
@@ -68,15 +83,31 @@ impl RegistryDispatcher {
         self
     }
 
-    /// The names of the tools materialized for this turn, in advertised order. Surfaced in machine
-    /// output so a consumer can observe the per-turn (model-aware) tool list.
+    /// The names of the tools materialized for this turn, in advertised order: the built-in tools
+    /// first, then the connected MCP servers' server-qualified tool ids. Surfaced in machine output
+    /// so a consumer can observe the per-turn (model-aware) tool list.
     #[must_use]
     pub fn tool_names(&self) -> Vec<String> {
-        self.registry
-            .definitions()
-            .into_iter()
-            .map(|def| def.name)
-            .collect()
+        self.definitions().into_iter().map(|def| def.name).collect()
+    }
+
+    /// The MCP tool definitions advertised this turn (server-qualified id, description, schema),
+    /// empty when no manager is attached.
+    fn mcp_definitions(&self) -> Vec<ToolDef> {
+        self.mcp
+            .as_ref()
+            .map(|manager| {
+                manager
+                    .tools()
+                    .iter()
+                    .map(|tool| ToolDef {
+                        name: tool.id.clone(),
+                        description: tool.description.clone().unwrap_or_default(),
+                        parameters: tool.input_schema.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The background-job registry tracking long-running `bash` jobs spawned during the run, so the
@@ -89,11 +120,20 @@ impl RegistryDispatcher {
 
 impl ToolDispatcher for RegistryDispatcher {
     fn definitions(&self) -> Vec<ToolDef> {
-        self.registry.definitions()
+        let mut defs = self.registry.definitions();
+        defs.extend(self.mcp_definitions());
+        defs
     }
 
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
         Box::pin(async move {
+            // Route a call to a connected MCP tool (matched by its server-qualified id) through the
+            // manager as a real `tools/call`; everything else goes to the built-in registry.
+            if let Some(manager) = &self.mcp {
+                if manager.has_tool(&call.name) {
+                    return dispatch_mcp(manager, call).await;
+                }
+            }
             let output = self
                 .registry
                 .execute(&call.name, &call.arguments, &self.context)
@@ -104,6 +144,45 @@ impl ToolDispatcher for RegistryDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+}
+
+/// Execute one MCP tool call through the manager and convert the relayed result into the runner's
+/// [`ToolDispatchResult`]. A non-object/unparseable arguments string or a transport error resolves
+/// to an error result so the turn continues and the model can recover.
+async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResult {
+    let arguments = if call.arguments.trim().is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        match serde_json::from_str(&call.arguments) {
+            Ok(value) => value,
+            Err(err) => {
+                return ToolDispatchResult {
+                    content: format!("{}: invalid arguments JSON: {err}", call.name),
+                    parts: vec![protocol::ToolResultPart::text(format!(
+                        "{}: invalid arguments JSON: {err}",
+                        call.name
+                    ))],
+                    is_error: true,
+                };
+            }
+        }
+    };
+
+    match manager.call(&call.name, arguments).await {
+        Ok(relayed) => ToolDispatchResult {
+            content: relayed.content,
+            parts: relayed.parts,
+            is_error: relayed.is_error,
+        },
+        Err(err) => {
+            let message = err.to_string();
+            ToolDispatchResult {
+                content: message.clone(),
+                parts: vec![protocol::ToolResultPart::text(message)],
+                is_error: true,
+            }
+        }
     }
 }
 
