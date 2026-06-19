@@ -9,7 +9,6 @@ mod run;
 mod session;
 mod todo_store;
 mod tooling;
-mod tui;
 
 use std::process::ExitCode;
 use std::sync::Arc;

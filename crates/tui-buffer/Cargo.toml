@@ -1,0 +1,34 @@
+# Provenance: ported source (direct-port-allowed), adapted to this workspace
+# Source-Repo: CortexLM/cortex-code
+# Source-Commit: 7954d0218faf6f26aa84df0f6d8b09ea9f2e5ac9
+# Source-Path: cortex-tui-framework/crates/cortex-tui-buffer/Cargo.toml
+# Target-Path: crates/tui-buffer/Cargo.toml
+# Upstream-License: MIT
+# See: NOTICE (Direct-Port Provenance Ledger)
+[package]
+name = "tui-buffer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish = false
+description = "Double-buffered terminal rendering for Cortex TUI"
+
+[lib]
+doctest = false
+
+[dependencies]
+tui-core = { path = "../tui-core" }
+smallvec = { workspace = true }
+
+# Intentionally does not use `workspace = true`: the render hot-path needs
+# `get_unchecked`, but `[workspace.lints]` sets `unsafe_code = "forbid"`, which a
+# crate-level `#![allow]` cannot relax. Clippy posture mirrors the workspace.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "allow"
+missing_docs = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "allow"

@@ -1,0 +1,18 @@
+[package]
+name = "tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+errors = { workspace = true }
+settings = { workspace = true }
+tui-widgets = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+[dev-dependencies]

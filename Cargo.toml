@@ -13,6 +13,11 @@ members = [
     "crates/permissions",
     "crates/checkpoints",
     "crates/tools",
+    "crates/tui-core",
+    "crates/tui-buffer",
+    "crates/tui-text",
+    "crates/tui-widgets",
+    "crates/tui",
     "crates/cli",
 ]
 
@@ -41,6 +46,11 @@ engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
 checkpoints = { path = "crates/checkpoints" }
 tools = { path = "crates/tools" }
+tui-core = { path = "crates/tui-core" }
+tui-buffer = { path = "crates/tui-buffer" }
+tui-text = { path = "crates/tui-text" }
+tui-widgets = { path = "crates/tui-widgets" }
+tui = { path = "crates/tui" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util"] }
@@ -57,3 +67,7 @@ serde_json = "1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smallvec = { version = "1", features = ["union", "const_generics"] }
+thiserror = "2"
+unicode-width = "0.2"
+unicode-segmentation = "1"

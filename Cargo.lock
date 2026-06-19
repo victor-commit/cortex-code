@@ -200,7 +200,6 @@ version = "0.1.0"
 dependencies = [
  "checkpoints",
  "clap",
- "crossterm",
  "db",
  "engine",
  "errors",
@@ -210,7 +209,6 @@ dependencies = [
  "permissions",
  "protocol",
  "providers",
- "ratatui",
  "redaction",
  "rusqlite",
  "serde",
@@ -220,6 +218,7 @@ dependencies = [
  "tools",
  "tracing",
  "tracing-subscriber",
+ "tui",
 ]
 
 [[package]]
@@ -1912,6 +1911,55 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tui"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "errors",
+ "ratatui",
+ "settings",
+ "tui-widgets",
+]
+
+[[package]]
+name = "tui-buffer"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
+ "tui-core",
+]
+
+[[package]]
+name = "tui-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "ratatui",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "tui-text"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "tui-widgets"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
+ "tui-buffer",
+ "tui-core",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+]
 
 [[package]]
 name = "unicode-ident"

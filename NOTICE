@@ -1,0 +1,43 @@
+Cortex Code Notices
+===================
+
+Cortex Code is distributed under Apache-2.0 (see LICENSE). This file records the
+attribution required for the one owner-authorized source-port exception described
+in architecture.md §9. Everything outside the authorized roots is clean-room
+original.
+
+Authorized source port
+-----------------------
+
+Decision: direct-port-allowed (architecture.md §9).
+Source repository: CortexLM/cortex-code  (https://github.com/CortexLM/cortex-code)
+Pinned commit:     7954d0218faf6f26aa84df0f6d8b09ea9f2e5ac9
+Authorized roots:  the TUI framework crates ONLY.
+
+Each ported file carries a per-file provenance header (Source-Repo, Source-Commit,
+Source-Path, Target-Path, Upstream-License). The product remains Apache-2.0; ported
+code retains its upstream MIT license, recorded per-file and summarized below.
+
+This notice does NOT approve any other source transfer: no CortexLM source outside
+the authorized roots, no future commits, no third-party dependency source, and no
+unrelated products.
+
+Direct-Port Provenance Ledger (target crates)
+---------------------------------------------
+
+| Target crate (path)     | Upstream root (Source-Path prefix @7954d02)              | Upstream license | Notes |
+| ----------------------- | -------------------------------------------------------- | ---------------- | ----- |
+| crates/tui-core         | cortex-tui-framework/crates/cortex-tui-core              | MIT              | color/error/geometry/id/style/lib ported verbatim. `src/legacy_palette.rs` is a local, non-upstream back-compat shim gated behind the (off-by-default) `legacy-palette` feature; no upstream attribution. |
+| crates/tui-buffer       | cortex-tui-framework/crates/cortex-tui-buffer            | MIT              | buffer/cell/diff/double_buffer/grapheme/lib ported verbatim. Keeps the documented narrow `unsafe` opt-out for the render hot-path `get_unchecked` (workspace default is `unsafe_code = "forbid"`). |
+| crates/tui-text         | cortex-tui-framework/crates/cortex-tui-text              | MIT              | grapheme/line/measurement/styled/wrap/lib ported verbatim; no upstream copyright/notice headers were present in the source files. |
+| crates/tui-widgets      | cortex-tui-framework/crates/cortex-tui-widgets           | MIT              | border/box_widget/buffer/cursor/event/input/layout/lib/scrollbar/scrollbox/textarea/text_widget/types/viewport/widget ported verbatim. |
+
+Workspace adaptation applied to all ported crates above: the crate was renamed
+`cortex-tui-*` -> `tui-*` (package name and `cortex_tui_*` -> `tui_*` import paths)
+and its dependencies were re-pointed to this workspace. These adaptations do not
+change upstream behavior; Target-Path headers reflect the new paths while
+Source-Repo/Source-Commit/Source-Path record the authorized upstream origin.
+
+The `tui` application crate (crates/tui) is clean-room original (Apache-2.0): it
+consumes the ported framework above but contains no ported source, so it carries no
+provenance header.
