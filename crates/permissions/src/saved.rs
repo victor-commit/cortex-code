@@ -11,12 +11,18 @@
 
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+
 use crate::engine::Decision;
 use crate::glob::glob_match;
 use crate::rule::ANY_TOOL;
 
 /// One saved "always allow/deny" decision for a tool/pattern.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serializes field-for-field (`tool`, `pattern`, `decision`) so a snapshot taken via
+/// [`SavedDecisions::snapshot`] persists durably (e.g. to JSON on disk) and rebuilds losslessly via
+/// [`SavedDecisions::from_decisions`], enabling cross-process reuse of an "always" choice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedDecision {
     /// The gated tool the decision was saved for, or [`ANY_TOOL`] (`*`) for any tool.
     pub tool: String,
@@ -133,6 +139,19 @@ mod tests {
             Some(SavedDecision::new("bash", "echo *", Decision::Allow))
         );
         assert_eq!(store.resolve("bash", "rm x"), None);
+    }
+
+    #[test]
+    fn saved_decision_serializes_with_stable_lowercase_tokens() {
+        let saved = SavedDecision::new("bash", "echo *", Decision::Allow);
+        let value = serde_json::to_value(&saved).expect("serialize");
+        assert_eq!(value["tool"], "bash");
+        assert_eq!(value["pattern"], "echo *");
+        assert_eq!(value["decision"], "allow");
+
+        // The JSON form round-trips back to an identical decision (the durable on-disk contract).
+        let decoded: SavedDecision = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, saved);
     }
 
     #[test]

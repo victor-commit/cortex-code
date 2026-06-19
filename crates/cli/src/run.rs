@@ -31,6 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use db::{Database, DbPathInputs, UsageTotals};
@@ -39,6 +40,7 @@ use engine::{
     SessionRunner, SystemContext, ToolDispatcher, Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
+use events::EventBus;
 use protocol::ToolResultPart;
 use providers::ResolvedModel;
 use redaction::guard_outbound;
@@ -47,13 +49,14 @@ use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
 use crate::permission;
+use crate::permission_store;
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
 const OUTBOUND_OPERATION: &str = "LLM turn";
 
 /// Execute a single headless `cortex run` turn.
-pub fn run(args: RunArgs) -> Exit {
+pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     let stdin = io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let prompt = match resolve_prompt(args.prompt, stdin_is_terminal, stdin.lock()) {
@@ -96,6 +99,17 @@ pub fn run(args: RunArgs) -> Exit {
             }
         };
 
+    // Parse the repeatable `--permission-allow-save` specs the same way: each is a `TOOL:GLOB`
+    // "ask-and-remember (always allow)" pattern whose saved decision persists across runs. A
+    // malformed spec fails fast with a usage error before any network or store work.
+    let save_specs = match permission::rules_from_save_flags(&args.permission_allow_save) {
+        Ok(rules) => rules,
+        Err(message) => {
+            eprintln!("cortex run: {message}");
+            return Exit::Usage;
+        }
+    };
+
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
     // so a refusal never touches the network even when a key is present.
     if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
@@ -115,21 +129,37 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    // Build the headless permission engine from the config-file `[[permission]]` layers (global →
-    // project → nested, the documented settings layering order, picking up a project-level
-    // `cortex.toml` in the working dir) as the BASE ruleset, then append the CLI rules ON TOP so a
-    // CLI rule overrides a conflicting config rule under last-matching-rule-wins. The engine is
-    // attached only when the combined ruleset is non-empty, so with no config rules AND no flags the
+    // The per-project working directory the saved-permission store is keyed by (identical to the
+    // checkpoint store's key), captured before `config_inputs` is consumed by config resolution.
+    let permission_cwd = config_inputs.cwd.clone();
+
+    // Load this project's previously saved ("always allow/deny") decisions from the durable store
+    // under the data dir, so a decision saved by an EARLIER, fully separate `cortex run` is honored
+    // this run without re-asking (VAL-CROSS-027). A missing/corrupt store yields no decisions.
+    let loaded_decisions = permission_store::load_for(&permission_cwd);
+
+    // Build the headless permission engine from every source `cortex run` honors: the config-file
+    // `[[permission]]` layers (global → project → nested) as the BASE ruleset, the CLI allow/deny
+    // rules appended ON TOP (last-matching-rule-wins), the previously saved cross-process decisions
+    // (consulted before the ruleset, so a saved decision is honored with no new ask), and the
+    // `--permission-allow-save` specs (each surfaced as an ask answered "always allow" and recorded
+    // for reuse). The engine is attached whenever any of these is non-empty; with none of them the
     // run stays ungated (the default the other M2 tool features rely on). A malformed config-file
     // rule (or an unreadable/invalid config layer) fails fast with the stable config exit code.
-    let permission_engine =
-        match permission::engine_from_layers_and_flags(&config_inputs, cli_permission_rules) {
-            Ok(engine) => engine,
-            Err(err) => {
-                eprintln!("cortex run: {err}");
-                return Exit::Config;
-            }
-        };
+    let prepared_permissions = match permission::prepare_headless_permissions(
+        &config_inputs,
+        cli_permission_rules,
+        save_specs,
+        loaded_decisions,
+        bus,
+    ) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Config;
+        }
+    };
+    let permission_engine = prepared_permissions.engine.clone();
 
     let run_config = match resolve_run_config(config_inputs) {
         Ok(run_config) => run_config,
@@ -284,6 +314,18 @@ pub fn run(args: RunArgs) -> Exit {
     // mutations recorded) appends nothing, so purely read/grep/glob turns create no checkpoint churn.
     if let Some(recorder) = &checkpoint_recorder {
         crate::checkpoint::finalize_turn(recorder);
+    }
+
+    // Persist any "always allow/deny" decisions saved this run to the per-project store, so a LATER,
+    // fully separate `cortex run` on this project reuses them without re-asking (VAL-CROSS-027). Only
+    // a run that could record a decision (`--permission-allow-save`) rewrites the store; a persist
+    // failure is a stderr warning, not a non-zero exit (the answer already shipped).
+    if prepared_permissions.persist {
+        if let Err(err) =
+            permission_store::save_for(&permission_cwd, &prepared_permissions.saved.snapshot())
+        {
+            eprintln!("cortex run: failed to persist saved permission decisions: {err}");
+        }
     }
     exit
 }

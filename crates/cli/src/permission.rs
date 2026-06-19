@@ -32,7 +32,11 @@
 
 use std::sync::Arc;
 
-use permissions::{ANY_TOOL, Action, PermissionEngine, Rule, RuleError, load_layered, scope_of};
+use events::EventBus;
+use permissions::{
+    ANY_TOOL, Action, Decision, PermissionEngine, PermissionRequest, Responder, Rule, RuleError,
+    SavedDecision, SavedDecisions, ScopedDecision, load_layered, scope_of,
+};
 use settings::ConfigInputs;
 
 /// Parse the repeatable allow/deny CLI rule flags into ordered permission [`Rule`]s.
@@ -55,30 +59,143 @@ pub fn rules_from_flags(allow: &[String], deny: &[String]) -> Result<Vec<Rule>, 
     Ok(rules)
 }
 
-/// Build the optional headless [`PermissionEngine`] from the config-file permission layers plus the
-/// already-parsed CLI rules.
+/// Parse the repeatable `--permission-allow-save` flags into ordered "ask-and-save-always" specs.
 ///
-/// The config-file `[[permission]]` rules are loaded via [`load_layered`] in ascending precedence
-/// order (global → project → nested) as the BASE ruleset, then `cli_rules` are appended ON TOP so a
-/// CLI rule overrides a conflicting config rule under last-matching-rule-wins. Returns `Ok(None)`
-/// when the combined ruleset is empty (no config rules AND no flags), preserving the ungated default
-/// headless behavior the other M2 tool features rely on.
+/// Each spec is a `TOOL:GLOB` (parsed exactly like an allow/deny rule) meaning: when a matching
+/// gated action is asked, answer "always allow" AND persist that choice so a LATER run reuses it
+/// without re-asking (the headless analog of the TUI's "approve and remember"). The carried
+/// [`Action`] is irrelevant (only the tool + pattern matter), so [`Action::Allow`] is used as a
+/// neutral placeholder.
+///
+/// # Errors
+/// Returns a human-readable message when a spec is not `TOOL:GLOB`, names an unknown tool, or has
+/// an empty glob.
+pub fn rules_from_save_flags(specs: &[String]) -> Result<Vec<Rule>, String> {
+    specs
+        .iter()
+        .map(|spec| parse_spec(spec, Action::Allow))
+        .collect()
+}
+
+/// The headless permission setup for a `cortex run`: the optional engine the tool context consults,
+/// the shared saved-decisions store, and whether saved decisions should be persisted after the run.
+pub struct HeadlessPermissions {
+    /// The engine gating each tool effect, or `None` when the run is ungated (no config rules, no
+    /// flags, and no previously saved decisions).
+    pub engine: Option<Arc<PermissionEngine>>,
+    /// The shared store of saved "always" decisions (seeded from disk, recorded into during the
+    /// run); snapshot it to persist new decisions.
+    pub saved: Arc<SavedDecisions>,
+    /// Whether this run may add saved decisions (a `--permission-allow-save` spec was present), so
+    /// the caller should persist [`saved`](HeadlessPermissions::saved) after the turn.
+    pub persist: bool,
+}
+
+/// Assemble the headless permission engine from every source a `cortex run` honors: the config-file
+/// `[[permission]]` layers, the CLI allow/deny flags, the previously saved cross-process decisions,
+/// and the `--permission-allow-save` "ask-and-remember" specs.
+///
+/// The combined ruleset is, in last-matching-rule-wins order: the config layers (global → project →
+/// nested), then the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an
+/// `ask` rule (so a matching action is surfaced as an ask — recording a `permission.asked` event —
+/// and the [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern). The engine
+/// also carries:
+/// - the `saved` store (consulted BEFORE the ruleset, so a previously saved decision is honored
+///   with no new ask — VAL-CROSS-027), seeded from `loaded`;
+/// - the event `bus`, so `permission.asked`/`permission.replied` are observable;
+/// - the [`SaveResponder`] (only when `save_specs` is non-empty) that turns a matching ask into a
+///   saved "always allow".
+///
+/// Returns an engine whenever any source is non-empty (rules, prior saved decisions, or save
+/// specs); with none of them the run stays ungated (`engine: None`), preserving the default the
+/// other M2 tool features rely on.
 ///
 /// # Errors
 /// Returns [`RuleError`] when a config layer cannot be read/parsed or a config-file rule is
 /// malformed.
-pub fn engine_from_layers_and_flags(
+pub fn prepare_headless_permissions(
     inputs: &ConfigInputs,
     cli_rules: Vec<Rule>,
-) -> Result<Option<Arc<PermissionEngine>>, RuleError> {
+    save_specs: Vec<Rule>,
+    loaded: Vec<SavedDecision>,
+    bus: Arc<EventBus>,
+) -> Result<HeadlessPermissions, RuleError> {
     let mut ruleset = load_layered(inputs)?;
     for rule in cli_rules {
         ruleset.push(rule);
     }
-    if ruleset.is_empty() {
-        return Ok(None);
+    // Each save spec becomes an `ask` rule so a matching action classifies as `ask` against the
+    // SPEC's pattern (not the broad default `*`), making the recorded saved decision precise.
+    for spec in &save_specs {
+        ruleset.push(Rule::new(
+            spec.tool.clone(),
+            spec.pattern.clone(),
+            Action::Ask,
+        ));
     }
-    Ok(Some(Arc::new(PermissionEngine::new(ruleset))))
+
+    let saved = Arc::new(SavedDecisions::from_decisions(loaded));
+    let persist = !save_specs.is_empty();
+
+    // Attach an engine when anything would gate or honor an action: a configured/CLI rule, a
+    // previously saved decision to honor, or a save spec to record this run.
+    if ruleset.is_empty() && saved.is_empty() {
+        return Ok(HeadlessPermissions {
+            engine: None,
+            saved,
+            persist,
+        });
+    }
+
+    let mut engine = PermissionEngine::new(ruleset)
+        .with_saved_decisions(saved.clone())
+        .with_bus(bus);
+    if !save_specs.is_empty() {
+        engine = engine.with_responder(Arc::new(SaveResponder::new(save_specs)));
+    }
+    Ok(HeadlessPermissions {
+        engine: Some(Arc::new(engine)),
+        saved,
+        persist,
+    })
+}
+
+/// A headless [`Responder`] that answers asks for `--permission-allow-save` patterns with a saved
+/// "always allow", and fails closed (a one-shot deny) for any other ask.
+///
+/// This is the non-interactive analog of the TUI's "approve and remember": there is no human to
+/// prompt, so a matching ask is auto-approved AND remembered (the engine records it into the saved
+/// store, which the caller persists), while a non-matching ask still denies in bounded time (no
+/// hang, no silent allow), preserving the headless fail-closed guarantee.
+struct SaveResponder {
+    specs: Vec<Rule>,
+}
+
+impl SaveResponder {
+    fn new(specs: Vec<Rule>) -> Self {
+        Self { specs }
+    }
+
+    /// Whether `request` matches one of the save specs (so it should be allowed-and-remembered).
+    fn matches(&self, request: &PermissionRequest) -> bool {
+        self.specs
+            .iter()
+            .any(|spec| spec.matches(&request.tool, &request.subject))
+    }
+}
+
+impl Responder for SaveResponder {
+    fn respond(&self, request: &PermissionRequest) -> Decision {
+        self.respond_scoped(request).decision
+    }
+
+    fn respond_scoped(&self, request: &PermissionRequest) -> ScopedDecision {
+        if self.matches(request) {
+            ScopedDecision::always(Decision::Allow)
+        } else {
+            ScopedDecision::once(Decision::Deny)
+        }
+    }
 }
 
 /// Parse one `TOOL:GLOB` spec into a [`Rule`] carrying `action`.
@@ -184,13 +301,26 @@ mod tests {
         specs.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    /// Build the headless engine option from config layers + CLI rules alone (no save specs, no
+    /// prior saved decisions), as the layered-precedence tests exercise it.
+    fn engine_for(inputs: &ConfigInputs, cli_rules: Vec<Rule>) -> Option<Arc<PermissionEngine>> {
+        prepare_headless_permissions(
+            inputs,
+            cli_rules,
+            Vec::new(),
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare permissions")
+        .engine
+    }
+
     // With no config files AND no flags the combined ruleset is empty, so no engine is attached and
     // tools run ungated (the default the other M2 tool features rely on).
     #[test]
     fn no_config_and_no_flags_yield_no_engine() {
         let scratch = Scratch::new("none");
-        let engine = engine_from_layers_and_flags(&scratch.inputs(), Vec::new()).expect("ok");
-        assert!(engine.is_none());
+        assert!(engine_for(&scratch.inputs(), Vec::new()).is_none());
     }
 
     // VAL-PERM-017: a project-layer rule deterministically overrides a conflicting global-layer one.
@@ -202,8 +332,7 @@ mod tests {
         scratch.write_global(ALLOW_RM);
         scratch.write_project(DENY_RM);
 
-        let engine = engine_from_layers_and_flags(&scratch.inputs(), Vec::new())
-            .expect("ok")
+        let engine = engine_for(&scratch.inputs(), Vec::new())
             .expect("rules present so an engine is attached");
         assert_eq!(engine.classify("bash", "rm x"), Action::Deny);
     }
@@ -215,9 +344,8 @@ mod tests {
         let scratch = Scratch::new("restore");
         scratch.write_global(ALLOW_RM);
 
-        let engine = engine_from_layers_and_flags(&scratch.inputs(), Vec::new())
-            .expect("ok")
-            .expect("the global rule attaches an engine");
+        let engine =
+            engine_for(&scratch.inputs(), Vec::new()).expect("the global rule attaches an engine");
         assert_eq!(engine.classify("bash", "rm x"), Action::Allow);
     }
 
@@ -229,9 +357,7 @@ mod tests {
         scratch.write_global(ALLOW_RM);
 
         let cli_rules = rules_from_flags(&[], &flags(&["bash:rm *"])).expect("parse cli rules");
-        let engine = engine_from_layers_and_flags(&scratch.inputs(), cli_rules)
-            .expect("ok")
-            .expect("rules present");
+        let engine = engine_for(&scratch.inputs(), cli_rules).expect("rules present");
         assert_eq!(
             engine.classify("bash", "rm x"),
             Action::Deny,
@@ -246,8 +372,7 @@ mod tests {
         let scratch = Scratch::new("cli-only");
         let cli_rules =
             rules_from_flags(&flags(&["*:**"]), &flags(&["write:secrets/**"])).expect("parse");
-        let engine = engine_from_layers_and_flags(&scratch.inputs(), cli_rules)
-            .expect("ok")
+        let engine = engine_for(&scratch.inputs(), cli_rules)
             .expect("flags present so an engine is attached");
         assert_eq!(engine.classify("write", "secrets/k.txt"), Action::Deny);
         assert_eq!(engine.classify("write", "src/k.txt"), Action::Allow);
@@ -261,12 +386,8 @@ mod tests {
         scratch.write_global(ALLOW_RM);
         scratch.write_project(DENY_RM);
 
-        let first = engine_from_layers_and_flags(&scratch.inputs(), Vec::new())
-            .expect("ok")
-            .expect("engine");
-        let second = engine_from_layers_and_flags(&scratch.inputs(), Vec::new())
-            .expect("ok")
-            .expect("engine");
+        let first = engine_for(&scratch.inputs(), Vec::new()).expect("engine");
+        let second = engine_for(&scratch.inputs(), Vec::new()).expect("engine");
         assert_eq!(first.classify("bash", "rm x"), Action::Deny);
         assert_eq!(second.classify("bash", "rm x"), Action::Deny);
     }
@@ -277,7 +398,13 @@ mod tests {
     fn a_malformed_config_rule_is_a_rule_error() {
         let scratch = Scratch::new("bad-config");
         scratch.write_project("[[permission]]\ntool = \"bash\"\n");
-        let err = match engine_from_layers_and_flags(&scratch.inputs(), Vec::new()) {
+        let err = match prepare_headless_permissions(
+            &scratch.inputs(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        ) {
             Ok(_) => panic!("a malformed config rule must error"),
             Err(err) => err.to_string(),
         };
@@ -365,5 +492,148 @@ mod tests {
             Err(message) => message,
         };
         assert!(err.contains("TOOL:GLOB"), "{err}");
+    }
+
+    #[test]
+    fn save_flags_parse_like_allow_rules() {
+        let specs = rules_from_save_flags(&flags(&["bash:echo *", "write:src/**"])).expect("parse");
+        assert_eq!(
+            specs,
+            vec![
+                Rule::new("bash", "echo *", Action::Allow),
+                Rule::new("write", "src/**", Action::Allow),
+            ]
+        );
+        // A malformed save spec is rejected, just like an allow/deny spec.
+        assert!(rules_from_save_flags(&flags(&["not-a-rule"])).is_err());
+    }
+
+    // The save responder remembers (always-allows) a matching ask and fails closed (a one-shot
+    // deny, never a silent allow) for any non-matching ask.
+    #[test]
+    fn save_responder_remembers_matches_and_fails_closed_otherwise() {
+        let responder =
+            SaveResponder::new(rules_from_save_flags(&flags(&["bash:echo *"])).expect("specs"));
+
+        let matching = responder.respond_scoped(&PermissionRequest::new("bash", "echo hi"));
+        assert_eq!(matching, ScopedDecision::always(Decision::Allow));
+
+        let other = responder.respond_scoped(&PermissionRequest::new("bash", "rm victim"));
+        assert_eq!(other, ScopedDecision::once(Decision::Deny));
+    }
+
+    /// An event-bus subscriber that records the kind of every event it observes, so a test can
+    /// assert that a `permission.asked` was (or was not) emitted.
+    #[derive(Default)]
+    struct EventCollector {
+        kinds: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl EventCollector {
+        fn saw(&self, kind: &str) -> bool {
+            self.kinds
+                .lock()
+                .expect("collector lock")
+                .iter()
+                .any(|seen| seen == kind)
+        }
+    }
+
+    impl events::Subscriber for EventCollector {
+        fn on_event(&self, event: &events::Event) {
+            self.kinds
+                .lock()
+                .expect("collector lock")
+                .push(event.kind().to_owned());
+        }
+    }
+
+    // VAL-CROSS-027 (the durable, cross-process core): run 1 surfaces an ask for `bash echo *`,
+    // answers it "always allow", and that decision — once snapshotted to disk and reloaded — is
+    // honored by a fully separate run 2 with NO new `permission.asked`, and the action is allowed.
+    #[test]
+    fn saved_always_allow_is_honored_across_a_persist_reload_without_reasking() {
+        let scratch = Scratch::new("cross");
+        let store = scratch.root.join("permissions.json");
+
+        // --- Run 1: ask + save always-allow, then persist the snapshot to disk. ---
+        let bus1 = Arc::new(EventBus::new());
+        let collector1 = Arc::new(EventCollector::default());
+        bus1.subscribe(collector1.clone());
+        let prepared1 = prepare_headless_permissions(
+            &scratch.inputs(),
+            Vec::new(),
+            rules_from_save_flags(&flags(&["bash:echo *"])).expect("save specs"),
+            Vec::new(),
+            bus1,
+        )
+        .expect("prepare run 1");
+        assert!(
+            prepared1.persist,
+            "a save spec marks the run for persistence"
+        );
+        let engine1 = prepared1
+            .engine
+            .clone()
+            .expect("engine attached for save specs");
+
+        let outcome1 = engine1.evaluate(&permissions::request_for("bash", "echo hi"));
+        assert_eq!(outcome1, permissions::Outcome::Allowed);
+        assert!(collector1.saw("permission.asked"), "run 1 surfaces the ask");
+
+        let snapshot = prepared1.saved.snapshot();
+        assert_eq!(
+            snapshot,
+            vec![SavedDecision::new("bash", "echo *", Decision::Allow)],
+            "the saved decision carries the SPEC's precise pattern, not the broad default"
+        );
+        crate::permission_store::write(&store, &snapshot).expect("persist run 1");
+
+        // --- Run 2: a fully separate process loads the decision and honors it with no re-ask. ---
+        let loaded = crate::permission_store::read(&store);
+        assert_eq!(loaded, snapshot, "the decision survives the persist/reload");
+
+        let bus2 = Arc::new(EventBus::new());
+        let collector2 = Arc::new(EventCollector::default());
+        bus2.subscribe(collector2.clone());
+        let prepared2 =
+            prepare_headless_permissions(&scratch.inputs(), Vec::new(), Vec::new(), loaded, bus2)
+                .expect("prepare run 2");
+        assert!(
+            !prepared2.persist,
+            "run 2 records nothing new, so it does not rewrite the store"
+        );
+        let engine2 = prepared2
+            .engine
+            .expect("engine attached to honor the saved decision");
+
+        let outcome2 = engine2.evaluate(&permissions::request_for("bash", "echo persisted-ok"));
+        assert_eq!(
+            outcome2,
+            permissions::Outcome::Allowed,
+            "the saved always-allow lets the matching action proceed"
+        );
+        assert!(
+            !collector2.saw("permission.asked"),
+            "run 2 must honor the saved decision WITHOUT re-asking (VAL-CROSS-027)"
+        );
+    }
+
+    // Without a saved decision, the same `bash echo` action would NOT be auto-allowed in a gated
+    // run: it defaults to ask and fails closed (denied) in headless, proving the saved decision is
+    // what makes run 2 succeed (the difference the persistence buys).
+    #[test]
+    fn the_same_action_fails_closed_without_the_saved_decision() {
+        let scratch = Scratch::new("no-saved");
+        // An engine is present (a benign config rule), but there is no saved decision for `echo`.
+        scratch.write_project(ALLOW_RM);
+        let engine =
+            engine_for(&scratch.inputs(), Vec::new()).expect("a config rule attaches an engine");
+        let outcome = engine.evaluate(&permissions::request_for("bash", "echo hi"));
+        assert_eq!(
+            outcome,
+            permissions::Outcome::Denied,
+            "with no saved decision the default ask fails closed in headless"
+        );
     }
 }

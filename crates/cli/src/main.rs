@@ -4,6 +4,7 @@ mod config;
 mod net;
 mod observe;
 mod permission;
+mod permission_store;
 mod run;
 mod session;
 mod todo_store;
@@ -28,7 +29,7 @@ fn main() -> ExitCode {
     };
 
     let debug_events = observe::init(cli.verbose);
-    let bus = EventBus::new();
+    let bus = Arc::new(EventBus::new());
     let counter = Arc::new(CounterSink::new());
     if debug_events {
         bus.subscribe(Arc::new(LogSink));
@@ -49,7 +50,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
-        Some(Command::Run(args)) => run::run(args).into(),
+        Some(Command::Run(args)) => run::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),

@@ -257,6 +257,16 @@ pub struct RunArgs {
     /// `--permission-deny 'bash:rm *'`, `--permission-deny 'write:secrets/**'`.
     #[arg(long = "permission-deny", value_name = "TOOL:GLOB")]
     pub permission_deny: Vec<String>,
+
+    /// Allow AND remember a gated tool action, in `TOOL:GLOB` form (repeatable).
+    ///
+    /// The headless analog of the TUI's "approve and remember": a matching action is surfaced as an
+    /// ask (recording a `permission.asked` event), auto-approved, and the "always allow" choice is
+    /// saved to the per-project store under the data dir. A LATER, fully separate `cortex run` on
+    /// the same project then reuses the saved decision WITHOUT re-asking. Example:
+    /// `--permission-allow-save 'bash:echo *'`.
+    #[arg(long = "permission-allow-save", value_name = "TOOL:GLOB")]
+    pub permission_allow_save: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -444,6 +454,30 @@ mod tests {
             Some(Command::Run(args)) => {
                 assert!(args.permission_allow.is_empty());
                 assert!(args.permission_deny.is_empty());
+                assert!(args.permission_allow_save.is_empty());
+            }
+            other => panic!("expected run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_parses_repeatable_permission_allow_save_flags() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "run",
+            "hi",
+            "--permission-allow-save",
+            "bash:echo *",
+            "--permission-allow-save",
+            "write:src/**",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Run(args)) => {
+                assert_eq!(
+                    args.permission_allow_save,
+                    vec!["bash:echo *".to_owned(), "write:src/**".to_owned()]
+                );
             }
             other => panic!("expected run, got {other:?}"),
         }

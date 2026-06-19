@@ -219,8 +219,9 @@ fn base_dir() -> Option<PathBuf> {
 
 /// A stable, filesystem-safe key for `cwd`: a sanitized basename plus a deterministic hash of the
 /// canonical path, so two different workspaces never collide and the same workspace always maps to
-/// the same shadow store across processes.
-fn workspace_key(cwd: &Path) -> String {
+/// the same per-project store across processes. Shared by the other per-project data-dir stores
+/// (e.g. the saved-permission store) so every per-workspace artifact keys projects identically.
+pub(crate) fn workspace_key(cwd: &Path) -> String {
     let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let basename = canonical
         .file_name()

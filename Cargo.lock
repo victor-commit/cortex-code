@@ -1011,6 +1011,7 @@ name = "permissions"
 version = "0.1.0"
 dependencies = [
  "events",
+ "serde",
  "serde_json",
  "settings",
  "toml",

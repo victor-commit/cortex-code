@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use events::{EventBus, PermissionDecision};
+use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 use crate::ruleset::Ruleset;
@@ -30,7 +31,11 @@ impl PermissionRequest {
 }
 
 /// The concrete answer a [`Responder`] gives to an `ask`: run the action or block it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Serializes to the stable lowercase tokens `allow`/`deny` so a [`SavedDecision`](crate::SavedDecision)
+/// round-trips through the durable on-disk saved-decisions store unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Decision {
     /// Allow the action to proceed.
     Allow,
