@@ -10,8 +10,9 @@
 //! - VAL-LLM-012: `--model google/gemini-2.5-flash` exits 0 and the JSON model field equals it.
 //! - VAL-LLM-013: a second, distinct valid model is honored, proving selection is not hard-wired
 //!   to the default.
-//! - VAL-LLM-014: a non-existent model (`gemini-3.5-flash`) fails fast with an actionable error
-//!   naming it, a non-zero exit, no panic/backtrace, and no assistant answer on stdout.
+//! - VAL-LLM-014: a malformed model id (`not-a-real-model`, not a `provider/model` pair) fails
+//!   fast with an actionable error naming it, a non-zero exit, no panic/backtrace, and no
+//!   assistant answer on stdout.
 //! - VAL-LLM-029: a config-file `model` is honored with no flag, and `--model` overrides it; both
 //!   turns exit 0.
 //!
@@ -36,8 +37,10 @@ const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 /// module note.)
 const SECOND_MODEL: &str = "anthropic/claude-sonnet-4";
 
-/// A non-existent / malformed model id (no `provider/` prefix): not a valid OpenRouter model.
-const INVALID_MODEL: &str = "gemini-3.5-flash";
+/// A malformed model id (not a `provider/model` pair): rejected locally before any credential or
+/// socket. Per the validation contract's VAL-LLM-014 example. (A bare `gemini-3.5-flash` is no
+/// longer a safe "invalid" example: `google/gemini-3.5-flash` is now served by OpenRouter.)
+const INVALID_MODEL: &str = "not-a-real-model";
 
 /// Generous per-turn upper bound: a healthy single turn finishes well within this; exceeding it is
 /// treated as a hang and fails the test loudly instead of blocking.

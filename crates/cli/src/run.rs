@@ -419,10 +419,10 @@ mod tests {
             model_overrides(None).is_empty(),
             "no flag yields no override so lower layers decide"
         );
-        let with = model_overrides(Some("anthropic/claude-3.5-sonnet"));
+        let with = model_overrides(Some("anthropic/claude-sonnet-4"));
         assert_eq!(
             with.get("model").map(String::as_str),
-            Some("anthropic/claude-3.5-sonnet")
+            Some("anthropic/claude-sonnet-4")
         );
     }
 
@@ -454,27 +454,27 @@ mod tests {
             &base,
             &proj,
             &[],
-            Some("anthropic/claude-3.5-sonnet"),
+            Some("anthropic/claude-sonnet-4"),
         ))
         .expect("resolve model");
-        assert_eq!(second.model_id, "anthropic/claude-3.5-sonnet");
+        assert_eq!(second.model_id, "anthropic/claude-sonnet-4");
     }
 
     // VAL-LLM-029 (config half): a config-file `model` is honored when no `--model` flag is given.
     #[test]
     fn config_file_model_is_honored_without_a_flag() {
         let (base, proj) = scratch_tree("config");
-        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+        write_config_model(&proj, "anthropic/claude-sonnet-4");
         let resolved =
             resolve_run_model(config_inputs(&base, &proj, &[], None)).expect("resolve model");
-        assert_eq!(resolved.model_id, "anthropic/claude-3.5-sonnet");
+        assert_eq!(resolved.model_id, "anthropic/claude-sonnet-4");
     }
 
     // VAL-LLM-029 (override half): an explicit `--model` overrides a config-file `model`.
     #[test]
     fn flag_overrides_a_config_file_model() {
         let (base, proj) = scratch_tree("override");
-        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+        write_config_model(&proj, "anthropic/claude-sonnet-4");
         let resolved = resolve_run_model(config_inputs(
             &base,
             &proj,
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn env_overrides_config_and_flag_overrides_env() {
         let (base, proj) = scratch_tree("precedence");
-        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+        write_config_model(&proj, "anthropic/claude-sonnet-4");
 
         let env_only = resolve_run_model(config_inputs(
             &base,
@@ -524,9 +524,9 @@ mod tests {
     fn unknown_model_is_preserved_verbatim() {
         let (base, proj) = scratch_tree("unknown");
         let resolved =
-            resolve_run_model(config_inputs(&base, &proj, &[], Some("gemini-3.5-flash")))
+            resolve_run_model(config_inputs(&base, &proj, &[], Some("not-a-real-model")))
                 .expect("resolve model");
-        assert_eq!(resolved.model_id, "gemini-3.5-flash");
+        assert_eq!(resolved.model_id, "not-a-real-model");
         assert!(
             resolved.info.is_none(),
             "an unknown id carries no catalogue metadata"
@@ -537,9 +537,9 @@ mod tests {
     // an actionable error that names the offending model and reads as unknown/invalid.
     #[test]
     fn bare_model_id_is_rejected_with_an_actionable_error() {
-        let err = validate_model_id("gemini-3.5-flash").expect_err("a bare id must be rejected");
+        let err = validate_model_id("not-a-real-model").expect_err("a bare id must be rejected");
         assert!(
-            err.contains("gemini-3.5-flash"),
+            err.contains("not-a-real-model"),
             "the error must name the offending model, got: {err}"
         );
         assert!(
