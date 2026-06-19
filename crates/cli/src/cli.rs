@@ -62,6 +62,27 @@ pub enum Command {
     /// before any socket is opened, emitting a `net-disabled` diagnostic on stderr with a non-zero
     /// exit. With the switch unset they proceed to open a real outbound connection.
     Net(NetArgs),
+
+    /// Undo the most recent agent turn's file changes (shadow-git checkpoint restore).
+    ///
+    /// Reverts every file the last mutating turn changed as one unit, restoring each to its exact
+    /// pre-turn bytes (and removing files the turn created). The shadow checkpoint store lives
+    /// outside the project tree and never touches the project's own `.git`. A file changed outside
+    /// the agent since the snapshot is detected as a conflict and left untouched rather than
+    /// clobbered. Repeat to walk further back through history.
+    Undo(CheckpointArgs),
+
+    /// Re-apply the most recently undone turn's file changes (shadow-git checkpoint restore).
+    ///
+    /// Restores the post-turn state an `undo` reverted. A fresh edit made after an undo advances
+    /// history along a new branch, so the abandoned change is no longer redoable.
+    Redo(CheckpointArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

@@ -160,6 +160,10 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         }
     };
 
+    // Capture the pre-mutation snapshot BEFORE the edited bytes hit the disk, so `/undo` can restore
+    // the file's prior content exactly.
+    ctx.checkpoint_before(&resolved);
+
     if let Err(err) = fs::write(&resolved, applied.content.as_bytes()) {
         return ToolOutput::error(format!("edit: could not write {path}: {err}"));
     }

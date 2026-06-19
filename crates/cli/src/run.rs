@@ -213,6 +213,20 @@ pub fn run(args: RunArgs) -> Exit {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let todo_store: std::sync::Arc<dyn tools::TodoStore> =
         std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path));
+
+    // Open the shadow checkpoint store for the working directory and begin recording this turn, so a
+    // pre-mutation snapshot is captured BEFORE any write/edit/apply_patch changes the tree (powering
+    // `cortex undo`/`cortex redo`). Checkpointing degrades silently when the store cannot be opened
+    // (git unavailable or no resolvable data location) — it never blocks the run.
+    let checkpoint_recorder = match crate::checkpoint::open_store(&cwd) {
+        Ok(Some(store)) => Some(std::sync::Arc::new(store.begin_turn(session_id.clone()))),
+        Ok(None) => None,
+        Err(err) => {
+            eprintln!("cortex run: checkpoint store unavailable: {err}");
+            None
+        }
+    };
+
     let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
     // by the same engine the tools already call via `ctx.permits`.
@@ -220,9 +234,17 @@ pub fn run(args: RunArgs) -> Exit {
         Some(engine) => dispatcher.with_permissions(engine),
         None => dispatcher,
     };
+    // Attach the checkpoint recorder so each mutating tool snapshots a file's prior state before it
+    // changes it.
+    let dispatcher = match &checkpoint_recorder {
+        Some(recorder) => dispatcher.with_checkpoints(std::sync::Arc::new(
+            crate::checkpoint::RecorderBridge::new(recorder.clone()),
+        )),
+        None => dispatcher,
+    };
     let tool_names = dispatcher.tool_names();
 
-    runtime.block_on(async {
+    let exit = runtime.block_on(async {
         let exit = match format {
             OutputFormat::Text => stream_text(&provider, &session_id, &db, turn, &dispatcher).await,
             OutputFormat::Jsonl => {
@@ -255,7 +277,15 @@ pub fn run(args: RunArgs) -> Exit {
         // outlives the run.
         dispatcher.background_jobs().shutdown().await;
         exit
-    })
+    });
+
+    // Finalize the turn's checkpoint AFTER the turn completes: record each touched file's
+    // post-mutation state and append the snapshot to the durable journal. A read-only turn (no
+    // mutations recorded) appends nothing, so purely read/grep/glob turns create no checkpoint churn.
+    if let Some(recorder) = &checkpoint_recorder {
+        crate::checkpoint::finalize_turn(recorder);
+    }
+    exit
 }
 
 /// Resolve the agent persona for the run from the optional `--agent` flag, defaulting to the

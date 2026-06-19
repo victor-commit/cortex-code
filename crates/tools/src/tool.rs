@@ -71,6 +71,23 @@ pub trait MutationHooks: Send + Sync {
     }
 }
 
+/// The pre-mutation checkpoint seam the mutating file tools call before they touch the working
+/// tree.
+///
+/// Before `write`/`edit`/`apply_patch` (and downstream formatters) change a file, they call
+/// [`record_pre_image`](CheckpointRecorder::record_pre_image) with the file they are about to
+/// mutate so a snapshot of its prior state is captured for `/undo`. The implementation is owned
+/// outside `tools` (the `checkpoints` crate, bridged by the CLI) so the tool layer stays decoupled
+/// from the shadow-git store. With no recorder attached the call is a no-op, so a tool runs
+/// unchanged until a surface wires checkpointing in. Capture is best-effort by contract: it never
+/// blocks or fails a mutation (a capture failure degrades undo for the turn, surfaced when the turn
+/// is finalized by the owner).
+pub trait CheckpointRecorder: Send + Sync {
+    /// Capture the pre-mutation image of `path` (a resolved absolute path) the first time the
+    /// current turn touches it. MUST be called before the mutation's bytes hit the disk.
+    fn record_pre_image(&self, path: &Path);
+}
+
 /// The per-session persistence seam the `todo` tool writes through.
 ///
 /// The `todo` tool maintains a structured task list scoped to the active session. Persistence is
@@ -165,6 +182,7 @@ pub struct ToolContext {
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
     hooks: Option<Arc<dyn MutationHooks>>,
+    checkpoints: Option<Arc<dyn CheckpointRecorder>>,
     session_id: Option<String>,
     todos: Option<Arc<dyn TodoStore>>,
     background_jobs: Arc<BackgroundJobs>,
@@ -180,6 +198,7 @@ impl ToolContext {
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             hooks: None,
+            checkpoints: None,
             session_id: None,
             todos: None,
             background_jobs: Arc::new(BackgroundJobs::new()),
@@ -236,6 +255,15 @@ impl ToolContext {
         self
     }
 
+    /// Attach the pre-mutation checkpoint recorder the mutating tools call before they touch a file
+    /// (builder style). With none attached [`checkpoint_before`](ToolContext::checkpoint_before) is
+    /// a no-op, so a tool runs unchanged until a surface wires checkpointing in.
+    #[must_use]
+    pub fn with_checkpoints(mut self, recorder: Arc<dyn CheckpointRecorder>) -> Self {
+        self.checkpoints = Some(recorder);
+        self
+    }
+
     /// Run the post-write formatter over `path` (a resolved absolute path) through the attached
     /// hooks. A no-op when no hooks are attached, so the file is left exactly as written.
     pub fn format_after_write(&self, path: &Path) {
@@ -252,6 +280,16 @@ impl ToolContext {
             .as_ref()
             .map(|hooks| hooks.diagnostics(path))
             .unwrap_or_default()
+    }
+
+    /// Record the pre-mutation snapshot of `path` (a resolved absolute path) through the attached
+    /// checkpoint recorder, so the prior state is recoverable via `/undo`. MUST be called before the
+    /// mutation writes. A no-op when no recorder is attached, and best-effort otherwise (it never
+    /// blocks or fails the mutation).
+    pub fn checkpoint_before(&self, path: &Path) {
+        if let Some(recorder) = &self.checkpoints {
+            recorder.record_pre_image(path);
+        }
     }
 
     /// The session working directory relative paths resolve against.

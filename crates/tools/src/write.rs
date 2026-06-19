@@ -119,6 +119,10 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         }
     }
 
+    // Capture the pre-mutation snapshot BEFORE the bytes hit the disk, so `/undo` can restore the
+    // file's prior state (or remove it when this write creates it).
+    ctx.checkpoint_before(&resolved);
+
     if let Err(err) = fs::write(&resolved, content.as_bytes()) {
         return ToolOutput::error(format!("write: could not write {path}: {err}"));
     }
@@ -164,10 +168,10 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    use crate::tool::{Diagnostic, MutationHooks};
+    use crate::tool::{CheckpointRecorder, Diagnostic, MutationHooks};
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -405,6 +409,91 @@ mod tests {
             text_of(&output)
         );
         assert!(!sub.join("new.txt").exists());
+    }
+
+    /// A checkpoint recorder spy that captures, for each call, the on-disk content of the path at
+    /// the moment `record_pre_image` runs. Because it reads the file when called, the captured value
+    /// proves whether the snapshot was taken BEFORE the tool's write (it sees the prior bytes) or
+    /// after (it would see the new bytes).
+    struct SnapshotSpy {
+        captured: Mutex<Vec<(PathBuf, Option<String>)>>,
+    }
+
+    impl SnapshotSpy {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                captured: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn snapshots(&self) -> Vec<(PathBuf, Option<String>)> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    impl CheckpointRecorder for SnapshotSpy {
+        fn record_pre_image(&self, path: &Path) {
+            let content = fs::read_to_string(path).ok();
+            self.captured
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), content));
+        }
+    }
+
+    #[test]
+    fn checkpoint_captures_pre_image_before_overwrite() {
+        let dir = temp_dir("ckpt-overwrite");
+        fs::write(dir.join("x.txt"), "BEFORE").unwrap();
+        let spy = SnapshotSpy::new();
+        let ctx = ctx_for(&dir).with_checkpoints(spy.clone());
+        ctx.record_read(dir.join("x.txt"));
+
+        let output = run(&write_args("x.txt", "AFTER"), &ctx);
+        assert!(!output.is_error, "{}", text_of(&output));
+
+        let snapshots = spy.snapshots();
+        assert_eq!(snapshots.len(), 1, "exactly one pre-mutation snapshot");
+        assert_eq!(
+            snapshots[0].1.as_deref(),
+            Some("BEFORE"),
+            "the snapshot captured the content immediately before the write"
+        );
+        assert_eq!(fs::read_to_string(dir.join("x.txt")).unwrap(), "AFTER");
+    }
+
+    #[test]
+    fn checkpoint_captures_absent_pre_image_for_a_created_file() {
+        let dir = temp_dir("ckpt-create");
+        let spy = SnapshotSpy::new();
+        let ctx = ctx_for(&dir).with_checkpoints(spy.clone());
+
+        let output = run(&write_args("new.txt", "hello"), &ctx);
+        assert!(!output.is_error, "{}", text_of(&output));
+
+        let snapshots = spy.snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].1, None,
+            "a created file has no prior content to snapshot"
+        );
+    }
+
+    #[test]
+    fn a_refused_write_records_no_checkpoint() {
+        let dir = temp_dir("ckpt-refused");
+        fs::write(dir.join("cfg.txt"), "ORIGINAL").unwrap();
+        let spy = SnapshotSpy::new();
+        // No prior read this session, so the overwrite is refused before any mutation.
+        let ctx = ctx_for(&dir).with_checkpoints(spy.clone());
+
+        let output = run(&write_args("cfg.txt", "NEW"), &ctx);
+        assert!(output.is_error);
+        assert!(
+            spy.snapshots().is_empty(),
+            "a refused write must not record a checkpoint"
+        );
+        assert_eq!(fs::read_to_string(dir.join("cfg.txt")).unwrap(), "ORIGINAL");
     }
 
     /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.

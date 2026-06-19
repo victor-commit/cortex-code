@@ -88,6 +88,17 @@ enum Action {
     },
 }
 
+/// The resolved paths an action will mutate, used to snapshot them before the commit phase. A
+/// rename touches both its source (removed) and destination (written).
+fn action_paths(action: &Action) -> Vec<&PathBuf> {
+    match action {
+        Action::Create { path, .. } | Action::Overwrite { path, .. } | Action::Delete { path } => {
+            vec![path]
+        }
+        Action::Rename { from, to, .. } => vec![from, to],
+    }
+}
+
 /// A one-line, model-readable summary of a committed action.
 fn action_summary(action: &Action, display: &str) -> String {
     match action {
@@ -149,6 +160,15 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
             return ToolOutput::error(format!(
                 "apply_patch: permission denied for {display} (no changes made)"
             ));
+        }
+    }
+
+    // Capture pre-mutation snapshots of every affected path BEFORE any byte is written, so `/undo`
+    // reverts the whole multi-file patch as one unit (removing files it created and restoring files
+    // it deleted exactly). A rename snapshots both its source and destination.
+    for (action, _) in &plan {
+        for path in action_paths(action) {
+            ctx.checkpoint_before(path);
         }
     }
 
@@ -331,8 +351,10 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use crate::tool::CheckpointRecorder;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -680,5 +702,59 @@ mod tests {
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_readonly(readonly);
         fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// A checkpoint recorder spy capturing each path's on-disk content at call time, proving the
+    /// snapshot is taken before the patch mutates the file.
+    struct SnapshotSpy {
+        captured: Mutex<Vec<(PathBuf, Option<String>)>>,
+    }
+
+    impl CheckpointRecorder for SnapshotSpy {
+        fn record_pre_image(&self, path: &Path) {
+            let content = fs::read_to_string(path).ok();
+            self.captured
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), content));
+        }
+    }
+
+    #[test]
+    fn checkpoint_snapshots_every_patched_path_before_mutation() {
+        let dir = temp_dir("ckpt-multi");
+        let spy = Arc::new(SnapshotSpy {
+            captured: Mutex::new(Vec::new()),
+        });
+        fs::write(dir.join("update.txt"), "old line\n").unwrap();
+        fs::write(dir.join("delete.txt"), "remove me\n").unwrap();
+        let ctx = ToolContext::new(dir.clone()).with_checkpoints(spy.clone());
+        ctx.record_read(dir.join("update.txt"));
+        ctx.record_read(dir.join("delete.txt"));
+
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Add File: add.txt\n+created\n*** Update File: update.txt\n@@\n-old line\n+new line\n*** Delete File: delete.txt\n*** End Patch",
+        );
+        assert!(!output.is_error, "{}", output.model_content());
+
+        let captured = spy.captured.lock().unwrap();
+        let snapshot_of = |name: &str| -> Option<Option<String>> {
+            captured
+                .iter()
+                .find(|(path, _)| path.ends_with(name))
+                .map(|(_, content)| content.clone())
+        };
+        // Every affected path was snapshotted, each with its pre-mutation content (the created file
+        // absent, the updated/deleted files with their prior bytes).
+        assert_eq!(snapshot_of("add.txt"), Some(None));
+        assert_eq!(
+            snapshot_of("update.txt"),
+            Some(Some("old line\n".to_owned()))
+        );
+        assert_eq!(
+            snapshot_of("delete.txt"),
+            Some(Some("remove me\n".to_owned()))
+        );
     }
 }

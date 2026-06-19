@@ -18,6 +18,8 @@ pub enum Surface {
     Session,
     /// The outbound-network diagnostics path (`cortex net`).
     Net,
+    /// The checkpoint undo/redo path (`cortex undo`/`cortex redo`).
+    Checkpoint,
 }
 
 impl Surface {
@@ -31,6 +33,7 @@ impl Surface {
             Surface::Config => "config",
             Surface::Session => "session",
             Surface::Net => "net",
+            Surface::Checkpoint => "checkpoint",
         }
     }
 }

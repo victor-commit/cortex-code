@@ -59,6 +59,15 @@ impl RegistryDispatcher {
         self
     }
 
+    /// Attach the pre-mutation checkpoint recorder so each mutating tool snapshots a file's prior
+    /// state before it changes it (builder style). Without this the headless context records no
+    /// checkpoints, so `/undo` has nothing to restore.
+    #[must_use]
+    pub fn with_checkpoints(mut self, recorder: Arc<dyn tools::CheckpointRecorder>) -> Self {
+        self.context = self.context.with_checkpoints(recorder);
+        self
+    }
+
     /// The names of the tools materialized for this turn, in advertised order. Surfaced in machine
     /// output so a consumer can observe the per-turn (model-aware) tool list.
     #[must_use]

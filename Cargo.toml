@@ -11,6 +11,7 @@ members = [
     "crates/providers",
     "crates/engine",
     "crates/permissions",
+    "crates/checkpoints",
     "crates/tools",
     "crates/cli",
 ]
@@ -38,6 +39,7 @@ llm = { path = "crates/llm" }
 providers = { path = "crates/providers" }
 engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
+checkpoints = { path = "crates/checkpoints" }
 tools = { path = "crates/tools" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }

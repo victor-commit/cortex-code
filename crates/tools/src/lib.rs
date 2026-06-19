@@ -33,5 +33,7 @@ pub use output::{BoundedOutput, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, OutputLimi
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
 pub use todo::TodoTool;
-pub use tool::{Diagnostic, MutationHooks, TodoStore, Tool, ToolContext, ToolOutput};
+pub use tool::{
+    CheckpointRecorder, Diagnostic, MutationHooks, TodoStore, Tool, ToolContext, ToolOutput,
+};
 pub use write::WriteTool;
