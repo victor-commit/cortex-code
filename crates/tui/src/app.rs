@@ -5355,6 +5355,117 @@ mod tests {
         assert_eq!(last_notice(&a), "Nothing to undo.");
     }
 
+    /// Open a fresh store handle at the same shadow directory `root/shadow` a previous handle used,
+    /// modelling a SEPARATE surface (a headless `cortex run`, or a relaunched TUI) resolving the one
+    /// shared, workspace-keyed location through `ShadowStore::open_default`.
+    fn reopen_store(root: &std::path::Path, workspace: &std::path::Path) -> ShadowStore {
+        ShadowStore::open(workspace, &root.join("shadow")).expect("reopen shared store")
+    }
+
+    // VAL-CROSS-018: a file edited by a separate (headless) surface is reverted by the TUI's `/undo`
+    // on the SHARED shadow store. The headless turn records its checkpoint through one store handle;
+    // the TUI then opens the same shadow location at launch and undo restores the pre-edit bytes
+    // byte-for-byte (the in-process analogue of the black-box headless-run -> TUI-`/undo` flow).
+    #[test]
+    fn a_separate_surface_edit_is_reverted_by_tui_undo_on_the_shared_store() {
+        let (workspace, store_a) = checkpoint_scratch("cross-headless");
+        let root = store_a
+            .git_dir()
+            .parent()
+            .expect("shadow parent")
+            .to_owned();
+        let h0 = b"H0 pre-edit bytes\nsecond line\n";
+        std::fs::write(workspace.join("target.txt"), h0).unwrap();
+
+        // The "headless turn" records its checkpoint, edits the file to H1, then exits (handle drop).
+        record_change(
+            &store_a,
+            &workspace,
+            "target.txt",
+            "H1 edited by the headless turn\n",
+        );
+        let h1 = std::fs::read(workspace.join("target.txt")).unwrap();
+        assert_ne!(h1.as_slice(), h0, "the headless turn changed the bytes");
+        drop(store_a);
+
+        // The TUI launches on the same project: it opens the shared store from disk and `/undo`
+        // reverts the headless edit byte-for-byte.
+        let mut a = app();
+        a.set_checkpoint_store(Some(reopen_store(&root, &workspace)));
+        a.undo();
+
+        assert_eq!(
+            std::fs::read(workspace.join("target.txt"))
+                .unwrap()
+                .as_slice(),
+            h0,
+            "the TUI restores the exact pre-headless-edit bytes from the shared store"
+        );
+        assert!(
+            last_notice(&a).contains("reverted"),
+            "the TUI reports the revert"
+        );
+    }
+
+    // VAL-CROSS-020: a checkpoint created in one TUI session survives exiting and relaunching the
+    // TUI and remains undoable. The first session's turn records the checkpoint (durable journal on
+    // disk); a fresh App opening the same shadow location (a relaunch) reverts the pre-change bytes
+    // byte-for-byte through `/undo`.
+    #[test]
+    fn a_tui_checkpoint_survives_restart_and_remains_undoable() {
+        let (workspace, store_1) = checkpoint_scratch("cross-restart");
+        let root = store_1
+            .git_dir()
+            .parent()
+            .expect("shadow parent")
+            .to_owned();
+        let h0 = b"H0 before the TUI change\n";
+        std::fs::write(workspace.join("note.txt"), h0).unwrap();
+
+        // TUI session #1: a turn edits note.txt and finalizes its checkpoint, then the session ends.
+        {
+            let mut session1 = app();
+            session1.set_checkpoint_store(Some(reopen_store(&root, &workspace)));
+            record_change(&store_1, &workspace, "note.txt", "H1 changed in the TUI\n");
+            assert_eq!(
+                std::fs::read(workspace.join("note.txt")).unwrap(),
+                b"H1 changed in the TUI\n",
+                "the TUI turn changed the bytes"
+            );
+            // Session #1 (its App and the recording handle) is dropped here: the TUI "exits".
+            drop(session1);
+            drop(store_1);
+        }
+
+        // TUI session #2 (relaunch): a brand-new App opens the same shared store from disk and the
+        // checkpoint is still undoable, restoring the pre-change bytes byte-for-byte.
+        let mut session2 = app();
+        session2.set_checkpoint_store(Some(reopen_store(&root, &workspace)));
+        assert!(
+            session2
+                .checkpoints
+                .as_ref()
+                .expect("store")
+                .history()
+                .expect("history")
+                .can_undo(),
+            "the checkpoint persisted across the TUI restart"
+        );
+        session2.undo();
+
+        assert_eq!(
+            std::fs::read(workspace.join("note.txt"))
+                .unwrap()
+                .as_slice(),
+            h0,
+            "after restart the TUI restores the exact pre-change bytes"
+        );
+        assert!(
+            last_notice(&session2).contains("reverted"),
+            "the relaunched TUI reports the revert"
+        );
+    }
+
     /// A unique temp database path bound to an app for session-persistence tests, so a real DB is
     /// exercised without touching any shared location.
     fn session_store_path(tag: &str) -> PathBuf {
