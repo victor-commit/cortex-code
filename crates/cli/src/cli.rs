@@ -12,6 +12,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     propagate_version = true
 )]
 pub struct Cli {
+    /// Increase logging verbosity (repeatable: `-v` for debug, `-vv` for trace).
+    ///
+    /// Routes debug/event logs (including event-bus delivery) to stderr; `RUST_LOG` is also
+    /// honored. Never affects stdout, so machine output stays clean.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

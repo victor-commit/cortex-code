@@ -1,15 +1,19 @@
 mod cli;
 mod config;
+mod observe;
 mod run;
 mod tui;
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use clap::error::ErrorKind;
 use errors::Exit;
+use events::{Event, EventBus, LifecyclePhase, Surface};
 
 use crate::cli::{Cli, Command, ServeArgs};
+use crate::observe::{CounterSink, LogSink};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -17,11 +21,41 @@ fn main() -> ExitCode {
         Err(err) => return report_parse_error(err),
     };
 
+    let debug_events = observe::init(cli.verbose);
+    let bus = EventBus::new();
+    let counter = Arc::new(CounterSink::new());
+    if debug_events {
+        bus.subscribe(Arc::new(LogSink));
+        bus.subscribe(counter.clone());
+    }
+
+    // A startup/lifecycle event flows through the typed bus on every invocation. With debug
+    // observability enabled it reaches both attached sinks (each exactly once); with no sinks
+    // attached the publish is a clean no-op.
+    bus.publish(&Event::lifecycle(
+        LifecyclePhase::Startup,
+        surface_of(&cli.command),
+        env!("CARGO_PKG_VERSION"),
+    ));
+    if debug_events {
+        counter.report();
+    }
+
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
         Some(Command::Run(args)) => run::run(args).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
+    }
+}
+
+/// Map the dispatched subcommand to the surface that emits the startup lifecycle event.
+fn surface_of(command: &Option<Command>) -> Surface {
+    match command {
+        None | Some(Command::Tui(_)) => Surface::Tui,
+        Some(Command::Run(_)) => Surface::Run,
+        Some(Command::Config(_)) => Surface::Config,
+        Some(Command::Serve(_)) => Surface::Serve,
     }
 }
 
