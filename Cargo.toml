@@ -11,6 +11,7 @@ members = [
     "crates/providers",
     "crates/engine",
     "crates/permissions",
+    "crates/tools",
     "crates/cli",
 ]
 
@@ -27,6 +28,7 @@ unsafe_code = "forbid"
 all = "warn"
 
 [workspace.dependencies]
+protocol = { path = "crates/protocol" }
 errors = { path = "crates/errors" }
 events = { path = "crates/events" }
 redaction = { path = "crates/redaction" }
@@ -36,6 +38,7 @@ llm = { path = "crates/llm" }
 providers = { path = "crates/providers" }
 engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
+tools = { path = "crates/tools" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }

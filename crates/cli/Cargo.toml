@@ -13,6 +13,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+protocol = { workspace = true }
 errors = { workspace = true }
 events = { workspace = true }
 redaction = { workspace = true }
@@ -21,7 +22,9 @@ db = { workspace = true }
 llm = { workspace = true }
 providers = { workspace = true }
 engine = { workspace = true }
+tools = { workspace = true }
 clap = { workspace = true }
+futures-util = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 serde = { workspace = true }

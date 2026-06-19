@@ -23,10 +23,11 @@
 
 use errors::Diagnostic;
 use futures_util::StreamExt;
-use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall};
+use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
 
 use crate::compaction::{self, CompactionPolicy};
 use crate::event::{RunError, RunOutcome, RunnerEvent, accumulate_usage};
+use crate::tools::ToolDispatcher;
 
 /// The built-in step budget for a single turn (architecture §4, `MAX_STEPS`).
 pub const DEFAULT_MAX_STEPS: usize = 25;
@@ -142,10 +143,52 @@ impl SessionRunner {
     /// `sink` observes the turn's normalized event vocabulary in order. The returned outcome
     /// carries the assembled assistant message (role [`Role::Assistant`]), the summed usage, the
     /// finish reason, the number of round-trips taken, and any normalized error.
-    pub async fn run<F>(&self, provider: &dyn Provider, turn: Turn, mut sink: F) -> RunOutcome
+    ///
+    /// No tools are advertised on this path: a tool call the model nonetheless makes is answered
+    /// with a "tool execution unavailable" result so the turn still progresses. Use
+    /// [`run_with_tools`](SessionRunner::run_with_tools) to materialize and execute a real tool set.
+    pub async fn run<F>(&self, provider: &dyn Provider, turn: Turn, sink: F) -> RunOutcome
     where
         F: FnMut(RunnerEvent),
     {
+        self.run_inner(provider, turn, None, sink).await
+    }
+
+    /// Run a turn with a real tool registry materialized into the request and executed via
+    /// `dispatcher`.
+    ///
+    /// The dispatcher's [`definitions`](ToolDispatcher::definitions) are advertised to the model;
+    /// each tool call the model makes is surfaced as a [`RunnerEvent::ToolCall`], executed via
+    /// [`dispatch`](ToolDispatcher::dispatch), surfaced as a [`RunnerEvent::ToolResult`], and
+    /// re-injected as a tool-result message so the turn is carried forward (architecture §4).
+    pub async fn run_with_tools<F>(
+        &self,
+        provider: &dyn Provider,
+        turn: Turn,
+        dispatcher: &dyn ToolDispatcher,
+        sink: F,
+    ) -> RunOutcome
+    where
+        F: FnMut(RunnerEvent),
+    {
+        self.run_inner(provider, turn, Some(dispatcher), sink).await
+    }
+
+    async fn run_inner<F>(
+        &self,
+        provider: &dyn Provider,
+        turn: Turn,
+        dispatcher: Option<&dyn ToolDispatcher>,
+        mut sink: F,
+    ) -> RunOutcome
+    where
+        F: FnMut(RunnerEvent),
+    {
+        // Materialize the advertised tool catalogue once for the turn (empty when no dispatcher).
+        let tool_defs: Vec<ToolDef> = dispatcher
+            .map(ToolDispatcher::definitions)
+            .unwrap_or_default();
+
         let mut messages = Vec::new();
         if !turn.system.is_empty() {
             messages.push(Message::system(turn.system.clone()));
@@ -189,7 +232,7 @@ impl SessionRunner {
                 compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
             }
 
-            let request = self.build_request(&turn, &messages);
+            let request = self.build_request(&turn, &messages, &tool_defs);
             let mut stream = match provider.stream(request).await {
                 Ok(stream) => stream,
                 Err(err) => {
@@ -274,11 +317,32 @@ impl SessionRunner {
                 break round.reason;
             }
 
-            // M1 has no tool registry: fail each requested tool with a clear result and carry the
-            // turn forward so the model can recover (continuation). M2 replaces this with real
-            // tool execution.
-            for call in &round.tool_calls {
-                messages.push(Message::tool_result(call.id.clone(), TOOL_UNAVAILABLE));
+            // Execute the requested tool calls and carry the turn forward (continuation). With a
+            // dispatcher each call is surfaced, executed, and re-injected; without one (the no-tool
+            // path) each call is answered with a clear "unavailable" result so the model recovers.
+            match dispatcher {
+                Some(dispatcher) => {
+                    for call in &round.tool_calls {
+                        sink(RunnerEvent::ToolCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        });
+                        let result = dispatcher.dispatch(call).await;
+                        sink(RunnerEvent::ToolResult {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            parts: result.parts,
+                            is_error: result.is_error,
+                        });
+                        messages.push(Message::tool_result(call.id.clone(), result.content));
+                    }
+                }
+                None => {
+                    for call in &round.tool_calls {
+                        messages.push(Message::tool_result(call.id.clone(), TOOL_UNAVAILABLE));
+                    }
+                }
             }
         };
 
@@ -299,10 +363,12 @@ impl SessionRunner {
         }
     }
 
-    /// Build the provider request for one round-trip from the current working messages.
-    fn build_request(&self, turn: &Turn, messages: &[Message]) -> LlmRequest {
+    /// Build the provider request for one round-trip from the current working messages and the
+    /// advertised tool catalogue.
+    fn build_request(&self, turn: &Turn, messages: &[Message], tools: &[ToolDef]) -> LlmRequest {
         let mut request = LlmRequest::new(&turn.model_id);
         request.messages = messages.to_vec();
+        request.tools = tools.to_vec();
         request.max_tokens = turn.max_tokens;
         request.temperature = turn.temperature;
         request

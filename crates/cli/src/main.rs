@@ -4,6 +4,7 @@ mod net;
 mod observe;
 mod run;
 mod session;
+mod tooling;
 mod tui;
 
 use std::process::ExitCode;

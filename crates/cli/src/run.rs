@@ -36,15 +36,17 @@ use std::time::Duration;
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent,
-    SessionRunner, SystemContext, Turn, project_history,
+    SessionRunner, SystemContext, ToolDispatcher, Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
+use protocol::ToolResultPart;
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::Serialize;
 use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
+use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
 const OUTBOUND_OPERATION: &str = "LLM turn";
@@ -173,15 +175,31 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    runtime.block_on(execute_turn(
-        &provider,
-        &model_id,
-        agent.name(),
-        &session_id,
-        &db,
-        turn,
-        format,
-    ))
+    // Materialize the built-in tool set, scoped to the process working directory, so the model can
+    // read/inspect the filesystem for real this turn (architecture §3.4 / §4).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let dispatcher = RegistryDispatcher::builtin(cwd);
+
+    runtime.block_on(async {
+        match format {
+            OutputFormat::Text => stream_text(&provider, &session_id, &db, turn, &dispatcher).await,
+            OutputFormat::Jsonl => {
+                stream_jsonl(&provider, agent.name(), &session_id, &db, turn, &dispatcher).await
+            }
+            OutputFormat::Json => {
+                emit_json(
+                    &provider,
+                    &model_id,
+                    agent.name(),
+                    &session_id,
+                    &db,
+                    turn,
+                    &dispatcher,
+                )
+                .await
+            }
+        }
+    })
 }
 
 /// Resolve the agent persona for the run from the optional `--agent` flag, defaulting to the
@@ -350,13 +368,20 @@ enum TurnResult {
 /// On interrupt the in-flight runner future is dropped, which drops the upstream SSE stream and
 /// aborts the connection (no orphaned children, no panic), and [`TurnResult::Interrupted`] is
 /// returned so the caller can finalize output cleanly (VAL-RUN-005 / VAL-RUN-013).
-async fn run_turn<F>(provider: &dyn llm::Provider, turn: Turn, sink: F) -> TurnResult
+async fn run_turn<F>(
+    provider: &dyn llm::Provider,
+    turn: Turn,
+    dispatcher: &dyn ToolDispatcher,
+    sink: F,
+) -> TurnResult
 where
     F: FnMut(RunnerEvent),
 {
     let runner = SessionRunner::default();
     tokio::select! {
-        outcome = runner.run(provider, turn, sink) => TurnResult::Completed(outcome),
+        outcome = runner.run_with_tools(provider, turn, dispatcher, sink) => {
+            TurnResult::Completed(outcome)
+        }
         () = interrupt() => TurnResult::Interrupted,
     }
 }
@@ -392,25 +417,6 @@ fn parse_idle_timeout_ms(raw: Option<&str>) -> Option<Duration> {
     (ms >= 1).then(|| Duration::from_millis(ms))
 }
 
-/// Drive the turn through the runner, render its events in the requested format, and persist the
-/// assistant reply so the session can be resumed later. The session id is surfaced in the machine
-/// formats so it can be fed back via `--session`.
-async fn execute_turn(
-    provider: &dyn llm::Provider,
-    model_id: &str,
-    agent: &str,
-    session_id: &str,
-    db: &Database,
-    turn: Turn,
-    format: OutputFormat,
-) -> Exit {
-    match format {
-        OutputFormat::Text => stream_text(provider, session_id, db, turn).await,
-        OutputFormat::Jsonl => stream_jsonl(provider, agent, session_id, db, turn).await,
-        OutputFormat::Json => emit_json(provider, model_id, agent, session_id, db, turn).await,
-    }
-}
-
 /// Stream the assistant answer as clean prose, flushing each fragment as it arrives so output is
 /// incremental rather than a single end-of-turn dump. The session id is intentionally omitted from
 /// the human prose (it is available via the machine formats).
@@ -419,12 +425,13 @@ async fn stream_text(
     session_id: &str,
     db: &Database,
     turn: Turn,
+    dispatcher: &dyn ToolDispatcher,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let mut wrote_any = false;
 
-    let result = run_turn(provider, turn, |event| {
+    let result = run_turn(provider, turn, dispatcher, |event| {
         if let RunnerEvent::TextDelta { text } = event {
             if !text.is_empty() {
                 let _ = handle.write_all(text.as_bytes());
@@ -480,6 +487,7 @@ async fn stream_jsonl(
     session_id: &str,
     db: &Database,
     turn: Turn,
+    dispatcher: &dyn ToolDispatcher,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -490,7 +498,7 @@ async fn stream_jsonl(
         let _ = handle.flush();
     }
 
-    let result = run_turn(provider, turn, |event| {
+    let result = run_turn(provider, turn, dispatcher, |event| {
         if let Ok(line) = render_event_line(&event) {
             let _ = handle.write_all(line.as_bytes());
             let _ = handle.write_all(b"\n");
@@ -541,6 +549,21 @@ struct RunDocument<'a> {
     /// so a consumer sees a running, monotonically non-decreasing session total.
     #[serde(skip_serializing_if = "Option::is_none")]
     session_usage: Option<UsageTotals>,
+    /// The structured results of every tool the model invoked this turn, in call order. Carries
+    /// text parts and any media attachments (images/PDFs) so a machine consumer sees the tool
+    /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_results: Vec<ToolResultDoc>,
+}
+
+/// One tool result in the completed-turn document: the call id, the tool name, the structured
+/// result parts, and whether the tool reported an error.
+#[derive(Serialize)]
+struct ToolResultDoc {
+    id: String,
+    name: String,
+    parts: Vec<ToolResultPart>,
+    is_error: bool,
 }
 
 /// The leading `--jsonl` event announcing the agent persona and session id, before the runner's
@@ -564,8 +587,30 @@ async fn emit_json(
     session_id: &str,
     db: &Database,
     turn: Turn,
+    dispatcher: &dyn ToolDispatcher,
 ) -> Exit {
-    let outcome = match run_turn(provider, turn, |_| {}).await {
+    // Collect each tool result as it streams so the completed document can carry the structured
+    // tool output (text plus any media attachments) alongside the assistant answer.
+    let mut tool_results: Vec<ToolResultDoc> = Vec::new();
+    let result = run_turn(provider, turn, dispatcher, |event| {
+        if let RunnerEvent::ToolResult {
+            id,
+            name,
+            parts,
+            is_error,
+        } = event
+        {
+            tool_results.push(ToolResultDoc {
+                id,
+                name,
+                parts,
+                is_error,
+            });
+        }
+    })
+    .await;
+
+    let outcome = match result {
         TurnResult::Completed(outcome) => outcome,
         TurnResult::Interrupted => {
             // The single JSON document is written only after the turn completes, so an interrupt
@@ -589,7 +634,14 @@ async fn emit_json(
         None
     };
 
-    let line = match render_json_document(model_id, agent, session_id, &outcome, session_usage) {
+    let line = match render_json_document(
+        model_id,
+        agent,
+        session_id,
+        &outcome,
+        session_usage,
+        tool_results,
+    ) {
         Ok(line) => line,
         Err(err) => {
             eprintln!("cortex run: failed to serialize output: {err}");
@@ -619,6 +671,7 @@ fn build_run_document<'a>(
     session_id: &'a str,
     outcome: &'a RunOutcome,
     session_usage: Option<UsageTotals>,
+    tool_results: Vec<ToolResultDoc>,
 ) -> RunDocument<'a> {
     RunDocument {
         role: "assistant",
@@ -630,6 +683,7 @@ fn build_run_document<'a>(
         steps: outcome.steps,
         usage: outcome.usage.as_ref(),
         session_usage,
+        tool_results,
     }
 }
 
@@ -641,6 +695,7 @@ fn render_json_document(
     session_id: &str,
     outcome: &RunOutcome,
     session_usage: Option<UsageTotals>,
+    tool_results: Vec<ToolResultDoc>,
 ) -> Result<String, serde_json::Error> {
     let mut line = serde_json::to_string(&build_run_document(
         model_id,
@@ -648,6 +703,7 @@ fn render_json_document(
         session_id,
         outcome,
         session_usage,
+        tool_results,
     ))?;
     line.push('\n');
     Ok(line)
@@ -1404,6 +1460,7 @@ mod tests {
             "ses_x",
             &sample_outcome(),
             None,
+            Vec::new(),
         )
         .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
@@ -1428,6 +1485,7 @@ mod tests {
             "ses_abc123",
             &sample_outcome(),
             None,
+            Vec::new(),
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -1475,6 +1533,7 @@ mod tests {
             "ses_cumulative",
             &sample_outcome(),
             Some(session_usage),
+            Vec::new(),
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -1511,8 +1570,8 @@ mod tests {
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered =
-            render_json_document("m", "general", "ses_y", &outcome, None).expect("render");
+        let rendered = render_json_document("m", "general", "ses_y", &outcome, None, Vec::new())
+            .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");

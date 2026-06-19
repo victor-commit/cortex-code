@@ -27,6 +27,28 @@ pub enum RunnerEvent {
         /// The reasoning fragment.
         text: String,
     },
+    /// A tool the model requested, surfaced before it is executed so a machine consumer can observe
+    /// the call (name and assembled JSON arguments) that produced the following [`RunnerEvent::ToolResult`].
+    ToolCall {
+        /// The provider-assigned call id, echoed by the matching result.
+        id: String,
+        /// The tool/function name invoked.
+        name: String,
+        /// The complete arguments as a JSON-encoded string.
+        arguments: String,
+    },
+    /// The result of executing a [`RunnerEvent::ToolCall`], carried as structured parts (text plus
+    /// any media attachments) so non-text payloads never leak raw bytes into the text channel.
+    ToolResult {
+        /// The [`RunnerEvent::ToolCall`] id this result answers.
+        id: String,
+        /// The tool/function name that produced this result.
+        name: String,
+        /// The structured result parts (text and/or attachment references).
+        parts: Vec<protocol::ToolResultPart>,
+        /// Whether the tool reported an error (the turn still continues).
+        is_error: bool,
+    },
     /// The per-turn token usage, summed across every provider round-trip in the turn.
     Usage(Usage),
     /// A normalized error surfaced during the turn (setup failure or mid-stream provider error).

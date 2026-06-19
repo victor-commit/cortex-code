@@ -31,6 +31,7 @@ mod event;
 mod family;
 mod history;
 mod runner;
+mod tools;
 
 pub use agent::{Agent, UnknownAgent};
 pub use compaction::{
@@ -43,3 +44,4 @@ pub use event::{RunError, RunOutcome, RunnerEvent};
 pub use family::ModelFamily;
 pub use history::{HistoryMessage, project_history, project_role};
 pub use runner::{DEFAULT_MAX_STEPS, SessionRunner, Turn};
+pub use tools::{ToolDispatchResult, ToolDispatcher};
