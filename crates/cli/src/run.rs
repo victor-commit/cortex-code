@@ -18,7 +18,7 @@
 
 use std::io::{self, IsTerminal, Read, Write};
 
-use engine::{EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn};
+use engine::{EnvironmentBlock, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn};
 use errors::Exit;
 use redaction::guard_outbound;
 use serde::Serialize;
@@ -140,7 +140,7 @@ async fn stream_jsonl(provider: &dyn llm::Provider, turn: Turn) -> Exit {
 
     let outcome = SessionRunner::default()
         .run(provider, turn, |event| {
-            if let Ok(line) = serde_json::to_string(&event) {
+            if let Ok(line) = render_event_line(&event) {
                 let _ = handle.write_all(line.as_bytes());
                 let _ = handle.write_all(b"\n");
                 let _ = handle.flush();
@@ -177,21 +177,13 @@ async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> 
         return err.exit();
     }
 
-    let document = RunDocument {
-        role: "assistant",
-        content: outcome.answer(),
-        model: model_id,
-        finish_reason: &outcome.finish_reason,
-        usage: outcome.usage.as_ref(),
-    };
-    let mut line = match serde_json::to_string(&document) {
+    let line = match render_json_document(model_id, &outcome) {
         Ok(line) => line,
         Err(err) => {
             eprintln!("cortex run: failed to serialize output: {err}");
             return Exit::Failure;
         }
     };
-    line.push('\n');
 
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -203,6 +195,32 @@ async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> 
         return Exit::Failure;
     }
     Exit::Success
+}
+
+/// Build the single JSON document describing a completed turn (role, content, model, finish
+/// reason, and the optional usage object).
+fn build_run_document<'a>(model_id: &'a str, outcome: &'a RunOutcome) -> RunDocument<'a> {
+    RunDocument {
+        role: "assistant",
+        content: outcome.answer(),
+        model: model_id,
+        finish_reason: &outcome.finish_reason,
+        usage: outcome.usage.as_ref(),
+    }
+}
+
+/// Serialize the completed-turn document to a single line terminated by exactly one newline, so
+/// stdout carries one strict JSON value with no leading or trailing non-JSON bytes.
+fn render_json_document(model_id: &str, outcome: &RunOutcome) -> Result<String, serde_json::Error> {
+    let mut line = serde_json::to_string(&build_run_document(model_id, outcome))?;
+    line.push('\n');
+    Ok(line)
+}
+
+/// Render one normalized runner event as a single JSONL line (without the trailing newline). Every
+/// event serializes to an object carrying a stable `type` discriminator.
+fn render_event_line(event: &RunnerEvent) -> Result<String, serde_json::Error> {
+    serde_json::to_string(event)
 }
 
 /// Collapse the two output-selection inputs into a single effective format. The `--jsonl`
@@ -356,6 +374,133 @@ mod tests {
         assert_eq!(
             effective_format(false, OutputFormat::Text),
             OutputFormat::Text
+        );
+    }
+
+    /// A completed-turn outcome with assistant text and integer usage, mirroring a real turn.
+    fn sample_outcome() -> RunOutcome {
+        RunOutcome {
+            message: llm::Message::assistant("Hello! How can I help you today?"),
+            usage: Some(llm::Usage {
+                input_tokens: 9,
+                output_tokens: 8,
+                total_tokens: 17,
+                cost: Some(0.0000056),
+            }),
+            finish_reason: llm::FinishReason::Stop,
+            steps: 1,
+            error: None,
+        }
+    }
+
+    // VAL-LLM-005: `--format json` emits exactly one strict JSON value with a single trailing
+    // newline and no other framing bytes, so a strict parser accepts it whole.
+    #[test]
+    fn json_document_is_a_single_strict_value_with_one_trailing_newline() {
+        let rendered =
+            render_json_document("google/gemini-2.5-flash", &sample_outcome()).expect("render");
+        assert!(rendered.ends_with('\n'), "document must end with a newline");
+        assert_eq!(
+            rendered.matches('\n').count(),
+            1,
+            "the document is a single line (no interleaved newlines)"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&rendered).expect("strict JSON parse of the whole document");
+        assert!(value.is_object(), "the document is a single JSON object");
+    }
+
+    // VAL-LLM-004 / VAL-LLM-006: the document carries the assistant role, the model text as
+    // content, the model id, and a usage object with integer input/output token counts.
+    #[test]
+    fn json_document_carries_assistant_role_content_model_and_integer_usage() {
+        let rendered =
+            render_json_document("google/gemini-2.5-flash", &sample_outcome()).expect("render");
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "Hello! How can I help you today?");
+        assert_eq!(value["model"], "google/gemini-2.5-flash");
+        assert_eq!(value["finish_reason"], "stop");
+        assert_eq!(value["usage"]["input_tokens"].as_u64(), Some(9));
+        assert_eq!(value["usage"]["output_tokens"].as_u64(), Some(8));
+        assert!(
+            value["usage"]["input_tokens"].is_u64() && value["usage"]["output_tokens"].is_u64(),
+            "token counts must be integers"
+        );
+    }
+
+    // The usage object is optional: when the provider reports none, it is omitted yet the document
+    // stays a valid, strictly-parseable JSON object with the assistant role and content.
+    #[test]
+    fn json_document_omits_usage_when_absent_but_stays_valid() {
+        let mut outcome = sample_outcome();
+        outcome.usage = None;
+        let rendered = render_json_document("m", &outcome).expect("render");
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "Hello! How can I help you today?");
+        assert!(value.get("usage").is_none(), "absent usage is omitted");
+    }
+
+    // VAL-LLM-007 / VAL-LLM-008: the JSONL stream renders >=2 independently-parseable lines, each
+    // carrying a stable `type` discriminator; at least one text event and a terminal usage/done are
+    // present, the stream ends with the terminal event, and concatenated text deltas reconstruct
+    // the answer.
+    #[test]
+    fn jsonl_lines_are_typed_terminate_with_done_and_reconstruct_the_answer() {
+        let events = [
+            RunnerEvent::TextDelta {
+                text: "Hello".to_owned(),
+            },
+            RunnerEvent::TextDelta {
+                text: ", world!".to_owned(),
+            },
+            RunnerEvent::Usage(llm::Usage {
+                input_tokens: 5,
+                output_tokens: 3,
+                total_tokens: 8,
+                cost: None,
+            }),
+            RunnerEvent::Done {
+                reason: llm::FinishReason::Stop,
+            },
+        ];
+        let lines: Vec<String> = events
+            .iter()
+            .map(|event| render_event_line(event).expect("render"))
+            .collect();
+        assert!(lines.len() >= 2, "incremental events span >=2 lines");
+
+        let mut reconstructed = String::new();
+        let mut types = Vec::new();
+        for line in &lines {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("each line parses as JSON");
+            let kind = value["type"]
+                .as_str()
+                .expect("every event carries a `type` discriminator")
+                .to_owned();
+            if kind == "text_delta" {
+                reconstructed.push_str(value["text"].as_str().expect("text fragment"));
+            }
+            types.push(kind);
+        }
+        assert_eq!(
+            reconstructed, "Hello, world!",
+            "concatenated text deltas reconstruct the answer"
+        );
+        assert!(
+            types.iter().any(|t| t == "text_delta"),
+            "at least one text event present"
+        );
+        assert!(
+            types.iter().any(|t| t == "usage" || t == "done"),
+            "a usage/final/done event present"
+        );
+        assert_eq!(
+            types.last().map(String::as_str),
+            Some("done"),
+            "the stream ends with the terminal event"
         );
     }
 }
