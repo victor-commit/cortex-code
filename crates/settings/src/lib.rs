@@ -16,10 +16,25 @@
 //! Layering is a per-key deep-merge (see [`merge`]): adding a higher layer only overrides the
 //! keys it sets and never erases unrelated keys from lower layers. A present-but-empty or
 //! whitespace/comment-only config file parses to an empty table and is a clean no-op.
+//!
+//! After merging, two passes run over the effective table:
+//!
+//! - **Substitution** (see [`subst`]): a string value that is exactly `{env:NAME}` or
+//!   `{file:PATH}` is replaced by the environment variable's value, or the file's trimmed
+//!   contents. An unset variable or unreadable file is a hard error with a clear diagnostic;
+//!   the literal token is never silently leaked into an effective value.
+//! - **Type validation** (see [`schema`]): the small set of typed keys (`model` is a string,
+//!   `max_steps` an integer) is checked, so a wrongly-typed value yields a clear diagnostic
+//!   naming the offending key and its expected type rather than mis-driving the tool.
+//!
+//! Both passes surface failures as [`ConfigError`], which the config-reporting path renders to
+//! stderr with a non-zero exit.
 
 mod discovery;
 mod env;
 mod merge;
+mod schema;
+mod subst;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,6 +48,9 @@ pub use env::env_var_name;
 
 /// The built-in default model used when no layer overrides it.
 pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
+
+/// The built-in default step budget for a single agent turn (architecture §4, `MAX_STEPS`).
+pub const DEFAULT_MAX_STEPS: i64 = 25;
 
 /// The resolved inputs for one configuration load.
 ///
@@ -88,6 +106,15 @@ impl EffectiveConfig {
             .unwrap_or(DEFAULT_MODEL)
     }
 
+    /// The effective step budget, falling back to [`DEFAULT_MAX_STEPS`] if it was cleared.
+    #[must_use]
+    pub fn max_steps(&self) -> i64 {
+        self.table
+            .get("max_steps")
+            .and_then(Value::as_integer)
+            .unwrap_or(DEFAULT_MAX_STEPS)
+    }
+
     /// The raw merged value for an arbitrary top-level key, if present.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -119,20 +146,30 @@ impl EffectiveConfig {
 /// Returns [`ConfigError`] if a present config file cannot be read or contains invalid TOML.
 /// Absent files are skipped, and an empty/whitespace/comment-only file is a clean no-op.
 pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
+    let ConfigInputs {
+        home,
+        xdg_config_home,
+        cwd,
+        env,
+        cli_overrides,
+    } = inputs;
+
     let mut table = default_table();
 
-    for path in discovery::config_files(
-        inputs.home.as_deref(),
-        inputs.xdg_config_home.as_deref(),
-        &inputs.cwd,
-    ) {
+    for path in discovery::config_files(home.as_deref(), xdg_config_home.as_deref(), &cwd) {
         if let Some(layer) = read_layer(&path)? {
             merge::merge_into(&mut table, layer);
         }
     }
 
-    apply_string_overrides(&mut table, env::overrides_from(inputs.env));
-    apply_string_overrides(&mut table, inputs.cli_overrides);
+    // Resolve `{env:}` tokens against the full environment, so capture it before the env layer
+    // (which only maps `CORTEX_*`) consumes the list.
+    let environment: BTreeMap<String, String> = env.iter().cloned().collect();
+    apply_string_overrides(&mut table, env::overrides_from(env));
+    apply_string_overrides(&mut table, cli_overrides);
+
+    subst::substitute(&mut table, &environment, &cwd)?;
+    schema::validate(&mut table)?;
 
     Ok(EffectiveConfig { table })
 }
@@ -141,6 +178,7 @@ pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
 fn default_table() -> Table {
     let mut table = Table::new();
     table.insert("model".to_owned(), Value::String(DEFAULT_MODEL.to_owned()));
+    table.insert("max_steps".to_owned(), Value::Integer(DEFAULT_MAX_STEPS));
     table
 }
 
@@ -164,13 +202,27 @@ fn read_layer(path: &Path) -> Result<Option<Table>, ConfigError> {
     Ok(Some(table))
 }
 
-/// A failure loading or parsing a configuration file.
+/// A failure loading, parsing, substituting into, or validating a configuration.
 #[derive(Debug)]
 pub enum ConfigError {
     /// A present config file could not be read.
     Read { path: PathBuf, source: io::Error },
     /// A config file contained invalid TOML.
     Parse { path: PathBuf, message: String },
+    /// An `{env:NAME}` substitution referenced an environment variable that is not set.
+    EnvMissing { key: String, var: String },
+    /// A `{file:PATH}` substitution referenced a file that could not be read.
+    FileRead {
+        key: String,
+        path: String,
+        source: io::Error,
+    },
+    /// A typed config key held a value of the wrong type.
+    TypeMismatch {
+        key: String,
+        expected: &'static str,
+        found: String,
+    },
 }
 
 impl ConfigError {
@@ -188,13 +240,53 @@ impl ConfigError {
         }
     }
 
-    /// The config file that caused the failure.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        match self {
-            Self::Read { path, .. } | Self::Parse { path, .. } => path,
+    fn env_missing(key: &str, var: &str) -> Self {
+        Self::EnvMissing {
+            key: key.to_owned(),
+            var: var.to_owned(),
         }
     }
+
+    fn file_read(key: &str, path: &str, source: io::Error) -> Self {
+        Self::FileRead {
+            key: key.to_owned(),
+            path: path.to_owned(),
+            source,
+        }
+    }
+
+    /// Build a type-mismatch error, describing the found value from a TOML value.
+    fn type_mismatch(key: &str, expected: &'static str, found: &Value) -> Self {
+        Self::type_mismatch_found(key, expected, describe(found.type_str()))
+    }
+
+    /// Build a type-mismatch error with an explicit description of what was found.
+    fn type_mismatch_found(key: &str, expected: &'static str, found: impl Into<String>) -> Self {
+        Self::TypeMismatch {
+            key: key.to_owned(),
+            expected,
+            found: found.into(),
+        }
+    }
+
+    /// The config file that caused a read/parse failure, if this error is file-bound.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Read { path, .. } | Self::Parse { path, .. } => Some(path),
+            Self::EnvMissing { .. } | Self::FileRead { .. } | Self::TypeMismatch { .. } => None,
+        }
+    }
+}
+
+/// Render a TOML type name (`type_str`) as an article-prefixed noun (e.g. `integer` ->
+/// `an integer`) for human-readable diagnostics.
+fn describe(type_str: &str) -> String {
+    let article = match type_str.chars().next() {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    };
+    format!("{article} {type_str}")
 }
 
 impl fmt::Display for ConfigError {
@@ -214,6 +306,28 @@ impl fmt::Display for ConfigError {
                     path.display()
                 )
             }
+            Self::EnvMissing { key, var } => {
+                write!(
+                    formatter,
+                    "config key `{key}`: environment variable `{var}` is not set"
+                )
+            }
+            Self::FileRead { key, path, source } => {
+                write!(
+                    formatter,
+                    "config key `{key}`: cannot read substitution file `{path}`: {source}"
+                )
+            }
+            Self::TypeMismatch {
+                key,
+                expected,
+                found,
+            } => {
+                write!(
+                    formatter,
+                    "config key `{key}`: expected {expected}, but found {found}"
+                )
+            }
         }
     }
 }
@@ -221,8 +335,8 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Read { source, .. } => Some(source),
-            Self::Parse { .. } => None,
+            Self::Read { source, .. } | Self::FileRead { source, .. } => Some(source),
+            Self::Parse { .. } | Self::EnvMissing { .. } | Self::TypeMismatch { .. } => None,
         }
     }
 }

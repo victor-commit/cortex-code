@@ -99,6 +99,21 @@ impl Scratch {
             .expect("model is a string")
             .to_owned()
     }
+
+    /// Run `cortex config --format json` from the nested CWD with a cleared environment plus the
+    /// given `CORTEX_*`/substitution vars, returning the raw process output (no exit assertion,
+    /// so error paths can be inspected).
+    fn raw(&self, env: &[(&str, &str)]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+        command.env_clear();
+        command.env("HOME", self.home());
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command.current_dir(self.nested());
+        command.args(["config", "--format", "json"]);
+        run(command)
+    }
 }
 
 impl Drop for Scratch {
@@ -314,5 +329,131 @@ fn invalid_toml_yields_a_clear_config_error() {
     assert!(
         !stderr.contains("panicked"),
         "no panic backtrace allowed, got: {stderr}"
+    );
+}
+
+// VAL-SKEL-025: `{env:SOME_VAR}` resolves to the variable's value in the reported config.
+#[test]
+fn env_substitution_resolves_in_report() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"secret = "{env:SOME_VAR}""#);
+    let report = scratch.report(&[("SOME_VAR", "resolved")], None);
+    assert_eq!(report["secret"], "resolved");
+}
+
+// VAL-SKEL-026: an unset `{env:MISSING_VAR}` yields a clear stderr diagnostic naming the
+// variable, exits non-zero (Config = 5), keeps stdout empty, and never leaks the literal token.
+#[test]
+fn missing_env_var_yields_a_clear_diagnostic() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"secret = "{env:MISSING_VAR}""#);
+    let output = scratch.raw(&[]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "missing env exits Config code"
+    );
+    assert!(output.stdout.is_empty(), "stdout must stay empty on error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MISSING_VAR"),
+        "stderr must name the variable, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("{env:MISSING_VAR}"),
+        "the literal token must never leak, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "no panic backtrace, got: {stderr}"
+    );
+}
+
+// VAL-SKEL-027: `{file:./secret.txt}` resolves to the file's trimmed contents.
+#[test]
+fn file_substitution_resolves_in_report() {
+    let scratch = Scratch::new();
+    scratch.write("home/proj/sub/secret.txt", "  file-secret\n\n");
+    scratch.write_project(r#"secret = "{file:./secret.txt}""#);
+    let report = scratch.report(&[], None);
+    assert_eq!(report["secret"], "file-secret");
+}
+
+// VAL-SKEL-028: a missing `{file:./nope.txt}` yields a clear stderr diagnostic naming the path,
+// exits non-zero, keeps stdout empty, and never leaks the literal token.
+#[test]
+fn missing_file_yields_a_clear_diagnostic() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"secret = "{file:./nope.txt}""#);
+    let output = scratch.raw(&[]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "missing file exits Config code"
+    );
+    assert!(output.stdout.is_empty(), "stdout must stay empty on error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("./nope.txt"),
+        "stderr must name the missing path, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("{file:./nope.txt}"),
+        "the literal token must never leak, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "no panic backtrace, got: {stderr}"
+    );
+}
+
+// VAL-SKEL-030: a wrongly-typed value yields a clear stderr diagnostic naming the offending key
+// and the expected type, exits non-zero, and keeps stdout empty.
+#[test]
+fn type_mismatch_yields_a_clear_diagnostic() {
+    let scratch = Scratch::new();
+    scratch.write_project("model = 123");
+    let output = scratch.raw(&[]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "type mismatch exits Config code"
+    );
+    assert!(output.stdout.is_empty(), "stdout must stay empty on error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("model"),
+        "stderr must name the offending key, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("string"),
+        "stderr must name the expected type, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "no panic backtrace, got: {stderr}"
+    );
+}
+
+// VAL-SKEL-029: invalid TOML names the file and locates the error (line/column).
+#[test]
+fn invalid_toml_diagnostic_locates_the_error() {
+    let scratch = Scratch::new();
+    scratch.write_project("model = \n");
+    let output = scratch.raw(&[]);
+
+    assert_eq!(output.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cortex.toml"),
+        "names the file, got: {stderr}"
+    );
+    assert!(stderr.contains("line"), "locates the error, got: {stderr}");
+    assert!(
+        !stderr.contains("panicked"),
+        "no panic backtrace, got: {stderr}"
     );
 }
