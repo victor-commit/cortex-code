@@ -23,6 +23,7 @@ llm = { workspace = true }
 providers = { workspace = true }
 engine = { workspace = true }
 tools = { workspace = true }
+permissions = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
 ratatui = { workspace = true }

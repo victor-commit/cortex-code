@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod net;
 mod observe;
+mod permission;
 mod run;
 mod session;
 mod todo_store;

@@ -46,6 +46,7 @@ use serde::Serialize;
 use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
+use crate::permission;
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
@@ -81,6 +82,21 @@ pub fn run(args: RunArgs) -> Exit {
             return Exit::Failure;
         }
     };
+
+    // Build the permission engine from the repeatable allow/deny rule flags before any network or
+    // store work, so a malformed rule fails fast with a usage error and zero side effects. With no
+    // flags supplied the engine is absent and tools run ungated (the default headless behavior the
+    // other M2 tool features rely on); with rules present every gated tool action is resolved
+    // through this engine via `ctx.permits`, so a denied write/edit/apply_patch/bash/read produces
+    // no effect.
+    let permission_engine =
+        match permission::engine_from_flags(&args.permission_allow, &args.permission_deny) {
+            Ok(engine) => engine,
+            Err(message) => {
+                eprintln!("cortex run: {message}");
+                return Exit::Usage;
+            }
+        };
 
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
     // so a refusal never touches the network even when a key is present.
@@ -183,6 +199,12 @@ pub fn run(args: RunArgs) -> Exit {
     let todo_store: std::sync::Arc<dyn tools::TodoStore> =
         std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path));
     let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
+    // Attach the permission engine (when rules were supplied) so the headless tool context is gated
+    // by the same engine the tools already call via `ctx.permits`.
+    let dispatcher = match permission_engine {
+        Some(engine) => dispatcher.with_permissions(engine),
+        None => dispatcher,
+    };
     let tool_names = dispatcher.tool_names();
 
     runtime.block_on(async {

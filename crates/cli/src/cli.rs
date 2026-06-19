@@ -215,6 +215,27 @@ pub struct RunArgs {
     /// Resume the most recent session.
     #[arg(long, short = 'c', conflicts_with = "session")]
     pub r#continue: bool,
+
+    /// Allow a gated tool action, in `TOOL:GLOB` form (repeatable).
+    ///
+    /// `TOOL` selects the gated tool (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`bash`) or
+    /// `*` for any tool; `GLOB` is matched against the action's subject (a file path for the file
+    /// tools, or the parsed command for `bash`). Example: `--permission-allow '*:**'` allows
+    /// everything, `--permission-allow 'write:src/**'` allows writes under `src/`. Allow rules are
+    /// applied before deny rules, so an explicit `--permission-deny` always overrides a broader
+    /// allow. With no permission flags the run is ungated (every tool action proceeds).
+    #[arg(long = "permission-allow", value_name = "TOOL:GLOB")]
+    pub permission_allow: Vec<String>,
+
+    /// Deny a gated tool action, in `TOOL:GLOB` form (repeatable).
+    ///
+    /// A denied action produces no side effect: a denied `write`/`edit`/`apply_patch` leaves the
+    /// target file byte-for-byte unchanged, a denied `read`/`glob`/`grep` returns no protected
+    /// content, and a denied `bash` command does not run at all. A compound `bash` command with any
+    /// denied segment is refused atomically before anything runs. Example:
+    /// `--permission-deny 'bash:rm *'`, `--permission-deny 'write:secrets/**'`.
+    #[arg(long = "permission-deny", value_name = "TOOL:GLOB")]
+    pub permission_deny: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -364,6 +385,44 @@ mod tests {
                 assert_eq!(args.format, OutputFormat::Json);
                 assert!(!args.jsonl);
                 assert!(!args.r#continue);
+            }
+            other => panic!("expected run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_parses_repeatable_permission_flags() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "run",
+            "hi",
+            "--permission-allow",
+            "*:**",
+            "--permission-deny",
+            "bash:rm *",
+            "--permission-deny",
+            "write:secrets/**",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Run(args)) => {
+                assert_eq!(args.permission_allow, vec!["*:**".to_owned()]);
+                assert_eq!(
+                    args.permission_deny,
+                    vec!["bash:rm *".to_owned(), "write:secrets/**".to_owned()]
+                );
+            }
+            other => panic!("expected run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_permission_flags_default_empty() {
+        let cli = Cli::try_parse_from(["cortex", "run", "hi"]).expect("parse");
+        match cli.command {
+            Some(Command::Run(args)) => {
+                assert!(args.permission_allow.is_empty());
+                assert!(args.permission_deny.is_empty());
             }
             other => panic!("expected run, got {other:?}"),
         }

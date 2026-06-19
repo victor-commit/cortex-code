@@ -198,6 +198,7 @@ dependencies = [
  "events",
  "futures-util",
  "llm",
+ "permissions",
  "protocol",
  "providers",
  "ratatui",
