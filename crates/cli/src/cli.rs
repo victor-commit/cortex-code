@@ -52,6 +52,47 @@ pub enum Command {
     /// `CORTEX_DB_PATH` to point at an explicit database file, or `CORTEX_DATA_DIR` to relocate
     /// the data directory; the default location is left untouched when an override is used.
     Session(SessionArgs),
+
+    /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
+    ///
+    /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
+    /// before any socket is opened, emitting a `net-disabled` diagnostic on stderr with a non-zero
+    /// exit. With the switch unset they proceed to open a real outbound connection.
+    Net(NetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NetArgs {
+    #[command(subcommand)]
+    pub command: NetCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NetCommand {
+    /// Probe outbound connectivity to a host:port (honors the `CORTEX_NO_NET` kill-switch).
+    ///
+    /// The kill-switch is consulted before any address resolution or socket is created, so under
+    /// `CORTEX_NO_NET=1` this refuses with a `net-disabled` diagnostic and makes zero connection
+    /// attempts. Otherwise it opens a real TCP connection and reports the outcome.
+    Check(NetCheckArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NetCheckArgs {
+    /// Host to probe (defaults to the reference provider's API host, `openrouter.ai`).
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
+
+    /// Port to probe (defaults to 443).
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+
+    /// Connection timeout in seconds.
+    #[arg(long = "timeout", default_value_t = 5, value_name = "SECS")]
+    pub timeout_secs: u64,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 /// Output format shared by the `session` subcommands.

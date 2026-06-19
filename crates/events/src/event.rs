@@ -16,6 +16,8 @@ pub enum Surface {
     Config,
     /// The persisted-session management path (`cortex session`).
     Session,
+    /// The outbound-network diagnostics path (`cortex net`).
+    Net,
 }
 
 impl Surface {
@@ -28,6 +30,7 @@ impl Surface {
             Surface::Serve => "serve",
             Surface::Config => "config",
             Surface::Session => "session",
+            Surface::Net => "net",
         }
     }
 }

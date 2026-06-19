@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod net;
 mod observe;
 mod run;
 mod session;
@@ -47,6 +48,7 @@ fn main() -> ExitCode {
         Some(Command::Run(args)) => run::run(args).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
+        Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
@@ -58,6 +60,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Run(_)) => Surface::Run,
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
+        Some(Command::Net(_)) => Surface::Net,
         Some(Command::Serve(_)) => Surface::Serve,
     }
 }

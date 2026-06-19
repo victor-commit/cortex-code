@@ -25,6 +25,7 @@ all = "warn"
 [workspace.dependencies]
 errors = { path = "crates/errors" }
 events = { path = "crates/events" }
+redaction = { path = "crates/redaction" }
 settings = { path = "crates/settings" }
 db = { path = "crates/db" }
 rusqlite = { version = "0.32", features = ["bundled"] }

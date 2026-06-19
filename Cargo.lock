@@ -166,6 +166,7 @@ dependencies = [
  "errors",
  "events",
  "ratatui",
+ "redaction",
  "rusqlite",
  "serde",
  "serde_json",
@@ -615,6 +616,9 @@ dependencies = [
 [[package]]
 name = "redaction"
 version = "0.1.0"
+dependencies = [
+ "errors",
+]
 
 [[package]]
 name = "redox_syscall"

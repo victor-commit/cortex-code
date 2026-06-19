@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 errors = { workspace = true }
 events = { workspace = true }
+redaction = { workspace = true }
 settings = { workspace = true }
 db = { workspace = true }
 clap = { workspace = true }
