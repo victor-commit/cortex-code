@@ -23,6 +23,7 @@ unsafe_code = "forbid"
 all = "warn"
 
 [workspace.dependencies]
+cortex-errors = { path = "crates/cortex-errors" }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"

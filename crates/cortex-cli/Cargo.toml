@@ -13,6 +13,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+cortex-errors = { workspace = true }
 clap = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }

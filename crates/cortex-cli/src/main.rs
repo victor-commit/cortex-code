@@ -4,24 +4,45 @@ mod tui;
 use std::process::ExitCode;
 
 use clap::Parser;
+use clap::error::ErrorKind;
+use cortex_errors::Exit;
 
 use crate::cli::{Cli, Command, RunArgs, ServeArgs};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => return report_parse_error(err),
+    };
+
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
-        Some(Command::Run(args)) => run_placeholder(args),
-        Some(Command::Serve(args)) => serve_placeholder(args),
+        Some(Command::Run(args)) => run_placeholder(args).into(),
+        Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
 
-fn run_placeholder(_args: RunArgs) -> ExitCode {
-    eprintln!("cortex run: the headless run path is not wired up in this build yet.");
-    ExitCode::FAILURE
+/// Render a clap parse outcome to the correct stream and map it to a stable exit code.
+///
+/// `--help`/`--version` are not failures: clap renders them to stdout and we exit
+/// [`Exit::Success`]. Every genuine argument/usage error is written to stderr only, leaving
+/// stdout byte-empty for machine consumers, and exits with the stable [`Exit::Usage`] code.
+fn report_parse_error(err: clap::Error) -> ExitCode {
+    let _ = err.print();
+    match err.kind() {
+        ErrorKind::DisplayHelp
+        | ErrorKind::DisplayVersion
+        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => Exit::Success.into(),
+        _ => Exit::Usage.into(),
+    }
 }
 
-fn serve_placeholder(_args: ServeArgs) -> ExitCode {
+fn run_placeholder(_args: RunArgs) -> Exit {
+    eprintln!("cortex run: the headless run path is not wired up in this build yet.");
+    Exit::Failure
+}
+
+fn serve_placeholder(_args: ServeArgs) -> Exit {
     eprintln!("cortex serve: the local server is not wired up in this build yet.");
-    ExitCode::FAILURE
+    Exit::Failure
 }
