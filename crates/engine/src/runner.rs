@@ -21,6 +21,7 @@
 //! turn completes in a single round-trip. The continuation path is exercised by the offline tests
 //! and is the seam M2 fills with a real tool registry.
 
+use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall};
 
@@ -141,7 +142,19 @@ impl SessionRunner {
 
         let finish_reason = loop {
             if steps >= self.max_steps {
-                break llm::FinishReason::Other("step_limit_exceeded".to_owned());
+                // The turn still needs another round-trip but the step budget is spent. Surface an
+                // explicit, non-crashing step-limit signal (an Error event + a normalized error)
+                // and terminate rather than looping past MAX_STEPS (architecture §4 / VAL-RUN-003).
+                let diagnostic = Diagnostic::step_limit_exceeded(format!(
+                    "reached the maximum of {} steps in a single turn without completing",
+                    self.max_steps
+                ));
+                sink(RunnerEvent::Error {
+                    message: diagnostic.to_string(),
+                    kind: diagnostic.kind().to_owned(),
+                });
+                error = Some(RunError::new(diagnostic));
+                break llm::FinishReason::Error;
             }
             steps += 1;
 
@@ -215,6 +228,7 @@ impl SessionRunner {
         }
         sink(RunnerEvent::Done {
             reason: finish_reason.clone(),
+            steps,
         });
 
         RunOutcome {

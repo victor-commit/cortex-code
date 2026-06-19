@@ -30,5 +30,6 @@ pub use credentials::{
 };
 pub use openrouter::{
     OPENROUTER_DEFAULT_MODEL, OPENROUTER_ID, openrouter_base_url, openrouter_provider,
-    openrouter_provider_with_base_url, resolve_openrouter, resolve_openrouter_with,
+    openrouter_provider_with_base_url, openrouter_provider_with_options, resolve_openrouter,
+    resolve_openrouter_with, resolve_openrouter_with_options,
 };

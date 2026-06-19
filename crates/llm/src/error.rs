@@ -78,6 +78,10 @@ impl LlmError {
             Diagnostic::TransportUnavailable(detail) => LlmError::Transport(detail),
             Diagnostic::Upstream(detail) => LlmError::Upstream(detail),
             Diagnostic::CassetteMissing(name) => LlmError::CassetteMissing(name),
+            // A step-limit is an engine-level (runner) condition that never originates in the
+            // transport/provider layer; it is folded into the upstream class only so this lift
+            // stays total. In practice the runner constructs the step-limit diagnostic directly.
+            Diagnostic::StepLimitExceeded(detail) => LlmError::Upstream(detail),
         }
     }
 
@@ -85,6 +89,23 @@ impl LlmError {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         self.to_diagnostic().kind()
+    }
+
+    /// The underlying human-readable detail (without the class prefix [`Display`] adds).
+    ///
+    /// This is what an adapter forwards as an [`crate::LlmEvent::Error`]'s `message` — a bare,
+    /// secret-scrubbed detail — so a downstream consumer that re-wraps it by `kind` renders the
+    /// class prefix exactly once rather than doubling it.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            LlmError::NetDisabled(s)
+            | LlmError::NoCredential(s)
+            | LlmError::Transport(s)
+            | LlmError::Upstream(s)
+            | LlmError::Decode(s)
+            | LlmError::CassetteMissing(s) => s,
+        }
     }
 
     /// Normalize this error into a canonical [`errors::Diagnostic`] for exit-code mapping.
@@ -152,6 +173,22 @@ mod tests {
         assert_eq!(
             LlmError::net_disabled("op").to_diagnostic().exit().code(),
             4
+        );
+    }
+
+    #[test]
+    fn detail_returns_the_bare_payload_without_a_class_prefix() {
+        let err = LlmError::transport("idle timeout: no SSE frame received in time");
+        assert_eq!(err.detail(), "idle timeout: no SSE frame received in time");
+        assert!(
+            !err.detail().contains("transport unavailable"),
+            "detail must not carry the Display class prefix: {}",
+            err.detail()
+        );
+        // Display still renders the class prefix exactly once.
+        assert_eq!(
+            err.to_string(),
+            "transport unavailable: idle timeout: no SSE frame received in time"
         );
     }
 

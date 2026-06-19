@@ -87,8 +87,10 @@ impl NormalizeState {
                 Step::Emitted
             }
             Some(Err(err)) => {
+                // Forward the bare detail (not the rendered `Display`, which prepends the class
+                // prefix) so a consumer re-wrapping by `kind` renders the prefix exactly once.
                 self.queue.push_back(LlmEvent::Error {
-                    message: err.to_string(),
+                    message: err.detail().to_owned(),
                     kind: err.kind().to_owned(),
                 });
                 self.queue.push_back(LlmEvent::Done {

@@ -29,6 +29,10 @@ pub enum Diagnostic {
     /// A test cassette/fixture was required but could not be found (tests only). The payload
     /// names the missing cassette.
     CassetteMissing(String),
+    /// A turn exhausted its step budget (`MAX_STEPS`) without completing, so the durable runner
+    /// stopped with an explicit, non-crashing signal rather than looping. The payload carries the
+    /// human-readable detail (e.g. the budget that was reached).
+    StepLimitExceeded(String),
 }
 
 impl Diagnostic {
@@ -62,6 +66,12 @@ impl Diagnostic {
         Diagnostic::CassetteMissing(name.into())
     }
 
+    /// Construct a [`Diagnostic::StepLimitExceeded`] carrying the step-budget detail.
+    #[must_use]
+    pub fn step_limit_exceeded(detail: impl Into<String>) -> Self {
+        Diagnostic::StepLimitExceeded(detail.into())
+    }
+
     /// The stable, machine-comparable identifier for this diagnostic class.
     ///
     /// These strings are part of the contract; do not rename existing values.
@@ -73,6 +83,7 @@ impl Diagnostic {
             Diagnostic::TransportUnavailable(_) => "transport-unavailable",
             Diagnostic::Upstream(_) => "upstream",
             Diagnostic::CassetteMissing(_) => "cassette-missing",
+            Diagnostic::StepLimitExceeded(_) => "step-limit-exceeded",
         }
     }
 
@@ -88,7 +99,8 @@ impl Diagnostic {
             Diagnostic::NoCredential(_)
             | Diagnostic::TransportUnavailable(_)
             | Diagnostic::Upstream(_)
-            | Diagnostic::CassetteMissing(_) => Exit::Failure,
+            | Diagnostic::CassetteMissing(_)
+            | Diagnostic::StepLimitExceeded(_) => Exit::Failure,
         }
     }
 }
@@ -112,6 +124,9 @@ impl fmt::Display for Diagnostic {
             Diagnostic::CassetteMissing(name) => {
                 write!(f, "cassette missing: no recorded fixture named {name}")
             }
+            Diagnostic::StepLimitExceeded(detail) => {
+                write!(f, "step limit exceeded: {detail}")
+            }
         }
     }
 }
@@ -132,6 +147,10 @@ mod tests {
         );
         assert_eq!(Diagnostic::upstream("x").kind(), "upstream");
         assert_eq!(Diagnostic::cassette_missing("x").kind(), "cassette-missing");
+        assert_eq!(
+            Diagnostic::step_limit_exceeded("x").kind(),
+            "step-limit-exceeded"
+        );
 
         let kinds = [
             Diagnostic::net_disabled("x").kind(),
@@ -139,6 +158,7 @@ mod tests {
             Diagnostic::transport_unavailable("x").kind(),
             Diagnostic::upstream("x").kind(),
             Diagnostic::cassette_missing("x").kind(),
+            Diagnostic::step_limit_exceeded("x").kind(),
         ];
         let mut unique = kinds.to_vec();
         unique.sort_unstable();
@@ -179,6 +199,22 @@ mod tests {
         assert!(
             message.contains("outbound connectivity check"),
             "message must name the refused operation: {message}"
+        );
+    }
+
+    #[test]
+    fn step_limit_is_a_failure_with_an_explicit_message() {
+        let diag = Diagnostic::step_limit_exceeded("reached the maximum of 25 steps");
+        assert_eq!(diag.kind(), "step-limit-exceeded");
+        assert_eq!(diag.exit(), Exit::Failure);
+        let message = diag.to_string();
+        assert!(
+            message.contains("step limit exceeded"),
+            "message must read as a step-limit error: {message}"
+        );
+        assert!(
+            message.contains("25 steps"),
+            "message must carry the step-budget detail: {message}"
         );
     }
 

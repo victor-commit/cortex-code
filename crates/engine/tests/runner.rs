@@ -43,6 +43,31 @@ impl Provider for ScriptedProvider {
     }
 }
 
+/// A provider that requests a tool call on every round-trip forever, so the turn never naturally
+/// completes — used to drive the runner into its step budget.
+struct EndlessToolProvider;
+
+impl Provider for EndlessToolProvider {
+    fn stream<'a>(
+        &'a self,
+        _request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            let stream = futures_util::stream::iter(vec![
+                LlmEvent::ToolCall(ToolCall {
+                    id: "call_loop".to_owned(),
+                    name: "lookup".to_owned(),
+                    arguments: "{}".to_owned(),
+                }),
+                LlmEvent::Done {
+                    reason: FinishReason::ToolCalls,
+                },
+            ]);
+            Ok(Box::pin(stream) as LlmStream)
+        })
+    }
+}
+
 /// A provider whose `stream` fails before any event (a setup error such as no-credential).
 struct FailingProvider {
     error: llm::LlmError,
@@ -322,6 +347,73 @@ async fn mid_stream_error_is_forwarded_then_terminated_once() {
     assert_eq!(done_count(&events), 1, "exactly one terminal Done");
     let error = outcome.error.as_ref().expect("a normalized error");
     assert_eq!(error.kind(), "upstream");
+}
+
+// VAL-RUN-003: a turn that would require more than the step budget stops at exactly MAX_STEPS with
+// an explicit, non-crashing step-limit signal (an Error event with the `step-limit-exceeded` kind
+// and a normalized error on the outcome), still emitting exactly one terminal Done whose reported
+// step count never exceeds the budget.
+#[tokio::test]
+async fn step_budget_is_enforced_with_an_explicit_signal() {
+    let max_steps = 3;
+    let provider = EndlessToolProvider;
+    let mut events = Vec::new();
+    let outcome = SessionRunner::new(max_steps)
+        .run(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "loop forever via tools"),
+            |event| events.push(event),
+        )
+        .await;
+
+    // The runner stopped exactly at the budget and never ran a step beyond it.
+    assert_eq!(
+        outcome.steps, max_steps,
+        "the turn stops at the step budget"
+    );
+    assert!(
+        outcome.steps <= max_steps,
+        "the step count never exceeds MAX_STEPS"
+    );
+
+    // The outcome carries a normalized, distinctly-classed step-limit error (non-crash).
+    let error = outcome
+        .error
+        .as_ref()
+        .expect("a normalized step-limit error");
+    assert_eq!(error.kind(), "step-limit-exceeded");
+    assert_eq!(
+        error.exit().code(),
+        1,
+        "step-limit is a generic failure exit"
+    );
+    assert!(!outcome.is_success());
+
+    // An explicit step-limit Error event precedes exactly one terminal Done, and the Done reports
+    // a bounded step count.
+    let error_pos = events
+        .iter()
+        .position(|e| matches!(e, RunnerEvent::Error { kind, .. } if kind == "step-limit-exceeded"))
+        .expect("an explicit step-limit error event");
+    let done_pos = events
+        .iter()
+        .position(|e| matches!(e, RunnerEvent::Done { .. }))
+        .expect("a terminal done event");
+    assert!(error_pos < done_pos, "the error precedes the terminal done");
+    assert_eq!(done_count(&events), 1, "exactly one terminal Done");
+    match &events[done_pos] {
+        RunnerEvent::Done { steps, .. } => {
+            assert_eq!(
+                *steps, max_steps,
+                "the Done event reports the bounded step count"
+            );
+            assert!(
+                *steps <= max_steps,
+                "the reported step count is within budget"
+            );
+        }
+        other => panic!("expected a Done event, got {other:?}"),
+    }
 }
 
 #[tokio::test]

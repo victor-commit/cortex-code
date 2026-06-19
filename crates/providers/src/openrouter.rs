@@ -8,6 +8,8 @@
 //! The credential is exposed to the transport at exactly one point (building the bearer header);
 //! the key is never logged or otherwise rendered here.
 
+use std::time::Duration;
+
 use errors::Diagnostic;
 use llm::{OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig};
 
@@ -58,8 +60,31 @@ pub fn openrouter_provider_with_base_url(
     credential: &Credential,
     base_url: &str,
 ) -> Result<OpenAiCompatible, Diagnostic> {
+    openrouter_provider_with_options(credential, base_url, None)
+}
+
+/// Build a ready OpenRouter [`OpenAiCompatible`] provider from a resolved credential against an
+/// explicit `base_url`, optionally overriding the transport's per-frame idle/stall timeout.
+///
+/// A `Some(idle_timeout)` retargets how long the transport waits for each successive SSE frame
+/// before treating the stream as stalled and failing closed with a transport diagnostic. A `None`
+/// keeps the transport default, so normal runs are unaffected. This is the seam a forced-stall test
+/// uses to set a tiny idle budget and prove the run aborts within a bounded window rather than
+/// hanging (VAL-RUN-004).
+///
+/// # Errors
+/// Returns the [`Diagnostic`] from the transport build (e.g. a rustls client failure) normalized
+/// through the LLM error layer.
+pub fn openrouter_provider_with_options(
+    credential: &Credential,
+    base_url: &str,
+    idle_timeout: Option<Duration>,
+) -> Result<OpenAiCompatible, Diagnostic> {
     let mut config = OpenAiConfig::openrouter(credential.expose());
     config.base_url = base_url.to_owned();
+    if let Some(idle_timeout) = idle_timeout {
+        config.transport.idle_timeout = idle_timeout;
+    }
     let config = config
         .header("HTTP-Referer", REFERER)
         .header("X-Title", TITLE);
@@ -90,12 +115,31 @@ pub fn resolve_openrouter_with(
     inputs: &CredentialInputs,
     base_url_override: Option<&str>,
 ) -> Result<OpenAiCompatible, Diagnostic> {
+    resolve_openrouter_with_options(inputs, base_url_override, None)
+}
+
+/// Resolve the OpenRouter credential across the documented precedence layers and build a provider,
+/// honoring an optional `base_url` override and an optional per-frame idle/stall timeout.
+///
+/// The `idle_timeout` is the transport's fail-closed stall guard: when set, a stalled upstream
+/// stream is aborted within that bounded window with a transport diagnostic instead of hanging
+/// (VAL-RUN-004). A `None` keeps the transport default. Credential resolution and redaction
+/// guarantees are identical to [`resolve_openrouter`].
+///
+/// # Errors
+/// Returns [`Diagnostic::NoCredential`] when no layer yields a key, or a transport-build diagnostic
+/// if the client cannot be constructed.
+pub fn resolve_openrouter_with_options(
+    inputs: &CredentialInputs,
+    base_url_override: Option<&str>,
+    idle_timeout: Option<Duration>,
+) -> Result<OpenAiCompatible, Diagnostic> {
     let credential = resolve_credential(OPENROUTER_ID, inputs)?;
     let base_url = match base_url_override.map(str::trim) {
         Some(override_url) if !override_url.is_empty() => override_url.to_owned(),
         _ => openrouter_base_url(),
     };
-    openrouter_provider_with_base_url(&credential, &base_url)
+    openrouter_provider_with_options(&credential, &base_url, idle_timeout)
 }
 
 #[cfg(test)]
@@ -143,6 +187,24 @@ mod tests {
             resolve_openrouter_with(&CredentialInputs::default(), Some("http://127.0.0.1:3250"))
                 .expect_err("an endpoint override does not substitute for a credential");
         assert_eq!(err.kind(), "no-credential");
+    }
+
+    #[test]
+    fn provider_builds_with_an_idle_timeout_override() {
+        let inputs = CredentialInputs {
+            env_value: Some("env-key".to_owned()),
+            ..Default::default()
+        };
+        let credential = resolve_credential(OPENROUTER_ID, &inputs).expect("resolves");
+        openrouter_provider_with_options(
+            &credential,
+            "http://127.0.0.1:3250",
+            Some(Duration::from_millis(5)),
+        )
+        .expect("provider builds with a tiny idle budget");
+        // Resolving through the full precedence path with a tiny idle budget also builds.
+        resolve_openrouter_with_options(&inputs, None, Some(Duration::from_millis(5)))
+            .expect("resolve with an idle-timeout override builds");
     }
 
     #[test]

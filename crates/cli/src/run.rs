@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
+use std::time::Duration;
 
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
@@ -109,8 +110,11 @@ pub fn run(args: RunArgs) -> Exit {
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
     let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
-    let provider = match providers::resolve_openrouter_with(&inputs, run_config.base_url.as_deref())
-    {
+    let provider = match providers::resolve_openrouter_with_options(
+        &inputs,
+        run_config.base_url.as_deref(),
+        stream_idle_timeout(),
+    ) {
         Ok(provider) => provider,
         Err(diag) => return report_setup_diagnostic(&diag),
     };
@@ -319,6 +323,62 @@ fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {
     diag.exit()
 }
 
+/// The result of awaiting a turn that may be interrupted by SIGINT.
+enum TurnResult {
+    /// The turn ran to completion (success or a normalized error in the outcome).
+    Completed(RunOutcome),
+    /// SIGINT (Ctrl-C) cancelled the turn at a safe await boundary before it completed.
+    Interrupted,
+}
+
+/// Run a turn against the provider, racing it against a SIGINT so the process cancels cleanly at a
+/// safe boundary instead of being hard-killed mid-write.
+///
+/// On interrupt the in-flight runner future is dropped, which drops the upstream SSE stream and
+/// aborts the connection (no orphaned children, no panic), and [`TurnResult::Interrupted`] is
+/// returned so the caller can finalize output cleanly (VAL-RUN-005 / VAL-RUN-013).
+async fn run_turn<F>(provider: &dyn llm::Provider, turn: Turn, sink: F) -> TurnResult
+where
+    F: FnMut(RunnerEvent),
+{
+    let runner = SessionRunner::default();
+    tokio::select! {
+        outcome = runner.run(provider, turn, sink) => TurnResult::Completed(outcome),
+        () = interrupt() => TurnResult::Interrupted,
+    }
+}
+
+/// Resolve when the process receives a SIGINT (Ctrl-C).
+///
+/// If the signal handler cannot be installed the future never resolves, so the turn proceeds and
+/// the OS default disposition applies rather than silently swallowing interrupts.
+async fn interrupt() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// The per-frame idle/stall timeout for the streamed turn, read from the operational
+/// `CORTEX_STREAM_IDLE_TIMEOUT_MS` environment variable.
+///
+/// When set to a positive integer the transport aborts a stalled upstream within that bounded
+/// window with a transport diagnostic (fail-closed) instead of hanging (VAL-RUN-004); an absent,
+/// blank, zero, or unparseable value keeps the transport default.
+fn stream_idle_timeout() -> Option<Duration> {
+    parse_idle_timeout_ms(
+        std::env::var("CORTEX_STREAM_IDLE_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Parse a millisecond idle-timeout value, accepting only a positive integer (trimmed). Returns
+/// `None` for an absent, blank, zero, or unparseable value so the transport default stands.
+fn parse_idle_timeout_ms(raw: Option<&str>) -> Option<Duration> {
+    let ms: u64 = raw?.trim().parse().ok()?;
+    (ms >= 1).then(|| Duration::from_millis(ms))
+}
+
 /// Drive the turn through the runner, render its events in the requested format, and persist the
 /// assistant reply so the session can be resumed later. The session id is surfaced in the machine
 /// formats so it can be fed back via `--session`.
@@ -351,17 +411,31 @@ async fn stream_text(
     let mut handle = stdout.lock();
     let mut wrote_any = false;
 
-    let outcome = SessionRunner::default()
-        .run(provider, turn, |event| {
-            if let RunnerEvent::TextDelta { text } = event {
-                if !text.is_empty() {
-                    let _ = handle.write_all(text.as_bytes());
-                    let _ = handle.flush();
-                    wrote_any = true;
-                }
+    let result = run_turn(provider, turn, |event| {
+        if let RunnerEvent::TextDelta { text } = event {
+            if !text.is_empty() {
+                let _ = handle.write_all(text.as_bytes());
+                let _ = handle.flush();
+                wrote_any = true;
             }
-        })
-        .await;
+        }
+    })
+    .await;
+
+    let outcome = match result {
+        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Interrupted => {
+            // Cancelled at a safe boundary: finish the partial line cleanly and exit with the
+            // interrupt code. The session stays durable (the prompt was persisted before the turn).
+            if wrote_any {
+                let _ = handle.write_all(b"\n");
+                let _ = handle.flush();
+            }
+            drop(handle);
+            eprintln!("cortex run: interrupted");
+            return Exit::Interrupted;
+        }
+    };
 
     if let Some(err) = &outcome.error {
         if wrote_any {
@@ -403,15 +477,25 @@ async fn stream_jsonl(
         let _ = handle.flush();
     }
 
-    let outcome = SessionRunner::default()
-        .run(provider, turn, |event| {
-            if let Ok(line) = render_event_line(&event) {
-                let _ = handle.write_all(line.as_bytes());
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
-            }
-        })
-        .await;
+    let result = run_turn(provider, turn, |event| {
+        if let Ok(line) = render_event_line(&event) {
+            let _ = handle.write_all(line.as_bytes());
+            let _ = handle.write_all(b"\n");
+            let _ = handle.flush();
+        }
+    })
+    .await;
+
+    let outcome = match result {
+        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Interrupted => {
+            // Every JSONL line already written is a complete object; stop emitting and exit. The
+            // session stays durable (the prompt was persisted before the turn).
+            drop(handle);
+            eprintln!("cortex run: interrupted");
+            return Exit::Interrupted;
+        }
+    };
 
     drop(handle);
     if let Some(err) = &outcome.error {
@@ -434,6 +518,9 @@ struct RunDocument<'a> {
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
     finish_reason: &'a llm::FinishReason,
+    /// How many provider round-trips (steps) the turn took; always within the `MAX_STEPS` budget
+    /// so a machine consumer observes a bounded iteration count (VAL-RUN-003).
+    steps: usize,
     /// The per-turn token usage and cost for this turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<&'a llm::Usage>,
@@ -465,7 +552,15 @@ async fn emit_json(
     db: &Database,
     turn: Turn,
 ) -> Exit {
-    let outcome = SessionRunner::default().run(provider, turn, |_| {}).await;
+    let outcome = match run_turn(provider, turn, |_| {}).await {
+        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Interrupted => {
+            // The single JSON document is written only after the turn completes, so an interrupt
+            // here leaves stdout byte-empty — never a partial/malformed document (VAL-RUN-013).
+            eprintln!("cortex run: interrupted");
+            return Exit::Interrupted;
+        }
+    };
 
     if let Some(err) = &outcome.error {
         eprintln!("cortex run: {err}");
@@ -519,6 +614,7 @@ fn build_run_document<'a>(
         agent,
         session: session_id,
         finish_reason: &outcome.finish_reason,
+        steps: outcome.steps,
         usage: outcome.usage.as_ref(),
         session_usage,
     }
@@ -1130,6 +1226,42 @@ mod tests {
         assert_eq!(resolved, Some(String::new()));
     }
 
+    // VAL-RUN-004 plumbing: the operational idle-timeout value is parsed only for a positive
+    // integer; an absent, blank, zero, or unparseable value leaves the transport default in place.
+    #[test]
+    fn parse_idle_timeout_accepts_only_positive_integers() {
+        assert_eq!(
+            parse_idle_timeout_ms(Some("50")),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(
+            parse_idle_timeout_ms(Some("  5 ")),
+            Some(Duration::from_millis(5)),
+            "surrounding whitespace is trimmed"
+        );
+        assert_eq!(
+            parse_idle_timeout_ms(None),
+            None,
+            "absent value is no override"
+        );
+        assert_eq!(
+            parse_idle_timeout_ms(Some("")),
+            None,
+            "blank value is no override"
+        );
+        assert_eq!(parse_idle_timeout_ms(Some("0")), None, "zero is rejected");
+        assert_eq!(
+            parse_idle_timeout_ms(Some("not-a-number")),
+            None,
+            "an unparseable value is no override"
+        );
+        assert_eq!(
+            parse_idle_timeout_ms(Some("-5")),
+            None,
+            "a negative value is no override"
+        );
+    }
+
     #[test]
     fn jsonl_shorthand_overrides_format() {
         assert_eq!(
@@ -1211,6 +1343,13 @@ mod tests {
             "the document surfaces the re-usable session id"
         );
         assert_eq!(value["finish_reason"], "stop");
+        // VAL-RUN-003: the document reports a bounded step/iteration count (<= MAX_STEPS = 25).
+        let steps = value["steps"].as_u64().expect("steps is an integer");
+        assert_eq!(steps, 1, "a single-round-trip turn reports one step");
+        assert!(
+            steps <= 25,
+            "the reported step count never exceeds MAX_STEPS"
+        );
         assert_eq!(value["usage"]["input_tokens"].as_u64(), Some(9));
         assert_eq!(value["usage"]["output_tokens"].as_u64(), Some(8));
         assert!(
@@ -1341,6 +1480,7 @@ mod tests {
             }),
             RunnerEvent::Done {
                 reason: llm::FinishReason::Stop,
+                steps: 1,
             },
         ];
         let lines: Vec<String> = events
@@ -1379,6 +1519,17 @@ mod tests {
             types.last().map(String::as_str),
             Some("done"),
             "the stream ends with the terminal event"
+        );
+
+        // VAL-RUN-003: the terminal Done line reports a bounded step count (<= MAX_STEPS = 25).
+        let done_value: serde_json::Value =
+            serde_json::from_str(lines.last().expect("a terminal line")).expect("json");
+        let steps = done_value["steps"]
+            .as_u64()
+            .expect("done carries a step count");
+        assert!(
+            steps <= 25,
+            "the reported step count never exceeds MAX_STEPS"
         );
     }
 }

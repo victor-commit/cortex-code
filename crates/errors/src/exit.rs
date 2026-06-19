@@ -24,6 +24,10 @@ pub enum Exit {
     NetDisabled = 4,
     /// Configuration was invalid (parse error, failed substitution, or type mismatch).
     Config = 5,
+    /// The operation was interrupted by SIGINT (Ctrl-C) and cancelled at a safe boundary. Matches
+    /// the conventional shell convention of `128 + SIGINT(2)` so a parent can recognize an
+    /// interrupt by `$?` alone.
+    Interrupted = 130,
 }
 
 impl Exit {
@@ -52,6 +56,7 @@ mod tests {
         assert_eq!(Exit::MissingInput.code(), 3);
         assert_eq!(Exit::NetDisabled.code(), 4);
         assert_eq!(Exit::Config.code(), 5);
+        assert_eq!(Exit::Interrupted.code(), 130);
     }
 
     #[test]
@@ -62,6 +67,7 @@ mod tests {
             Exit::MissingInput,
             Exit::NetDisabled,
             Exit::Config,
+            Exit::Interrupted,
         ] {
             assert_ne!(exit.code(), 0, "{exit:?} must be a non-zero failure code");
         }

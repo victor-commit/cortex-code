@@ -36,7 +36,7 @@ providers = { path = "crates/providers" }
 engine = { path = "crates/engine" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 eventsource-stream = "0.2"
 futures-util = "0.3"
 bytes = "1"

@@ -36,10 +36,14 @@ pub enum RunnerEvent {
         /// The stable error class (see [`errors::Diagnostic::kind`]).
         kind: String,
     },
-    /// The single terminal event of the turn, carrying why the turn ended.
+    /// The single terminal event of the turn, carrying why the turn ended and how many provider
+    /// round-trips (steps) it took. The step count is always within the runner's `MAX_STEPS`
+    /// budget, so a machine consumer can observe a bounded iteration count (VAL-RUN-003).
     Done {
         /// Why the turn ended.
         reason: FinishReason,
+        /// How many provider round-trips (steps) the turn took (`<= MAX_STEPS`).
+        steps: usize,
     },
 }
 
@@ -68,6 +72,7 @@ impl RunError {
             "no-credential" => Diagnostic::no_credential(message),
             "transport-unavailable" => Diagnostic::transport_unavailable(message),
             "cassette-missing" => Diagnostic::cassette_missing(message),
+            "step-limit-exceeded" => Diagnostic::step_limit_exceeded(message),
             _ => Diagnostic::upstream(message),
         };
         Self { diagnostic }
@@ -162,10 +167,12 @@ mod tests {
 
         let done = serde_json::to_value(RunnerEvent::Done {
             reason: FinishReason::Stop,
+            steps: 1,
         })
         .expect("serialize");
         assert_eq!(done["type"], "done");
         assert_eq!(done["reason"], "stop");
+        assert_eq!(done["steps"], 1);
     }
 
     #[test]

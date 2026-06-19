@@ -17,6 +17,7 @@ const RESERVED_SUFFIXES: &[&str] = &[
     "CONFIG_HOME",
     "HOME",
     "DATA_DIR",
+    "STREAM_IDLE_TIMEOUT_MS",
 ];
 
 /// The environment variable name that overrides config `key` (e.g. `model` -> `CORTEX_MODEL`).
@@ -74,6 +75,7 @@ mod tests {
             ("PATH", "/usr/bin"),
             ("CORTEX_NO_NET", "1"),
             ("CORTEX_CONFIG_FILE", "/x"),
+            ("CORTEX_STREAM_IDLE_TIMEOUT_MS", "50"),
             ("CORTEX_", "empty-suffix"),
         ]));
         assert!(overrides.is_empty(), "got: {overrides:?}");
