@@ -14,6 +14,7 @@
 //! by [`load_layered`], so under last-matching-rule-wins a project-layer rule overrides a
 //! conflicting global-layer rule deterministically (VAL-PERM-017).
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -22,11 +23,15 @@ use toml::Value;
 use toml::value::Table;
 
 use crate::action::Action;
+use crate::agent::AgentRulesets;
 use crate::rule::Rule;
 use crate::ruleset::Ruleset;
 
 /// The config key holding the ordered array of permission rule tables.
 const PERMISSION_KEY: &str = "permission";
+
+/// The config key holding the per-agent permission override tables.
+const AGENT_KEY: &str = "agent";
 
 /// A failure loading or parsing permission rules from configuration.
 #[derive(Debug)]
@@ -175,6 +180,55 @@ pub fn load_layered(inputs: &ConfigInputs) -> Result<Ruleset, RuleError> {
         layers.push(Ruleset::new(rules));
     }
     Ok(Ruleset::from_layers(layers))
+}
+
+/// Load the per-agent permission rulesets from every config layer.
+///
+/// Each layer contributes its top-level `[[permission]]` rules to the shared **base** ruleset (the
+/// rules applied to every agent) and any `[[agent.<name>.permission]]` rules to that agent's
+/// override ruleset. Across layers the per-layer rule lists are concatenated in ascending
+/// precedence order (global, project root, nested), so under last-matching-rule-wins a higher layer
+/// overrides a conflicting lower one. The effective ruleset for an agent is its base plus its
+/// overrides ([`AgentRulesets::for_agent`]); two agents whose rules differ decide the same action
+/// differently (VAL-PERM-009). With no config present the result is empty (every agent defaults to
+/// ask).
+///
+/// # Errors
+/// Returns [`RuleError`] when a config layer cannot be read/parsed, the `agent` value is not a
+/// table of agent tables, or a rule is malformed.
+pub fn load_agent_rulesets(inputs: &ConfigInputs) -> Result<AgentRulesets, RuleError> {
+    let mut base_layers: Vec<Ruleset> = Vec::new();
+    let mut agent_layers: BTreeMap<String, Vec<Ruleset>> = BTreeMap::new();
+
+    for layer in settings::layer_tables(inputs)? {
+        let source = Some(layer.source.as_path());
+
+        let base_rules = rules_from_table(&layer.table, source)?;
+        base_layers.push(Ruleset::new(base_rules));
+
+        if let Some(agent_value) = layer.table.get(AGENT_KEY) {
+            let agent_table = agent_value.as_table().ok_or_else(|| {
+                RuleError::malformed(source, format!("`{AGENT_KEY}` must be a table of agents"))
+            })?;
+            for (name, value) in agent_table {
+                let table = value.as_table().ok_or_else(|| {
+                    RuleError::malformed(source, format!("`{AGENT_KEY}.{name}` must be a table"))
+                })?;
+                let rules = rules_from_table(table, source)?;
+                agent_layers
+                    .entry(name.clone())
+                    .or_default()
+                    .push(Ruleset::new(rules));
+            }
+        }
+    }
+
+    let base = Ruleset::from_layers(base_layers);
+    let per_agent = agent_layers
+        .into_iter()
+        .map(|(name, layers)| (name, Ruleset::from_layers(layers)))
+        .collect();
+    Ok(AgentRulesets::new(base, per_agent))
 }
 
 #[cfg(test)]

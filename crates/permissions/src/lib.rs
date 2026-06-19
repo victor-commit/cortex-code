@@ -1,10 +1,20 @@
 //! The Cortex Code permission engine: resolve every gated tool action to allow/ask/deny.
 //!
 //! This crate is the M2 capability that decides whether a gated tool action may run (architecture
-//! §3.4). It is deliberately small and subject-agnostic — it answers "given this tool and this
-//! subject, what should happen?" and surfaces asks observably — leaving *what the subject is* (a
-//! file path for file tools, the parsed command for `bash`), per-agent ruleset selection, subagent
-//! narrowing, and saved decisions to the scoping layer that builds on it.
+//! §3.4). The core engine is deliberately small and subject-agnostic — it answers "given this tool
+//! and this subject, what should happen?" and surfaces asks observably — and the scoping layer on
+//! top supplies the rest:
+//!
+//! - **Subject derivation** ([`scope`]): file tools scope by their normalized target path; `bash`
+//!   scopes by its command (with compound-command splitting). [`request_for`] builds the
+//!   right-subject [`PermissionRequest`] for a tool (VAL-PERM-006/007).
+//! - **Per-agent rulesets** ([`AgentRulesets`]): each agent carries its own ruleset layered on a
+//!   shared base, so two agents decide the same action differently (VAL-PERM-009).
+//! - **Subagent narrowing** ([`narrow_action`] / [`PermissionEngine::with_parent_cap`]): a spawned
+//!   subagent's effective permission is the most restrictive of its own and its parent's, so it can
+//!   never exceed the parent (VAL-PERM-010).
+//! - **Saved decisions** ([`SavedDecisions`]): an "always allow/deny this pattern" choice is reused
+//!   for later matching actions in the session with no new ask (VAL-PERM-011).
 //!
 //! ## Model (blueprint: the durable runner's permission layer, architecture §4)
 //!
@@ -29,15 +39,27 @@
 //! feed, an audit sink).
 
 mod action;
+mod agent;
 mod config;
 mod engine;
 mod glob;
 mod rule;
 mod ruleset;
+mod saved;
+mod scope;
 
 pub use action::Action;
-pub use config::{RuleError, load_layered, rules_from_table};
-pub use engine::{Decision, Outcome, PermissionEngine, PermissionRequest, Responder};
+pub use agent::{AgentRulesets, narrow_action};
+pub use config::{RuleError, load_agent_rulesets, load_layered, rules_from_table};
+pub use engine::{
+    Decision, DecisionScope, Outcome, PermissionEngine, PermissionRequest, Responder,
+    ScopedDecision,
+};
 pub use glob::glob_match;
 pub use rule::{ANY_TOOL, Rule};
 pub use ruleset::Ruleset;
+pub use saved::{SavedDecision, SavedDecisions};
+pub use scope::{
+    ToolScope, classify_command, command_subject, file_subject, is_command_tool, is_file_tool,
+    normalize_path, request_for, scope_of, split_bash_commands,
+};

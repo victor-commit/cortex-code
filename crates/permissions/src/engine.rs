@@ -7,6 +7,7 @@ use events::{EventBus, PermissionDecision};
 
 use crate::action::Action;
 use crate::ruleset::Ruleset;
+use crate::saved::{SavedDecision, SavedDecisions};
 
 /// A gated tool action awaiting a permission verdict.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +38,64 @@ pub enum Decision {
     Deny,
 }
 
+impl Decision {
+    /// The configured [`Action`] this decision is equivalent to (`Allow`/`Deny`).
+    #[must_use]
+    pub const fn action(self) -> Action {
+        match self {
+            Decision::Allow => Action::Allow,
+            Decision::Deny => Action::Deny,
+        }
+    }
+
+    /// The [`Outcome`] this decision resolves to.
+    #[must_use]
+    pub const fn outcome(self) -> Outcome {
+        match self {
+            Decision::Allow => Outcome::Allowed,
+            Decision::Deny => Outcome::Denied,
+        }
+    }
+}
+
+/// Whether a [`Decision`] applies only to the current action or is saved for matching ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionScope {
+    /// Apply to this action only; do not save it.
+    Once,
+    /// Save the decision so later matching actions reuse it without re-asking (VAL-PERM-011).
+    Always,
+}
+
+/// A responder's answer to an `ask`: the decision plus whether to save it for matching actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScopedDecision {
+    /// Allow or deny the action.
+    pub decision: Decision,
+    /// Whether the decision is saved for later matching actions.
+    pub scope: DecisionScope,
+}
+
+impl ScopedDecision {
+    /// A one-shot decision applying only to the current action.
+    #[must_use]
+    pub const fn once(decision: Decision) -> Self {
+        Self {
+            decision,
+            scope: DecisionScope::Once,
+        }
+    }
+
+    /// A saved decision applied to and remembered for later matching actions.
+    #[must_use]
+    pub const fn always(decision: Decision) -> Self {
+        Self {
+            decision,
+            scope: DecisionScope::Always,
+        }
+    }
+}
+
 /// The final verdict the engine returns for a gated action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -63,6 +122,15 @@ impl Outcome {
 pub trait Responder: Send + Sync {
     /// Answer the ask for `request`, returning whether to allow or deny it.
     fn respond(&self, request: &PermissionRequest) -> Decision;
+
+    /// Answer the ask for `request`, optionally saving the decision for later matching actions.
+    ///
+    /// The default applies [`respond`](Responder::respond) once (not saved); a surface that lets a
+    /// user pick "always allow/deny this pattern" overrides this to return [`DecisionScope::Always`]
+    /// so the engine records the choice (VAL-PERM-011).
+    fn respond_scoped(&self, request: &PermissionRequest) -> ScopedDecision {
+        ScopedDecision::once(self.respond(request))
+    }
 }
 
 /// Resolves every gated tool action to [`Outcome::Allowed`] or [`Outcome::Denied`].
@@ -78,6 +146,8 @@ pub trait Responder: Send + Sync {
 ///   it resolves to [`Outcome::Denied`] in bounded time (no hang, no silent allow; VAL-PERM-005).
 pub struct PermissionEngine {
     ruleset: Ruleset,
+    parent_cap: Option<Ruleset>,
+    saved: Option<Arc<SavedDecisions>>,
     responder: Option<Arc<dyn Responder>>,
     bus: Option<Arc<EventBus>>,
 }
@@ -88,9 +158,33 @@ impl PermissionEngine {
     pub fn new(ruleset: Ruleset) -> Self {
         Self {
             ruleset,
+            parent_cap: None,
+            saved: None,
             responder: None,
             bus: None,
         }
+    }
+
+    /// Cap this engine's decisions with a parent agent's ruleset (builder style).
+    ///
+    /// When set, the effective action is the most restrictive of this engine's own decision and the
+    /// parent's, so a spawned subagent can never exceed its parent: an action the parent denies
+    /// stays denied here regardless of this engine's ruleset (VAL-PERM-010).
+    #[must_use]
+    pub fn with_parent_cap(mut self, parent: Ruleset) -> Self {
+        self.parent_cap = Some(parent);
+        self
+    }
+
+    /// Attach a shared store of saved "always" decisions (builder style).
+    ///
+    /// A saved decision matching the action is honored before the configured ruleset, so a matching
+    /// later action resolves directly and emits no new `permission.asked` event (VAL-PERM-011). The
+    /// store is shared across a session's turns, and an `Always` reply is recorded into it.
+    #[must_use]
+    pub fn with_saved_decisions(mut self, saved: Arc<SavedDecisions>) -> Self {
+        self.saved = Some(saved);
+        self
     }
 
     /// Attach a responder that answers asks (builder style); without one, asks fail closed.
@@ -121,46 +215,81 @@ impl PermissionEngine {
     }
 
     /// The action this engine would take for a gated action, without surfacing or resolving an ask.
+    ///
+    /// Honors saved "always" decisions and the parent cap, so it reflects the same effective
+    /// decision `evaluate` would reach (minus surfacing/answering the ask).
     #[must_use]
     pub fn classify(&self, tool: &str, subject: &str) -> Action {
-        self.ruleset.classify(tool, subject)
+        self.effective(tool, subject).0
     }
 
     /// Resolve a gated action to a final [`Outcome`], surfacing and answering an `ask` as needed.
     pub fn evaluate(&self, request: &PermissionRequest) -> Outcome {
-        let (action, rule) = self.ruleset.resolve(&request.tool, &request.subject);
+        let (action, pattern) = self.effective(&request.tool, &request.subject);
         match action {
             Action::Allow => Outcome::Allowed,
             Action::Deny => Outcome::Denied,
             Action::Ask => {
-                // The pattern that classified the action: the matching rule's pattern, or the
-                // implicit `*` of the default-ask case when no rule matched.
-                let pattern = rule.map_or("*", |rule| rule.pattern.as_str());
                 self.publish(events::Event::permission_asked(
                     &request.tool,
-                    pattern,
+                    &pattern,
                     &request.subject,
                 ));
 
-                // No responder (headless) → fail closed: deny without waiting.
-                let decision = match &self.responder {
-                    Some(responder) => responder.respond(request),
-                    None => Decision::Deny,
+                // No responder (headless) → fail closed: deny without waiting, and never save.
+                let reply = match &self.responder {
+                    Some(responder) => responder.respond_scoped(request),
+                    None => ScopedDecision::once(Decision::Deny),
                 };
 
-                let (outcome, reply) = match decision {
-                    Decision::Allow => (Outcome::Allowed, PermissionDecision::Allow),
-                    Decision::Deny => (Outcome::Denied, PermissionDecision::Deny),
+                if reply.scope == DecisionScope::Always {
+                    if let Some(saved) = &self.saved {
+                        saved.record(SavedDecision::new(&request.tool, &pattern, reply.decision));
+                    }
+                }
+
+                let outcome_decision = match reply.decision {
+                    Decision::Allow => PermissionDecision::Allow,
+                    Decision::Deny => PermissionDecision::Deny,
                 };
                 self.publish(events::Event::permission_replied(
                     &request.tool,
-                    pattern,
+                    &pattern,
                     &request.subject,
-                    reply,
+                    outcome_decision,
                 ));
-                outcome
+                reply.decision.outcome()
             }
         }
+    }
+
+    /// The effective action and the pattern that classified it, combining saved decisions (highest
+    /// precedence) and the configured ruleset, then narrowing by the parent cap.
+    fn effective(&self, tool: &str, subject: &str) -> (Action, String) {
+        // A saved "always" decision takes precedence over the configured ruleset; otherwise the
+        // ruleset decides. Either way we keep the pattern that classified the action for the event.
+        let (own_action, own_pattern) = self
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.resolve(tool, subject))
+            .map(|saved| (saved.decision.action(), saved.pattern))
+            .unwrap_or_else(|| {
+                let (action, rule) = self.ruleset.resolve(tool, subject);
+                (
+                    action,
+                    rule.map_or_else(|| "*".to_owned(), |r| r.pattern.clone()),
+                )
+            });
+
+        // Narrow by the parent cap (subagent): the most restrictive of own and parent governs.
+        if let Some(cap) = &self.parent_cap {
+            let (cap_action, cap_rule) = cap.resolve(tool, subject);
+            if cap_action.is_more_restrictive_than(own_action) {
+                let cap_pattern = cap_rule.map_or_else(|| "*".to_owned(), |r| r.pattern.clone());
+                return (cap_action, cap_pattern);
+            }
+        }
+        (own_action, own_pattern)
     }
 
     fn publish(&self, event: events::Event) {
