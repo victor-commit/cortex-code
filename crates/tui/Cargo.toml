@@ -11,8 +11,13 @@ workspace = true
 [dependencies]
 errors = { workspace = true }
 settings = { workspace = true }
+providers = { workspace = true }
+engine = { workspace = true }
+llm = { workspace = true }
+redaction = { workspace = true }
 tui-widgets = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]

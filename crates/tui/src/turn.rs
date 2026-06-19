@@ -1,0 +1,207 @@
+//! Driving a single streaming turn from the TUI on a background thread.
+//!
+//! The interactive event loop is synchronous (it owns the terminal), so a turn runs on a dedicated
+//! worker thread that builds the provider, assembles the [`Turn`], and drives the durable
+//! [`SessionRunner`]. The runner's normalized [`RunnerEvent`] stream is forwarded over a channel as
+//! [`TurnMessage`]s; the UI thread drains them each tick to grow the assistant text, surface
+//! reasoning, update usage, and clear the busy indicator when the worker reports it is
+//! [`TurnMessage::Finished`].
+//!
+//! No mocks live on this path: the same runner and OpenRouter provider the headless `cortex run`
+//! uses drive the turn here. Setup failures (the network kill-switch, a missing credential, a bad
+//! model id) are surfaced as a [`TurnMessage::SetupError`] so the UI renders a clear error state
+//! instead of hanging.
+
+use std::collections::BTreeMap;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+
+use engine::{
+    Agent, CompactionPolicy, EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn,
+};
+use llm::Message;
+use redaction::guard_outbound;
+use settings::EffectiveConfig;
+
+/// A message published by the turn worker for the UI thread to apply.
+#[derive(Debug)]
+pub enum TurnMessage {
+    /// One normalized runner event (text/reasoning delta, usage, error, …).
+    Event(RunnerEvent),
+    /// The turn could not start: a setup-time diagnostic (net-disabled, no-credential, bad model).
+    SetupError(String),
+    /// The worker has finished; the UI clears the busy indicator and finalizes the turn.
+    Finished,
+}
+
+/// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
+const OUTBOUND_OPERATION: &str = "LLM turn";
+
+/// Spawn a worker thread that streams a turn for `prompt` (with prior `history` for context),
+/// returning the receiver the UI drains for [`TurnMessage`]s.
+///
+/// The worker owns its own current-thread Tokio runtime and provider, so nothing but plain data
+/// crosses the thread boundary. The receiver disconnects once the worker exits.
+#[must_use]
+pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
+    let (tx, rx) = mpsc::channel();
+    let tx_events = tx.clone();
+    thread::spawn(move || {
+        match build_turn(&prompt, history) {
+            Ok((provider, turn)) => {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        runtime.block_on(async {
+                            let runner = SessionRunner::default();
+                            runner
+                                .run(&provider, turn, |event| {
+                                    let _ = tx_events.send(TurnMessage::Event(event));
+                                })
+                                .await;
+                        });
+                    }
+                    Err(err) => {
+                        let _ = tx.send(TurnMessage::SetupError(format!(
+                            "failed to start runtime: {err}"
+                        )));
+                    }
+                }
+            }
+            Err(message) => {
+                let _ = tx.send(TurnMessage::SetupError(message));
+            }
+        }
+        let _ = tx.send(TurnMessage::Finished);
+    });
+    rx
+}
+
+/// Build the provider and assembled [`Turn`] for a prompt, resolving the model, credential, and any
+/// endpoint override through the same configuration precedence the headless run uses.
+///
+/// # Errors
+/// Returns a human-readable, secret-scrubbed message when the kill-switch refuses the turn, a
+/// configuration layer cannot be loaded, the model id is malformed, or no credential is available.
+fn build_turn(
+    prompt: &str,
+    history: Vec<Message>,
+) -> Result<(llm::OpenAiCompatible, Turn), String> {
+    // Fail closed on the network kill-switch before resolving a credential or opening any socket.
+    guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
+
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
+        .map_err(|err| format!("cannot determine the working directory: {err}"))?;
+    let effective = settings::load(inputs).map_err(|err| err.to_string())?;
+
+    let model = providers::resolve_model(Some(effective.model()));
+    validate_model_id(&model.model_id)?;
+
+    let credentials =
+        providers::CredentialInputs::openrouter_from_process(openrouter_api_key(&effective));
+    let provider = providers::resolve_openrouter_with_options(
+        &credentials,
+        openrouter_base_url_override(&effective).as_deref(),
+        None,
+    )
+    .map_err(|diag| diag.to_string())?;
+
+    let compaction = compaction_policy(&model);
+    let model_id = model.model_id;
+    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
+        .with_agent(Agent::default())
+        .render();
+    let turn = Turn::new(&model_id, system, prompt)
+        .with_history(history)
+        .with_compaction(compaction);
+
+    Ok((provider, turn))
+}
+
+/// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id, rejecting
+/// a bare id locally with an actionable message (mirroring the headless run's validation).
+fn validate_model_id(model_id: &str) -> Result<(), String> {
+    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
+    if provider.is_empty() || model.is_empty() {
+        return Err(format!(
+            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
+             (for example google/gemini-2.5-flash)"
+        ));
+    }
+    Ok(())
+}
+
+/// The compaction policy derived from the resolved model's context window (an unknown model falls
+/// back to the engine's default window), so an over-large turn is pruned rather than crashing.
+fn compaction_policy(model: &providers::ResolvedModel) -> CompactionPolicy {
+    let (context, output) = match &model.info {
+        Some(info) => (
+            usize::try_from(info.limit.context).unwrap_or(usize::MAX),
+            usize::try_from(info.limit.output).unwrap_or(0),
+        ),
+        None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
+    };
+    CompactionPolicy::for_context_window(context, output)
+}
+
+/// The OpenRouter endpoint override, if configured (the flat `openrouter_base_url` key, settable via
+/// `CORTEX_OPENROUTER_BASE_URL`, wins over a nested `[provider.openrouter] base_url`).
+fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
+    top_level_string(effective, "openrouter_base_url")
+        .or_else(|| provider_openrouter_string(effective, "base_url"))
+}
+
+/// The OpenRouter API key supplied through configuration (the lowest-precedence credential layer,
+/// below the env var and the 0600 store).
+fn openrouter_api_key(effective: &EffectiveConfig) -> Option<String> {
+    provider_openrouter_string(effective, "api_key")
+        .or_else(|| top_level_string(effective, "api_key"))
+}
+
+/// A non-empty top-level string config value (trimmed), or `None`.
+fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get(key)
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
+/// A non-empty string value under the `[provider.openrouter]` table (trimmed), or `None`.
+fn provider_openrouter_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get("provider")
+        .and_then(|provider| provider.get("openrouter"))
+        .and_then(|openrouter| openrouter.get(key))
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
+/// Trim a candidate value and keep it only if non-empty after trimming.
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_model_id_is_rejected() {
+        let err = validate_model_id("not-a-real-model").unwrap_err();
+        assert!(err.contains("provider/model"), "message: {err}");
+    }
+
+    #[test]
+    fn qualified_model_id_passes() {
+        assert!(validate_model_id("google/gemini-2.5-flash").is_ok());
+    }
+
+    #[test]
+    fn empty_provider_or_model_half_is_rejected() {
+        assert!(validate_model_id("/flash").is_err());
+        assert!(validate_model_id("google/").is_err());
+    }
+}

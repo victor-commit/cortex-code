@@ -1,6 +1,7 @@
-//! Rendering for the Cortex Code TUI scaffold: an empty/home transcript area, a
-//! bottom prompt box, and a status footer. Layout is recomputed every frame so the
-//! screen reflows on resize.
+//! Rendering for the Cortex Code TUI: a transcript area (the streamed conversation, with a distinct
+//! reasoning region and a busy indicator while a turn is in flight), a bottom prompt box, and a
+//! status footer that reflects token/cost usage. Layout is recomputed every frame so the screen
+//! reflows on resize, and the transcript auto-scrolls to keep the latest content visible.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -8,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{App, AssistantTurn, Entry, UsageSummary};
 
 /// Maximum number of visible prompt text rows before the box stops growing.
 const MAX_PROMPT_ROWS: usize = 8;
@@ -25,7 +26,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    draw_home(frame, chunks[0]);
+    draw_transcript(frame, app, chunks[0]);
     draw_prompt(frame, app, chunks[1]);
     draw_footer(frame, app, chunks[2]);
 }
@@ -33,9 +34,159 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// Number of text rows the prompt box should show (clamped to available height).
 fn prompt_rows(app: &App, total_height: u16) -> u16 {
     let logical = app.input.line_count().max(1);
-    // Leave room for at least one home row, the prompt borders, and the footer.
+    // Leave room for at least one transcript row, the prompt borders, and the footer.
     let budget = total_height.saturating_sub(1 + 2 + 1).max(1) as usize;
     logical.min(MAX_PROMPT_ROWS).min(budget).max(1) as u16
+}
+
+/// Render the transcript area: the home screen before any exchange, otherwise the streamed
+/// conversation tail (so the newest content and the busy indicator stay visible).
+fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
+    if app.transcript.is_empty() && !app.is_busy() {
+        draw_home(frame, area);
+        return;
+    }
+
+    let width = area.width.max(1) as usize;
+    let lines = transcript_lines(app, width);
+    // Keep the latest lines visible (auto-scroll to the bottom) by dropping the leading overflow.
+    let height = area.height as usize;
+    let start = lines.len().saturating_sub(height);
+    let visible: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    frame.render_widget(Paragraph::new(visible), area);
+}
+
+/// Build the full transcript as pre-wrapped lines (so scrolling is exact). The in-progress
+/// assistant entry grows as deltas arrive, and the busy indicator is appended while a turn streams.
+pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for entry in &app.transcript {
+        match entry {
+            Entry::User(text) => push_user(&mut lines, text, width),
+            Entry::Assistant(turn) => push_assistant(&mut lines, turn, width),
+            Entry::Error(message) => push_error(&mut lines, message, width),
+        }
+    }
+    if let Some(glyph) = app.spinner_glyph() {
+        lines.push(Line::from(Span::styled(
+            format!("{glyph} Thinking…"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines
+}
+
+/// Append a user prompt: a bold marker header followed by the wrapped prompt body.
+fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    lines.push(Line::from(Span::styled(
+        "› you",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for wrapped in wrap(text, width) {
+        lines.push(Line::from(Span::raw(wrapped)));
+    }
+    lines.push(Line::from(""));
+}
+
+/// Append an assistant reply: an optional distinct reasoning region, then the answer body.
+fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: usize) {
+    // Reasoning, when present, renders in a distinct dimmed/labeled region separate from the answer.
+    // When absent, nothing is emitted (no empty-reasoning artifact).
+    if !turn.reasoning.trim().is_empty() {
+        let label = Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::ITALIC);
+        let body = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        lines.push(Line::from(Span::styled("  reasoning", label)));
+        // Reserve two columns for the "│ " quote bar when wrapping.
+        for wrapped in wrap(&turn.reasoning, width.saturating_sub(2).max(1)) {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", body),
+                Span::styled(wrapped, body),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "• cortex",
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for wrapped in wrap(&turn.answer, width) {
+        lines.push(Line::from(Span::raw(wrapped)));
+    }
+    lines.push(Line::from(""));
+}
+
+/// Append a turn-level error as a distinct, red-styled block.
+fn push_error(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
+    let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    lines.push(Line::from(Span::styled("✗ error", style)));
+    for wrapped in wrap(message, width) {
+        lines.push(Line::from(Span::styled(
+            wrapped,
+            Style::default().fg(Color::Red),
+        )));
+    }
+    lines.push(Line::from(""));
+}
+
+/// Word-wrap `text` to `width` columns, preserving explicit line breaks and hard-splitting words
+/// longer than the available width. A non-positive width yields the text split only on newlines.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return text.split('\n').map(str::to_owned).collect();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split(' ') {
+            if word.chars().count() > width {
+                // Flush the current line, then hard-split the over-long word.
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+                let mut chunk = String::new();
+                for ch in word.chars() {
+                    if chunk.chars().count() == width {
+                        out.push(std::mem::take(&mut chunk));
+                    }
+                    chunk.push(ch);
+                }
+                current = chunk;
+                continue;
+            }
+            let projected = if current.is_empty() {
+                word.chars().count()
+            } else {
+                current.chars().count() + 1 + word.chars().count()
+            };
+            if projected > width {
+                out.push(std::mem::take(&mut current));
+                current.push_str(word);
+            } else {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+            }
+        }
+        out.push(current);
+    }
+    out
 }
 
 fn draw_home(frame: &mut Frame, area: Rect) {
@@ -106,26 +257,198 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let footer = Paragraph::new(footer_line(app)).style(Style::default().bg(Color::Indexed(236)));
+    frame.render_widget(footer, area);
+}
+
+/// Build the status footer: model / agent / mode / session plus the token-and-cost usage segment.
+/// Before any turn reports usage the segment reads `usage —`; after a turn it shows the running
+/// token counts (and cost when reported), so a usage figure appears/increments versus before.
+pub fn footer_line(app: &App) -> Line<'static> {
     let label = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
     let value = Style::default().fg(Color::Gray);
-    let sep = Span::styled(" · ", Style::default().fg(Color::DarkGray));
+    let sep = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled("model ", label),
         Span::styled(app.status.model.clone(), value),
-        sep.clone(),
+        sep(),
         Span::styled("agent ", label),
         Span::styled(app.status.agent.clone(), value),
-        sep.clone(),
+        sep(),
         Span::styled("mode ", label),
         Span::styled(app.status.mode.clone(), value),
-        sep,
+        sep(),
         Span::styled("session ", label),
         Span::styled(app.status.session.clone(), value),
-    ]);
+        sep(),
+        Span::styled("usage ", label),
+    ];
+    spans.push(Span::styled(usage_text(&app.usage), value));
+    Line::from(spans)
+}
 
-    let footer = Paragraph::new(line).style(Style::default().bg(Color::Indexed(236)));
-    frame.render_widget(footer, area);
+/// The footer's usage text: a placeholder dash before any turn, otherwise the token totals and
+/// (when reported) the accumulated cost.
+fn usage_text(usage: &UsageSummary) -> String {
+    if !usage.reported {
+        return "—".to_owned();
+    }
+    let mut text = format!("↑{} ↓{} tok", usage.input_tokens, usage.output_tokens);
+    if let Some(cost) = usage.cost {
+        text.push_str(&format!(" · ${cost:.4}"));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AssistantTurn, Status};
+    use std::sync::mpsc::channel;
+
+    fn app() -> App {
+        App::new(Status {
+            model: "google/gemini-2.5-flash".to_owned(),
+            agent: "build".to_owned(),
+            mode: "build".to_owned(),
+            session: "new".to_owned(),
+        })
+    }
+
+    fn plain(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn rendered(lines: &[Line]) -> String {
+        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn wrap_breaks_on_width_and_keeps_words() {
+        let wrapped = wrap("the quick brown fox", 9);
+        assert_eq!(
+            wrapped,
+            vec!["the quick".to_owned(), "brown fox".to_owned()]
+        );
+    }
+
+    #[test]
+    fn wrap_hard_splits_overlong_words() {
+        let wrapped = wrap("abcdefghij", 4);
+        assert_eq!(
+            wrapped,
+            vec!["abcd".to_owned(), "efgh".to_owned(), "ij".to_owned()]
+        );
+    }
+
+    #[test]
+    fn wrap_preserves_blank_lines() {
+        assert_eq!(wrap("a\n\nb", 10), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn transcript_shows_user_and_growing_answer() {
+        let mut a = app();
+        let (tx, rx) = channel();
+        a.begin_turn("hello there".to_owned(), rx);
+        tx.send(crate::turn::TurnMessage::Event(
+            engine::RunnerEvent::TextDelta {
+                text: "partial".to_owned(),
+            },
+        ))
+        .unwrap();
+        a.poll_turn();
+
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(text.contains("hello there"), "user prompt present:\n{text}");
+        assert!(text.contains("partial"), "partial answer present:\n{text}");
+        // The busy indicator is shown while streaming.
+        assert!(text.contains("Thinking"), "busy indicator present:\n{text}");
+    }
+
+    #[test]
+    fn busy_indicator_absent_after_completion() {
+        let mut a = app();
+        let (tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx);
+        tx.send(crate::turn::TurnMessage::Event(
+            engine::RunnerEvent::TextDelta {
+                text: "the full reply".to_owned(),
+            },
+        ))
+        .unwrap();
+        tx.send(crate::turn::TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(!text.contains("Thinking"), "indicator cleared:\n{text}");
+        assert!(text.contains("the full reply"), "reply present:\n{text}");
+    }
+
+    #[test]
+    fn reasoning_renders_in_a_labeled_region() {
+        let mut lines = Vec::new();
+        push_assistant(
+            &mut lines,
+            &AssistantTurn {
+                reasoning: "weighing options".to_owned(),
+                answer: "final".to_owned(),
+            },
+            80,
+        );
+        let text = rendered(&lines);
+        assert!(text.contains("reasoning"), "reasoning labeled:\n{text}");
+        assert!(text.contains("weighing options"));
+        assert!(text.contains("final"));
+    }
+
+    #[test]
+    fn absent_reasoning_emits_no_region() {
+        let mut lines = Vec::new();
+        push_assistant(
+            &mut lines,
+            &AssistantTurn {
+                reasoning: String::new(),
+                answer: "just the answer".to_owned(),
+            },
+            80,
+        );
+        let text = rendered(&lines);
+        assert!(
+            !text.contains("reasoning"),
+            "no empty reasoning region:\n{text}"
+        );
+        assert!(text.contains("just the answer"));
+    }
+
+    #[test]
+    fn footer_usage_appears_after_a_turn() {
+        let mut a = app();
+        let before = plain(&footer_line(&a));
+        assert!(
+            before.contains("usage —"),
+            "no figure before a turn: {before}"
+        );
+
+        let (tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx);
+        tx.send(crate::turn::TurnMessage::Event(engine::RunnerEvent::Usage(
+            llm::Usage {
+                input_tokens: 12,
+                output_tokens: 34,
+                total_tokens: 46,
+                cost: Some(0.0021),
+            },
+        )))
+        .unwrap();
+        a.poll_turn();
+
+        let after = plain(&footer_line(&a));
+        assert!(after.contains("↑12"), "input tokens shown: {after}");
+        assert!(after.contains("↓34"), "output tokens shown: {after}");
+        assert!(after.contains("$0.0021"), "cost shown: {after}");
+    }
 }

@@ -1917,9 +1917,14 @@ name = "tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "engine",
  "errors",
+ "llm",
+ "providers",
  "ratatui",
+ "redaction",
  "settings",
+ "tokio",
  "tui-widgets",
 ]
 

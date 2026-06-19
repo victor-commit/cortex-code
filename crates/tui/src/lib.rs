@@ -7,11 +7,13 @@
 //! status footer — and exits cleanly via `/exit` or the quit keybind.
 
 mod app;
+mod turn;
 mod ui;
 
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crossterm::event::{
     self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -85,17 +87,40 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Resu
         if app.should_quit {
             break;
         }
-        match event::read()? {
-            Event::Key(key) => {
-                if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-                app.on_key(key);
-            }
-            // Resize is handled implicitly: the next draw recomputes the layout.
-            Event::Resize(_, _) => {}
-            _ => {}
+
+        // Start a streaming turn for any prompt the last Enter submitted. The worker runs on its
+        // own thread and reports events back over a channel; redraw immediately so the user message
+        // and busy indicator appear before the first delta arrives.
+        if let Some(prompt) = app.take_pending_prompt() {
+            let rx = turn::spawn(prompt.clone(), app.history_snapshot());
+            app.begin_turn(prompt, rx);
+            continue;
         }
+
+        // Poll for input with a short timeout while a turn streams (so the spinner animates and
+        // deltas are applied promptly) and a longer one when idle (so the loop stays cheap).
+        let timeout = if app.is_busy() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(200)
+        };
+        if event::poll(timeout)? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    app.on_key(key);
+                }
+                // Resize is handled implicitly: the next draw recomputes the layout.
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
+        }
+
+        // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
+        app.poll_turn();
+
         if app.should_quit {
             break;
         }
