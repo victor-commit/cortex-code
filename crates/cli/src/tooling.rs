@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use engine::{ToolDispatchResult, ToolDispatcher};
+use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use tools::{ToolContext, ToolRegistry};
@@ -20,13 +20,32 @@ pub struct RegistryDispatcher {
 }
 
 impl RegistryDispatcher {
-    /// Build a dispatcher over the built-in tool set, resolving relative paths against `cwd`.
+    /// Build a dispatcher whose tool set is materialized for `model_id`'s family (architecture §4):
+    /// a GPT-family model receives `apply_patch` (and loses `edit`/`write`), while every other model
+    /// keeps the default `edit`/`write` set and has no `apply_patch`.
     #[must_use]
-    pub fn builtin(cwd: PathBuf) -> Self {
+    pub fn for_model(cwd: PathBuf, model_id: &str) -> Self {
+        let registry = match ModelFamily::from_model_id(model_id) {
+            ModelFamily::Gpt | ModelFamily::Codex => ToolRegistry::gpt(),
+            ModelFamily::Anthropic | ModelFamily::Gemini | ModelFamily::Default => {
+                ToolRegistry::builtin()
+            }
+        };
         Self {
-            registry: ToolRegistry::builtin(),
+            registry,
             context: ToolContext::new(cwd),
         }
+    }
+
+    /// The names of the tools materialized for this turn, in advertised order. Surfaced in machine
+    /// output so a consumer can observe the per-turn (model-aware) tool list.
+    #[must_use]
+    pub fn tool_names(&self) -> Vec<String> {
+        self.registry
+            .definitions()
+            .into_iter()
+            .map(|def| def.name)
+            .collect()
     }
 }
 

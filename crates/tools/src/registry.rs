@@ -8,6 +8,7 @@
 
 use llm::ToolDef;
 
+use crate::apply_patch::ApplyPatchTool;
 use crate::edit::EditTool;
 use crate::read::ReadTool;
 use crate::tool::{Tool, ToolContext, ToolOutput};
@@ -26,13 +27,25 @@ impl ToolRegistry {
         Self { tools: Vec::new() }
     }
 
-    /// A registry pre-populated with the built-in tools available in headless `cortex run`.
+    /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
+    /// e.g. `google/gemini-2.5-flash`): `read`, `write`, and `edit`. This set has no `apply_patch`.
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(ReadTool));
         registry.register(Box::new(WriteTool));
         registry.register(Box::new(EditTool));
+        registry
+    }
+
+    /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
+    /// `apply_patch`. GPT-family models edit files through the `apply_patch` envelope, so `edit` and
+    /// `write` are deliberately swapped out (architecture §3.4, model-aware tool materialization).
+    #[must_use]
+    pub fn gpt() -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(ReadTool));
+        registry.register(Box::new(ApplyPatchTool));
         registry
     }
 
@@ -112,6 +125,35 @@ mod tests {
         assert!(registry.get("write").is_some());
         assert!(defs.iter().any(|def| def.name == "edit"));
         assert!(registry.get("edit").is_some());
+    }
+
+    #[test]
+    fn builtin_registry_has_no_apply_patch() {
+        let registry = ToolRegistry::builtin();
+        assert!(registry.get("apply_patch").is_none());
+        assert!(
+            !registry
+                .definitions()
+                .iter()
+                .any(|def| def.name == "apply_patch")
+        );
+    }
+
+    #[test]
+    fn gpt_registry_advertises_apply_patch_and_omits_edit_and_write() {
+        let registry = ToolRegistry::gpt();
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        assert!(names.contains(&"apply_patch".to_owned()), "got: {names:?}");
+        assert!(names.contains(&"read".to_owned()), "got: {names:?}");
+        assert!(!names.contains(&"edit".to_owned()), "got: {names:?}");
+        assert!(!names.contains(&"write".to_owned()), "got: {names:?}");
+        assert!(registry.get("apply_patch").is_some());
+        assert!(registry.get("edit").is_none());
+        assert!(registry.get("write").is_none());
     }
 
     #[tokio::test]

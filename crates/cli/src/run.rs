@@ -175,16 +175,28 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    // Materialize the built-in tool set, scoped to the process working directory, so the model can
-    // read/inspect the filesystem for real this turn (architecture §3.4 / §4).
+    // Materialize the per-turn tool set for the model's family, scoped to the process working
+    // directory, so the model can read/edit the filesystem for real this turn. A GPT-family model
+    // gets `apply_patch` (and loses `edit`/`write`); any other model keeps `edit`/`write`
+    // (architecture §3.4 / §4).
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let dispatcher = RegistryDispatcher::builtin(cwd);
+    let dispatcher = RegistryDispatcher::for_model(cwd, &model_id);
+    let tool_names = dispatcher.tool_names();
 
     runtime.block_on(async {
         match format {
             OutputFormat::Text => stream_text(&provider, &session_id, &db, turn, &dispatcher).await,
             OutputFormat::Jsonl => {
-                stream_jsonl(&provider, agent.name(), &session_id, &db, turn, &dispatcher).await
+                stream_jsonl(
+                    &provider,
+                    agent.name(),
+                    &session_id,
+                    &tool_names,
+                    &db,
+                    turn,
+                    &dispatcher,
+                )
+                .await
             }
             OutputFormat::Json => {
                 emit_json(
@@ -192,6 +204,7 @@ pub fn run(args: RunArgs) -> Exit {
                     &model_id,
                     agent.name(),
                     &session_id,
+                    &tool_names,
                     &db,
                     turn,
                     &dispatcher,
@@ -481,10 +494,12 @@ async fn stream_text(
 
 /// Stream the runner's normalized event vocabulary, one JSON object per line. A leading `session`
 /// event announces the session id so a machine consumer can capture and reuse it via `--session`.
+#[allow(clippy::too_many_arguments)]
 async fn stream_jsonl(
     provider: &dyn llm::Provider,
     agent: &str,
     session_id: &str,
+    tool_names: &[String],
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -492,7 +507,7 @@ async fn stream_jsonl(
     let stdout = io::stdout();
     let mut handle = stdout.lock();
 
-    if let Ok(line) = render_session_line(agent, session_id) {
+    if let Ok(line) = render_session_line(agent, session_id, tool_names) {
         let _ = handle.write_all(line.as_bytes());
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
@@ -549,6 +564,10 @@ struct RunDocument<'a> {
     /// so a consumer sees a running, monotonically non-decreasing session total.
     #[serde(skip_serializing_if = "Option::is_none")]
     session_usage: Option<UsageTotals>,
+    /// The per-turn tool set materialized for the model's family, in advertised order. A GPT-family
+    /// model lists `apply_patch` (and no `edit`/`write`); any other model lists `edit`/`write`
+    /// (and no `apply_patch`). This is the observable per-turn tool advertisement (VAL-TOOLS-019/020).
+    tools: &'a [String],
     /// The structured results of every tool the model invoked this turn, in call order. Carries
     /// text parts and any media attachments (images/PDFs) so a machine consumer sees the tool
     /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
@@ -576,15 +595,20 @@ struct SessionEvent<'a> {
     agent: &'a str,
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
+    /// The per-turn tool set materialized for the model's family, in advertised order (the
+    /// observable per-turn tool advertisement; see [`RunDocument::tools`]).
+    tools: &'a [String],
 }
 
 /// Run the turn to completion, then emit a single strict JSON document on stdout. No partial
 /// document is written if the turn fails.
+#[allow(clippy::too_many_arguments)]
 async fn emit_json(
     provider: &dyn llm::Provider,
     model_id: &str,
     agent: &str,
     session_id: &str,
+    tool_names: &[String],
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -638,6 +662,7 @@ async fn emit_json(
         model_id,
         agent,
         session_id,
+        tool_names,
         &outcome,
         session_usage,
         tool_results,
@@ -669,6 +694,7 @@ fn build_run_document<'a>(
     model_id: &'a str,
     agent: &'a str,
     session_id: &'a str,
+    tool_names: &'a [String],
     outcome: &'a RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
@@ -683,16 +709,19 @@ fn build_run_document<'a>(
         steps: outcome.steps,
         usage: outcome.usage.as_ref(),
         session_usage,
+        tools: tool_names,
         tool_results,
     }
 }
 
 /// Serialize the completed-turn document to a single line terminated by exactly one newline, so
 /// stdout carries one strict JSON value with no leading or trailing non-JSON bytes.
+#[allow(clippy::too_many_arguments)]
 fn render_json_document(
     model_id: &str,
     agent: &str,
     session_id: &str,
+    tool_names: &[String],
     outcome: &RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
@@ -701,6 +730,7 @@ fn render_json_document(
         model_id,
         agent,
         session_id,
+        tool_names,
         outcome,
         session_usage,
         tool_results,
@@ -709,12 +739,18 @@ fn render_json_document(
     Ok(line)
 }
 
-/// Render the leading `--jsonl` session event (without the trailing newline).
-fn render_session_line(agent: &str, session_id: &str) -> Result<String, serde_json::Error> {
+/// Render the leading `--jsonl` session event (without the trailing newline). It announces the
+/// agent persona, the session id, and the per-turn tool advertisement.
+fn render_session_line(
+    agent: &str,
+    session_id: &str,
+    tool_names: &[String],
+) -> Result<String, serde_json::Error> {
     serde_json::to_string(&SessionEvent {
         kind: "session",
         agent,
         session: session_id,
+        tools: tool_names,
     })
 }
 
@@ -1458,6 +1494,7 @@ mod tests {
             "google/gemini-2.5-flash",
             "build",
             "ses_x",
+            &[],
             &sample_outcome(),
             None,
             Vec::new(),
@@ -1483,6 +1520,7 @@ mod tests {
             "google/gemini-2.5-flash",
             "plan",
             "ses_abc123",
+            &[],
             &sample_outcome(),
             None,
             Vec::new(),
@@ -1531,6 +1569,7 @@ mod tests {
             "google/gemini-2.5-flash",
             "build",
             "ses_cumulative",
+            &[],
             &sample_outcome(),
             Some(session_usage),
             Vec::new(),
@@ -1570,8 +1609,9 @@ mod tests {
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered = render_json_document("m", "general", "ses_y", &outcome, None, Vec::new())
-            .expect("render");
+        let rendered =
+            render_json_document("m", "general", "ses_y", &[], &outcome, None, Vec::new())
+                .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
@@ -1588,11 +1628,41 @@ mod tests {
     // re-usable session id, so a machine consumer can capture it before the runner's events stream.
     #[test]
     fn jsonl_session_line_is_typed_and_carries_the_agent_and_session_id() {
-        let line = render_session_line("plan", "ses_seed42").expect("render");
+        let tools = vec!["read".to_owned(), "apply_patch".to_owned()];
+        let line = render_session_line("plan", "ses_seed42", &tools).expect("render");
         let value: serde_json::Value = serde_json::from_str(&line).expect("json");
         assert_eq!(value["type"], "session");
         assert_eq!(value["agent"], "plan");
         assert_eq!(value["session"], "ses_seed42");
+        // VAL-TOOLS-019/020: the session event advertises the per-turn tool set.
+        assert_eq!(
+            value["tools"],
+            serde_json::json!(["read", "apply_patch"]),
+            "the jsonl session event advertises the materialized tool set"
+        );
+    }
+
+    // VAL-TOOLS-019/020: the `--format json` document advertises the per-turn (model-aware) tool
+    // set so a machine consumer can observe which tools were materialized for the turn.
+    #[test]
+    fn json_document_advertises_the_per_turn_tool_set() {
+        let gpt_tools = vec!["read".to_owned(), "apply_patch".to_owned()];
+        let rendered = render_json_document(
+            "openai/gpt-4o-mini",
+            "build",
+            "ses_gpt",
+            &gpt_tools,
+            &sample_outcome(),
+            None,
+            Vec::new(),
+        )
+        .expect("render");
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        let tools = value["tools"].as_array().expect("tools is an array");
+        let names: Vec<&str> = tools.iter().filter_map(serde_json::Value::as_str).collect();
+        assert!(names.contains(&"apply_patch"), "got: {names:?}");
+        assert!(!names.contains(&"edit"), "got: {names:?}");
+        assert!(!names.contains(&"write"), "got: {names:?}");
     }
 
     // `session_selection` maps the mutually-exclusive flags: an explicit id wins, `--continue`
