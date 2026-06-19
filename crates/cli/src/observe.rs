@@ -56,15 +56,21 @@ pub struct LogSink;
 
 impl Subscriber for LogSink {
     fn on_event(&self, event: &Event) {
-        let payload =
-            serde_json::to_string(event).unwrap_or_else(|_| "<unserializable>".to_owned());
         tracing::debug!(
             target: "cortex::events",
             kind = event.kind(),
-            payload = %payload,
+            payload = %redacted_payload(event),
             "event delivered to subscriber"
         );
     }
+}
+
+/// Serialize an event to JSON for logging, scrubbing API-key-shaped secrets to the canonical
+/// [`redaction::PLACEHOLDER`] so a secret carried on the bus never reaches the log sink in
+/// cleartext.
+fn redacted_payload(event: &Event) -> String {
+    let payload = serde_json::to_string(event).unwrap_or_else(|_| "<unserializable>".to_owned());
+    redaction::redact(&payload)
 }
 
 /// A second in-process subscriber that tallies deliveries, used to demonstrate that a single
@@ -117,6 +123,22 @@ mod tests {
         counter.on_event(&event);
         counter.on_event(&event);
         assert_eq!(counter.count(), 2);
+    }
+
+    #[test]
+    fn log_payload_scrubs_a_secret_carried_on_an_event() {
+        // Assembled from fragments so no contiguous key-shaped literal lives in source.
+        let secret = format!("sk-{}-{}", "or-v1", "deadbeef".repeat(4));
+        let event = Event::lifecycle(LifecyclePhase::Startup, Surface::Run, secret.as_str());
+        let payload = redacted_payload(&event);
+        assert!(
+            !payload.contains(&secret),
+            "the raw secret must not reach the log payload: {payload}"
+        );
+        assert!(
+            payload.contains(redaction::PLACEHOLDER),
+            "the canonical placeholder must mark the redaction: {payload}"
+        );
     }
 
     #[test]

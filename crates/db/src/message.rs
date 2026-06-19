@@ -45,6 +45,10 @@ impl<'a> MessageRepo<'a> {
 
     /// Append a message to a session, returning the persisted record.
     ///
+    /// The content is scrubbed of API-key-shaped secrets (replaced by the canonical
+    /// [`redaction::PLACEHOLDER`]) before it is written, so the raw secret never lands in the
+    /// database file; non-secret text is stored verbatim.
+    ///
     /// Errors with [`DbError::NotFound`] if the session does not exist, so the caller gets a
     /// clear diagnostic rather than an opaque foreign-key constraint failure.
     pub fn create(&self, session_id: &str, role: &str, content: &str) -> DbResult<Message> {
@@ -60,6 +64,7 @@ impl<'a> MessageRepo<'a> {
             });
         }
 
+        let content = redaction::redact(content);
         let id = random_id(self.conn, "msg")?;
         let message = self.conn.query_row(
             "INSERT INTO messages (id, session_id, role, content, created_at)

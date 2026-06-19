@@ -259,6 +259,7 @@ dependencies = [
 name = "db"
 version = "0.1.0"
 dependencies = [
+ "redaction",
  "rusqlite",
  "serde",
  "serde_json",
@@ -747,6 +748,7 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "redaction",
  "serde_json",
  "toml",
 ]

@@ -30,6 +30,10 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
+    // The echoed output is a reporting sink, so scrub API-key-shaped secrets before rendering;
+    // the canonical placeholder is identical to the one used by logs and persistence.
+    let prompt = redaction::redact(&prompt);
+
     let stdout = io::stdout();
     let format = effective_format(args.jsonl, args.format);
     let colorize = should_colorize(format, stdout.is_terminal(), no_color_requested());

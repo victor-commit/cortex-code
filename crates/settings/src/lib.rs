@@ -128,15 +128,56 @@ impl EffectiveConfig {
     }
 
     /// Render the effective config as a single strict JSON document (compact, one line).
+    ///
+    /// This is a config-reporting sink, so API-key-shaped secrets are scrubbed to the canonical
+    /// [`redaction::PLACEHOLDER`] before serialization; non-secret values are reported verbatim.
+    /// The structured accessors ([`get`](Self::get), [`table`](Self::table), [`model`](Self::model))
+    /// still return the real resolved values for runtime use.
     #[must_use]
     pub fn to_json(&self) -> String {
-        serde_json::to_string(&self.table).expect("a toml table is always JSON-serializable")
+        serde_json::to_string(&self.redacted_table())
+            .expect("a toml table is always JSON-serializable")
     }
 
-    /// Render the effective config as a TOML document for human inspection.
+    /// Render the effective config as a TOML document for human inspection, with secrets scrubbed
+    /// to the canonical [`redaction::PLACEHOLDER`] (see [`to_json`](Self::to_json)).
     #[must_use]
     pub fn to_toml(&self) -> String {
-        toml::to_string_pretty(&self.table).unwrap_or_else(|_| self.to_json())
+        let redacted = self.redacted_table();
+        toml::to_string_pretty(&redacted).unwrap_or_else(|_| {
+            serde_json::to_string(&redacted).expect("a toml table is always JSON-serializable")
+        })
+    }
+
+    /// A clone of the effective table with every API-key-shaped secret value scrubbed, used by the
+    /// reporting sinks only (the live table retains the real values for runtime).
+    fn redacted_table(&self) -> Table {
+        let mut table = self.table.clone();
+        redact_table(&mut table);
+        table
+    }
+}
+
+/// Recursively scrub secrets from every string value in `table`.
+fn redact_table(table: &mut Table) {
+    for (_key, value) in table.iter_mut() {
+        redact_value(value);
+    }
+}
+
+/// Scrub secrets from a single config value, descending into nested tables and arrays so a secret
+/// referenced anywhere (e.g. `[auth] key = "..."`) is masked while non-secret siblings are kept.
+fn redact_value(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            let scrubbed = redaction::redact(text);
+            if scrubbed != *text {
+                *text = scrubbed;
+            }
+        }
+        Value::Table(table) => redact_table(table),
+        Value::Array(items) => items.iter_mut().for_each(redact_value),
+        _ => {}
     }
 }
 

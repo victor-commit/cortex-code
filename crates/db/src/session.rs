@@ -41,7 +41,12 @@ impl<'a> SessionRepo<'a> {
     }
 
     /// Create a new session with an optional title, returning the persisted record.
+    ///
+    /// The title is scrubbed of API-key-shaped secrets (replaced by the canonical
+    /// [`redaction::PLACEHOLDER`]) before it is written, so a secret pasted into a title never
+    /// lands in the database file; non-secret titles are stored verbatim.
     pub fn create(&self, title: Option<&str>) -> DbResult<Session> {
+        let title = title.map(redaction::redact);
         let id = random_id(self.conn, "ses")?;
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, created_at, updated_at)
