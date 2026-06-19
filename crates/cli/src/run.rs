@@ -11,17 +11,25 @@
 //! (`</dev/null`, a closed pipe, or an interactive terminal with nothing piped in) the command
 //! fails fast with [`Exit::MissingInput`] rather than hanging.
 //!
+//! The model used for the turn is resolved through the full configuration precedence chain
+//! (`defaults < global < project < nested < env < --model`): a config-file `model` is honored,
+//! an explicit `--model` flag overrides it, and with neither present the mission default
+//! `google/gemini-2.5-flash` is used. The model actually used is reported in machine output.
+//!
 //! The `CORTEX_NO_NET` kill-switch is consulted before a credential is resolved or any socket is
 //! opened, so a run fails closed with a `net-disabled` diagnostic. When the credential is absent
 //! the run fails with the canonical `no-credential` diagnostic; in neither case is any partial
 //! answer written to stdout.
 
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 
 use engine::{EnvironmentBlock, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn};
 use errors::Exit;
+use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::Serialize;
+use settings::{ConfigError, ConfigInputs};
 
 use crate::cli::{OutputFormat, RunArgs};
 
@@ -53,7 +61,32 @@ pub fn run(args: RunArgs) -> Exit {
         return diag.exit();
     }
 
-    let resolved = providers::resolve_model(args.model.as_deref());
+    // Resolve the model through the full configuration precedence chain so a config-file `model`
+    // is honored while an explicit `--model` flag still wins. A config error (bad TOML, failed
+    // `{env:}`/`{file:}` substitution, type mismatch) fails fast with the stable config exit code.
+    let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
+        Ok(config_inputs) => config_inputs,
+        Err(err) => {
+            eprintln!("cortex run: cannot determine the working directory: {err}");
+            return Exit::Failure;
+        }
+    };
+    let resolved = match resolve_run_model(config_inputs) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Config;
+        }
+    };
+
+    // Reject a malformed model id locally, before any credential or socket, with an actionable
+    // error naming the offending model. A well-formed but unknown id is left to the provider to
+    // accept or reject upstream, preserving the OpenRouter passthrough for newer models.
+    if let Err(message) = validate_model_id(&resolved.model_id) {
+        eprintln!("cortex run: {message}");
+        return Exit::Failure;
+    }
+
     let inputs = providers::CredentialInputs::openrouter_from_process(None);
     let provider = match providers::resolve_openrouter(&inputs) {
         Ok(provider) => provider,
@@ -229,6 +262,53 @@ fn effective_format(jsonl: bool, format: OutputFormat) -> OutputFormat {
     if jsonl { OutputFormat::Jsonl } else { format }
 }
 
+/// Build the CLI-layer configuration overrides for the run from the optional `--model` flag.
+///
+/// An explicit `--model` becomes the highest-precedence `model` override (beating env and every
+/// config file); its absence yields an empty override map so the lower layers (config files, env,
+/// built-in default) decide the model.
+fn model_overrides(cli_model: Option<&str>) -> BTreeMap<String, String> {
+    let mut overrides = BTreeMap::new();
+    if let Some(model) = cli_model {
+        overrides.insert("model".to_owned(), model.to_owned());
+    }
+    overrides
+}
+
+/// Resolve the effective model for the turn by merging every configuration layer (the `--model`
+/// flag is carried as the CLI override inside `inputs`) and resolving the winning model id against
+/// the provider catalogue.
+///
+/// # Errors
+/// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded (bad TOML,
+/// failed `{env:}`/`{file:}` substitution, or a type mismatch).
+fn resolve_run_model(inputs: ConfigInputs) -> Result<ResolvedModel, ConfigError> {
+    let effective = settings::load(inputs)?;
+    Ok(providers::resolve_model(Some(effective.model())))
+}
+
+/// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id.
+///
+/// OpenRouter model ids always carry a provider prefix (e.g. `google/gemini-2.5-flash`), so a
+/// bare id without one is not a valid model. Rejecting it here fails fast with an actionable error
+/// naming the offending model rather than letting the provider silently auto-route an ambiguous
+/// request. A well-formed but unknown id is intentionally accepted (it is left to the provider to
+/// accept or reject upstream), which preserves the OpenRouter passthrough for models newer than
+/// the embedded catalogue.
+///
+/// # Errors
+/// Returns an actionable, model-naming message when the id is not a `provider/model` pair.
+fn validate_model_id(model_id: &str) -> Result<(), String> {
+    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
+    if provider.is_empty() || model.is_empty() {
+        return Err(format!(
+            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
+             (for example google/gemini-2.5-flash)"
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the prompt according to the documented precedence (argument over stdin).
 ///
 /// `stdin_is_terminal` is passed in (rather than derived from `source`) because `IsTerminal`
@@ -277,10 +357,216 @@ fn strip_one_trailing_newline(s: &str) -> &str {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A non-terminal stdin double (a pipe/redirect), so `resolve_prompt` reads it.
     fn piped(data: &str) -> Cursor<Vec<u8>> {
         Cursor::new(data.as_bytes().to_vec())
+    }
+
+    /// A unique, freshly created empty temp directory for hermetic config-layer tests.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let unique = format!(
+            "cortex-model-sel-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    /// Build a fresh `base` (home) + `base/proj` (cwd) scratch tree so the project-config walk is
+    /// bounded to the scratch dir (home is the walk boundary) and never reads real config files.
+    fn scratch_tree(tag: &str) -> (PathBuf, PathBuf) {
+        let base = scratch_dir(tag);
+        let proj = base.join("proj");
+        std::fs::create_dir_all(&proj).expect("create proj dir");
+        (base, proj)
+    }
+
+    /// Construct hermetic [`ConfigInputs`]: `home` bounds the project walk, `cwd` is where project
+    /// config is discovered, plus explicit `CORTEX_*` env and the optional `--model` CLI override.
+    fn config_inputs(
+        home: &Path,
+        cwd: &Path,
+        env: &[(&str, &str)],
+        cli_model: Option<&str>,
+    ) -> ConfigInputs {
+        ConfigInputs {
+            home: Some(home.to_path_buf()),
+            xdg_config_home: None,
+            cwd: cwd.to_path_buf(),
+            env: env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            cli_overrides: model_overrides(cli_model),
+        }
+    }
+
+    /// Write a project `cortex.toml` selecting `model` into the given directory.
+    fn write_config_model(dir: &Path, model: &str) {
+        std::fs::write(dir.join("cortex.toml"), format!("model = \"{model}\"\n"))
+            .expect("write cortex.toml");
+    }
+
+    #[test]
+    fn model_overrides_maps_only_an_explicit_flag() {
+        assert!(
+            model_overrides(None).is_empty(),
+            "no flag yields no override so lower layers decide"
+        );
+        let with = model_overrides(Some("anthropic/claude-3.5-sonnet"));
+        assert_eq!(
+            with.get("model").map(String::as_str),
+            Some("anthropic/claude-3.5-sonnet")
+        );
+    }
+
+    // VAL-LLM-011: with no `--model` flag and no config override, the resolved model is the
+    // mission default `google/gemini-2.5-flash`.
+    #[test]
+    fn default_model_when_no_flag_and_no_config() {
+        let (base, proj) = scratch_tree("default");
+        let resolved =
+            resolve_run_model(config_inputs(&base, &proj, &[], None)).expect("resolve model");
+        assert_eq!(resolved.model_id, "google/gemini-2.5-flash");
+    }
+
+    // VAL-LLM-012 / VAL-LLM-013: an explicit `--model` is honored verbatim, for both the default
+    // model requested explicitly and a second, distinct valid model.
+    #[test]
+    fn explicit_flag_is_honored_for_either_valid_model() {
+        let (base, proj) = scratch_tree("explicit");
+        let default = resolve_run_model(config_inputs(
+            &base,
+            &proj,
+            &[],
+            Some("google/gemini-2.5-flash"),
+        ))
+        .expect("resolve model");
+        assert_eq!(default.model_id, "google/gemini-2.5-flash");
+
+        let second = resolve_run_model(config_inputs(
+            &base,
+            &proj,
+            &[],
+            Some("anthropic/claude-3.5-sonnet"),
+        ))
+        .expect("resolve model");
+        assert_eq!(second.model_id, "anthropic/claude-3.5-sonnet");
+    }
+
+    // VAL-LLM-029 (config half): a config-file `model` is honored when no `--model` flag is given.
+    #[test]
+    fn config_file_model_is_honored_without_a_flag() {
+        let (base, proj) = scratch_tree("config");
+        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+        let resolved =
+            resolve_run_model(config_inputs(&base, &proj, &[], None)).expect("resolve model");
+        assert_eq!(resolved.model_id, "anthropic/claude-3.5-sonnet");
+    }
+
+    // VAL-LLM-029 (override half): an explicit `--model` overrides a config-file `model`.
+    #[test]
+    fn flag_overrides_a_config_file_model() {
+        let (base, proj) = scratch_tree("override");
+        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+        let resolved = resolve_run_model(config_inputs(
+            &base,
+            &proj,
+            &[],
+            Some("google/gemini-2.5-flash"),
+        ))
+        .expect("resolve model");
+        assert_eq!(resolved.model_id, "google/gemini-2.5-flash");
+    }
+
+    // The documented precedence chain holds end-to-end: env (`CORTEX_MODEL`) overrides the config
+    // file, and a `--model` flag overrides env.
+    #[test]
+    fn env_overrides_config_and_flag_overrides_env() {
+        let (base, proj) = scratch_tree("precedence");
+        write_config_model(&proj, "anthropic/claude-3.5-sonnet");
+
+        let env_only = resolve_run_model(config_inputs(
+            &base,
+            &proj,
+            &[("CORTEX_MODEL", "openai/gpt-4o-mini")],
+            None,
+        ))
+        .expect("resolve model");
+        assert_eq!(
+            env_only.model_id, "openai/gpt-4o-mini",
+            "env overrides the config file"
+        );
+
+        let flag_wins = resolve_run_model(config_inputs(
+            &base,
+            &proj,
+            &[("CORTEX_MODEL", "openai/gpt-4o-mini")],
+            Some("google/gemini-2.5-flash"),
+        ))
+        .expect("resolve model");
+        assert_eq!(
+            flag_wins.model_id, "google/gemini-2.5-flash",
+            "the --model flag overrides env"
+        );
+    }
+
+    // VAL-LLM-014 (resolution half): an unknown model id is preserved verbatim (OpenRouter is a
+    // passthrough) with no catalogue metadata, so the offending id reaches the model-id check (or
+    // the provider) rather than being silently coerced to the default.
+    #[test]
+    fn unknown_model_is_preserved_verbatim() {
+        let (base, proj) = scratch_tree("unknown");
+        let resolved =
+            resolve_run_model(config_inputs(&base, &proj, &[], Some("gemini-3.5-flash")))
+                .expect("resolve model");
+        assert_eq!(resolved.model_id, "gemini-3.5-flash");
+        assert!(
+            resolved.info.is_none(),
+            "an unknown id carries no catalogue metadata"
+        );
+    }
+
+    // VAL-LLM-014 (validation half): a bare model id with no provider prefix is rejected fast with
+    // an actionable error that names the offending model and reads as unknown/invalid.
+    #[test]
+    fn bare_model_id_is_rejected_with_an_actionable_error() {
+        let err = validate_model_id("gemini-3.5-flash").expect_err("a bare id must be rejected");
+        assert!(
+            err.contains("gemini-3.5-flash"),
+            "the error must name the offending model, got: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("unknown") && err.contains("provider/model"),
+            "the error must read as unknown and explain the expected format, got: {err}"
+        );
+        // An empty provider or empty model half is equally malformed.
+        assert!(validate_model_id("/gemini-2.5-flash").is_err());
+        assert!(validate_model_id("google/").is_err());
+        assert!(validate_model_id("").is_err());
+    }
+
+    // Well-formed `provider/model` ids pass validation, including ones unknown to the embedded
+    // catalogue, so the OpenRouter passthrough is preserved for models newer than the snapshot.
+    #[test]
+    fn well_formed_model_ids_pass_validation() {
+        for id in [
+            "google/gemini-2.5-flash",
+            "anthropic/claude-sonnet-4",
+            "some/brand-new-model-2099",
+            "openrouter/auto",
+        ] {
+            assert!(
+                validate_model_id(id).is_ok(),
+                "a fully-qualified id must pass validation: {id}"
+            );
+        }
     }
 
     #[test]
