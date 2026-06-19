@@ -34,28 +34,68 @@ pub fn openrouter_base_url() -> String {
         .unwrap_or_else(|| OPENROUTER_BASE_URL.to_owned())
 }
 
-/// Build a ready OpenRouter [`OpenAiCompatible`] provider from a resolved credential.
+/// Build a ready OpenRouter [`OpenAiCompatible`] provider from a resolved credential, targeting
+/// the catalogue/default base URL.
 ///
 /// # Errors
 /// Returns the [`Diagnostic`] from the transport build (e.g. a rustls client failure) normalized
 /// through the LLM error layer.
 pub fn openrouter_provider(credential: &Credential) -> Result<OpenAiCompatible, Diagnostic> {
+    openrouter_provider_with_base_url(credential, &openrouter_base_url())
+}
+
+/// Build a ready OpenRouter [`OpenAiCompatible`] provider from a resolved credential against an
+/// explicit `base_url`.
+///
+/// This is the seam for pointing the provider at an alternate endpoint (e.g. a self-hosted
+/// gateway, or a deliberately unreachable loopback port in tests), without disturbing the
+/// catalogue default for normal runs.
+///
+/// # Errors
+/// Returns the [`Diagnostic`] from the transport build (e.g. a rustls client failure) normalized
+/// through the LLM error layer.
+pub fn openrouter_provider_with_base_url(
+    credential: &Credential,
+    base_url: &str,
+) -> Result<OpenAiCompatible, Diagnostic> {
     let mut config = OpenAiConfig::openrouter(credential.expose());
-    config.base_url = openrouter_base_url();
+    config.base_url = base_url.to_owned();
     let config = config
         .header("HTTP-Referer", REFERER)
         .header("X-Title", TITLE);
     OpenAiCompatible::new(config).map_err(|error| error.to_diagnostic())
 }
 
-/// Resolve the OpenRouter credential across the documented precedence layers and build a provider.
+/// Resolve the OpenRouter credential across the documented precedence layers and build a provider
+/// against the catalogue/default base URL.
 ///
 /// # Errors
 /// Returns [`Diagnostic::NoCredential`] when no layer yields a key, or a transport-build diagnostic
 /// if the client cannot be constructed.
 pub fn resolve_openrouter(inputs: &CredentialInputs) -> Result<OpenAiCompatible, Diagnostic> {
+    resolve_openrouter_with(inputs, None)
+}
+
+/// Resolve the OpenRouter credential across the documented precedence layers and build a provider,
+/// honoring an optional `base_url` override.
+///
+/// A `None` (or empty) override falls back to the catalogue/default base URL, so normal runs are
+/// unaffected; a non-empty override targets the supplied endpoint. The credential resolution and
+/// redaction guarantees are identical to [`resolve_openrouter`].
+///
+/// # Errors
+/// Returns [`Diagnostic::NoCredential`] when no layer yields a key, or a transport-build diagnostic
+/// if the client cannot be constructed.
+pub fn resolve_openrouter_with(
+    inputs: &CredentialInputs,
+    base_url_override: Option<&str>,
+) -> Result<OpenAiCompatible, Diagnostic> {
     let credential = resolve_credential(OPENROUTER_ID, inputs)?;
-    openrouter_provider(&credential)
+    let base_url = match base_url_override.map(str::trim) {
+        Some(override_url) if !override_url.is_empty() => override_url.to_owned(),
+        _ => openrouter_base_url(),
+    };
+    openrouter_provider_with_base_url(&credential, &base_url)
 }
 
 #[cfg(test)]
@@ -84,5 +124,36 @@ mod tests {
         let err = resolve_openrouter(&CredentialInputs::default()).expect_err("must fail");
         assert_eq!(err.kind(), "no-credential");
         assert_eq!(err, Diagnostic::no_credential(OPENROUTER_ID));
+    }
+
+    #[test]
+    fn provider_builds_against_an_explicit_base_url() {
+        let inputs = CredentialInputs {
+            env_value: Some("env-key".to_owned()),
+            ..Default::default()
+        };
+        let credential = resolve_credential(OPENROUTER_ID, &inputs).expect("resolves");
+        openrouter_provider_with_base_url(&credential, "http://127.0.0.1:3250")
+            .expect("provider builds against an override base URL");
+    }
+
+    #[test]
+    fn resolve_with_an_override_still_requires_a_credential() {
+        let err =
+            resolve_openrouter_with(&CredentialInputs::default(), Some("http://127.0.0.1:3250"))
+                .expect_err("an endpoint override does not substitute for a credential");
+        assert_eq!(err.kind(), "no-credential");
+    }
+
+    #[test]
+    fn resolve_with_a_blank_override_falls_back_to_the_default_and_builds() {
+        let inputs = CredentialInputs {
+            env_value: Some("env-key".to_owned()),
+            ..Default::default()
+        };
+        // A blank/whitespace override is treated as "no override": the provider still builds
+        // (against the catalogue default) rather than failing on an empty URL.
+        resolve_openrouter_with(&inputs, Some("   ")).expect("blank override falls back");
+        resolve_openrouter_with(&inputs, None).expect("absent override uses the default");
     }
 }

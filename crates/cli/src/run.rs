@@ -25,11 +25,11 @@ use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 
 use engine::{EnvironmentBlock, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn};
-use errors::Exit;
+use errors::{Diagnostic, Exit};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::Serialize;
-use settings::{ConfigError, ConfigInputs};
+use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
 
@@ -61,9 +61,10 @@ pub fn run(args: RunArgs) -> Exit {
         return diag.exit();
     }
 
-    // Resolve the model through the full configuration precedence chain so a config-file `model`
-    // is honored while an explicit `--model` flag still wins. A config error (bad TOML, failed
-    // `{env:}`/`{file:}` substitution, type mismatch) fails fast with the stable config exit code.
+    // Resolve the model, credential indirection, and any endpoint override through the full
+    // configuration precedence chain so a config-file `model` is honored while an explicit
+    // `--model` flag still wins. A config error (bad TOML, failed `{env:}`/`{file:}` substitution,
+    // type mismatch) fails fast with the stable config exit code.
     let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
         Ok(config_inputs) => config_inputs,
         Err(err) => {
@@ -71,8 +72,8 @@ pub fn run(args: RunArgs) -> Exit {
             return Exit::Failure;
         }
     };
-    let resolved = match resolve_run_model(config_inputs) {
-        Ok(resolved) => resolved,
+    let run_config = match resolve_run_config(config_inputs) {
+        Ok(run_config) => run_config,
         Err(err) => {
             eprintln!("cortex run: {err}");
             return Exit::Config;
@@ -82,23 +83,24 @@ pub fn run(args: RunArgs) -> Exit {
     // Reject a malformed model id locally, before any credential or socket, with an actionable
     // error naming the offending model. A well-formed but unknown id is left to the provider to
     // accept or reject upstream, preserving the OpenRouter passthrough for newer models.
-    if let Err(message) = validate_model_id(&resolved.model_id) {
+    if let Err(message) = validate_model_id(&run_config.model.model_id) {
         eprintln!("cortex run: {message}");
         return Exit::Failure;
     }
 
-    let inputs = providers::CredentialInputs::openrouter_from_process(None);
-    let provider = match providers::resolve_openrouter(&inputs) {
+    // The credential resolves through env > 0600 file > config indirection; an endpoint override
+    // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
+    // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
+    let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
+    let provider = match providers::resolve_openrouter_with(&inputs, run_config.base_url.as_deref())
+    {
         Ok(provider) => provider,
-        Err(diag) => {
-            eprintln!("cortex run: {diag}");
-            return diag.exit();
-        }
+        Err(diag) => return report_setup_diagnostic(&diag),
     };
 
-    let system =
-        SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
-    let turn = Turn::new(&resolved.model_id, system, prompt);
+    let model_id = run_config.model.model_id;
+    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process()).render();
+    let turn = Turn::new(&model_id, system, prompt);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -111,7 +113,29 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    runtime.block_on(execute_turn(&provider, &resolved.model_id, turn, format))
+    runtime.block_on(execute_turn(&provider, &model_id, turn, format))
+}
+
+/// Report a setup-time provider diagnostic to stderr (keeping stdout byte-empty) and return its
+/// mapped exit code. A missing-credential diagnostic is followed by an actionable hint naming how
+/// to supply the key, so a keyless run tells the user exactly what to set (VAL-LLM-022).
+fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {
+    eprintln!("cortex run: {diag}");
+    if let Diagnostic::NoCredential(provider) = diag {
+        if provider == providers::OPENROUTER_ID {
+            eprintln!(
+                "cortex run: set the {} environment variable (or store a key in the credential \
+                 file or config) to authenticate with OpenRouter",
+                providers::OPENROUTER_ENV
+            );
+        } else {
+            eprintln!(
+                "cortex run: provide an API key for {provider} via its environment variable, the \
+                 credential file, or config"
+            );
+        }
+    }
+    diag.exit()
 }
 
 /// Drive the turn through the runner and render its events in the requested format.
@@ -275,16 +299,78 @@ fn model_overrides(cli_model: Option<&str>) -> BTreeMap<String, String> {
     overrides
 }
 
-/// Resolve the effective model for the turn by merging every configuration layer (the `--model`
-/// flag is carried as the CLI override inside `inputs`) and resolving the winning model id against
-/// the provider catalogue.
+/// The configuration-derived inputs for a run: the resolved model plus the optional OpenRouter
+/// endpoint override and config-supplied credential (the lowest-precedence credential layer).
+struct RunConfig {
+    model: ResolvedModel,
+    base_url: Option<String>,
+    api_key: Option<String>,
+}
+
+/// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
+/// carried as the CLI override inside `inputs`), resolve the winning model id against the provider
+/// catalogue, and extract the optional OpenRouter endpoint override and config-supplied API key.
 ///
 /// # Errors
 /// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded (bad TOML,
 /// failed `{env:}`/`{file:}` substitution, or a type mismatch).
-fn resolve_run_model(inputs: ConfigInputs) -> Result<ResolvedModel, ConfigError> {
+fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
     let effective = settings::load(inputs)?;
-    Ok(providers::resolve_model(Some(effective.model())))
+    Ok(RunConfig {
+        model: providers::resolve_model(Some(effective.model())),
+        base_url: openrouter_base_url_override(&effective),
+        api_key: openrouter_api_key(&effective),
+    })
+}
+
+/// Resolve the effective model for the turn (a thin wrapper over [`resolve_run_config`]).
+///
+/// # Errors
+/// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded.
+#[cfg(test)]
+fn resolve_run_model(inputs: ConfigInputs) -> Result<ResolvedModel, ConfigError> {
+    Ok(resolve_run_config(inputs)?.model)
+}
+
+/// The OpenRouter endpoint override, if configured. The flat `openrouter_base_url` key (settable
+/// via the `CORTEX_OPENROUTER_BASE_URL` environment variable through the standard `CORTEX_<KEY>`
+/// mapping) wins over a nested `[provider.openrouter] base_url`, so an env/CLI override is
+/// authoritative. An empty/whitespace value is treated as absent.
+fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
+    top_level_string(effective, "openrouter_base_url")
+        .or_else(|| provider_openrouter_string(effective, "base_url"))
+}
+
+/// The OpenRouter API key supplied through configuration (the lowest-precedence credential layer,
+/// below the env var and the 0600 store). A nested `[provider.openrouter] api_key` wins over a
+/// flat `api_key`. Any `{env:}`/`{file:}` indirection has already been resolved by `settings`.
+fn openrouter_api_key(effective: &EffectiveConfig) -> Option<String> {
+    provider_openrouter_string(effective, "api_key")
+        .or_else(|| top_level_string(effective, "api_key"))
+}
+
+/// A non-empty top-level string config value (trimmed), or `None`.
+fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get(key)
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
+/// A non-empty string value under the `[provider.openrouter]` table (trimmed), or `None`.
+fn provider_openrouter_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get("provider")
+        .and_then(|provider| provider.get("openrouter"))
+        .and_then(|openrouter| openrouter.get(key))
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
+/// Trim a candidate value and keep it only if non-empty after trimming.
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id.
@@ -411,6 +497,11 @@ mod tests {
     fn write_config_model(dir: &Path, model: &str) {
         std::fs::write(dir.join("cortex.toml"), format!("model = \"{model}\"\n"))
             .expect("write cortex.toml");
+    }
+
+    /// Write an arbitrary project `cortex.toml` body into the given directory.
+    fn write_config(dir: &Path, body: &str) {
+        std::fs::write(dir.join("cortex.toml"), body).expect("write cortex.toml");
     }
 
     #[test]
@@ -567,6 +658,93 @@ mod tests {
                 "a fully-qualified id must pass validation: {id}"
             );
         }
+    }
+
+    // VAL-LLM-032 (override plumbing): a nested `[provider.openrouter] base_url` is surfaced as the
+    // endpoint override, so a run can be retargeted at an alternate (e.g. unreachable) endpoint.
+    #[test]
+    fn base_url_override_from_nested_provider_table() {
+        let (base, proj) = scratch_tree("base-url-nested");
+        write_config(
+            &proj,
+            "[provider.openrouter]\nbase_url = \"http://127.0.0.1:3250\"\n",
+        );
+        let run_config =
+            resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
+        assert_eq!(
+            run_config.base_url.as_deref(),
+            Some("http://127.0.0.1:3250")
+        );
+    }
+
+    // The flat `openrouter_base_url` key is what `CORTEX_OPENROUTER_BASE_URL` maps to via the
+    // standard `CORTEX_<KEY>` env mapping, so an env override retargets the endpoint.
+    #[test]
+    fn base_url_override_from_env_mapped_flat_key() {
+        let (base, proj) = scratch_tree("base-url-env");
+        let run_config = resolve_run_config(config_inputs(
+            &base,
+            &proj,
+            &[("CORTEX_OPENROUTER_BASE_URL", "http://127.0.0.1:3260")],
+            None,
+        ))
+        .expect("resolve");
+        assert_eq!(
+            run_config.base_url.as_deref(),
+            Some("http://127.0.0.1:3260")
+        );
+    }
+
+    // The env-mapped flat key is authoritative: it wins over a nested config-file value.
+    #[test]
+    fn flat_base_url_override_wins_over_nested() {
+        let (base, proj) = scratch_tree("base-url-precedence");
+        write_config(
+            &proj,
+            "[provider.openrouter]\nbase_url = \"http://127.0.0.1:3250\"\n",
+        );
+        let run_config = resolve_run_config(config_inputs(
+            &base,
+            &proj,
+            &[("CORTEX_OPENROUTER_BASE_URL", "http://127.0.0.1:3299")],
+            None,
+        ))
+        .expect("resolve");
+        assert_eq!(
+            run_config.base_url.as_deref(),
+            Some("http://127.0.0.1:3299")
+        );
+    }
+
+    // With nothing configured the override is absent, so the catalogue default base URL is used.
+    #[test]
+    fn no_base_url_override_by_default() {
+        let (base, proj) = scratch_tree("base-url-none");
+        let run_config =
+            resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
+        assert!(run_config.base_url.is_none());
+        assert!(run_config.api_key.is_none());
+    }
+
+    // A nested `[provider.openrouter] api_key` is surfaced as the config-layer credential (the
+    // lowest-precedence credential source, below the env var and the 0600 store).
+    #[test]
+    fn api_key_from_nested_provider_table() {
+        let (base, proj) = scratch_tree("api-key-nested");
+        write_config(&proj, "[provider.openrouter]\napi_key = \"from-config\"\n");
+        let run_config =
+            resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
+        assert_eq!(run_config.api_key.as_deref(), Some("from-config"));
+    }
+
+    // A flat `api_key` key is also accepted as the config-layer credential.
+    #[test]
+    fn api_key_from_flat_key() {
+        let (base, proj) = scratch_tree("api-key-flat");
+        write_config(&proj, "api_key = \"flat-config-key\"\n");
+        let run_config =
+            resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
+        assert_eq!(run_config.api_key.as_deref(), Some("flat-config-key"));
     }
 
     #[test]

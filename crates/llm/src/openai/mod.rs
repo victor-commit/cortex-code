@@ -11,8 +11,10 @@ mod wire;
 
 pub use normalize::{FrameStream, normalize_chat_sse};
 
+use std::fmt;
+
 use futures_util::future::BoxFuture;
-use redaction::guard_outbound;
+use redaction::{PLACEHOLDER, guard_outbound};
 
 use crate::error::LlmError;
 use crate::provider::{LlmStream, Provider};
@@ -26,7 +28,10 @@ const OUTBOUND_OPERATION: &str = "LLM streaming request";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Configuration for an [`OpenAiCompatible`] provider.
-#[derive(Debug, Clone)]
+///
+/// `Debug` deliberately renders the [`api_key`](Self::api_key) as the canonical redaction
+/// placeholder so the raw key can never leak through a `{:?}` of the config.
+#[derive(Clone)]
 pub struct OpenAiConfig {
     /// The API base URL (no trailing `/chat/completions`); e.g. [`OPENROUTER_BASE_URL`].
     pub base_url: String,
@@ -71,8 +76,24 @@ impl OpenAiConfig {
     }
 }
 
+impl fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &PLACEHOLDER)
+            .field("provider_name", &self.provider_name)
+            .field("extra_headers", &self.extra_headers)
+            .field("include_usage", &self.include_usage)
+            .field("transport", &self.transport)
+            .finish()
+    }
+}
+
 /// An OpenAI-compatible Chat-completions provider.
-#[derive(Debug, Clone)]
+///
+/// `Debug` deliberately renders the bearer key as the canonical redaction placeholder so the raw
+/// key can never leak through a `{:?}` of the provider.
+#[derive(Clone)]
 pub struct OpenAiCompatible {
     transport: HttpTransport,
     base_url: String,
@@ -98,6 +119,19 @@ impl OpenAiCompatible {
 
     fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+}
+
+impl fmt::Debug for OpenAiCompatible {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiCompatible")
+            .field("transport", &self.transport)
+            .field("base_url", &self.base_url)
+            .field("api_key", &PLACEHOLDER)
+            .field("provider_name", &self.provider_name)
+            .field("extra_headers", &self.extra_headers)
+            .field("include_usage", &self.include_usage)
+            .finish()
     }
 }
 
@@ -153,5 +187,27 @@ mod tests {
             provider.chat_url(),
             "https://openrouter.ai/api/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn debug_redacts_the_api_key_in_config_and_provider() {
+        // Assembled from fragments so no contiguous key-shaped literal lives in source.
+        let secret = format!("sk-{}-{}", "or-v1", "deadbeef".repeat(6));
+        let config = OpenAiConfig::openrouter(secret.clone());
+        let config_debug = format!("{config:?}");
+        assert!(
+            !config_debug.contains(&secret),
+            "config Debug must not leak the key: {config_debug}"
+        );
+        assert!(config_debug.contains(PLACEHOLDER));
+
+        let provider =
+            OpenAiCompatible::new(OpenAiConfig::openrouter(secret.clone())).expect("build");
+        let provider_debug = format!("{provider:?}");
+        assert!(
+            !provider_debug.contains(&secret),
+            "provider Debug must not leak the key: {provider_debug}"
+        );
+        assert!(provider_debug.contains(PLACEHOLDER));
     }
 }
