@@ -48,6 +48,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, app, chunks[2]);
     // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
     draw_slash_menu(frame, app, chunks[1]);
+    // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
+    draw_mention_menu(frame, app, chunks[1]);
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area);
 }
@@ -559,6 +561,89 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(style::INFO))
         .title(" / commands ")
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Build the `@`-file picker's rows for the current query, or `None` when the picker is closed.
+/// Each row shows a file path; the highlighted row carries a `▸` marker and bold text. A query that
+/// matches no file yields a single graceful "no matching files" row.
+fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+    if !app.mention_open() {
+        return None;
+    }
+    let matches = app.mention_matches();
+    if matches.is_empty() {
+        return Some(vec![Line::from(Span::styled(
+            "  no matching files",
+            Style::default()
+                .fg(style::TEXT_DIM)
+                .add_modifier(Modifier::ITALIC),
+        ))]);
+    }
+
+    let selected = app.mention_selected();
+    let mut lines = Vec::with_capacity(matches.len());
+    for (i, path) in matches.iter().enumerate() {
+        let is_selected = i == selected;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let path_style = if is_selected {
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(style::TEXT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(path.clone(), path_style),
+        ]));
+    }
+    Some(lines)
+}
+
+/// Render the `@`-file picker as a bordered popup floating directly above the prompt box, scrolling
+/// to keep the highlighted row visible when the match list is long.
+fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
+    let Some(rows) = mention_menu_lines(app) else {
+        return;
+    };
+    if prompt_area.width == 0 {
+        return;
+    }
+
+    let selected = app.mention_selected();
+    let visible = rows.len().min(MAX_SLASH_ROWS);
+    let offset = if selected < visible {
+        0
+    } else {
+        selected + 1 - visible
+    };
+    let shown: Vec<Line<'static>> = rows[offset..offset + visible].to_vec();
+
+    let height = (visible as u16).saturating_add(2);
+    let width = prompt_area.width;
+    let y = prompt_area.y.saturating_sub(height);
+    let popup = Rect {
+        x: prompt_area.x,
+        y,
+        width,
+        height: height.min(prompt_area.y.saturating_sub(y).max(height)),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(" @ files ")
         .title_style(
             Style::default()
                 .fg(style::INFO)

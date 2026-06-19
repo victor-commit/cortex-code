@@ -15,9 +15,14 @@ use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
+use crate::mention;
 use crate::slash;
 use crate::tool_card::ToolCard;
 use crate::turn::TurnMessage;
+
+/// The cap on the number of files surfaced in the `@`-mention picker at once, so a broad query (or a
+/// bare `@`) cannot build an unbounded row list; the popup scrolls within this set.
+const MENTION_MATCH_LIMIT: usize = 200;
 
 /// Status line contents reported in the footer.
 #[derive(Debug, Clone)]
@@ -111,6 +116,18 @@ impl Dialog {
     }
 }
 
+/// The open `@`-file picker: the cached candidate file list (loaded when the picker opened) and the
+/// highlighted row. The query and visible matches are derived from the prompt text + cursor (see
+/// [`App::mention_query`] / [`App::mention_matches`]); this state only carries what cannot be
+/// re-derived cheaply each frame (the file list) and the navigation highlight.
+#[derive(Debug, Clone)]
+pub struct MentionPicker {
+    /// Every candidate project file (relative path), loaded once when the picker opened.
+    files: Vec<String>,
+    /// The highlighted match row (clamped to the current match count).
+    selected: usize,
+}
+
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
 const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
     important files, then create (or update) an AGENTS.md file at the project root that documents \
@@ -198,6 +215,10 @@ pub struct App {
     /// The open modal dialog (a picker or status view), or `None` when no dialog is shown. While
     /// set it captures navigation/dismissal keys so the prompt is not edited beneath it.
     dialog: Option<Dialog>,
+    /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
+    /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
+    /// dismisses it.
+    mention: Option<MentionPicker>,
     /// Set when `/editor` is dispatched, signalling the event loop to suspend the TUI and open the
     /// external `$EDITOR`. Consumed once by [`App::take_editor_request`].
     editor_requested: bool,
@@ -225,6 +246,7 @@ impl App {
             expand_tools: false,
             slash_selected: 0,
             dialog: None,
+            mention: None,
             editor_requested: false,
             history: Vec::new(),
         }
@@ -535,6 +557,150 @@ impl App {
     fn close_slash_menu(&mut self) {
         self.input.set_value("");
         self.slash_selected = 0;
+    }
+
+    /// The `@`-mention fragment being typed at the cursor, or `None` when the cursor is not inside an
+    /// active mention.
+    ///
+    /// A mention is active when an `@` sits at the start of the cursor's line or directly after
+    /// whitespace, and every character between that `@` and the cursor is an ordinary path character
+    /// (no whitespace, and no `:`/`#` which begin a line range). The returned string is the text
+    /// between the `@` and the cursor (empty for a bare `@`). Stopping at `:`/`#` means typing a
+    /// line range after a selected path does not reopen the picker.
+    #[must_use]
+    pub fn mention_query(&self) -> Option<String> {
+        let pos = self.input.cursor_position();
+        let line = self.input.line(pos.row)?;
+        let chars: Vec<char> = line.chars().collect();
+        let col = pos.col.min(chars.len());
+
+        let mut at: Option<usize> = None;
+        let mut i = col;
+        while i > 0 {
+            i -= 1;
+            let c = chars[i];
+            if c == '@' {
+                at = Some(i);
+                break;
+            }
+            if c.is_whitespace() || c == ':' || c == '#' {
+                break;
+            }
+        }
+        let at = at?;
+        if at > 0 && !chars[at - 1].is_whitespace() {
+            return None;
+        }
+        Some(chars[at + 1..col].iter().collect())
+    }
+
+    /// Whether the `@`-file picker is currently open.
+    #[must_use]
+    pub fn mention_open(&self) -> bool {
+        self.mention.is_some()
+    }
+
+    /// The picker's files fuzzy-ranked against the current query, best match first (empty when the
+    /// picker is closed).
+    #[must_use]
+    pub fn mention_matches(&self) -> Vec<String> {
+        let Some(picker) = self.mention.as_ref() else {
+            return Vec::new();
+        };
+        let query = self.mention_query().unwrap_or_default();
+        mention::fuzzy_filter(&picker.files, &query, MENTION_MATCH_LIMIT)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The highlighted match index, clamped to the current match count.
+    #[must_use]
+    pub fn mention_selected(&self) -> usize {
+        let len = self.mention_matches().len();
+        let raw = self.mention.as_ref().map_or(0, |picker| picker.selected);
+        if len == 0 { 0 } else { raw.min(len - 1) }
+    }
+
+    /// Recompute the picker's open state after a prompt edit: open it (loading the file list) when
+    /// the cursor enters a mention fragment, keep it open and reset the highlight while the fragment
+    /// is edited, and close it when the cursor leaves the fragment.
+    fn refresh_mention(&mut self) {
+        match self.mention_query() {
+            Some(_) => match self.mention.as_mut() {
+                Some(picker) => picker.selected = 0,
+                None => {
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    self.mention = Some(MentionPicker {
+                        files: mention::list_project_files(&cwd),
+                        selected: 0,
+                    });
+                }
+            },
+            None => self.mention = None,
+        }
+    }
+
+    /// Move the picker highlight to the next match (wrapping at the end).
+    fn mention_select_next(&mut self) {
+        let len = self.mention_matches().len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.mention_selected() + 1) % len;
+        if let Some(picker) = self.mention.as_mut() {
+            picker.selected = next;
+        }
+    }
+
+    /// Move the picker highlight to the previous match (wrapping at the start).
+    fn mention_select_prev(&mut self) {
+        let len = self.mention_matches().len();
+        if len == 0 {
+            return;
+        }
+        let prev = (self.mention_selected() + len - 1) % len;
+        if let Some(picker) = self.mention.as_mut() {
+            picker.selected = prev;
+        }
+    }
+
+    /// Close the `@`-file picker without inserting anything, leaving the typed text unchanged (Esc).
+    fn close_mention(&mut self) {
+        self.mention = None;
+    }
+
+    /// Accept the highlighted file (Enter): replace the typed `@fragment` with an `@path` token and
+    /// close the picker. A picker with no matches simply closes.
+    fn accept_mention(&mut self) {
+        let matches = self.mention_matches();
+        if matches.is_empty() {
+            self.close_mention();
+            return;
+        }
+        let path = matches[self.mention_selected()].clone();
+        self.insert_mention_path(&path);
+        self.mention = None;
+    }
+
+    /// Replace the active `@fragment` (the text between the `@` and the cursor) with `path`, leaving
+    /// the leading `@` in place so the result is an `@path` token and the cursor lands after it.
+    fn insert_mention_path(&mut self, path: &str) {
+        let Some(query) = self.mention_query() else {
+            return;
+        };
+        for _ in 0..query.chars().count() {
+            self.input.delete_backward();
+        }
+        for c in path.chars() {
+            self.input.insert_char(c);
+        }
+    }
+
+    /// React to a prompt edit: reset the slash highlight and recompute the mention picker.
+    fn on_prompt_edited(&mut self) {
+        self.slash_selected = 0;
+        self.refresh_mention();
     }
 
     /// Dispatch the highlighted slash command (Enter). With matches, the highlighted command runs
@@ -895,6 +1061,32 @@ impl App {
             }
         }
 
+        // While the `@`-file picker is open it owns vertical navigation, selection, and dismissal:
+        // the arrows move the highlight, Enter inserts the highlighted file as an `@path` token, and
+        // Esc closes the picker without inserting. Other keys fall through to ordinary editing, which
+        // re-filters (or closes) the picker.
+        if self.mention_open() {
+            match key.code {
+                KeyCode::Up => {
+                    self.mention_select_prev();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.mention_select_next();
+                    return;
+                }
+                KeyCode::Enter if !shift => {
+                    self.accept_mention();
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.close_mention();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             // Quit keybind.
             KeyCode::Char('c') if ctrl => self.should_quit = true,
@@ -908,21 +1100,21 @@ impl App {
             // Expand/collapse tool cards to reveal or hide their full arguments and output.
             KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
-            // slash menu, so reset the highlight to the top match.
+            // slash menu and the `@`-file picker, so refresh both after the edit.
             KeyCode::Char(c) if !ctrl && !alt => {
                 self.input.insert_char(c);
-                self.slash_selected = 0;
+                self.on_prompt_edited();
             }
             // Shift+Enter inserts a soft newline and grows the input without submitting.
             KeyCode::Enter if shift => self.input.insert_newline(),
             KeyCode::Enter => self.submit(),
             KeyCode::Backspace => {
                 self.input.delete_backward();
-                self.slash_selected = 0;
+                self.on_prompt_edited();
             }
             KeyCode::Delete => {
                 self.input.delete_forward();
-                self.slash_selected = 0;
+                self.on_prompt_edited();
             }
             KeyCode::Left => {
                 self.input.handle_key(TextAreaKey::Left, modifiers(shift));
@@ -959,7 +1151,17 @@ impl App {
         if self.is_busy() || trimmed.is_empty() {
             return;
         }
-        self.pending_prompt = Some(trimmed.to_owned());
+        // Inline any `@`-mentioned file contents into the prompt sent to the model, while showing the
+        // typed `@path` prompt in the transcript: the expanded text becomes the pending prompt (sent
+        // and carried into history) and the typed text becomes the user-visible header.
+        let typed = trimmed.to_owned();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let expanded = mention::expand(&typed, &cwd);
+        if expanded != typed {
+            self.pending_header = Some(typed);
+        }
+        self.pending_prompt = Some(expanded);
+        self.mention = None;
         self.input.set_value("");
     }
 }
@@ -1293,6 +1495,96 @@ mod tests {
             a.on_key(key(KeyCode::Char(c)));
         }
         assert_eq!(a.input_value(), "secret");
+    }
+
+    /// Replace the open picker's file list with a fixed set so selection/filtering tests are
+    /// deterministic and independent of the working directory.
+    fn inject_mention_files(a: &mut App, files: &[&str]) {
+        let picker = a.mention.as_mut().expect("picker open");
+        picker.files = files.iter().map(|f| (*f).to_owned()).collect();
+        picker.selected = 0;
+    }
+
+    #[test]
+    fn typing_at_opens_the_file_picker() {
+        // VAL-TUI-049: typing `@` opens the file picker.
+        let mut a = app();
+        assert!(!a.mention_open());
+        a.on_key(key(KeyCode::Char('@')));
+        assert!(a.mention_open(), "the `@` file picker is open");
+    }
+
+    #[test]
+    fn typing_after_at_filters_the_file_list() {
+        // VAL-TUI-050: typing after `@` fuzzy-filters the file list.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('@')));
+        inject_mention_files(
+            &mut a,
+            &["crates/cli/src/main.rs", "README.md", "Cargo.toml"],
+        );
+        type_str(&mut a, "main");
+        let matches = a.mention_matches();
+        assert_eq!(
+            matches.first().map(String::as_str),
+            Some("crates/cli/src/main.rs")
+        );
+        assert!(
+            !matches.iter().any(|m| m == "README.md"),
+            "got: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn selecting_a_file_inserts_an_at_path_token_and_closes() {
+        // VAL-TUI-051: selecting a file inserts an `@path` token and closes the picker.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('@')));
+        inject_mention_files(&mut a, &["crates/cli/src/main.rs"]);
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.input_value(), "@crates/cli/src/main.rs");
+        assert!(!a.mention_open(), "picker closed after selection");
+    }
+
+    #[test]
+    fn mention_supports_a_line_range_suffix() {
+        // VAL-TUI-052: a selected mention accepts a `:start-end` line-range suffix as one token.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('@')));
+        inject_mention_files(&mut a, &["crates/cli/src/main.rs"]);
+        a.on_key(key(KeyCode::Enter));
+        type_str(&mut a, ":5-20");
+        assert_eq!(a.input_value(), "@crates/cli/src/main.rs:5-20");
+        assert!(
+            !a.mention_open(),
+            "typing a range does not reopen the picker"
+        );
+        let parsed = mention::parse(&a.input_value());
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].range, Some((5, 20)));
+    }
+
+    #[test]
+    fn esc_closes_the_file_picker_without_inserting() {
+        // VAL-TUI-053: Esc dismisses the picker leaving the prompt unchanged (no path inserted).
+        let mut a = app();
+        type_str(&mut a, "@app");
+        assert!(a.mention_open());
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.mention_open(), "picker closed by Esc");
+        assert_eq!(a.input_value(), "@app", "no path inserted on Esc");
+    }
+
+    #[test]
+    fn whitespace_after_at_closes_the_picker() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('@')));
+        assert!(a.mention_open());
+        a.on_key(key(KeyCode::Char(' ')));
+        assert!(
+            !a.mention_open(),
+            "a space ends the mention and closes the picker"
+        );
     }
 
     fn usage(input: u32, output: u32, cost: Option<f64>) -> Usage {

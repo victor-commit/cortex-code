@@ -8,6 +8,7 @@
 
 mod app;
 mod diff;
+mod mention;
 mod slash;
 mod tool_card;
 mod tooling;
