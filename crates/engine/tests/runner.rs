@@ -463,3 +463,242 @@ async fn history_and_system_are_placed_ahead_of_the_user_input() {
     assert_eq!(messages[3].role, llm::Role::User);
     assert_eq!(messages[3].content, "new question");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Compaction & overflow recovery (VAL-LLM-025 / VAL-LLM-026)
+// ---------------------------------------------------------------------------------------------
+
+/// One scripted behavior for a single round-trip: fail the `stream` call, or emit a batch of events.
+enum Behavior {
+    /// `provider.stream` returns this error before any event (e.g. a context-overflow rejection).
+    Fail(llm::LlmError),
+    /// `provider.stream` succeeds and yields this batch of events.
+    Emit(Vec<LlmEvent>),
+}
+
+/// A provider that returns a scripted [`Behavior`] per round-trip and records every request it was
+/// asked to stream, so a test can inspect how the runner compacted the working messages.
+struct RecordingProvider {
+    behaviors: Mutex<std::collections::VecDeque<Behavior>>,
+    requests: Mutex<Vec<Vec<llm::Message>>>,
+}
+
+impl RecordingProvider {
+    fn new(behaviors: Vec<Behavior>) -> Self {
+        Self {
+            behaviors: Mutex::new(behaviors.into()),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn requests(&self) -> Vec<Vec<llm::Message>> {
+        self.requests.lock().expect("requests lock").clone()
+    }
+}
+
+impl Provider for RecordingProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        self.requests
+            .lock()
+            .expect("requests lock")
+            .push(request.messages.clone());
+        let behavior = self.behaviors.lock().expect("behaviors lock").pop_front();
+        Box::pin(async move {
+            match behavior {
+                Some(Behavior::Fail(err)) => Err(err),
+                Some(Behavior::Emit(batch)) => {
+                    Ok(Box::pin(futures_util::stream::iter(batch)) as LlmStream)
+                }
+                None => Ok(Box::pin(futures_util::stream::iter(vec![LlmEvent::Done {
+                    reason: FinishReason::Stop,
+                }])) as LlmStream),
+            }
+        })
+    }
+}
+
+/// A realistic context-overflow upstream rejection, as the OpenAI-compatible transport would
+/// normalize an HTTP 400 from the provider.
+fn overflow_error() -> llm::LlmError {
+    llm::LlmError::upstream(
+        "provider returned HTTP 400: This model's maximum context length is 8192 tokens. However, \
+         your messages resulted in 50000 tokens. Please reduce the length of the messages.",
+    )
+}
+
+fn tokens(messages: &[llm::Message]) -> usize {
+    engine::estimate_messages_tokens(messages)
+}
+
+/// A turn whose history is far larger than the configured budget, so `compactIfNeeded` must shrink
+/// the request before it is sent (VAL-LLM-026: compaction across accumulated history).
+fn large_history(turns: usize) -> Vec<llm::Message> {
+    let mut history = Vec::new();
+    for i in 0..turns {
+        history.push(llm::Message::user(format!(
+            "user turn {i}: {}",
+            "context word ".repeat(80)
+        )));
+        history.push(llm::Message::assistant(format!(
+            "assistant turn {i}: {}",
+            "reply word ".repeat(80)
+        )));
+    }
+    history
+}
+
+// VAL-LLM-026: a turn assembled from a large accumulated history is automatically compacted before
+// it is sent, so the request fits the model's context budget and the turn still completes.
+#[tokio::test]
+async fn compact_if_needed_shrinks_a_large_history_before_send() {
+    let provider = RecordingProvider::new(vec![Behavior::Emit(vec![
+        text("answer"),
+        LlmEvent::Done {
+            reason: FinishReason::Stop,
+        },
+    ])]);
+
+    // A small context window forces compaction; the history alone dwarfs it.
+    let policy = engine::CompactionPolicy::for_context_window(4_000, 0);
+    let budget = policy.input_budget();
+    let history = large_history(60);
+    let raw = {
+        let mut all = vec![llm::Message::system("SYS")];
+        all.extend(history.iter().cloned());
+        all.push(llm::Message::user("the latest question"));
+        tokens(&all)
+    };
+    assert!(raw > budget, "the assembled history must exceed the budget");
+
+    let turn = Turn::new("google/gemini-2.5-flash", "SYS", "the latest question")
+        .with_history(history)
+        .with_compaction(policy);
+    let (_, outcome) = run(&provider, turn).await;
+
+    assert!(outcome.is_success(), "the compacted turn must complete");
+    assert_eq!(outcome.answer(), "answer");
+
+    let sent = provider.requests();
+    assert_eq!(sent.len(), 1, "a single round-trip");
+    let request = &sent[0];
+    assert!(
+        tokens(request) <= budget + 64,
+        "the sent request must be compacted to within the budget, got {} > {budget}",
+        tokens(request)
+    );
+    assert_eq!(
+        request[0].role,
+        llm::Role::System,
+        "system stays at the head"
+    );
+    assert!(
+        request
+            .iter()
+            .any(|m| m.content.contains("the latest question")),
+        "the newest user input is preserved verbatim"
+    );
+    assert!(
+        request
+            .iter()
+            .any(|m| m.content.contains("Context compaction")
+                || m.content.contains("omitted by context compaction")),
+        "compaction leaves an elision marker"
+    );
+}
+
+// VAL-LLM-025: a context-overflow provider error before any assistant text triggers
+// compactAfterOverflow and a rebuild; the retried (smaller) request succeeds and the turn returns a
+// coherent answer rather than crashing.
+#[tokio::test]
+async fn overflow_before_text_triggers_compaction_and_rebuild() {
+    let provider = RecordingProvider::new(vec![
+        Behavior::Fail(overflow_error()),
+        Behavior::Emit(vec![
+            text("done"),
+            usage(),
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+    ]);
+
+    // A large single input so the rebuild has something to shrink.
+    let big_input = "lorem ipsum dolor sit amet padding line\n".repeat(4_000);
+    let policy = engine::CompactionPolicy::for_context_window(20_000, 0);
+    let turn = Turn::new("google/gemini-2.5-flash", "SYS", big_input).with_compaction(policy);
+
+    let (events, outcome) = run(&provider, turn).await;
+
+    assert!(
+        outcome.is_success(),
+        "the turn recovers from overflow: {:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.answer(), "done");
+    assert_eq!(concat_text(&events), "done");
+    assert_eq!(done_count(&events), 1, "exactly one terminal Done");
+
+    let sent = provider.requests();
+    assert_eq!(sent.len(), 2, "an initial attempt plus one rebuild");
+    assert!(
+        tokens(&sent[1]) < tokens(&sent[0]),
+        "the rebuilt request is smaller after compaction: {} !< {}",
+        tokens(&sent[1]),
+        tokens(&sent[0])
+    );
+    // The rebuild reused the step, so the reported step count stays at one.
+    assert_eq!(
+        outcome.steps, 1,
+        "overflow recovery does not consume extra steps"
+    );
+}
+
+// VAL-LLM-025 (failure half): when compaction cannot shrink the request enough, the runner gives
+// up after a bounded number of recoveries with a clear, specific context-overflow diagnostic — and
+// never hangs or panics.
+#[tokio::test]
+async fn persistent_overflow_surfaces_a_clear_diagnostic_and_terminates() {
+    // Every attempt overflows, so recovery can never succeed.
+    let behaviors = (0..16).map(|_| Behavior::Fail(overflow_error())).collect();
+    let provider = RecordingProvider::new(behaviors);
+
+    let big_input = "padding ".repeat(10_000);
+    let turn = Turn::new("google/gemini-2.5-flash", "SYS", big_input);
+
+    let (events, outcome) = run(&provider, turn).await;
+
+    assert!(!outcome.is_success(), "a persistent overflow must fail");
+    let error = outcome.error.as_ref().expect("a normalized error");
+    assert_eq!(
+        error.kind(),
+        "context-overflow",
+        "the failure is the specific context-overflow class"
+    );
+    assert!(
+        error.to_string().contains("context overflow"),
+        "the diagnostic reads as a context-overflow error: {error}"
+    );
+
+    // The recovery loop is bounded: an initial attempt plus a fixed number of rebuilds, never
+    // unbounded retries.
+    let attempts = provider.requests().len();
+    assert!(
+        (2..=6).contains(&attempts),
+        "overflow recovery is bounded, made {attempts} attempts"
+    );
+
+    // Exactly one terminal Done event and no panic — the turn terminated cleanly.
+    assert_eq!(done_count(&events), 1, "exactly one terminal Done");
+    let error_pos = events
+        .iter()
+        .position(|e| matches!(e, RunnerEvent::Error { kind, .. } if kind == "context-overflow"))
+        .expect("a context-overflow error event");
+    let done_pos = events
+        .iter()
+        .position(|e| matches!(e, RunnerEvent::Done { .. }))
+        .expect("a terminal done event");
+    assert!(error_pos < done_pos, "the error precedes the terminal done");
+}

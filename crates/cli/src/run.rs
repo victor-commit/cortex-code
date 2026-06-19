@@ -6,10 +6,18 @@
 //! json` emits a single document built from the completed turn, and `--jsonl` streams the runner's
 //! normalized event vocabulary one object per line.
 //!
-//! Input-source precedence is fixed and deterministic: a positional prompt argument always wins,
-//! and stdin is consulted only when no argument is given. When no prompt is available at all
-//! (`</dev/null`, a closed pipe, or an interactive terminal with nothing piped in) the command
-//! fails fast with [`Exit::MissingInput`] rather than hanging.
+//! Input-source handling is deterministic: a positional prompt argument and piped (non-terminal)
+//! stdin are combined when both are present (the piped content is treated as context that precedes
+//! the instruction argument), so a large piped document reaches the model and exercises compaction.
+//! With only one source present that source is the prompt; an interactive terminal is never read
+//! (it would block). When no prompt is available at all (`</dev/null`, a closed pipe, or an
+//! interactive terminal with nothing piped in) the command fails fast with [`Exit::MissingInput`]
+//! rather than hanging.
+//!
+//! An over-large turn does not crash or hang: the runner's compaction policy (derived from the
+//! resolved model's context window) prunes/truncates the request before sending and recovers from a
+//! context-overflow provider error by compacting and rebuilding, otherwise surfacing a clear
+//! context-overflow diagnostic (VAL-LLM-025/026).
 //!
 //! The model used for the turn is resolved through the full configuration precedence chain
 //! (`defaults < global < project < nested < env < --model`): a config-file `model` is honored,
@@ -27,8 +35,8 @@ use std::time::Duration;
 
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
-    Agent, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner, SystemContext,
-    Turn, project_history,
+    Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent,
+    SessionRunner, SystemContext, Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
 use providers::ResolvedModel;
@@ -143,11 +151,16 @@ pub fn run(args: RunArgs) -> Exit {
         return Exit::Failure;
     }
 
+    // Derive the compaction policy from the resolved model's context window before the model id is
+    // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
+    let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
     let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
         .with_agent(agent)
         .render();
-    let turn = Turn::new(&model_id, system, prompt).with_history(history);
+    let turn = Turn::new(&model_id, system, prompt)
+        .with_history(history)
+        .with_compaction(compaction);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -748,6 +761,37 @@ fn non_empty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// Build the compaction policy for the run from the resolved model's context window and per-turn
+/// output limit. The effective window can be overridden via `CORTEX_CONTEXT_LIMIT_TOKENS` (an
+/// operational tuning/testing knob); an unknown model falls back to the engine's default window.
+fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
+    if let Some(context) = context_limit_override() {
+        // An explicit override drives the budget purely from the requested window.
+        return CompactionPolicy::for_context_window(context, 0);
+    }
+    let (context, output) = match &model.info {
+        Some(info) => (
+            usize::try_from(info.limit.context).unwrap_or(usize::MAX),
+            usize::try_from(info.limit.output).unwrap_or(0),
+        ),
+        None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
+    };
+    CompactionPolicy::for_context_window(context, output)
+}
+
+/// The operational override for the effective context window, read from
+/// `CORTEX_CONTEXT_LIMIT_TOKENS`.
+fn context_limit_override() -> Option<usize> {
+    parse_context_limit(std::env::var("CORTEX_CONTEXT_LIMIT_TOKENS").ok().as_deref())
+}
+
+/// Parse a context-window override token, accepting only a positive integer (trimmed). Returns
+/// `None` for an absent, blank, zero, or unparseable value so the model-derived window stands.
+fn parse_context_limit(raw: Option<&str>) -> Option<usize> {
+    let parsed: usize = raw?.trim().parse().ok()?;
+    (parsed >= 1).then_some(parsed)
+}
+
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id.
 ///
 /// OpenRouter model ids always carry a provider prefix (e.g. `google/gemini-2.5-flash`), so a
@@ -780,19 +824,32 @@ fn resolve_prompt<R: Read>(
     stdin_is_terminal: bool,
     mut source: R,
 ) -> io::Result<Option<String>> {
-    if let Some(arg) = arg {
-        return Ok(Some(arg));
-    }
+    // Read piped (non-terminal) stdin once. An interactive terminal is never read because it would
+    // block forever waiting on a human; a closed/empty pipe normalizes to "no input".
+    let piped = if stdin_is_terminal {
+        None
+    } else {
+        let mut buffer = String::new();
+        source.read_to_string(&mut buffer)?;
+        normalize_stdin(&buffer)
+    };
 
-    // No argument: read stdin. An interactive terminal with nothing piped in would block
-    // forever, so treat it as "no input" instead of reading.
-    if stdin_is_terminal {
-        return Ok(None);
-    }
+    Ok(match (arg, piped) {
+        // Both present: the piped content is context (e.g. a large document or "padding") that the
+        // instruction argument refers to, so it is prepended to the instruction as one prompt. This
+        // is what lets a large piped input reach the model and exercise compaction/overflow
+        // recovery (VAL-LLM-025) while keeping the short instruction intact.
+        (Some(arg), Some(piped)) => Some(combine_prompt(&piped, &arg)),
+        (Some(arg), None) => Some(arg),
+        (None, Some(piped)) => Some(piped),
+        (None, None) => None,
+    })
+}
 
-    let mut buffer = String::new();
-    source.read_to_string(&mut buffer)?;
-    Ok(normalize_stdin(&buffer))
+/// Combine piped stdin context with the positional instruction: the stdin content first (the
+/// material the instruction refers to), a blank line, then the instruction.
+fn combine_prompt(piped: &str, arg: &str) -> String {
+    format!("{piped}\n\n{arg}")
 }
 
 /// Normalize raw stdin into an optional prompt: strip a single trailing line ending (the one
@@ -1187,17 +1244,29 @@ mod tests {
         );
     }
 
+    // VAL-LLM-025 plumbing: a positional instruction and piped (non-terminal) stdin are combined,
+    // with the piped content first (the "padding"/context) and the instruction after, so a large
+    // piped input reaches the model alongside the short instruction.
     #[test]
-    fn argument_takes_precedence_over_stdin() {
+    fn argument_is_combined_with_piped_stdin() {
         let resolved = resolve_prompt(Some("FROM_ARG".to_owned()), false, piped("FROM_STDIN\n"))
             .expect("resolve");
+        assert_eq!(resolved, Some("FROM_STDIN\n\nFROM_ARG".to_owned()));
+    }
+
+    #[test]
+    fn argument_alone_when_no_piped_stdin() {
+        // Non-terminal but empty stdin: nothing to combine, so the argument is the prompt.
+        let resolved =
+            resolve_prompt(Some("FROM_ARG".to_owned()), false, piped("")).expect("resolve");
         assert_eq!(resolved, Some("FROM_ARG".to_owned()));
     }
 
     #[test]
-    fn argument_wins_even_on_an_interactive_terminal() {
-        let resolved =
-            resolve_prompt(Some("FROM_ARG".to_owned()), true, piped("")).expect("resolve");
+    fn interactive_terminal_stdin_is_not_read_with_an_argument() {
+        // A terminal is never read (it would block); the argument stands alone.
+        let resolved = resolve_prompt(Some("FROM_ARG".to_owned()), true, piped("anything\n"))
+            .expect("resolve");
         assert_eq!(resolved, Some("FROM_ARG".to_owned()));
     }
 
@@ -1220,9 +1289,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_argument_is_preserved_as_explicit_prompt() {
-        let resolved =
-            resolve_prompt(Some(String::new()), false, piped("ignored\n")).expect("resolve");
+    fn empty_argument_with_no_piped_stdin_is_preserved_as_explicit_prompt() {
+        let resolved = resolve_prompt(Some(String::new()), false, piped("")).expect("resolve");
         assert_eq!(resolved, Some(String::new()));
     }
 
@@ -1260,6 +1328,38 @@ mod tests {
             None,
             "a negative value is no override"
         );
+    }
+
+    // The compaction policy is derived from the resolved model's context window: a known model
+    // uses its catalogued window, an unknown model falls back to the engine default, and both
+    // yield a usable (non-zero) input budget.
+    #[test]
+    fn compaction_policy_tracks_the_model_context_window() {
+        let known = providers::resolve_model(Some("google/gemini-2.5-flash"));
+        let policy = compaction_policy(&known);
+        assert_eq!(policy.context_limit_tokens, 1_048_576);
+        assert!(policy.input_budget() > 0);
+
+        let unknown = providers::resolve_model(Some("some/brand-new-model-2099"));
+        let fallback = compaction_policy(&unknown);
+        assert_eq!(
+            fallback.context_limit_tokens,
+            engine::DEFAULT_CONTEXT_LIMIT_TOKENS
+        );
+        assert!(fallback.input_budget() > 0);
+    }
+
+    // The context-window override token is parsed only as a positive integer; an absent, blank,
+    // zero, or unparseable value leaves the model-derived window in place.
+    #[test]
+    fn parse_context_limit_accepts_only_positive_integers() {
+        assert_eq!(parse_context_limit(Some("4000")), Some(4_000));
+        assert_eq!(parse_context_limit(Some("  16000 ")), Some(16_000));
+        assert_eq!(parse_context_limit(None), None);
+        assert_eq!(parse_context_limit(Some("")), None);
+        assert_eq!(parse_context_limit(Some("0")), None);
+        assert_eq!(parse_context_limit(Some("-5")), None);
+        assert_eq!(parse_context_limit(Some("nope")), None);
     }
 
     #[test]

@@ -82,6 +82,10 @@ impl LlmError {
             // transport/provider layer; it is folded into the upstream class only so this lift
             // stays total. In practice the runner constructs the step-limit diagnostic directly.
             Diagnostic::StepLimitExceeded(detail) => LlmError::Upstream(detail),
+            // A context-overflow is likewise an engine-level recovery outcome: the provider only
+            // ever reports the raw upstream rejection, which the runner classifies. The lift folds
+            // it into the upstream class so it stays total.
+            Diagnostic::ContextOverflow(detail) => LlmError::Upstream(detail),
         }
     }
 

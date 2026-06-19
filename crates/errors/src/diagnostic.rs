@@ -33,6 +33,10 @@ pub enum Diagnostic {
     /// stopped with an explicit, non-crashing signal rather than looping. The payload carries the
     /// human-readable detail (e.g. the budget that was reached).
     StepLimitExceeded(String),
+    /// A turn's context exceeded the model's window and compaction/overflow recovery could not
+    /// shrink it enough to proceed, so the durable runner stopped with an explicit, non-crashing
+    /// signal rather than hanging or panicking. The payload carries the human-readable detail.
+    ContextOverflow(String),
 }
 
 impl Diagnostic {
@@ -72,6 +76,12 @@ impl Diagnostic {
         Diagnostic::StepLimitExceeded(detail.into())
     }
 
+    /// Construct a [`Diagnostic::ContextOverflow`] carrying the context-overflow detail.
+    #[must_use]
+    pub fn context_overflow(detail: impl Into<String>) -> Self {
+        Diagnostic::ContextOverflow(detail.into())
+    }
+
     /// The stable, machine-comparable identifier for this diagnostic class.
     ///
     /// These strings are part of the contract; do not rename existing values.
@@ -84,6 +94,7 @@ impl Diagnostic {
             Diagnostic::Upstream(_) => "upstream",
             Diagnostic::CassetteMissing(_) => "cassette-missing",
             Diagnostic::StepLimitExceeded(_) => "step-limit-exceeded",
+            Diagnostic::ContextOverflow(_) => "context-overflow",
         }
     }
 
@@ -100,7 +111,8 @@ impl Diagnostic {
             | Diagnostic::TransportUnavailable(_)
             | Diagnostic::Upstream(_)
             | Diagnostic::CassetteMissing(_)
-            | Diagnostic::StepLimitExceeded(_) => Exit::Failure,
+            | Diagnostic::StepLimitExceeded(_)
+            | Diagnostic::ContextOverflow(_) => Exit::Failure,
         }
     }
 }
@@ -127,6 +139,9 @@ impl fmt::Display for Diagnostic {
             Diagnostic::StepLimitExceeded(detail) => {
                 write!(f, "step limit exceeded: {detail}")
             }
+            Diagnostic::ContextOverflow(detail) => {
+                write!(f, "context overflow: {detail}")
+            }
         }
     }
 }
@@ -151,6 +166,7 @@ mod tests {
             Diagnostic::step_limit_exceeded("x").kind(),
             "step-limit-exceeded"
         );
+        assert_eq!(Diagnostic::context_overflow("x").kind(), "context-overflow");
 
         let kinds = [
             Diagnostic::net_disabled("x").kind(),
@@ -159,6 +175,7 @@ mod tests {
             Diagnostic::upstream("x").kind(),
             Diagnostic::cassette_missing("x").kind(),
             Diagnostic::step_limit_exceeded("x").kind(),
+            Diagnostic::context_overflow("x").kind(),
         ];
         let mut unique = kinds.to_vec();
         unique.sort_unstable();
@@ -215,6 +232,24 @@ mod tests {
         assert!(
             message.contains("25 steps"),
             "message must carry the step-budget detail: {message}"
+        );
+    }
+
+    #[test]
+    fn context_overflow_is_a_failure_with_an_explicit_message() {
+        let diag = Diagnostic::context_overflow(
+            "the request exceeds the model's context window even after compaction",
+        );
+        assert_eq!(diag.kind(), "context-overflow");
+        assert_eq!(diag.exit(), Exit::Failure);
+        let message = diag.to_string();
+        assert!(
+            message.contains("context overflow"),
+            "message must read as a context-overflow error: {message}"
+        );
+        assert!(
+            message.contains("context window"),
+            "message must carry the overflow detail: {message}"
         );
     }
 

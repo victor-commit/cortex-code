@@ -25,10 +25,18 @@ use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall};
 
+use crate::compaction::{self, CompactionPolicy};
 use crate::event::{RunError, RunOutcome, RunnerEvent, accumulate_usage};
 
 /// The built-in step budget for a single turn (architecture §4, `MAX_STEPS`).
 pub const DEFAULT_MAX_STEPS: usize = 25;
+
+/// The maximum number of context-overflow recoveries (compact-and-rebuild) attempted in one turn
+/// before the runner gives up with a clear context-overflow diagnostic rather than looping forever.
+const MAX_OVERFLOW_RECOVERIES: usize = 4;
+
+/// The smallest input budget an overflow recovery will shrink to before giving up.
+const MIN_RECOVERY_BUDGET_TOKENS: usize = 512;
 
 /// The placeholder result injected for a tool call when no tool registry is available (M1).
 const TOOL_UNAVAILABLE: &str =
@@ -49,6 +57,8 @@ pub struct Turn {
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
+    /// The context-compaction policy applied before each send and on overflow recovery.
+    pub compaction: CompactionPolicy,
 }
 
 impl Turn {
@@ -66,6 +76,7 @@ impl Turn {
             user_input: user_input.into(),
             max_tokens: None,
             temperature: None,
+            compaction: CompactionPolicy::default(),
         }
     }
 
@@ -87,6 +98,13 @@ impl Turn {
     #[must_use]
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set the context-compaction policy (builder style).
+    #[must_use]
+    pub fn with_compaction(mut self, compaction: CompactionPolicy) -> Self {
+        self.compaction = compaction;
         self
     }
 }
@@ -140,6 +158,13 @@ impl SessionRunner {
         let mut steps = 0usize;
         let mut error = None;
 
+        // Compaction state: the per-request input budget and the number of recent messages kept
+        // verbatim. An overflow recovery shrinks both and rebuilds the turn (architecture §4).
+        let policy = turn.compaction;
+        let mut input_budget = policy.input_budget();
+        let mut tail_messages = policy.tail_messages;
+        let mut overflow_recoveries = 0usize;
+
         let finish_reason = loop {
             if steps >= self.max_steps {
                 // The turn still needs another round-trip but the step budget is spent. Surface an
@@ -158,11 +183,37 @@ impl SessionRunner {
             }
             steps += 1;
 
+            // compactIfNeeded before send: prune/truncate the working messages to the input budget
+            // so an over-large request is shrunk before it ever reaches the provider.
+            if policy.auto {
+                compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
+            }
+
             let request = self.build_request(&turn, &messages);
             let mut stream = match provider.stream(request).await {
                 Ok(stream) => stream,
                 Err(err) => {
-                    let diagnostic = err.to_diagnostic();
+                    // compactAfterOverflow then rebuild: a context-overflow provider error before
+                    // any assistant text shrinks the budget, re-compacts, and retries the turn
+                    // (bounded by MAX_OVERFLOW_RECOVERIES) rather than failing immediately.
+                    if answer.is_empty()
+                        && compaction::is_context_overflow(err.detail())
+                        && overflow_recoveries < MAX_OVERFLOW_RECOVERIES
+                        && input_budget > MIN_RECOVERY_BUDGET_TOKENS
+                    {
+                        overflow_recoveries += 1;
+                        input_budget = (input_budget / 2).max(MIN_RECOVERY_BUDGET_TOKENS);
+                        tail_messages = (tail_messages / 2).max(1);
+                        compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
+                        steps -= 1;
+                        continue;
+                    }
+
+                    let diagnostic = if compaction::is_context_overflow(err.detail()) {
+                        Diagnostic::context_overflow(err.detail())
+                    } else {
+                        err.to_diagnostic()
+                    };
                     sink(RunnerEvent::Error {
                         message: diagnostic.to_string(),
                         kind: diagnostic.kind().to_owned(),
@@ -193,6 +244,14 @@ impl SessionRunner {
                         total_usage = Some(accumulate_usage(total_usage.take(), usage));
                     }
                     LlmEvent::Error { message, kind } => {
+                        // Reclassify a mid-stream upstream error that is actually a context-overflow
+                        // so the surfaced diagnostic is the specific context-overflow class.
+                        let kind =
+                            if kind == "upstream" && compaction::is_context_overflow(&message) {
+                                "context-overflow".to_owned()
+                            } else {
+                                kind
+                            };
                         sink(RunnerEvent::Error {
                             message: message.clone(),
                             kind: kind.clone(),

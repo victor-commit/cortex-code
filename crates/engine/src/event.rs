@@ -73,6 +73,7 @@ impl RunError {
             "transport-unavailable" => Diagnostic::transport_unavailable(message),
             "cassette-missing" => Diagnostic::cassette_missing(message),
             "step-limit-exceeded" => Diagnostic::step_limit_exceeded(message),
+            "context-overflow" => Diagnostic::context_overflow(message),
             _ => Diagnostic::upstream(message),
         };
         Self { diagnostic }

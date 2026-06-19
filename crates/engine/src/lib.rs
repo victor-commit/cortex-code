@@ -24,6 +24,7 @@
 //! implementation behind the [`llm::Provider`] trait.
 
 mod agent;
+mod compaction;
 mod context;
 mod environment;
 mod event;
@@ -32,6 +33,10 @@ mod history;
 mod runner;
 
 pub use agent::{Agent, UnknownAgent};
+pub use compaction::{
+    CompactionPolicy, DEFAULT_CONTEXT_LIMIT_TOKENS, DEFAULT_TAIL_MESSAGES, MAX_INPUT_BUDGET_TOKENS,
+    estimate_messages_tokens, estimate_tokens, is_context_overflow,
+};
 pub use context::SystemContext;
 pub use environment::{EnvironmentBlock, GitStatus};
 pub use event::{RunError, RunOutcome, RunnerEvent};
