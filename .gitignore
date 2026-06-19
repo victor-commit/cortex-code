@@ -1,0 +1,9 @@
+/target
+target/
+**/target/
+.env
+.env.local
+*.secret
+*.key
+.DS_Store
+/.cortex/
