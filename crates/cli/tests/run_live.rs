@@ -13,6 +13,8 @@
 //! - VAL-LLM-010: the default format is clean prose with no JSON envelope / `"type":` scaffolding.
 //! - VAL-LLM-030: Unicode/multibyte input round-trips byte-identically.
 //! - VAL-RUN-001: the turn always terminates in bounded time, even on an adversarial prompt.
+//! - VAL-SKEL-067: a positional argument and piped stdin are COMBINED in the documented order
+//!   (piped stdin first, then the argument), so both sources reach the model, deterministically.
 
 use std::io::Read;
 use std::process::{Child, Command, Output, Stdio};
@@ -324,6 +326,93 @@ fn json_document_carries_role_content_model_and_usage() {
         output_tokens > 0,
         "a real turn reports positive output tokens, got: {output_tokens}"
     );
+}
+
+// VAL-SKEL-067: `cortex run` deterministically COMBINES a positional argument with piped stdin in
+// the documented order (piped stdin first, then the argument, joined by a blank line), so BOTH
+// sources reach the model. Piping `BANANA` and instructing the model to reply with only the single
+// capitalized word "supplied above" answers BANANA, which is only possible if the piped word and
+// the instruction were combined in that order. Proven identical across two runs (no source dropped,
+// stable order, no hang).
+#[test]
+fn combines_stdin_context_with_argument_instruction_in_order() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+
+    let invoke = || {
+        run_with_stdin(
+            cortex(
+                &key,
+                &[
+                    "run",
+                    "Reply with only the single capitalized word supplied above.",
+                ],
+            ),
+            "BANANA",
+            Duration::from_secs(60),
+        )
+    };
+
+    for out in [invoke(), invoke()] {
+        assert_eq!(out.status.code(), Some(0), "a combined turn must exit 0");
+        let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+        assert!(
+            stdout.contains("BANANA"),
+            "the combined prompt must carry the piped stdin word to the model, got: {stdout:?}"
+        );
+    }
+}
+
+/// Spawn the binary feeding `stdin_data` on a dedicated writer thread (so a child that drains stdin
+/// can never deadlock the writer), and collect its output under a `timeout` hang guard, killing the
+/// exact child PID if the timeout is exceeded so no orphan is left behind.
+fn run_with_stdin(mut command: Command, stdin_data: &str, timeout: Duration) -> Output {
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn cortex binary");
+
+    let mut stdin = child.stdin.take().expect("stdin handle");
+    let owned = stdin_data.to_owned();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = stdin.write_all(owned.as_bytes());
+    });
+
+    let mut out = child.stdout.take().expect("stdout handle");
+    let mut err = child.stderr.take().expect("stderr handle");
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err.read_to_end(&mut buf);
+        buf
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("cortex run did not terminate within {timeout:?} (possible hang)");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    Output {
+        status,
+        stdout: out_thread.join().expect("join stdout reader"),
+        stderr: err_thread.join().expect("join stderr reader"),
+    }
 }
 
 /// A dependency-free, sufficiently-unique token (timestamp + counter), used as a fresh nonce.

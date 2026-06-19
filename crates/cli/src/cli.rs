@@ -25,10 +25,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run a single headless turn (scriptable; reads the prompt from an argument or stdin).
+    /// Run a single headless turn (scriptable; reads the prompt from an argument, stdin, or both).
     ///
-    /// Input-source precedence is deterministic: a positional prompt argument always wins,
-    /// and stdin is read only when no argument is given. The two are never blended.
+    /// Input sources are combined deterministically. When both a positional prompt argument and
+    /// piped stdin are present they are joined in a stable, documented order (piped stdin first,
+    /// then the argument, separated by a blank line), so piped context reaches the model alongside
+    /// the instruction. With only one source present that source is the prompt; with neither
+    /// (empty stdin and no argument) the run fails fast with a clear no-input diagnostic.
     Run(RunArgs),
 
     /// Launch the interactive terminal UI (same as running with no arguments).
@@ -183,8 +186,9 @@ pub enum OutputFormat {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// The prompt to send. Takes precedence over stdin: when given, stdin is not read.
-    /// When omitted, the prompt is read from stdin instead.
+    /// The instruction prompt. When piped stdin is also present, the two are combined in a stable
+    /// order (piped stdin first, then this argument, joined by a blank line), so piped context is
+    /// sent with the instruction. When omitted, the prompt is read from stdin alone.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 

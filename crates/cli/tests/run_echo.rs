@@ -11,8 +11,9 @@
 //!   credential diagnostic and writes no answer to stdout.
 //! - **Net-disabled, fail-closed** (the CORTEX_NO_NET behavior that also replaces VAL-SKEL-016):
 //!   the kill-switch refuses before any socket and before the credential is even consulted.
-//! - **stdout/stderr hygiene** (VAL-SKEL-067 precedence + clean stdout): the positional argument
-//!   wins over stdin with no hang, and every error keeps stdout byte-empty.
+//! - **Input-source combine determinism** (VAL-SKEL-067 + clean stdout): a positional argument and
+//!   piped stdin are combined (piped stdin first, then the argument) without hanging and reach the
+//!   network path deterministically, and every error keeps stdout byte-empty.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -277,12 +278,14 @@ fn explicit_session_flag_is_wired_without_panic() {
     );
 }
 
-// VAL-SKEL-067 (preserved): with BOTH an argument and piped stdin, a single documented source
-// wins (the argument) with no blend and no hang. Observed via the net-disabled refusal, which
-// proves the prompt was resolved (the command reached the network path) without reading/blocking
-// on stdin, identically across runs.
+// VAL-SKEL-067 (offline invariants): with BOTH an argument and piped stdin, `cortex run` combines
+// the two sources (piped stdin first, then the argument, joined by a blank line) without hanging
+// and reaches the network path deterministically. Observed here via the net-disabled refusal,
+// which fires only after the prompt is resolved (stdin fully drained, no blocking) and keeps
+// stdout byte-empty, identically across runs. The combined order actually reaching the model over
+// a real OpenRouter turn is proven live in `run_live.rs`.
 #[test]
-fn argument_precedence_does_not_hang_and_is_deterministic() {
+fn combining_argument_and_stdin_does_not_hang_and_is_deterministic() {
     let invoke = || {
         let mut command = cmd(&["run", "FROM_ARG"]);
         command.env("CORTEX_NO_NET", "1");
@@ -295,12 +298,12 @@ fn argument_precedence_does_not_hang_and_is_deterministic() {
     assert_eq!(
         first.status.code(),
         Some(NET_DISABLED_CODE),
-        "the argument prompt is resolved and the run reaches the (refused) network path"
+        "both sources are combined and the run reaches the (refused) network path"
     );
     assert_eq!(
         first.status.code(),
         second.status.code(),
-        "the resolved source and outcome must be identical across repeated runs"
+        "the combined prompt and outcome must be identical across repeated runs"
     );
     assert!(
         first.stdout.is_empty() && second.stdout.is_empty(),
