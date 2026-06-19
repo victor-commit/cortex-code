@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
+use checkpoints::{RestoreOutcome, ShadowStore};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
@@ -332,6 +333,11 @@ pub struct App {
     /// Error-level toasts render with distinct error styling; entries are removed once their display
     /// window elapses (see [`App::tick_toasts`]).
     toasts: Vec<Toast>,
+    /// The shadow checkpoint store backing `/undo` and `/redo`, opened for the working directory at
+    /// launch. `None` when no data location resolves (so undo/redo degrade to a graceful no-op note
+    /// rather than failing). The undo/redo handlers re-read its on-disk journal each invocation, so
+    /// it observes snapshots finalized by the background turn worker.
+    checkpoints: Option<ShadowStore>,
 }
 
 impl App {
@@ -373,6 +379,7 @@ impl App {
             ack: None,
             copy_request: None,
             toasts: Vec::new(),
+            checkpoints: None,
         }
     }
 
@@ -390,6 +397,12 @@ impl App {
     /// Replace the active keybind set, used at launch to apply user overrides from config.
     pub fn set_keybinds(&mut self, keybinds: Keybinds) {
         self.keybinds = keybinds;
+    }
+
+    /// Attach the shadow checkpoint store backing `/undo` and `/redo`, used at launch to wire the
+    /// store opened for the working directory. `None` leaves undo/redo as graceful no-ops.
+    pub fn set_checkpoint_store(&mut self, store: Option<ShadowStore>) {
+        self.checkpoints = store;
     }
 
     /// The active keybind set (for rendering the which-key overlay and `/help`).
@@ -1086,6 +1099,8 @@ impl App {
             "mcp" => self.open_mcp_dialog(),
             "editor" => self.editor_requested = true,
             "share" => self.share_session(),
+            "undo" => self.undo(),
+            "redo" => self.redo(),
             _ => self.transcript.push(Entry::Notice(format!(
                 "/{} — {}",
                 command.name, command.description
@@ -1206,6 +1221,61 @@ impl App {
         };
         self.transcript.push(Entry::Notice(notice));
         self.push_toast(ToastLevel::Success, "Share link created");
+    }
+
+    /// Undo the last file-affecting change (`/undo`, the undo keybind, and the palette share this):
+    /// restore the most recently changed file(s) to their pre-change bytes on disk. The outcome is
+    /// reported as a transcript notice and a toast; an empty history (or an unresolved store) is
+    /// handled gracefully with a clear "nothing to undo" note rather than an error or a crash.
+    fn undo(&mut self) {
+        self.restore_change(false);
+    }
+
+    /// Redo the last undone change (`/redo`, the redo keybind, and the palette share this):
+    /// re-apply the most recently undone file change(s) on disk. Reported like [`App::undo`].
+    fn redo(&mut self) {
+        self.restore_change(true);
+    }
+
+    /// Shared undo/redo handler: walk the checkpoint timeline one step (back for undo, forward for
+    /// redo) and report the outcome. `redo` selects the direction and the user-facing phrasing.
+    ///
+    /// Refused while a turn streams (the running turn's snapshot is not finalized yet), so an undo
+    /// cannot race the in-flight edits. With no store or an empty history it is a graceful no-op
+    /// note; a conflict (a file changed out-of-band since the snapshot) is reported without
+    /// rewriting anything.
+    fn restore_change(&mut self, redo: bool) {
+        let verb = if redo { "redo" } else { "undo" };
+        if self.is_busy() {
+            self.push_toast(
+                ToastLevel::Warning,
+                format!("Cannot {verb} while a turn is running"),
+            );
+            return;
+        }
+        let outcome = match self.checkpoints.as_ref() {
+            Some(store) => {
+                if redo {
+                    store.redo()
+                } else {
+                    store.undo()
+                }
+            }
+            None => Ok(RestoreOutcome::Nothing),
+        };
+        match outcome {
+            Ok(outcome) => {
+                let (notice, level, toast) = restore_report(redo, &outcome);
+                self.transcript.push(Entry::Notice(notice));
+                self.push_toast(level, toast);
+            }
+            Err(err) => {
+                self.transcript
+                    .push(Entry::Notice(format!("Cannot {verb}: {err}")));
+                self.push_toast(ToastLevel::Error, format!("Cannot {verb}"));
+            }
+        }
+        self.pin_to_bottom();
     }
 
     /// Open a modal dialog, replacing any currently-open one and closing the slash menu.
@@ -1603,6 +1673,8 @@ impl App {
             KeybindAction::Sessions => self.open_sessions_dialog(),
             KeybindAction::Agents => self.open_agents_dialog(),
             KeybindAction::Themes => self.open_themes_dialog(),
+            KeybindAction::Undo => self.undo(),
+            KeybindAction::Redo => self.redo(),
         }
     }
 
@@ -2313,6 +2385,43 @@ fn agent_description(name: &str) -> &'static str {
         "plan" => "Investigate and produce a plan",
         "general" => "General-purpose assistant",
         _ => "",
+    }
+}
+
+/// Map an undo/redo [`RestoreOutcome`] to the user-facing `(transcript notice, toast level, toast
+/// message)` triple. Pure so the wording (and the graceful "nothing to do" path) is unit-testable
+/// without a real store. `redo` selects the redo phrasing.
+fn restore_report(redo: bool, outcome: &RestoreOutcome) -> (String, ToastLevel, String) {
+    let (past, verb) = if redo {
+        ("Redid", "redo")
+    } else {
+        ("Undid", "undo")
+    };
+    let action = if redo { "re-applied" } else { "reverted" };
+    match outcome {
+        RestoreOutcome::Restored { paths, .. } => (
+            format!(
+                "{past} last change — {action} {} file(s): {}",
+                paths.len(),
+                paths.join(", ")
+            ),
+            ToastLevel::Success,
+            format!("Change {action}"),
+        ),
+        RestoreOutcome::Nothing => (
+            format!("Nothing to {verb}."),
+            ToastLevel::Info,
+            format!("Nothing to {verb}"),
+        ),
+        RestoreOutcome::Conflict { conflicts, .. } => (
+            format!(
+                "Cannot {verb}: {} file(s) changed outside Cortex since the snapshot: {}",
+                conflicts.len(),
+                conflicts.join(", ")
+            ),
+            ToastLevel::Error,
+            format!("Cannot {verb} (file changed)"),
+        ),
     }
 }
 
@@ -4512,5 +4621,160 @@ mod tests {
             None,
             "submitting clears the selection"
         );
+    }
+
+    // --- undo/redo (VAL-TUI-043/044/085/086/087/088) ---------------------------------------------
+
+    static UNDO_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A unique temp workspace plus a shadow store rooted at it, for on-disk undo/redo tests.
+    fn checkpoint_scratch(tag: &str) -> (PathBuf, ShadowStore) {
+        let unique = UNDO_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "cortex-tui-undo-{tag}-{}-{unique}",
+            std::process::id()
+        ));
+        let workspace = root.join("ws");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let store = ShadowStore::open(&workspace, &root.join("shadow")).expect("open store");
+        (workspace, store)
+    }
+
+    /// Simulate a file-affecting turn: capture `file`'s pre-image, write `after`, and finalize the
+    /// snapshot — exactly what the background turn worker does around a real mutating turn.
+    fn record_change(store: &ShadowStore, workspace: &std::path::Path, file: &str, after: &str) {
+        let recorder = store.begin_turn("turn");
+        recorder.record_pre_image(&workspace.join(file));
+        std::fs::write(workspace.join(file), after).expect("write change");
+        recorder.finalize().expect("finalize snapshot");
+    }
+
+    fn last_notice(a: &App) -> String {
+        a.transcript
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Notice(text) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a notice entry")
+    }
+
+    #[test]
+    fn restore_report_wording_covers_each_outcome() {
+        // VAL-TUI-043/044: a restore confirms the revert/re-apply; the graceful empty case reads
+        // clearly; a conflict is reported without claiming success.
+        let restored = RestoreOutcome::Restored {
+            label: "t".to_owned(),
+            paths: vec!["a.txt".to_owned()],
+        };
+        let (notice, level, _) = restore_report(false, &restored);
+        assert!(
+            notice.contains("Undid") && notice.contains("reverted") && notice.contains("a.txt")
+        );
+        assert_eq!(level, ToastLevel::Success);
+
+        let (notice, _, _) = restore_report(true, &restored);
+        assert!(notice.contains("Redid") && notice.contains("re-applied"));
+
+        let (notice, level, _) = restore_report(false, &RestoreOutcome::Nothing);
+        assert_eq!(notice, "Nothing to undo.");
+        assert_eq!(level, ToastLevel::Info);
+
+        let conflict = RestoreOutcome::Conflict {
+            label: "t".to_owned(),
+            conflicts: vec!["a.txt".to_owned()],
+        };
+        let (notice, level, _) = restore_report(false, &conflict);
+        assert!(notice.contains("Cannot undo") && notice.contains("a.txt"));
+        assert_eq!(level, ToastLevel::Error);
+    }
+
+    #[test]
+    fn undo_restores_then_redo_reapplies_the_file_on_disk() {
+        // VAL-TUI-085/086: `/undo` reverts the on-disk file to its pre-change content; `/redo`
+        // re-applies the change on disk. Each confirms via a transcript notice.
+        let (workspace, store) = checkpoint_scratch("roundtrip");
+        std::fs::write(workspace.join("f.txt"), "ORIGINAL\n").unwrap();
+        record_change(&store, &workspace, "f.txt", "CHANGED\n");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("f.txt")).unwrap(),
+            "CHANGED\n"
+        );
+
+        let mut a = app();
+        a.set_checkpoint_store(Some(store));
+
+        a.undo();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("f.txt")).unwrap(),
+            "ORIGINAL\n",
+            "undo restores the pre-change bytes on disk"
+        );
+        assert!(
+            last_notice(&a).contains("reverted"),
+            "undo confirms the revert"
+        );
+
+        a.redo();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("f.txt")).unwrap(),
+            "CHANGED\n",
+            "redo re-applies the change on disk"
+        );
+        assert!(
+            last_notice(&a).contains("re-applied"),
+            "redo confirms the re-apply"
+        );
+    }
+
+    #[test]
+    fn undo_via_keybind_matches_the_slash_command() {
+        // VAL-TUI-087: the undo/redo keybinds (leader + u / r) perform the same on-disk revert and
+        // re-apply as the slash commands, sharing one implementation.
+        let (workspace, store) = checkpoint_scratch("keybind");
+        std::fs::write(workspace.join("f.txt"), "BEFORE\n").unwrap();
+        record_change(&store, &workspace, "f.txt", "AFTER\n");
+
+        let mut a = app();
+        a.set_checkpoint_store(Some(store));
+
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('u')));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("f.txt")).unwrap(),
+            "BEFORE\n",
+            "the undo keybind reverts the file"
+        );
+
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("f.txt")).unwrap(),
+            "AFTER\n",
+            "the redo keybind re-applies the change"
+        );
+    }
+
+    #[test]
+    fn undo_with_nothing_to_revert_is_graceful() {
+        // VAL-TUI-088: undo on a fresh session with no checkpointed change reports a clear
+        // "nothing to undo" note rather than erroring or changing state.
+        let (_workspace, store) = checkpoint_scratch("empty");
+        let mut a = app();
+        a.set_checkpoint_store(Some(store));
+
+        a.undo();
+        assert_eq!(last_notice(&a), "Nothing to undo.");
+        assert!(!a.should_quit, "a no-op undo never disrupts the session");
+    }
+
+    #[test]
+    fn undo_without_a_store_is_a_graceful_no_op() {
+        // With no resolvable checkpoint store, undo degrades to the same graceful note.
+        let mut a = app();
+        a.undo();
+        assert_eq!(last_notice(&a), "Nothing to undo.");
     }
 }

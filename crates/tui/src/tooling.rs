@@ -57,6 +57,15 @@ impl TurnDispatcher {
         }
     }
 
+    /// Attach the pre-mutation checkpoint recorder so each mutating tool snapshots a file's prior
+    /// state before it changes it (builder style). Without this the TUI turn records no checkpoints,
+    /// so `/undo` would have nothing to restore.
+    #[must_use]
+    pub fn with_checkpoints(mut self, recorder: Arc<dyn tools::CheckpointRecorder>) -> Self {
+        self.context = self.context.with_checkpoints(recorder);
+        self
+    }
+
     /// The background-job registry tracking long-running `bash` jobs spawned during the turn, so the
     /// caller can reap them (terminate + await by PID) when the turn ends — no orphan survives.
     #[must_use]

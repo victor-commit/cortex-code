@@ -20,10 +20,12 @@
 
 mod error;
 mod git;
+mod location;
 mod recorder;
 mod store;
 
 pub use error::CheckpointError;
+pub use location::workspace_key;
 pub use recorder::TurnRecorder;
 pub use store::{
     FileImage, HistorySummary, RecordedTurn, RestoreDirection, RestoreOutcome, ShadowStore,

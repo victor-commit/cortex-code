@@ -13,6 +13,7 @@
 //! instead of hanging.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -65,12 +66,24 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
                             // real this turn. The dispatcher emits a FileDiff for each change.
                             let cwd = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                            let dispatcher = TurnDispatcher::new(
-                                cwd,
-                                &model_id,
-                                ephemeral_session_id(),
-                                tx_events.clone(),
-                            );
+                            let session_id = ephemeral_session_id();
+                            // Open the shared shadow store and begin a turn recorder so each file
+                            // this turn changes is snapshotted BEFORE it is written, powering on-disk
+                            // `/undo` and `/redo`. Checkpointing degrades silently when the store
+                            // cannot be opened — it never blocks the turn.
+                            let recorder = match checkpoints::ShadowStore::open_default(&cwd) {
+                                Ok(Some(store)) => {
+                                    Some(Arc::new(store.begin_turn(session_id.clone())))
+                                }
+                                _ => None,
+                            };
+                            let mut dispatcher =
+                                TurnDispatcher::new(cwd, &model_id, session_id, tx_events.clone());
+                            if let Some(recorder) = &recorder {
+                                dispatcher = dispatcher.with_checkpoints(Arc::new(
+                                    crate::checkpoint::RecorderBridge::new(recorder.clone()),
+                                ));
+                            }
                             let runner = SessionRunner::default();
                             runner
                                 .run_with_tools(&provider, turn, &dispatcher, |event| {
@@ -80,6 +93,13 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
                             // orphan process outlives the turn.
                             dispatcher.background_jobs().shutdown().await;
+                            // Finalize the checkpoint AFTER the turn: record each touched file's
+                            // post-mutation state and append the snapshot. A read-only turn records
+                            // nothing, so it creates no checkpoint churn; a failure degrades undo for
+                            // this turn rather than disrupting the rendered session.
+                            if let Some(recorder) = &recorder {
+                                let _ = recorder.finalize();
+                            }
                         });
                     }
                     Err(err) => {

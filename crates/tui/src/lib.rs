@@ -7,6 +7,7 @@
 //! status footer — and exits cleanly via `/exit` or the quit keybind.
 
 mod app;
+mod checkpoint;
 mod diff;
 mod keybind;
 mod mention;
@@ -63,6 +64,11 @@ fn run() -> io::Result<()> {
     app.set_theme(app::active_theme_name());
     // Apply any user keybind overrides from config so custom/leader bindings take effect at launch.
     app.set_keybinds(keybind::Keybinds::load());
+    // Open the shared shadow checkpoint store for the working directory so `/undo` and `/redo` can
+    // revert/re-apply file-affecting turns on disk. It degrades to graceful no-ops when no data
+    // location resolves; opening never blocks launch.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    app.set_checkpoint_store(checkpoints::ShadowStore::open_default(&cwd).ok().flatten());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

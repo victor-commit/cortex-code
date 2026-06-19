@@ -26,6 +26,10 @@ pub enum KeybindAction {
     Agents,
     /// Open the theme picker, like `/themes`.
     Themes,
+    /// Undo the last file-affecting change, like `/undo`.
+    Undo,
+    /// Redo the last undone change, like `/redo`.
+    Redo,
 }
 
 impl KeybindAction {
@@ -37,6 +41,8 @@ impl KeybindAction {
         KeybindAction::Sessions,
         KeybindAction::Agents,
         KeybindAction::Themes,
+        KeybindAction::Undo,
+        KeybindAction::Redo,
     ];
 
     /// The config key under `[keybinds]` that overrides this action's key (e.g. `new_session`).
@@ -49,6 +55,8 @@ impl KeybindAction {
             KeybindAction::Sessions => "sessions",
             KeybindAction::Agents => "agents",
             KeybindAction::Themes => "themes",
+            KeybindAction::Undo => "undo",
+            KeybindAction::Redo => "redo",
         }
     }
 
@@ -62,6 +70,8 @@ impl KeybindAction {
             KeybindAction::Sessions => "Open the session picker",
             KeybindAction::Agents => "Open the agent picker",
             KeybindAction::Themes => "Open the theme picker",
+            KeybindAction::Undo => "Undo the last change",
+            KeybindAction::Redo => "Redo the last undone change",
         }
     }
 
@@ -75,6 +85,8 @@ impl KeybindAction {
             KeybindAction::Sessions => 's',
             KeybindAction::Agents => 'a',
             KeybindAction::Themes => 't',
+            KeybindAction::Undo => 'u',
+            KeybindAction::Redo => 'r',
         };
         KeyChord::plain(ch)
     }
@@ -392,6 +404,20 @@ mod tests {
         assert_eq!(
             kb.action_for(KeyChord::plain('b')),
             Some(KeybindAction::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn defaults_bind_undo_and_redo() {
+        // VAL-TUI-087: undo/redo are reachable by keybind (leader + key), sharing the slash effect.
+        let kb = Keybinds::default();
+        assert_eq!(
+            kb.action_for(KeyChord::plain('u')),
+            Some(KeybindAction::Undo)
+        );
+        assert_eq!(
+            kb.action_for(KeyChord::plain('r')),
+            Some(KeybindAction::Redo)
         );
     }
 
