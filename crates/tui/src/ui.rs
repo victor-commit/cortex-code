@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::app::{App, AssistantTurn, Entry, UsageSummary};
+use crate::diff::FileDiff;
 
 /// Maximum number of visible prompt text rows before the box stops growing.
 const MAX_PROMPT_ROWS: usize = 8;
@@ -65,6 +66,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         match entry {
             Entry::User(text) => push_user(&mut lines, text, width),
             Entry::Assistant(turn) => push_assistant(&mut lines, turn, width),
+            Entry::Diff(diff) => push_diff(&mut lines, diff),
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
     }
@@ -131,6 +133,20 @@ fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: u
         let md_width = width.clamp(1, u16::MAX as usize) as u16;
         lines.extend(frame::markdown::render_markdown(&turn.answer, md_width));
     }
+    lines.push(Line::from(""));
+}
+
+/// Append a file-change diff: a labeled marker line, then the colored unified-diff lines (file-path
+/// header, `@@` hunks, and green `+` / red `-` change lines), then a trailing blank line.
+fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff) {
+    let verb = if diff.is_new { "created" } else { "edited" };
+    lines.push(Line::from(Span::styled(
+        format!("✎ {verb} ({}+ {}-)", diff.additions, diff.removals),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.extend(diff.render());
     lines.push(Line::from(""));
 }
 
@@ -459,6 +475,75 @@ mod tests {
             "no empty reasoning region:\n{text}"
         );
         assert!(text.contains("just the answer"));
+    }
+
+    #[test]
+    fn diff_entry_renders_path_header_and_colored_markers() {
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(
+            "src/main.rs",
+            Some("fn main() {\n    println!(\"Hello\");\n    let x = 1;\n}\n"),
+            Some("fn main() {\n    println!(\"Cortex\");\n    let x = 1;\n}\n"),
+        )
+        .expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+
+        let lines = transcript_lines(&a, 80);
+        let text = rendered(&lines);
+        // The file-path header is visible (VAL-TUI-022).
+        assert!(text.contains("src/main.rs"), "path header present:\n{text}");
+        // A context line surrounds the change (VAL-TUI-022).
+        assert!(
+            text.contains("fn main() {"),
+            "context line present:\n{text}"
+        );
+        // Added and removed lines carry their markers (VAL-TUI-021).
+        assert!(
+            text.contains("+ ") && text.contains(r#"println!("Cortex");"#),
+            "added line present:\n{text}"
+        );
+        assert!(
+            text.contains("- ") && text.contains(r#"println!("Hello");"#),
+            "removed line present:\n{text}"
+        );
+
+        // Added and removed lines are distinctly colored.
+        let mut added = None;
+        let mut removed = None;
+        for line in &lines {
+            if let Some(span) = line.spans.first() {
+                let content = span.content.as_ref();
+                if content.starts_with("+ ") {
+                    added = span.style.fg;
+                } else if content.starts_with("- ") {
+                    removed = span.style.fg;
+                }
+            }
+        }
+        assert!(added.is_some() && removed.is_some(), "both markers colored");
+        assert_ne!(added, removed, "added and removed distinctly colored");
+    }
+
+    #[test]
+    fn new_file_diff_renders_a_new_file_indicator() {
+        let mut a = app();
+        let diff =
+            crate::diff::compute_file_diff("notes.txt", None, Some("one\ntwo\n")).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(
+            text.contains("notes.txt") && text.contains("new file"),
+            "new-file indicator present (VAL-TUI-023):\n{text}"
+        );
+        assert!(
+            text.contains("+ one") && text.contains("+ two"),
+            "all-added:\n{text}"
+        );
+        assert!(
+            !text.contains("- "),
+            "no removed lines for a new file:\n{text}"
+        );
     }
 
     #[test]

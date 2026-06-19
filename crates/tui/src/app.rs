@@ -45,6 +45,8 @@ pub enum Entry {
     User(String),
     /// An assistant reply (its reasoning region and answer text).
     Assistant(AssistantTurn),
+    /// A file changed by a tool this turn, rendered as a colored unified diff.
+    Diff(crate::diff::FileDiff),
     /// A turn-level error surfaced to the user.
     Error(String),
 }
@@ -188,9 +190,23 @@ impl App {
     fn apply(&mut self, message: TurnMessage) {
         match message {
             TurnMessage::Event(event) => self.apply_event(event),
+            TurnMessage::FileDiff(diff) => self.push_diff(*diff),
             TurnMessage::SetupError(message) => self.set_turn_error(message),
             TurnMessage::Finished => self.finish_turn(),
         }
+    }
+
+    /// Record a file-change diff in the transcript. A trailing empty in-progress assistant entry
+    /// (opened when the turn began but not yet written to) is dropped first, so the diff is not
+    /// preceded by an empty assistant block; any answer text that arrives after the tool call opens
+    /// a fresh assistant entry.
+    fn push_diff(&mut self, diff: crate::diff::FileDiff) {
+        if let Some(Entry::Assistant(turn)) = self.transcript.last() {
+            if turn.answer.is_empty() && turn.reasoning.is_empty() {
+                self.transcript.pop();
+            }
+        }
+        self.transcript.push(Entry::Diff(diff));
     }
 
     /// Apply one normalized runner event.
@@ -257,10 +273,14 @@ impl App {
         if let Some(prompt) = prompt {
             self.history.push(Message::user(prompt));
             if !errored {
-                if let Some(Entry::Assistant(turn)) = self.transcript.last() {
-                    if !turn.answer.is_empty() {
-                        self.history.push(Message::assistant(turn.answer.clone()));
-                    }
+                // Fold the turn's assistant answer into history. A tool/diff entry may sit after the
+                // answer, so scan back to the most recent assistant entry rather than only the last.
+                let answer = self.transcript.iter().rev().find_map(|entry| match entry {
+                    Entry::Assistant(turn) if !turn.answer.is_empty() => Some(turn.answer.clone()),
+                    _ => None,
+                });
+                if let Some(answer) = answer {
+                    self.history.push(Message::assistant(answer));
                 }
             }
         }
@@ -669,5 +689,61 @@ mod tests {
 
         assert!(!a.is_busy());
         assert!(matches!(a.transcript.last(), Some(Entry::Error(m)) if m == "no credential"));
+    }
+
+    #[test]
+    fn a_file_diff_is_recorded_in_the_transcript() {
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("edit the file".to_owned(), rx);
+
+        let diff =
+            crate::diff::compute_file_diff("src/main.rs", Some("a\nb\nc\n"), Some("a\nB\nc\n"))
+                .expect("a diff");
+        tx.send(TurnMessage::FileDiff(Box::new(diff))).unwrap();
+        a.poll_turn();
+
+        // The empty assistant entry opened at turn start is replaced by the diff entry (no empty
+        // assistant block precedes it).
+        match a.transcript.last() {
+            Some(Entry::Diff(diff)) => {
+                assert_eq!(diff.path, "src/main.rs");
+                assert!(!diff.is_new);
+            }
+            other => panic!("expected a diff entry, got {other:?}"),
+        }
+        assert!(
+            !a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant(t) if t.answer.is_empty() && t.reasoning.is_empty())),
+            "no empty assistant block should precede the diff"
+        );
+    }
+
+    #[test]
+    fn answer_after_a_diff_opens_a_fresh_assistant_entry_and_reaches_history() {
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("create a file".to_owned(), rx);
+
+        let diff =
+            crate::diff::compute_file_diff("new.txt", None, Some("hello\n")).expect("a diff");
+        tx.send(TurnMessage::FileDiff(Box::new(diff))).unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "Created the file.".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        // Order: user, diff, assistant answer.
+        assert!(matches!(a.transcript[1], Entry::Diff(_)));
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Assistant(t)) if t.answer == "Created the file.")
+        );
+        // The post-diff answer is folded into history.
+        let history = a.history_snapshot();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].content, "Created the file.");
     }
 }

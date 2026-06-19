@@ -23,11 +23,16 @@ use llm::Message;
 use redaction::guard_outbound;
 use settings::EffectiveConfig;
 
+use crate::tooling::TurnDispatcher;
+
 /// A message published by the turn worker for the UI thread to apply.
 #[derive(Debug)]
 pub enum TurnMessage {
     /// One normalized runner event (text/reasoning delta, usage, error, …).
     Event(RunnerEvent),
+    /// A file changed by a tool this turn, rendered as a colored unified diff in the transcript.
+    /// Boxed to keep the message enum small (a diff carries its full line list).
+    FileDiff(Box<crate::diff::FileDiff>),
     /// The turn could not start: a setup-time diagnostic (net-disabled, no-credential, bad model).
     SetupError(String),
     /// The worker has finished; the UI clears the busy indicator and finalizes the turn.
@@ -48,19 +53,33 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
     let tx_events = tx.clone();
     thread::spawn(move || {
         match build_turn(&prompt, history) {
-            Ok((provider, turn)) => {
+            Ok((provider, turn, model_id)) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(runtime) => {
                         runtime.block_on(async {
+                            // Materialize the per-turn tool set for the model's family, scoped to the
+                            // process working directory, so the model can read/edit/create files for
+                            // real this turn. The dispatcher emits a FileDiff for each change.
+                            let cwd = std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                            let dispatcher = TurnDispatcher::new(
+                                cwd,
+                                &model_id,
+                                ephemeral_session_id(),
+                                tx_events.clone(),
+                            );
                             let runner = SessionRunner::default();
                             runner
-                                .run(&provider, turn, |event| {
+                                .run_with_tools(&provider, turn, &dispatcher, |event| {
                                     let _ = tx_events.send(TurnMessage::Event(event));
                                 })
                                 .await;
+                            // Reap any background `bash` jobs spawned this turn by exact PID, so no
+                            // orphan process outlives the turn.
+                            dispatcher.background_jobs().shutdown().await;
                         });
                     }
                     Err(err) => {
@@ -79,6 +98,16 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
     rx
 }
 
+/// An ephemeral session id scoping this turn's tool context (the TUI does not yet persist sessions;
+/// the id only keys the in-memory per-session todo list for the turn).
+fn ephemeral_session_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("tui-{}-{nanos}", std::process::id())
+}
+
 /// Build the provider and assembled [`Turn`] for a prompt, resolving the model, credential, and any
 /// endpoint override through the same configuration precedence the headless run uses.
 ///
@@ -88,7 +117,7 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
 fn build_turn(
     prompt: &str,
     history: Vec<Message>,
-) -> Result<(llm::OpenAiCompatible, Turn), String> {
+) -> Result<(llm::OpenAiCompatible, Turn, String), String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
     guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
 
@@ -117,7 +146,7 @@ fn build_turn(
         .with_history(history)
         .with_compaction(compaction);
 
-    Ok((provider, turn))
+    Ok((provider, turn, model_id))
 }
 
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id, rejecting

@@ -1974,12 +1974,16 @@ dependencies = [
  "engine",
  "errors",
  "frame",
+ "futures-util",
  "llm",
+ "protocol",
  "providers",
  "ratatui",
  "redaction",
+ "serde_json",
  "settings",
  "tokio",
+ "tools",
  "tui-widgets",
 ]
 

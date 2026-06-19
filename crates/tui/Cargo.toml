@@ -15,10 +15,14 @@ providers = { workspace = true }
 engine = { workspace = true }
 llm = { workspace = true }
 redaction = { workspace = true }
+protocol = { workspace = true }
+tools = { workspace = true }
 tui-widgets = { workspace = true }
 frame = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]

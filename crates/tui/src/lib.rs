@@ -7,6 +7,8 @@
 //! status footer — and exits cleanly via `/exit` or the quit keybind.
 
 mod app;
+mod diff;
+mod tooling;
 mod turn;
 mod ui;
 
