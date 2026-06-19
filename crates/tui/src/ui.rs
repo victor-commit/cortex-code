@@ -99,6 +99,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 );
             }
             Entry::Notice(message) => push_notice(&mut lines, message, width),
+            Entry::Shell(outcome) => push_shell(&mut lines, outcome, width),
             Entry::Help => push_help(&mut lines),
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
@@ -306,10 +307,37 @@ fn push_notice(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
     lines.push(Line::from(""));
 }
 
+/// Append a `!` shell-mode command and its output: a `$ command` header (distinct from chat) then
+/// the captured output, dimmed on success and red-styled when the command failed.
+fn push_shell(lines: &mut Vec<Line<'static>>, outcome: &crate::shell::ShellOutcome, width: usize) {
+    let prompt_style = Style::default()
+        .fg(style::WARNING)
+        .add_modifier(Modifier::BOLD);
+    lines.push(Line::from(vec![
+        Span::styled("$ ", prompt_style),
+        Span::styled(
+            outcome.command.clone(),
+            Style::default()
+                .fg(style::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    let body = if outcome.success {
+        Style::default().fg(style::TEXT_DIM)
+    } else {
+        Style::default().fg(style::ERROR)
+    };
+    for wrapped in wrap(&outcome.output, width) {
+        lines.push(Line::from(Span::styled(wrapped, body)));
+    }
+    lines.push(Line::from(""));
+}
+
 /// The keybindings shown in the `/help` reference, paired with what each does.
 const KEYBINDINGS: &[(&str, &str)] = &[
     ("Enter", "Send the prompt / run the highlighted command"),
     ("Shift+Enter", "Insert a newline without sending"),
+    ("!", "Enter shell mode to run a command (Esc to exit)"),
     ("/", "Open the slash-command menu"),
     ("Up / Down", "Move the slash-menu highlight"),
     ("Esc", "Close the slash-command menu"),
@@ -454,20 +482,40 @@ fn draw_home(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
+    // Shell mode wears a distinct title and border color so it is unmistakably set apart from chat.
+    let shell = app.shell_mode();
+    let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(" Prompt ");
+        .border_type(BorderType::Rounded);
+    if shell {
+        block = block
+            .title(" ! shell ")
+            .title_style(
+                Style::default()
+                    .fg(style::WARNING)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .border_style(Style::default().fg(style::WARNING));
+    } else {
+        block = block.title(" Prompt ");
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let value = app.input_value();
     if value.is_empty() {
-        let placeholder = Paragraph::new(Span::styled(
-            "Type a message…  (/ for commands)",
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        frame.render_widget(placeholder, inner);
+        let placeholder = if shell {
+            "$ run a shell command…  (Esc to exit)"
+        } else {
+            "Type a message…  (/ for commands, ! for shell)"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                placeholder,
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            inner,
+        );
     } else {
         let lines: Vec<Line> = app
             .input
@@ -1206,6 +1254,54 @@ mod tests {
         let text = rendered(&transcript_lines(&a, 80));
         assert!(text.contains("/models"), "notice text shown:\n{text}");
         assert!(text.contains("▸"), "notice marker shown:\n{text}");
+    }
+
+    #[test]
+    fn shell_entry_renders_command_and_output() {
+        // VAL-TUI-056: a shell-mode command and its output render in the transcript.
+        let mut a = app();
+        a.transcript.push(Entry::Shell(crate::shell::ShellOutcome {
+            command: "echo cortex-shell-ok".to_owned(),
+            output: "cortex-shell-ok\n[exit code: 0]".to_owned(),
+            success: true,
+        }));
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(
+            text.contains("$ echo cortex-shell-ok"),
+            "command header shown:\n{text}"
+        );
+        assert!(
+            text.contains("cortex-shell-ok"),
+            "command output shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn shell_mode_prompt_shows_a_distinct_affordance() {
+        // VAL-TUI-055: the prompt wears a visible "shell" affordance while in shell mode.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.shell_mode(), "shell mode engaged");
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            screen.contains("shell"),
+            "shell affordance drawn in the prompt:\n{screen}"
+        );
     }
 
     #[test]

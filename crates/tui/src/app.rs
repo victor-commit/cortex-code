@@ -16,6 +16,7 @@ use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
 use crate::mention;
+use crate::shell;
 use crate::slash;
 use crate::tool_card::ToolCard;
 use crate::turn::TurnMessage;
@@ -62,6 +63,8 @@ pub enum Entry {
     /// A system notice (e.g. a dispatched slash command's acknowledgment, or an
     /// unknown-command message) shown distinctly from chat content.
     Notice(String),
+    /// A command run in `!` shell mode, rendered as a `$ command` header followed by its output.
+    Shell(crate::shell::ShellOutcome),
     /// The `/help` command reference: the built-in slash commands and keybindings, rendered as a
     /// distinct panel. Its content is generated at render time from the command registry, so the
     /// entry itself carries no data.
@@ -222,6 +225,10 @@ pub struct App {
     /// Set when `/editor` is dispatched, signalling the event loop to suspend the TUI and open the
     /// external `$EDITOR`. Consumed once by [`App::take_editor_request`].
     editor_requested: bool,
+    /// Whether the prompt is in `!` shell mode. Entered by typing `!` at the start of an empty
+    /// prompt; while set, the prompt runs typed commands locally (not as model turns) and shows a
+    /// distinct shell affordance. Exited by Esc or by backspacing out an empty command.
+    shell_mode: bool,
     /// Canonical prior-turn messages projected into each new turn for conversational context.
     history: Vec<Message>,
 }
@@ -248,6 +255,7 @@ impl App {
             dialog: None,
             mention: None,
             editor_requested: false,
+            shell_mode: false,
             history: Vec::new(),
         }
     }
@@ -1005,6 +1013,10 @@ impl App {
                     out.push_str(&format!("### Tool: {} — {}\n\n", card.name, card.summary));
                 }
                 Entry::Notice(text) => out.push_str(&format!("> {text}\n\n")),
+                Entry::Shell(outcome) => out.push_str(&format!(
+                    "### Shell: `{}`\n\n```\n{}\n```\n\n",
+                    outcome.command, outcome.output
+                )),
                 Entry::Help => {}
                 Entry::Error(text) => out.push_str(&format!("> Error: {text}\n\n")),
             }
@@ -1031,6 +1043,55 @@ impl App {
                 KeyCode::Up => self.dialog_select_prev(),
                 KeyCode::Down => self.dialog_select_next(),
                 KeyCode::Esc | KeyCode::Enter => self.close_dialog(),
+                _ => {}
+            }
+            return;
+        }
+
+        // While `!` shell mode is active the prompt runs typed commands locally rather than sending
+        // them to the model: Enter executes the command, Shift+Enter inserts a soft newline, Esc
+        // exits back to chat, and Backspace on an empty command also exits (otherwise it edits the
+        // command). Ordinary text and caret keys edit the command without opening the slash/`@`
+        // menus, which do not apply in shell mode.
+        if self.shell_mode {
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('a') if ctrl => {
+                    self.input.handle_key(TextAreaKey::Home, modifiers(false));
+                }
+                KeyCode::Char('e') if ctrl => {
+                    self.input.handle_key(TextAreaKey::End, modifiers(false));
+                }
+                KeyCode::Char(c) if !ctrl && !alt => self.input.insert_char(c),
+                KeyCode::Enter if shift => self.input.insert_newline(),
+                KeyCode::Enter => self.run_shell_command(),
+                KeyCode::Esc => self.exit_shell_mode(),
+                KeyCode::Backspace => {
+                    if self.input.value().is_empty() {
+                        self.exit_shell_mode();
+                    } else {
+                        self.input.delete_backward();
+                    }
+                }
+                KeyCode::Delete => self.input.delete_forward(),
+                KeyCode::Left => {
+                    self.input.handle_key(TextAreaKey::Left, modifiers(shift));
+                }
+                KeyCode::Right => {
+                    self.input.handle_key(TextAreaKey::Right, modifiers(shift));
+                }
+                KeyCode::Up => {
+                    self.input.handle_key(TextAreaKey::Up, modifiers(shift));
+                }
+                KeyCode::Down => {
+                    self.input.handle_key(TextAreaKey::Down, modifiers(shift));
+                }
+                KeyCode::Home => {
+                    self.input.handle_key(TextAreaKey::Home, modifiers(shift));
+                }
+                KeyCode::End => {
+                    self.input.handle_key(TextAreaKey::End, modifiers(shift));
+                }
                 _ => {}
             }
             return;
@@ -1099,6 +1160,11 @@ impl App {
             }
             // Expand/collapse tool cards to reveal or hide their full arguments and output.
             KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
+            // `!` at the start of an empty prompt enters shell mode (the `!` is the mode trigger,
+            // not literal text); typed elsewhere it is ordinary text handled by the arm below.
+            KeyCode::Char('!') if !ctrl && !alt && self.input.value().is_empty() => {
+                self.shell_mode = true;
+            }
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
             // slash menu and the `@`-file picker, so refresh both after the edit.
             KeyCode::Char(c) if !ctrl && !alt => {
@@ -1162,6 +1228,34 @@ impl App {
         }
         self.pending_prompt = Some(expanded);
         self.mention = None;
+        self.input.set_value("");
+    }
+
+    /// Whether the prompt is in `!` shell mode (rendered with a distinct affordance).
+    #[must_use]
+    pub fn shell_mode(&self) -> bool {
+        self.shell_mode
+    }
+
+    /// Run the typed shell-mode command (Enter): execute it locally in the working directory and
+    /// record its output in the transcript, then clear the prompt while staying in shell mode so
+    /// further commands can be run. An empty command is a no-op.
+    fn run_shell_command(&mut self) {
+        let command = self.input.value();
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let outcome = shell::run(command, &cwd);
+        self.transcript.push(Entry::Shell(outcome));
+        self.input.set_value("");
+    }
+
+    /// Leave `!` shell mode and return to chat input (Esc, or backspacing out an empty command),
+    /// clearing any partially-typed command.
+    fn exit_shell_mode(&mut self) {
+        self.shell_mode = false;
         self.input.set_value("");
     }
 }
@@ -1584,6 +1678,98 @@ mod tests {
         assert!(
             !a.mention_open(),
             "a space ends the mention and closes the picker"
+        );
+    }
+
+    #[test]
+    fn bang_on_empty_prompt_enters_shell_mode() {
+        // VAL-TUI-055: typing `!` at the start of an empty prompt enters shell mode (the `!` is the
+        // mode trigger, not literal prompt text).
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('!')));
+        assert!(a.shell_mode(), "shell mode engaged");
+        assert_eq!(a.input_value(), "", "the `!` is not inserted as text");
+    }
+
+    #[test]
+    fn bang_in_nonempty_prompt_is_literal_text() {
+        // `!` only triggers shell mode at the start of an empty prompt; elsewhere it is plain text.
+        let mut a = app();
+        type_str(&mut a, "hi");
+        a.on_key(key(KeyCode::Char('!')));
+        assert!(!a.shell_mode(), "no shell mode mid-text");
+        assert_eq!(a.input_value(), "hi!");
+    }
+
+    #[test]
+    fn shell_mode_runs_a_command_and_shows_output() {
+        // VAL-TUI-056: a command run in shell mode executes and its output lands in the transcript.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('!')));
+        type_str(&mut a, "echo cortex-shell-ok");
+        a.on_key(key(KeyCode::Enter));
+
+        match a.transcript.last() {
+            Some(Entry::Shell(outcome)) => {
+                assert!(outcome.success, "echo succeeds: {outcome:?}");
+                assert!(
+                    outcome.output.contains("cortex-shell-ok"),
+                    "stdout shown: {outcome:?}"
+                );
+                assert_eq!(outcome.command, "echo cortex-shell-ok");
+            }
+            other => panic!("expected a shell entry, got {other:?}"),
+        }
+        // The command is not sent to the model, and the prompt clears but stays in shell mode.
+        assert!(a.take_pending_prompt().is_none(), "no model turn queued");
+        assert_eq!(a.input_value(), "");
+        assert!(a.shell_mode(), "still in shell mode after a command");
+    }
+
+    #[test]
+    fn esc_exits_shell_mode() {
+        // VAL-TUI-057: Esc returns to chat input.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('!')));
+        type_str(&mut a, "echo hi");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.shell_mode(), "shell mode left by Esc");
+        assert_eq!(a.input_value(), "", "partial command cleared");
+    }
+
+    #[test]
+    fn backspace_out_of_empty_command_exits_shell_mode() {
+        // VAL-TUI-057: backspacing on an empty command returns to chat; with text it edits instead.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('!')));
+        type_str(&mut a, "ab");
+        a.on_key(key(KeyCode::Backspace));
+        assert!(
+            a.shell_mode(),
+            "still in shell mode while a command remains"
+        );
+        assert_eq!(a.input_value(), "a");
+        a.on_key(key(KeyCode::Backspace)); // now empty
+        assert!(
+            a.shell_mode(),
+            "empty command keeps shell mode until next backspace"
+        );
+        a.on_key(key(KeyCode::Backspace)); // empty -> exit
+        assert!(
+            !a.shell_mode(),
+            "shell mode left by backspacing an empty command"
+        );
+    }
+
+    #[test]
+    fn empty_shell_command_is_a_noop() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('!')));
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.shell_mode(), "still in shell mode");
+        assert!(
+            !matches!(a.transcript.last(), Some(Entry::Shell(_))),
+            "no shell entry for an empty command"
         );
     }
 
