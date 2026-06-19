@@ -19,10 +19,16 @@ struct Migration {
 
 /// The ordered list of migrations. Each runs exactly once, in version order. Append new
 /// migrations with the next version; never edit or renumber a shipped migration.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("migrations/0002_usage.sql"),
+    },
+];
 
 /// The highest migration version known to this build.
 #[must_use]

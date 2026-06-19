@@ -250,8 +250,8 @@ fn repeated_runs_are_idempotent_and_preserve_rows() {
 
     assert_eq!(
         migration_row_count(&db),
-        1,
-        "migration applied exactly once"
+        db::latest_version(),
+        "each migration applied exactly once"
     );
     assert!(integrity_ok(&db));
 
@@ -390,8 +390,8 @@ fn concurrent_first_use_is_safe() {
     assert!(integrity_ok(&db), "DB passes integrity_check");
     assert_eq!(
         migration_row_count(&db),
-        1,
-        "migration applied exactly once despite the race"
+        db::latest_version(),
+        "each migration applied exactly once despite the race"
     );
     let tables = table_names(&db);
     for expected in ["sessions", "messages", "schema_migrations"] {

@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 
-use db::{Database, DbPathInputs};
+use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
     Agent, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner, SystemContext,
     Turn, project_history,
@@ -264,6 +264,39 @@ fn persist_assistant(db: &Database, session_id: &str, outcome: &RunOutcome) {
     }
 }
 
+/// Record this turn's token usage and cost so the session's cumulative totals stay accurate across
+/// separate `cortex run` invocations. Recorded in every output format (not just JSON) so a session
+/// that mixes formats still accumulates correctly. A persistence failure is reported on stderr but
+/// does not change the exit code: the answer has already been delivered, so the run itself
+/// succeeded.
+fn persist_usage(db: &Database, session_id: &str, outcome: &RunOutcome) {
+    let Some(usage) = outcome.usage.as_ref() else {
+        return;
+    };
+    if let Err(err) = db.usage().record(
+        session_id,
+        u64::from(usage.input_tokens),
+        u64::from(usage.output_tokens),
+        u64::from(usage.total_tokens),
+        usage.cost,
+    ) {
+        eprintln!("cortex run: failed to persist usage: {err}");
+    }
+}
+
+/// The session's cumulative usage/cost across every recorded turn (this turn included), or `None`
+/// when the totals cannot be read. Reported alongside the per-turn usage so a machine consumer sees
+/// a running, monotonically non-decreasing session total rather than a single turn's value.
+fn session_usage_totals(db: &Database, session_id: &str) -> Option<UsageTotals> {
+    match db.usage().session_totals(session_id) {
+        Ok(totals) => Some(totals),
+        Err(err) => {
+            eprintln!("cortex run: failed to read session usage totals: {err}");
+            None
+        }
+    }
+}
+
 /// Report a setup-time provider diagnostic to stderr (keeping stdout byte-empty) and return its
 /// mapped exit code. A missing-credential diagnostic is followed by an actionable hint naming how
 /// to supply the key, so a keyless run tells the user exactly what to set (VAL-LLM-022).
@@ -348,6 +381,7 @@ async fn stream_text(
     }
     drop(handle);
     persist_assistant(db, session_id, &outcome);
+    persist_usage(db, session_id, &outcome);
     Exit::Success
 }
 
@@ -385,6 +419,7 @@ async fn stream_jsonl(
         return err.exit();
     }
     persist_assistant(db, session_id, &outcome);
+    persist_usage(db, session_id, &outcome);
     Exit::Success
 }
 
@@ -399,8 +434,13 @@ struct RunDocument<'a> {
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
     finish_reason: &'a llm::FinishReason,
+    /// The per-turn token usage and cost for this turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<&'a llm::Usage>,
+    /// The session's cumulative token usage and cost across every turn so far (this turn included),
+    /// so a consumer sees a running, monotonically non-decreasing session total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_usage: Option<UsageTotals>,
 }
 
 /// The leading `--jsonl` event announcing the agent persona and session id, before the runner's
@@ -432,7 +472,16 @@ async fn emit_json(
         return err.exit();
     }
 
-    let line = match render_json_document(model_id, agent, session_id, &outcome) {
+    // Persist this turn's usage BEFORE reading the session totals so the reported cumulative figure
+    // includes the current turn; tie the session total to a turn that actually reported usage.
+    persist_usage(db, session_id, &outcome);
+    let session_usage = if outcome.usage.is_some() {
+        session_usage_totals(db, session_id)
+    } else {
+        None
+    };
+
+    let line = match render_json_document(model_id, agent, session_id, &outcome, session_usage) {
         Ok(line) => line,
         Err(err) => {
             eprintln!("cortex run: failed to serialize output: {err}");
@@ -461,6 +510,7 @@ fn build_run_document<'a>(
     agent: &'a str,
     session_id: &'a str,
     outcome: &'a RunOutcome,
+    session_usage: Option<UsageTotals>,
 ) -> RunDocument<'a> {
     RunDocument {
         role: "assistant",
@@ -470,6 +520,7 @@ fn build_run_document<'a>(
         session: session_id,
         finish_reason: &outcome.finish_reason,
         usage: outcome.usage.as_ref(),
+        session_usage,
     }
 }
 
@@ -480,9 +531,15 @@ fn render_json_document(
     agent: &str,
     session_id: &str,
     outcome: &RunOutcome,
+    session_usage: Option<UsageTotals>,
 ) -> Result<String, serde_json::Error> {
-    let mut line =
-        serde_json::to_string(&build_run_document(model_id, agent, session_id, outcome))?;
+    let mut line = serde_json::to_string(&build_run_document(
+        model_id,
+        agent,
+        session_id,
+        outcome,
+        session_usage,
+    ))?;
     line.push('\n');
     Ok(line)
 }
@@ -1114,6 +1171,7 @@ mod tests {
             "build",
             "ses_x",
             &sample_outcome(),
+            None,
         )
         .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
@@ -1137,6 +1195,7 @@ mod tests {
             "plan",
             "ses_abc123",
             &sample_outcome(),
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -1160,19 +1219,71 @@ mod tests {
         );
     }
 
+    // VAL-LLM-031: when present, the document carries a `session_usage` cumulative total alongside
+    // the per-turn `usage`, with integer token counts and a numeric cost, so a machine consumer can
+    // read the running session-level figure.
+    #[test]
+    fn json_document_carries_session_usage_alongside_per_turn_usage() {
+        let session_usage = UsageTotals {
+            input_tokens: 248,
+            output_tokens: 16,
+            total_tokens: 264,
+            cost: Some(0.000_079_4),
+        };
+        let rendered = render_json_document(
+            "google/gemini-2.5-flash",
+            "build",
+            "ses_cumulative",
+            &sample_outcome(),
+            Some(session_usage),
+        )
+        .expect("render");
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+
+        // The per-turn usage stays present (this turn's figures).
+        assert_eq!(value["usage"]["input_tokens"].as_u64(), Some(9));
+        assert_eq!(value["usage"]["output_tokens"].as_u64(), Some(8));
+
+        // The cumulative session total is carried as integers plus a numeric cost, and is >= the
+        // per-turn figure (it includes this turn and every prior turn).
+        assert_eq!(value["session_usage"]["input_tokens"].as_u64(), Some(248));
+        assert_eq!(value["session_usage"]["output_tokens"].as_u64(), Some(16));
+        assert_eq!(value["session_usage"]["total_tokens"].as_u64(), Some(264));
+        assert!(
+            value["session_usage"]["input_tokens"].is_u64()
+                && value["session_usage"]["output_tokens"].is_u64()
+                && value["session_usage"]["total_tokens"].is_u64(),
+            "session token counts must be integers"
+        );
+        let session_cost = value["session_usage"]["cost"]
+            .as_f64()
+            .expect("session cost is a number");
+        assert!(session_cost > 0.0, "a paid session reports a positive cost");
+        assert!(
+            value["session_usage"]["total_tokens"].as_u64().unwrap()
+                >= value["usage"]["total_tokens"].as_u64().unwrap(),
+            "the session total must be at least this turn's usage"
+        );
+    }
+
     // The usage object is optional: when the provider reports none, it is omitted yet the document
     // stays a valid, strictly-parseable JSON object with the assistant role, content, and session.
     #[test]
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered = render_json_document("m", "general", "ses_y", &outcome).expect("render");
+        let rendered =
+            render_json_document("m", "general", "ses_y", &outcome, None).expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
         assert_eq!(value["agent"], "general");
         assert_eq!(value["session"], "ses_y");
         assert!(value.get("usage").is_none(), "absent usage is omitted");
+        assert!(
+            value.get("session_usage").is_none(),
+            "absent session usage is omitted"
+        );
     }
 
     // The leading `--jsonl` session event is a typed, independently-parseable object carrying the
