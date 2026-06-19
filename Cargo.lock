@@ -2000,6 +2000,7 @@ dependencies = [
  "frame",
  "futures-util",
  "llm",
+ "permissions",
  "protocol",
  "providers",
  "ratatui",

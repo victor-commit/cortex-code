@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ use llm::Message;
 use redaction::guard_outbound;
 use settings::EffectiveConfig;
 
+use crate::permission::{PermissionAsk, UiResponder};
 use crate::tooling::TurnDispatcher;
 
 /// A message published by the turn worker for the UI thread to apply.
@@ -36,6 +37,9 @@ pub enum TurnMessage {
     /// A file changed by a tool this turn, rendered as a colored unified diff in the transcript.
     /// Boxed to keep the message enum small (a diff carries its full line list).
     FileDiff(Box<crate::diff::FileDiff>),
+    /// An ask-gated tool is awaiting an interactive permission decision: the UI surfaces a prompt
+    /// and answers on the carried reply channel, unblocking the worker. Boxed to keep the enum small.
+    Permission(Box<PermissionAsk>),
     /// The turn could not start: a setup-time diagnostic (net-disabled, no-credential, bad model).
     SetupError(String),
     /// The worker has finished; the UI clears the busy indicator and finalizes the turn.
@@ -89,7 +93,8 @@ pub fn spawn(
                                 _ => None,
                             };
                             let mut dispatcher =
-                                TurnDispatcher::new(cwd, &model_id, session_id, tx_events.clone());
+                                TurnDispatcher::new(cwd, &model_id, session_id, tx_events.clone())
+                                    .with_permissions(build_permission_engine(tx_events.clone()));
                             if let Some(recorder) = &recorder {
                                 dispatcher = dispatcher.with_checkpoints(Arc::new(
                                     crate::checkpoint::RecorderBridge::new(recorder.clone()),
@@ -192,6 +197,41 @@ fn build_turn(
     Ok((provider, turn, model_id))
 }
 
+/// Build the per-turn permission engine that gates the TUI's tools with an interactive prompt.
+///
+/// The base policy asks before any effectful tool (`write`/`edit`/`apply_patch`/`bash`) and allows
+/// the read-only tools, so an ungoverned mutation surfaces a prompt rather than running silently;
+/// the project's own `[[permission]]` config layers are applied on top (higher precedence) so an
+/// explicit allow/deny rule governs the matching action. The [`UiResponder`] answers each `ask` by
+/// forwarding it to the UI thread over `events` and blocking on the human's decision (fail-closed
+/// if the UI is gone).
+fn build_permission_engine(events: Sender<TurnMessage>) -> Arc<permissions::PermissionEngine> {
+    let base = default_ruleset();
+    let ruleset = match settings::ConfigInputs::from_process(BTreeMap::new()) {
+        Ok(inputs) => match permissions::load_layered(&inputs) {
+            Ok(config) => permissions::Ruleset::from_layers([base, config]),
+            Err(_) => base,
+        },
+        Err(_) => base,
+    };
+    let responder: Arc<dyn permissions::Responder> = Arc::new(UiResponder::new(events));
+    Arc::new(permissions::PermissionEngine::new(ruleset).with_responder(responder))
+}
+
+/// The TUI's default permission policy: allow everything, then ask before each effectful tool. With
+/// last-matching-rule-wins the trailing `ask` rules govern the mutating/effectful tools while the
+/// read-only tools stay allowed, so a normal read/grep/glob turn is never interrupted by a prompt.
+fn default_ruleset() -> permissions::Ruleset {
+    use permissions::{Action, Rule};
+    permissions::Ruleset::new(vec![
+        Rule::new("*", "*", Action::Allow),
+        Rule::new("write", "*", Action::Ask),
+        Rule::new("edit", "*", Action::Ask),
+        Rule::new("apply_patch", "*", Action::Ask),
+        Rule::new("bash", "*", Action::Ask),
+    ])
+}
+
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id, rejecting
 /// a bare id locally with an actionable message (mirroring the headless run's validation).
 fn validate_model_id(model_id: &str) -> Result<(), String> {
@@ -275,5 +315,28 @@ mod tests {
     fn empty_provider_or_model_half_is_rejected() {
         assert!(validate_model_id("/flash").is_err());
         assert!(validate_model_id("google/").is_err());
+    }
+
+    // The default policy asks before each effectful tool and allows the read-only tools, so an
+    // ungoverned write/edit/apply_patch/bash surfaces a prompt while read/grep/glob run silently.
+    #[test]
+    fn default_policy_asks_for_effectful_tools_and_allows_reads() {
+        use permissions::{Action, PermissionEngine};
+
+        let engine = PermissionEngine::new(default_ruleset());
+        for tool in ["write", "edit", "apply_patch", "bash"] {
+            assert_eq!(
+                engine.classify(tool, "anything"),
+                Action::Ask,
+                "{tool} must be ask-gated by default"
+            );
+        }
+        for tool in ["read", "grep", "glob", "todo"] {
+            assert_eq!(
+                engine.classify(tool, "anything"),
+                Action::Allow,
+                "{tool} must be allowed by default"
+            );
+        }
     }
 }

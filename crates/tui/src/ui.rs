@@ -81,6 +81,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_palette(frame, app, area);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
     draw_which_key(frame, app, area);
+    // An interactive permission prompt is modal: it overlays everything (it captures every key
+    // while the turn worker is blocked awaiting the decision).
+    draw_permission(frame, app, area);
     // Transient toast notifications float above everything else (top-right) so they remain visible
     // over any open dialog/overlay, and auto-dismiss without disturbing the layout beneath them.
     draw_toasts(frame, app, area);
@@ -1305,6 +1308,95 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Render the interactive permission prompt: a centered modal naming the ask-gated tool and its
+/// target with selectable Allow/Deny options, drawn over everything while a decision is pending.
+fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
+    let Some((tool, subject, selected)) = app.permission_prompt() else {
+        return;
+    };
+    if area.width < 8 || area.height < 6 {
+        return;
+    }
+
+    // The Allow/Deny option row: the highlighted choice carries a `▸` marker and bold styling, and
+    // the options keep their semantic colors (allow = success/green, deny = error/red) so the choice
+    // is unmistakable in a snapshot.
+    let allow_selected = selected == 0;
+    let options = Line::from(vec![
+        Span::styled(
+            if allow_selected {
+                "▸ Allow"
+            } else {
+                "  Allow"
+            },
+            option_style(style::SUCCESS, allow_selected),
+        ),
+        Span::raw("    "),
+        Span::styled(
+            if allow_selected { "  Deny" } else { "▸ Deny" },
+            option_style(style::ERROR, !allow_selected),
+        ),
+    ]);
+    let hint = "y allow · n deny · ←/→ select · Enter confirm · Esc deny";
+
+    let rows: Vec<Line<'static>> = vec![
+        Line::from(vec![
+            Span::styled(
+                tool.to_owned(),
+                Style::default()
+                    .fg(style::WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " requests permission to act on:",
+                Style::default().fg(style::TEXT),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("  {subject}"),
+            Style::default()
+                .fg(style::TEXT)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        options,
+        Line::from(Span::styled(hint, Style::default().fg(style::TEXT_DIM))),
+    ];
+
+    let content_w = rows.iter().map(Line::width).max().unwrap_or(0);
+    let max_w = (area.width as usize) * 9 / 10;
+    let width = (content_w + 4).clamp(28, max_w.max(28)) as u16;
+    let height = (rows.len() as u16).saturating_add(2);
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::WARNING))
+        .title(" Permission required ")
+        .title_style(
+            Style::default()
+                .fg(style::WARNING)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(rows), inner);
+}
+
+/// The style for a permission option: its semantic color, bold and reversed when it is the
+/// highlighted choice so the active option stands out against the modal background.
+fn option_style(color: Color, selected: bool) -> Style {
+    let base = Style::default().fg(color);
+    if selected {
+        base.add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        base.add_modifier(Modifier::DIM)
+    }
 }
 
 /// The footer hint for a dialog: the session picker advertises its switch/rename/delete actions

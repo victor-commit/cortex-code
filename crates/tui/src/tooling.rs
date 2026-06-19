@@ -57,6 +57,15 @@ impl TurnDispatcher {
         }
     }
 
+    /// Gate every tool effect through `engine` (builder style). The TUI attaches an engine whose
+    /// interactive responder surfaces an `ask` to the UI thread, so an ask-gated mutation prompts
+    /// for approval and a denied action produces no side effect.
+    #[must_use]
+    pub fn with_permissions(mut self, engine: Arc<permissions::PermissionEngine>) -> Self {
+        self.context = self.context.with_permissions(engine);
+        self
+    }
+
     /// Attach the pre-mutation checkpoint recorder so each mutating tool snapshots a file's prior
     /// state before it changes it (builder style). Without this the TUI turn records no checkpoints,
     /// so `/undo` would have nothing to restore.

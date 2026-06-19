@@ -11,6 +11,7 @@ mod checkpoint;
 mod diff;
 mod keybind;
 mod mention;
+mod permission;
 mod shell;
 mod slash;
 mod tool_card;

@@ -18,11 +18,13 @@ use checkpoints::{RestoreOutcome, ShadowStore};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
+use permissions::Decision;
 use tui_components::toast::{Toast, ToastLevel};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
+use crate::permission::PermissionAsk;
 use crate::shell;
 use crate::slash;
 use crate::tool_card::ToolCard;
@@ -74,6 +76,19 @@ struct QueuedPrompt {
     header: Option<String>,
     /// The expanded prompt actually sent to the model.
     prompt: String,
+}
+
+/// An interactive permission prompt awaiting the user's decision.
+///
+/// Surfaced when an ask-gated tool runs during a turn: the turn worker is blocked until the user
+/// approves or denies, at which point the carried [`PermissionAsk`] is answered to unblock it. The
+/// `selected` option (0 = Allow, 1 = Deny) tracks the highlighted choice for arrow/Enter selection.
+#[derive(Debug)]
+struct PendingPermission {
+    /// The ask carrying the gated tool, its subject, and the reply channel to the worker.
+    ask: PermissionAsk,
+    /// The highlighted option: 0 = Allow, 1 = Deny.
+    selected: usize,
 }
 
 /// One rendered transcript entry.
@@ -359,6 +374,9 @@ pub struct App {
     /// The interrupt signal shared with the active turn worker. Setting it asks the worker to stop
     /// streaming at a safe boundary; `None` whenever no turn is in flight.
     cancel_flag: Option<Arc<AtomicBool>>,
+    /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
+    /// modal: keys drive the approve/deny choice (the worker thread is blocked awaiting the reply).
+    pending_permission: Option<PendingPermission>,
 }
 
 impl App {
@@ -403,6 +421,7 @@ impl App {
             checkpoints: None,
             queued_prompts: VecDeque::new(),
             cancel_flag: None,
+            pending_permission: None,
         }
     }
 
@@ -620,6 +639,7 @@ impl App {
         match message {
             TurnMessage::Event(event) => self.apply_event(event),
             TurnMessage::FileDiff(diff) => self.push_diff(*diff),
+            TurnMessage::Permission(ask) => self.open_permission(*ask),
             TurnMessage::SetupError(message) => self.set_turn_error(message),
             TurnMessage::Finished => self.finish_turn(),
         }
@@ -818,6 +838,72 @@ impl App {
         self.transcript
             .push(Entry::Notice("Turn interrupted.".to_owned()));
         self.push_toast(ToastLevel::Info, "Turn interrupted");
+        self.pin_to_bottom();
+    }
+
+    /// Whether an interactive permission prompt is currently awaiting a decision. While open it is
+    /// modal (it captures keys) and the turn worker is blocked awaiting the reply.
+    #[must_use]
+    pub fn permission_open(&self) -> bool {
+        self.pending_permission.is_some()
+    }
+
+    /// The open permission prompt's `(tool, subject, selected)` for rendering, or `None` when no
+    /// ask is pending (`selected`: 0 = Allow, 1 = Deny).
+    #[must_use]
+    pub fn permission_prompt(&self) -> Option<(&str, &str, usize)> {
+        self.pending_permission
+            .as_ref()
+            .map(|p| (p.ask.tool.as_str(), p.ask.subject.as_str(), p.selected))
+    }
+
+    /// Surface an ask-gated tool's permission request as a modal prompt, defaulting the highlight to
+    /// Allow. The worker thread stays blocked until [`answer_permission`](App::answer_permission)
+    /// replies, so the dialog draws over the (still-busy) turn until the user decides.
+    fn open_permission(&mut self, ask: PermissionAsk) {
+        self.pending_permission = Some(PendingPermission { ask, selected: 0 });
+        self.pin_to_bottom();
+    }
+
+    /// Highlight a permission option without confirming it (0 = Allow, 1 = Deny).
+    fn permission_select(&mut self, option: usize) {
+        if let Some(pending) = self.pending_permission.as_mut() {
+            pending.selected = option.min(1);
+        }
+    }
+
+    /// Confirm the highlighted permission option (Enter), answering allow or deny accordingly.
+    fn confirm_permission(&mut self) {
+        let denied = self
+            .pending_permission
+            .as_ref()
+            .is_some_and(|pending| pending.selected == 1);
+        self.answer_permission(if denied {
+            Decision::Deny
+        } else {
+            Decision::Allow
+        });
+    }
+
+    /// Answer the pending permission prompt, unblocking the turn worker and recording the outcome.
+    ///
+    /// An approval lets the gated tool proceed (its effect/result then renders as the turn
+    /// continues); a denial blocks the tool (it returns a permission-denied result the model sees)
+    /// while the turn carries on. Either way a notice + toast records the decision and the dialog is
+    /// dismissed so the UI returns to its streaming state.
+    fn answer_permission(&mut self, decision: Decision) {
+        let Some(pending) = self.pending_permission.take() else {
+            return;
+        };
+        let tool = pending.ask.tool.clone();
+        let subject = pending.ask.subject.clone();
+        pending.ask.answer(decision);
+        let (label, level) = match decision {
+            Decision::Allow => (format!("Approved {tool}: {subject}"), ToastLevel::Success),
+            Decision::Deny => (format!("Denied {tool}: {subject}"), ToastLevel::Warning),
+        };
+        self.push_toast(level, label.clone());
+        self.transcript.push(Entry::Notice(label));
         self.pin_to_bottom();
     }
 
@@ -2095,6 +2181,28 @@ impl App {
         // clear it here; an action below may set a fresh one for this key.
         self.ack = None;
 
+        // An interactive permission prompt is the most modal state: the turn worker is blocked
+        // awaiting the decision, so it owns every key until answered. `y`/`a` approve, `n`/`d` deny,
+        // the arrows move the highlight and Enter confirms it, and Esc denies (the turn then
+        // continues gracefully). Ctrl+C still quits so the user is never trapped.
+        if self.permission_open() {
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('y' | 'a') if !ctrl && !alt => {
+                    self.answer_permission(Decision::Allow);
+                }
+                KeyCode::Char('n' | 'd') if !ctrl && !alt => {
+                    self.answer_permission(Decision::Deny);
+                }
+                KeyCode::Left | KeyCode::Up => self.permission_select(0),
+                KeyCode::Right | KeyCode::Down => self.permission_select(1),
+                KeyCode::Enter => self.confirm_permission(),
+                KeyCode::Esc => self.answer_permission(Decision::Deny),
+                _ => {}
+            }
+            return;
+        }
+
         // While the leader chord is armed the next key selects a binding: a matching action key runs
         // its action, Esc cancels, and any other key simply disarms (a harmless no-op). The chord is
         // consumed regardless, so the which-key overlay never lingers. Ctrl+C still quits.
@@ -2800,6 +2908,141 @@ mod tests {
     /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
     fn flag() -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
+    }
+
+    /// Deliver a permission ask to the app (as the worker would), returning the receiver the test
+    /// reads the answered decision from.
+    fn deliver_permission(
+        a: &mut App,
+        tool: &str,
+        subject: &str,
+    ) -> std::sync::mpsc::Receiver<Decision> {
+        let (reply, wait) = std::sync::mpsc::channel();
+        a.apply(TurnMessage::Permission(Box::new(PermissionAsk::new(
+            tool, subject, reply,
+        ))));
+        wait
+    }
+
+    // A delivered permission ask opens a modal prompt naming the tool + subject, defaulting the
+    // highlight to Allow.
+    #[test]
+    fn permission_ask_opens_a_modal_prompt() {
+        let mut a = app();
+        let _wait = deliver_permission(&mut a, "write", "marker.txt");
+        assert!(a.permission_open());
+        assert_eq!(a.permission_prompt(), Some(("write", "marker.txt", 0)));
+    }
+
+    // Pressing `y` approves the ask: the decision is Allow, the prompt is dismissed, and a notice
+    // records the approval.
+    #[test]
+    fn pressing_y_approves_the_ask() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "write", "marker.txt");
+        a.on_key(key(KeyCode::Char('y')));
+        assert_eq!(wait.recv().unwrap(), Decision::Allow);
+        assert!(!a.permission_open());
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(text) if text.contains("Approved")))
+        );
+    }
+
+    // Pressing `n` denies the ask: the decision is Deny and a notice records the denial.
+    #[test]
+    fn pressing_n_denies_the_ask() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "bash", "rm -rf .");
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(wait.recv().unwrap(), Decision::Deny);
+        assert!(!a.permission_open());
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(text) if text.contains("Denied")))
+        );
+    }
+
+    // Esc denies the ask (so the turn continues gracefully rather than the dialog lingering).
+    #[test]
+    fn esc_denies_the_ask() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "write", "x.txt");
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(wait.recv().unwrap(), Decision::Deny);
+        assert!(!a.permission_open());
+    }
+
+    // Arrow selection then Enter confirms the highlighted option: Right highlights Deny, Enter
+    // denies; the default highlight (Allow) is confirmed by Enter with no movement.
+    #[test]
+    fn arrow_then_enter_confirms_the_selected_option() {
+        let mut a = app();
+        let deny = deliver_permission(&mut a, "edit", "a.rs");
+        a.on_key(key(KeyCode::Right));
+        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 1)));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(deny.recv().unwrap(), Decision::Deny);
+
+        let mut b = app();
+        let allow = deliver_permission(&mut b, "edit", "b.rs");
+        b.on_key(key(KeyCode::Enter));
+        assert_eq!(allow.recv().unwrap(), Decision::Allow);
+    }
+
+    // While a permission prompt is open it is modal: a printable key drives the dialog rather than
+    // editing the prompt beneath it.
+    #[test]
+    fn permission_prompt_is_modal_over_the_input() {
+        let mut a = app();
+        let _wait = deliver_permission(&mut a, "write", "z.txt");
+        a.on_key(key(KeyCode::Char('y')));
+        assert_eq!(
+            a.input_value(),
+            "",
+            "the keypress answered the prompt, not the input"
+        );
+    }
+
+    // The permission prompt renders as a titled modal naming the tool, its target, and the
+    // Allow/Deny options over the frame (VAL-TUI-091).
+    #[test]
+    fn permission_prompt_renders_over_the_frame() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let _wait = deliver_permission(&mut a, "write", "marker.txt");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| crate::ui::draw(frame, &a)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(
+            rendered.contains("Permission required"),
+            "the modal title is drawn:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("write"),
+            "the gated tool is named:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("marker.txt"),
+            "the target is named:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Allow") && rendered.contains("Deny"),
+            "both options are offered:\n{rendered}"
+        );
     }
 
     #[test]
