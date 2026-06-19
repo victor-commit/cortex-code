@@ -345,6 +345,26 @@ mod tests {
     }
 
     #[test]
+    fn run_help_enumerates_its_flags_for_discovery() {
+        // VAL-CROSS-035: a capability available as a flag must be discoverable through
+        // per-subcommand `--help`, not only reachable as a hidden/undocumented flag. Model
+        // switching (`--model`) in particular is the cross-surface discoverability example, so it
+        // (and the other principal run flags) must surface in `cortex run --help`.
+        let mut cmd = Cli::command();
+        let run = cmd
+            .get_subcommands_mut()
+            .find(|sub| sub.get_name() == "run")
+            .expect("the `run` subcommand exists");
+        let help = run.render_help().to_string();
+        for flag in ["--model", "--agent", "--session", "--format"] {
+            assert!(
+                help.contains(flag),
+                "`run --help` should document `{flag}`:\n{help}"
+            );
+        }
+    }
+
+    #[test]
     fn session_new_parses_title_and_format() {
         let cli = Cli::try_parse_from([
             "cortex", "session", "new", "--title", "demo", "--format", "json",

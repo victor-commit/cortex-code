@@ -2114,6 +2114,31 @@ mod tests {
     }
 
     #[test]
+    fn model_switching_is_discoverable_in_both_help_and_palette() {
+        // VAL-CROSS-035: a randomly chosen capability (model switching) must be findable through
+        // an in-product listing on the TUI surface, not only via hidden means. It surfaces in the
+        // `/help` reference AND the command palette, both backed by the shared slash registry.
+        let mut a = app();
+
+        a.transcript.push(Entry::Help);
+        let help_text = rendered(&transcript_lines(&a, 80));
+        assert!(
+            help_text.contains("/models"),
+            "/help lists the model-switching command:\n{help_text}"
+        );
+
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let palette_text = rendered(&palette_command_lines(&a));
+        assert!(
+            palette_text.contains("/models"),
+            "the palette lists the model-switching action:\n{palette_text}"
+        );
+    }
+
+    #[test]
     fn notice_entry_renders_distinctly() {
         let mut a = app();
         a.transcript
