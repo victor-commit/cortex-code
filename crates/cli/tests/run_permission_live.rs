@@ -62,6 +62,54 @@ fn cortex_in(dir: &Path, key: &str, args: &[&str]) -> Command {
     c
 }
 
+/// A scratch layered-config tree: an isolated `home` (holding the global config and the per-run DB)
+/// and a `proj` working dir under it (holding the project config and the fixture files). `proj` is
+/// a child of `home`, so the project-config walk discovers `proj/cortex.toml` and stops at `home`.
+fn layered_tree(tag: &str) -> (PathBuf, PathBuf) {
+    let home = scratch_dir(tag);
+    let proj = home.join("proj");
+    fs::create_dir_all(&proj).expect("create project working dir");
+    (home, proj)
+}
+
+/// Write the global config (`$HOME/.config/cortex/config.toml`) for a layered fixture.
+fn write_global_config(home: &Path, contents: &str) {
+    let path = home.join(".config").join("cortex").join("config.toml");
+    fs::create_dir_all(path.parent().expect("config parent")).expect("create global config dir");
+    fs::write(path, contents).expect("write global config");
+}
+
+/// A `cortex` command rooted at the project working dir with `home` as its HOME, so the global
+/// config under `home/.config/cortex/config.toml` is discovered and the per-run DB lives in the
+/// isolated home (never touching the real environment). Other config/data env is cleared so the
+/// fixture is hermetic.
+fn cortex_layered(home: &Path, proj: &Path, key: &str, args: &[&str]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cortex"));
+    c.current_dir(proj);
+    c.args(args);
+    c.env("OPENROUTER_API_KEY", key);
+    c.env("HOME", home);
+    c.env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CORTEX_DATA_DIR")
+        .env_remove("CORTEX_DB_PATH")
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE")
+        .env_remove("NO_COLOR");
+    c
+}
+
+/// A config-file `[[permission]]` rule for `bash rm *` with the given action.
+fn rm_rule(action: &str) -> String {
+    format!("[[permission]]\ntool = \"bash\"\npattern = \"rm *\"\naction = \"{action}\"\n")
+}
+
+/// The prompt that drives a single, direct `rm x` bash tool call (no exploration first, which under
+/// a narrow ruleset would otherwise be denied and could derail the turn).
+const RM_X_PROMPT: &str = "Immediately use the bash tool to run exactly this one command: rm x . Do not read, list, or \
+     inspect anything first — just run `rm x` now.";
+
 /// Spawn the binary and collect its output, enforcing `timeout` as a hang guard; the exact child
 /// PID is killed if the timeout is exceeded so no orphan is left behind.
 fn run(mut command: Command, timeout: Duration) -> Output {
@@ -334,5 +382,104 @@ fn compound_bash_with_a_denied_segment_is_refused_atomically() {
     assert!(
         !dir.join("a.txt").exists(),
         "the allowed echo segment must not run either (atomic refusal)"
+    );
+}
+
+/// VAL-PERM-017: config-file permission layers gate a real `cortex run`. A global config `allow
+/// bash rm *` with a project config (in the run's working dir) `deny bash rm *` blocks `rm x`, so
+/// the project layer wins over the global layer and `x` is preserved on disk.
+#[test]
+fn config_project_deny_overrides_global_allow_blocking_rm() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = layered_tree("perm017-deny");
+    write_global_config(&home, &rm_rule("allow"));
+    fs::write(proj.join("cortex.toml"), rm_rule("deny")).unwrap();
+    fs::write(proj.join("x"), "PRESERVE ME\n").unwrap();
+
+    let out = run(
+        cortex_layered(&home, &proj, &key, &["run", "--model", MODEL, RM_X_PROMPT]),
+        Duration::from_secs(120),
+    );
+
+    assert!(
+        out.status.success(),
+        "the turn completes (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        proj.join("x").exists(),
+        "the project `deny bash rm *` must win over the global allow, preserving x on disk"
+    );
+}
+
+/// VAL-PERM-017: removing the project `deny` rule (leaving only the global `allow bash rm *`) lets
+/// the same `cortex run` turn delete `x` — demonstrating deterministic cross-layer combination
+/// (the global allow governs once nothing higher overrides it).
+#[test]
+fn config_global_allow_alone_permits_rm() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = layered_tree("perm017-allow");
+    write_global_config(&home, &rm_rule("allow"));
+    fs::write(proj.join("x"), "DELETE ME\n").unwrap();
+
+    let out = run(
+        cortex_layered(&home, &proj, &key, &["run", "--model", MODEL, RM_X_PROMPT]),
+        Duration::from_secs(120),
+    );
+
+    assert!(
+        out.status.success(),
+        "the turn completes (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !proj.join("x").exists(),
+        "with only the global allow (no project override) the rm runs and x is removed"
+    );
+}
+
+/// VAL-PERM-017: a CLI `--permission-deny 'bash:rm *'` is appended ON TOP of the config layers, so
+/// it overrides a config-file `allow bash rm *` (the CLI layer wins last). `x` is preserved.
+#[test]
+fn cli_deny_overrides_a_config_allow() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = layered_tree("perm017-cli");
+    write_global_config(&home, &rm_rule("allow"));
+    fs::write(proj.join("x"), "PRESERVE ME\n").unwrap();
+
+    let out = run(
+        cortex_layered(
+            &home,
+            &proj,
+            &key,
+            &[
+                "run",
+                "--model",
+                MODEL,
+                "--permission-deny",
+                "bash:rm *",
+                RM_X_PROMPT,
+            ],
+        ),
+        Duration::from_secs(120),
+    );
+
+    assert!(
+        out.status.success(),
+        "the turn completes (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        proj.join("x").exists(),
+        "the CLI deny is appended last and overrides the config-file allow, preserving x"
     );
 }

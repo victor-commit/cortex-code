@@ -83,15 +83,13 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    // Build the permission engine from the repeatable allow/deny rule flags before any network or
-    // store work, so a malformed rule fails fast with a usage error and zero side effects. With no
-    // flags supplied the engine is absent and tools run ungated (the default headless behavior the
-    // other M2 tool features rely on); with rules present every gated tool action is resolved
-    // through this engine via `ctx.permits`, so a denied write/edit/apply_patch/bash/read produces
-    // no effect.
-    let permission_engine =
-        match permission::engine_from_flags(&args.permission_allow, &args.permission_deny) {
-            Ok(engine) => engine,
+    // Parse the repeatable allow/deny CLI rule flags before any network or store work, so a
+    // malformed rule fails fast with a usage error and zero side effects. These CLI rules are later
+    // appended ON TOP of the config-file permission layers, so a CLI rule overrides a conflicting
+    // config rule (last-matching-rule-wins).
+    let cli_permission_rules =
+        match permission::rules_from_flags(&args.permission_allow, &args.permission_deny) {
+            Ok(rules) => rules,
             Err(message) => {
                 eprintln!("cortex run: {message}");
                 return Exit::Usage;
@@ -116,6 +114,23 @@ pub fn run(args: RunArgs) -> Exit {
             return Exit::Failure;
         }
     };
+
+    // Build the headless permission engine from the config-file `[[permission]]` layers (global →
+    // project → nested, the documented settings layering order, picking up a project-level
+    // `cortex.toml` in the working dir) as the BASE ruleset, then append the CLI rules ON TOP so a
+    // CLI rule overrides a conflicting config rule under last-matching-rule-wins. The engine is
+    // attached only when the combined ruleset is non-empty, so with no config rules AND no flags the
+    // run stays ungated (the default the other M2 tool features rely on). A malformed config-file
+    // rule (or an unreadable/invalid config layer) fails fast with the stable config exit code.
+    let permission_engine =
+        match permission::engine_from_layers_and_flags(&config_inputs, cli_permission_rules) {
+            Ok(engine) => engine,
+            Err(err) => {
+                eprintln!("cortex run: {err}");
+                return Exit::Config;
+            }
+        };
+
     let run_config = match resolve_run_config(config_inputs) {
         Ok(run_config) => run_config,
         Err(err) => {
