@@ -5,9 +5,12 @@
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -60,6 +63,17 @@ pub struct AssistantTurn {
     pub reasoning: String,
     /// The assistant-visible answer text, grown incrementally as deltas arrive.
     pub answer: String,
+}
+
+/// A chat message submitted while a turn was still streaming. Rather than being dropped, it is held
+/// here and promoted into its own turn once the active turn settles (queued, not lost).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueuedPrompt {
+    /// The user-visible header shown in the transcript, set only when `@`-mention expansion changed
+    /// the sent text; `None` means the typed text is the prompt verbatim.
+    header: Option<String>,
+    /// The expanded prompt actually sent to the model.
+    prompt: String,
 }
 
 /// One rendered transcript entry.
@@ -338,6 +352,13 @@ pub struct App {
     /// rather than failing). The undo/redo handlers re-read its on-disk journal each invocation, so
     /// it observes snapshots finalized by the background turn worker.
     checkpoints: Option<ShadowStore>,
+    /// Chat messages submitted while a turn was streaming, in submission order. Each is promoted
+    /// into its own turn once the active turn settles, so a mid-stream message is queued rather than
+    /// dropped. Cleared when the active turn is interrupted.
+    queued_prompts: VecDeque<QueuedPrompt>,
+    /// The interrupt signal shared with the active turn worker. Setting it asks the worker to stop
+    /// streaming at a safe boundary; `None` whenever no turn is in flight.
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl App {
@@ -380,6 +401,8 @@ impl App {
             copy_request: None,
             toasts: Vec::new(),
             checkpoints: None,
+            queued_prompts: VecDeque::new(),
+            cancel_flag: None,
         }
     }
 
@@ -538,7 +561,15 @@ impl App {
     /// A slash flow may set a concise [header](App::pending_header) (shown in the transcript) and
     /// the [compaction](App::pending_compaction) flag (so the turn's summary replaces history when
     /// it finishes); both are consumed here. A plain chat prompt shows its text verbatim.
-    pub fn begin_turn(&mut self, prompt: String, rx: Receiver<TurnMessage>) {
+    ///
+    /// `cancel` is the worker's interrupt seam, retained so [`interrupt_turn`](App::interrupt_turn)
+    /// can stop the stream when the user presses the cancel key.
+    pub fn begin_turn(
+        &mut self,
+        prompt: String,
+        rx: Receiver<TurnMessage>,
+        cancel: Arc<AtomicBool>,
+    ) {
         let header = self.pending_header.take().unwrap_or_else(|| prompt.clone());
         self.transcript.push(Entry::User(header));
         self.transcript
@@ -547,9 +578,17 @@ impl App {
         self.turn_errored = false;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
         self.turn_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
         self.spinner_start = Some(Instant::now());
         // Pin to the latest so the streaming reply stays in view.
         self.pin_to_bottom();
+    }
+
+    /// The number of chat messages queued behind the active turn (submitted mid-stream and waiting
+    /// to run once it settles). Surfaced in the busy indicator so a queued message reads as accepted.
+    #[must_use]
+    pub fn queued_count(&self) -> usize {
+        self.queued_prompts.len()
     }
 
     /// Drain every pending turn message from the worker, applying each to the transcript, usage,
@@ -698,8 +737,12 @@ impl App {
     /// A compaction turn (`/compact`) instead replaces the conversation history with its summary so
     /// subsequent turns carry a compact context, and annotates the transcript so the compaction is
     /// visible. A failed turn of either kind leaves history untouched.
+    ///
+    /// On the way out it promotes the next queued mid-stream message (if any) into its own turn, so
+    /// a message submitted while this turn streamed runs next rather than being dropped.
     fn finish_turn(&mut self) {
         self.turn_rx = None;
+        self.cancel_flag = None;
         self.spinner_start = None;
         let prompt = self.turn_prompt.take();
         let errored = std::mem::take(&mut self.turn_errored);
@@ -716,6 +759,7 @@ impl App {
                     ));
                 }
             }
+            self.start_next_queued();
             return;
         }
 
@@ -727,6 +771,54 @@ impl App {
                 }
             }
         }
+        self.start_next_queued();
+    }
+
+    /// Promote the oldest queued mid-stream message (if any) into the next turn by staging it as the
+    /// pending prompt the event loop starts. A no-op while a turn is in flight or the queue is empty.
+    fn start_next_queued(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        if let Some(item) = self.queued_prompts.pop_front() {
+            self.pending_header = item.header;
+            self.pending_prompt = Some(item.prompt);
+        }
+    }
+
+    /// Interrupt the streaming turn: signal the worker to stop, return the UI to an idle, editable
+    /// state, and preserve any partial output already rendered.
+    ///
+    /// The in-flight worker is asked to cancel (dropping the upstream stream at a safe boundary); the
+    /// partial exchange is folded into history so a follow-up keeps context, an "interrupted" notice
+    /// and toast are surfaced, and any messages queued behind this turn are cleared so the UI truly
+    /// returns to idle rather than immediately launching another turn. A no-op when no turn is in
+    /// flight.
+    fn interrupt_turn(&mut self) {
+        if !self.is_busy() {
+            return;
+        }
+        if let Some(flag) = self.cancel_flag.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.turn_rx = None;
+        self.spinner_start = None;
+        let prompt = self.turn_prompt.take();
+        let errored = std::mem::take(&mut self.turn_errored);
+        let _ = std::mem::take(&mut self.turn_compaction);
+        if let Some(prompt) = prompt {
+            self.history.push(Message::user(prompt));
+            if !errored {
+                if let Some(answer) = self.latest_assistant_answer() {
+                    self.history.push(Message::assistant(answer));
+                }
+            }
+        }
+        self.queued_prompts.clear();
+        self.transcript
+            .push(Entry::Notice("Turn interrupted.".to_owned()));
+        self.push_toast(ToastLevel::Info, "Turn interrupted");
+        self.pin_to_bottom();
     }
 
     /// The most recent assistant entry's answer text, if any. A tool/diff entry may sit after the
@@ -2243,15 +2335,23 @@ impl App {
             // Page-scroll the transcript to reach earlier / later content.
             KeyCode::PageUp => self.scroll_page_up(),
             KeyCode::PageDown => self.scroll_page_down(),
-            // Esc clears the message selection focus.
-            KeyCode::Esc => self.clear_navigation(),
+            // Esc interrupts a streaming turn (stopping it gracefully); otherwise it clears the
+            // message selection focus.
+            KeyCode::Esc => {
+                if self.is_busy() {
+                    self.interrupt_turn();
+                } else {
+                    self.clear_navigation();
+                }
+            }
             _ => {}
         }
     }
 
     /// Handles `Enter` on the current prompt. Slash exit commands quit; any other non-empty text is
     /// accepted as a [pending prompt](App::take_pending_prompt) the event loop turns into a
-    /// streaming turn. Submitting is ignored while a turn is already in flight.
+    /// streaming turn. A message submitted while a turn is already streaming is queued (not dropped)
+    /// and runs once the active turn settles.
     fn submit(&mut self) {
         let value = self.input.value();
         let trimmed = value.trim();
@@ -2259,17 +2359,35 @@ impl App {
             self.should_quit = true;
             return;
         }
-        if self.is_busy() || trimmed.is_empty() {
+        if trimmed.is_empty() {
             return;
         }
         // Inline any `@`-mentioned file contents into the prompt sent to the model, while showing the
-        // typed `@path` prompt in the transcript: the expanded text becomes the pending prompt (sent
-        // and carried into history) and the typed text becomes the user-visible header.
+        // typed `@path` prompt in the transcript: the expanded text becomes the prompt (sent and
+        // carried into history) and the typed text becomes the user-visible header.
         let typed = trimmed.to_owned();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let expanded = mention::expand(&typed, &cwd);
-        if expanded != typed {
-            self.pending_header = Some(typed);
+        let header = (expanded != typed).then(|| typed.clone());
+
+        if self.is_busy() {
+            // A turn is streaming: queue this message so it is admitted (and run next) rather than
+            // dropped, and acknowledge it so it reads as accepted.
+            self.queued_prompts.push_back(QueuedPrompt {
+                header,
+                prompt: expanded,
+            });
+            self.mention = None;
+            self.input.set_value("");
+            self.push_toast(
+                ToastLevel::Info,
+                "Message queued — sends after the current turn",
+            );
+            return;
+        }
+
+        if let Some(header) = header {
+            self.pending_header = Some(header);
         }
         self.pending_prompt = Some(expanded);
         self.mention = None;
@@ -2679,6 +2797,11 @@ mod tests {
         })
     }
 
+    /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
+    fn flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
     #[test]
     fn typing_echoes_into_the_prompt() {
         let mut a = app();
@@ -2992,25 +3115,135 @@ mod tests {
     }
 
     #[test]
-    fn submit_is_ignored_while_a_turn_is_in_flight() {
+    fn a_mid_stream_submit_is_queued_not_dropped() {
+        // VAL-TUI-089: a message submitted while a turn streams is admitted (queued), not dropped.
         let mut a = app();
-        let (_tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("first".to_owned(), rx);
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("first".to_owned(), rx, flag());
         assert!(a.is_busy());
+
         for c in "second".chars() {
             a.on_key(key(KeyCode::Char(c)));
         }
         a.on_key(key(KeyCode::Enter));
-        // Nothing was submitted and the typed text is preserved.
+
+        // The message is accepted: the prompt is cleared and the message is queued behind the turn
+        // rather than started immediately or dropped.
+        assert_eq!(a.input_value(), "");
+        assert_eq!(a.queued_count(), 1);
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "the queued message does not start while the first turn is in flight"
+        );
+
+        // Once the active turn settles, the queued message is promoted into its own turn.
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+        assert_eq!(a.queued_count(), 0);
+        assert_eq!(a.take_pending_prompt().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn queued_messages_run_in_submission_order() {
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("first".to_owned(), rx, flag());
+
+        for msg in ["alpha", "beta"] {
+            for c in msg.chars() {
+                a.on_key(key(KeyCode::Char(c)));
+            }
+            a.on_key(key(KeyCode::Enter));
+        }
+        assert_eq!(a.queued_count(), 2);
+
+        // Finishing the first turn drains the oldest queued message.
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+        assert_eq!(a.take_pending_prompt().as_deref(), Some("alpha"));
+        assert_eq!(a.queued_count(), 1);
+    }
+
+    #[test]
+    fn esc_interrupts_a_streaming_turn_and_returns_to_idle() {
+        // VAL-TUI-090: the interrupt key stops the turn and returns the UI to an idle editable
+        // state with partial output preserved.
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let cancel = flag();
+        a.begin_turn("count to 200".to_owned(), rx, cancel.clone());
+        // Some partial output streamed before the interrupt.
+        a.apply(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "1\n2\n3".to_owned(),
+        }));
+        assert!(a.is_busy());
+
+        a.on_key(key(KeyCode::Esc));
+
+        // The worker was signalled, the busy indicator cleared, and the UI is editable again.
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "the worker was asked to cancel"
+        );
+        assert!(!a.is_busy(), "the turn is no longer streaming");
+        // Partial output is preserved and an interruption notice is shown.
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant(t) if t.answer.contains('2'))),
+            "partial answer preserved: {:?}",
+            a.transcript
+        );
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(m) if m.contains("interrupted"))),
+            "an interruption notice is recorded"
+        );
+        // A fresh message can be submitted right away.
+        for c in "again".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.take_pending_prompt().as_deref(), Some("again"));
+    }
+
+    #[test]
+    fn interrupt_clears_queued_messages() {
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("first".to_owned(), rx, flag());
+        for c in "queued".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.queued_count(), 1);
+
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.is_busy());
+        assert_eq!(
+            a.queued_count(),
+            0,
+            "interrupt returns the UI fully to idle"
+        );
         assert!(a.take_pending_prompt().is_none());
-        assert_eq!(a.input_value(), "second");
+    }
+
+    #[test]
+    fn esc_when_idle_does_not_interrupt() {
+        // With no turn in flight Esc clears navigation rather than interrupting (no panic, no-op).
+        let mut a = app();
+        assert!(!a.is_busy());
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.is_busy());
+        assert_eq!(a.queued_count(), 0);
     }
 
     #[test]
     fn streamed_deltas_grow_the_assistant_answer() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
 
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
             text: "Hello".to_owned(),
@@ -3033,7 +3266,7 @@ mod tests {
     fn reasoning_is_kept_distinct_from_the_answer() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
 
         tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
             text: "let me think".to_owned(),
@@ -3054,7 +3287,7 @@ mod tests {
     fn no_reasoning_leaves_an_empty_region() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
             text: "plain answer".to_owned(),
         }))
@@ -3070,7 +3303,7 @@ mod tests {
         assert!(!a.usage.reported, "no usage before any turn");
 
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::Usage(usage(
             10,
             20,
@@ -3090,7 +3323,7 @@ mod tests {
     fn busy_indicator_shows_during_a_turn_and_clears_on_finish() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         assert!(a.is_busy());
         assert!(a.spinner_glyph().is_some());
 
@@ -3110,7 +3343,7 @@ mod tests {
     fn finished_turn_is_folded_into_history() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("question".to_owned(), rx);
+        a.begin_turn("question".to_owned(), rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
             text: "reply".to_owned(),
         }))
@@ -3128,7 +3361,7 @@ mod tests {
     fn a_turn_error_is_surfaced_and_kept_out_of_history() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::Error {
             message: "provider exploded".to_owned(),
             kind: "upstream".to_owned(),
@@ -3149,7 +3382,7 @@ mod tests {
     fn setup_error_is_surfaced_as_an_error_entry() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(TurnMessage::SetupError("no credential".to_owned()))
             .unwrap();
         tx.send(TurnMessage::Finished).unwrap();
@@ -3163,7 +3396,7 @@ mod tests {
     fn a_file_diff_is_recorded_in_the_transcript() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("edit the file".to_owned(), rx);
+        a.begin_turn("edit the file".to_owned(), rx, flag());
 
         let diff =
             crate::diff::compute_file_diff("src/main.rs", Some("a\nb\nc\n"), Some("a\nB\nc\n"))
@@ -3208,7 +3441,7 @@ mod tests {
         use crate::tool_card::ToolStatus;
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("read the file".to_owned(), rx);
+        a.begin_turn("read the file".to_owned(), rx, flag());
 
         tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
             id: "call_1".to_owned(),
@@ -3249,7 +3482,7 @@ mod tests {
         use crate::tool_card::ToolStatus;
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("read a missing file".to_owned(), rx);
+        a.begin_turn("read a missing file".to_owned(), rx, flag());
 
         tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
             id: "c".to_owned(),
@@ -3285,7 +3518,7 @@ mod tests {
     fn tool_result_for_unknown_id_is_ignored() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         // A result with no matching open card must not panic or fabricate a card.
         tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
             id: "missing".to_owned(),
@@ -3302,7 +3535,7 @@ mod tests {
     fn answer_after_a_diff_opens_a_fresh_assistant_entry_and_reaches_history() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("create a file".to_owned(), rx);
+        a.begin_turn("create a file".to_owned(), rx, flag());
 
         let diff =
             crate::diff::compute_file_diff("new.txt", None, Some("hello\n")).expect("a diff");
@@ -3485,7 +3718,7 @@ mod tests {
     /// Run a complete throwaway turn so the app accumulates transcript + history state.
     fn run_turn(a: &mut App, prompt: &str, answer: &str) {
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn(prompt.to_owned(), rx);
+        a.begin_turn(prompt.to_owned(), rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
             text: answer.to_owned(),
         }))
@@ -3552,7 +3785,7 @@ mod tests {
         );
         // The transcript shows the concise header, not the verbose instruction.
         let (_tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn(prompt, rx);
+        a.begin_turn(prompt, rx, flag());
         assert!(
             a.transcript
                 .iter()
@@ -3601,7 +3834,7 @@ mod tests {
             .take_pending_prompt()
             .expect("a compaction turn is queued");
         let (tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn(prompt, rx);
+        a.begin_turn(prompt, rx, flag());
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
             text: "Summary: discussed fact one and fact two.".to_owned(),
         }))
@@ -3678,7 +3911,7 @@ mod tests {
     fn flows_are_ignored_while_a_turn_is_in_flight() {
         let mut a = app();
         let (_tx, rx) = std::sync::mpsc::channel();
-        a.begin_turn("busy".to_owned(), rx);
+        a.begin_turn("busy".to_owned(), rx, flag());
         assert!(a.is_busy());
         type_str(&mut a, "/init");
         a.on_key(key(KeyCode::Enter));

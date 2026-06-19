@@ -14,8 +14,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Duration;
 
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn,
@@ -48,8 +50,17 @@ const OUTBOUND_OPERATION: &str = "LLM turn";
 ///
 /// The worker owns its own current-thread Tokio runtime and provider, so nothing but plain data
 /// crosses the thread boundary. The receiver disconnects once the worker exits.
+///
+/// `cancel` is the interrupt seam: when the UI sets it (the cancel/interrupt key), the in-flight
+/// runner future is dropped, which drops the upstream SSE stream and aborts the connection so the
+/// turn stops streaming gracefully — no orphaned children, no panic. Background `bash` jobs are
+/// still reaped and the checkpoint is still finalized afterward.
 #[must_use]
-pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
+pub fn spawn(
+    prompt: String,
+    history: Vec<Message>,
+    cancel: Arc<AtomicBool>,
+) -> Receiver<TurnMessage> {
     let (tx, rx) = mpsc::channel();
     let tx_events = tx.clone();
     thread::spawn(move || {
@@ -85,13 +96,17 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
                                 ));
                             }
                             let runner = SessionRunner::default();
-                            runner
-                                .run_with_tools(&provider, turn, &dispatcher, |event| {
+                            // Race the streaming turn against the interrupt signal: if the UI asks
+                            // to cancel, the runner future is dropped here (closing the upstream
+                            // stream) and the turn stops streaming at a safe boundary.
+                            tokio::select! {
+                                _ = runner.run_with_tools(&provider, turn, &dispatcher, |event| {
                                     let _ = tx_events.send(TurnMessage::Event(event));
-                                })
-                                .await;
+                                }) => {}
+                                () = wait_for_cancel(cancel.clone()) => {}
+                            }
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
-                            // orphan process outlives the turn.
+                            // orphan process outlives the turn (even after an interrupt).
                             dispatcher.background_jobs().shutdown().await;
                             // Finalize the checkpoint AFTER the turn: record each touched file's
                             // post-mutation state and append the snapshot. A read-only turn records
@@ -116,6 +131,14 @@ pub fn spawn(prompt: String, history: Vec<Message>) -> Receiver<TurnMessage> {
         let _ = tx.send(TurnMessage::Finished);
     });
     rx
+}
+
+/// Resolve once the cancel flag is set, polling it on a short cadence so an interrupt is observed
+/// promptly without busy-spinning. Used to race the streaming turn against the UI's interrupt key.
+async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
+    while !cancel.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
 }
 
 /// An ephemeral session id scoping this turn's tool context (the TUI does not yet persist sessions;

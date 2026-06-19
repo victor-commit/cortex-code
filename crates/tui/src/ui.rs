@@ -182,8 +182,16 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
         }
     }
     if let Some(glyph) = app.spinner_glyph() {
+        // The hint advertises the interrupt key; a queued-message count (messages submitted
+        // mid-stream) reads as accepted even after its transient toast has dismissed.
+        let mut label = format!("{glyph} Thinking… (Esc to interrupt)");
+        let queued = app.queued_count();
+        if queued > 0 {
+            let plural = if queued == 1 { "message" } else { "messages" };
+            label.push_str(&format!(" · {queued} queued {plural}"));
+        }
         lines.push(Line::from(Span::styled(
-            format!("{glyph} Thinking…"),
+            label,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1624,6 +1632,8 @@ fn usage_text(usage: &UsageSummary) -> String {
 mod tests {
     use super::*;
     use crate::app::{App, AssistantTurn, DialogKind, Status};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::channel;
 
     fn app() -> App {
@@ -1633,6 +1643,11 @@ mod tests {
             mode: "build".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
+    fn flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
     }
 
     fn plain(line: &Line) -> String {
@@ -1670,7 +1685,7 @@ mod tests {
     fn transcript_shows_user_and_growing_answer() {
         let mut a = app();
         let (tx, rx) = channel();
-        a.begin_turn("hello there".to_owned(), rx);
+        a.begin_turn("hello there".to_owned(), rx, flag());
         tx.send(crate::turn::TurnMessage::Event(
             engine::RunnerEvent::TextDelta {
                 text: "partial".to_owned(),
@@ -1690,7 +1705,7 @@ mod tests {
     fn busy_indicator_absent_after_completion() {
         let mut a = app();
         let (tx, rx) = channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(crate::turn::TurnMessage::Event(
             engine::RunnerEvent::TextDelta {
                 text: "the full reply".to_owned(),
@@ -2075,7 +2090,7 @@ mod tests {
         );
 
         let (tx, rx) = channel();
-        a.begin_turn("q".to_owned(), rx);
+        a.begin_turn("q".to_owned(), rx, flag());
         tx.send(crate::turn::TurnMessage::Event(engine::RunnerEvent::Usage(
             llm::Usage {
                 input_tokens: 12,

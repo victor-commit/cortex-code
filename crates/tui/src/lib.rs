@@ -21,6 +21,8 @@ mod ui;
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crossterm::event::{
@@ -143,10 +145,12 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
 
         // Start a streaming turn for any prompt the last Enter submitted. The worker runs on its
         // own thread and reports events back over a channel; redraw immediately so the user message
-        // and busy indicator appear before the first delta arrives.
+        // and busy indicator appear before the first delta arrives. The shared cancel flag is the
+        // interrupt seam: the UI sets it (Esc) to stop the turn gracefully.
         if let Some(prompt) = app.take_pending_prompt() {
-            let rx = turn::spawn(prompt.clone(), app.history_snapshot());
-            app.begin_turn(prompt, rx);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let rx = turn::spawn(prompt.clone(), app.history_snapshot(), cancel.clone());
+            app.begin_turn(prompt, rx, cancel);
             continue;
         }
 
