@@ -109,9 +109,13 @@ async fn runner_dispatches_apply_patch_and_applies_a_multi_file_envelope() {
     fs::write(dir.join("update.txt"), "old line\n").unwrap();
     fs::write(dir.join("delete.txt"), "remove me\n").unwrap();
 
+    // The Update/Delete targets must have been read this session (consistent with write/edit).
+    let context = ToolContext::new(dir.clone());
+    context.record_read(dir.join("update.txt"));
+    context.record_read(dir.join("delete.txt"));
     let dispatcher = RegistryDispatcher {
         registry: ToolRegistry::gpt(),
-        context: ToolContext::new(dir.clone()),
+        context,
     };
 
     let patch = "*** Begin Patch\n\
@@ -189,9 +193,13 @@ async fn runner_apply_patch_broken_envelope_leaves_files_unchanged() {
     fs::write(dir.join("update.txt"), "old line\n").unwrap();
     fs::write(dir.join("delete.txt"), "remove me\n").unwrap();
 
+    // Reads are recorded so the read-guard passes and the failure is genuinely the broken hunk.
+    let context = ToolContext::new(dir.clone());
+    context.record_read(dir.join("update.txt"));
+    context.record_read(dir.join("delete.txt"));
     let dispatcher = RegistryDispatcher {
         registry: ToolRegistry::gpt(),
-        context: ToolContext::new(dir.clone()),
+        context,
     };
 
     // The update section's context cannot be found, so the whole envelope must fail atomically.

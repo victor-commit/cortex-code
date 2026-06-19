@@ -9,6 +9,7 @@
 //! [`ToolOutput`] with [`is_error`](ToolOutput::is_error) set so the model can recover.
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -269,6 +270,36 @@ impl ToolContext {
             candidate.to_path_buf()
         } else {
             self.cwd.join(candidate)
+        }
+    }
+
+    /// Report a permission/IO reason when the OS would not accept new content at `resolved`, so a
+    /// mutating tool refuses cleanly and leaves the existing file byte-for-byte intact instead of
+    /// relying on the write syscall to fail.
+    ///
+    /// An existing file whose permission bits are read-only, or a not-yet-existing target whose
+    /// existing parent directory is read-only, yields a reason. This pre-check is required because a
+    /// privileged process (e.g. `root`) bypasses the permission bits, so the write syscall would
+    /// otherwise silently succeed against a target the contract treats as OS-unwritable. Returns
+    /// `None` when the target is writable (or when writability cannot be determined here, in which
+    /// case the write syscall's own error still surfaces a clean failure).
+    #[must_use]
+    pub fn writability_error(&self, resolved: &Path) -> Option<String> {
+        match fs::metadata(resolved) {
+            Ok(metadata) => metadata
+                .permissions()
+                .readonly()
+                .then(|| format!("{} is read-only (permission denied)", resolved.display())),
+            Err(_) => resolved.parent().and_then(|parent| {
+                fs::metadata(parent).ok().and_then(|meta| {
+                    meta.permissions().readonly().then(|| {
+                        format!(
+                            "the parent directory of {} is read-only (permission denied)",
+                            resolved.display()
+                        )
+                    })
+                })
+            }),
         }
     }
 

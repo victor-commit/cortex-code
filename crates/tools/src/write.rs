@@ -106,6 +106,13 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         Err(_) => true,
     };
 
+    // OS-writability pre-check: refuse a read-only target (or a target under a read-only directory)
+    // before touching the filesystem, so the existing file is left byte-for-byte intact even when a
+    // privileged process would otherwise bypass the permission bits.
+    if let Some(reason) = ctx.writability_error(&resolved) {
+        return ToolOutput::error(format!("write: cannot write {path}: {reason}"));
+    }
+
     if let Some(parent) = resolved.parent() {
         if let Err(err) = fs::create_dir_all(parent) {
             return ToolOutput::error(format!("write: could not create parent of {path}: {err}"));
@@ -359,5 +366,51 @@ mod tests {
             fs::read_to_string(dir.join("plain.rs")).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn write_to_a_read_only_file_errors_and_leaves_bytes_intact() {
+        let dir = temp_dir("ro");
+        let ctx = ctx_for(&dir);
+        let path = dir.join("ro.txt");
+        fs::write(&path, "ORIGINAL").unwrap();
+        // The file was read this session (so the read-guard passes), then made read-only.
+        ctx.record_read(&path);
+        set_readonly(&path, true);
+        let output = run(&write_args("ro.txt", "CHANGED"), &ctx);
+        assert!(output.is_error, "{}", text_of(&output));
+        assert!(
+            text_of(&output).to_lowercase().contains("permission"),
+            "got: {}",
+            text_of(&output)
+        );
+        // Restore perms to read the bytes back; the original content is intact (no truncation).
+        set_readonly(&path, false);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ORIGINAL");
+    }
+
+    #[test]
+    fn write_under_a_read_only_directory_errors() {
+        let dir = temp_dir("ro-dir");
+        let sub = dir.join("locked");
+        fs::create_dir(&sub).unwrap();
+        set_readonly(&sub, true);
+        let output = run(&write_args("locked/new.txt", "x"), &ctx_for(&dir));
+        // Restore perms so the temp tree can be cleaned up regardless of the assertion outcome.
+        set_readonly(&sub, false);
+        assert!(output.is_error, "{}", text_of(&output));
+        assert!(
+            text_of(&output).to_lowercase().contains("permission"),
+            "got: {}",
+            text_of(&output)
+        );
+        assert!(!sub.join("new.txt").exists());
+    }
+
+    /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(readonly);
+        fs::set_permissions(path, perms).unwrap();
     }
 }

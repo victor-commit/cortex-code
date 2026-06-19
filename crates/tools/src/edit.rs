@@ -136,6 +136,12 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         ));
     }
 
+    // OS-writability pre-check: refuse a read-only target before any mutation so the existing file
+    // is left byte-for-byte intact even when a privileged process would bypass the permission bits.
+    if let Some(reason) = ctx.writability_error(&resolved) {
+        return ToolOutput::error(format!("edit: cannot write {path}: {reason}"));
+    }
+
     let Ok(current) = fs::read_to_string(&resolved) else {
         return ToolOutput::error(format!("edit: could not read {path} as UTF-8 text"));
     };
@@ -667,6 +673,31 @@ mod tests {
         let output = run(&edit_args("ok.rs", "main", "run"), &ctx);
         assert!(!output.is_error, "{}", text_of(&output));
         assert!(!text_of(&output).to_lowercase().contains("diagnostic"));
+    }
+
+    #[test]
+    fn edit_of_a_read_only_file_errors_and_leaves_bytes_intact() {
+        let dir = temp_dir("ro");
+        let ctx = ctx_for(&dir);
+        let path = seed_read(&ctx, &dir, "ro.txt", "ORIGINAL");
+        set_readonly(&path, true);
+        let output = run(&edit_args("ro.txt", "ORIGINAL", "CHANGED"), &ctx);
+        assert!(output.is_error, "{}", text_of(&output));
+        assert!(
+            text_of(&output).to_lowercase().contains("permission"),
+            "got: {}",
+            text_of(&output)
+        );
+        // Restore perms to read the bytes back; the original content is intact (no truncation).
+        set_readonly(&path, false);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ORIGINAL");
+    }
+
+    /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(readonly);
+        fs::set_permissions(path, perms).unwrap();
     }
 
     #[test]

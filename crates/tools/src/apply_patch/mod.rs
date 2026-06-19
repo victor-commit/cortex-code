@@ -36,8 +36,10 @@ Wrap one or more file sections between '*** Begin Patch' and '*** End Patch'. Ea
 with a header: '*** Add File: <path>' (every following line is a '+' line giving the new file's \
 content), '*** Update File: <path>' (followed by context-anchored '@@' hunks whose lines start \
 with ' ' for context, '-' to remove, and '+' to add; optionally preceded by '*** Move to: \
-<path>' to rename), or '*** Delete File: <path>' (nothing follows). The entire envelope is applied \
-atomically: if any section cannot be applied, no files are changed.";
+<path>' to rename), or '*** Delete File: <path>' (nothing follows). Updating or deleting an \
+existing file requires you to have read it earlier in this session; if you have not read it, read \
+it first. Adding a new file needs no prior read. The entire envelope is applied atomically: if any \
+section cannot be applied, no files are changed.";
 
 /// The `apply_patch` tool.
 pub struct ApplyPatchTool;
@@ -181,14 +183,22 @@ fn plan_add(ctx: &ToolContext, path: &str, contents: &str) -> Result<Action, Str
     })
 }
 
-/// Plan a Delete section: the target must exist and be a file.
+/// Plan a Delete section: the target must exist, be a file, and have been read this session
+/// (consistent with the write/edit read-before-mutate guard).
 fn plan_delete(ctx: &ToolContext, path: &str) -> Result<Action, String> {
     let resolved = ctx.resolve(path);
     match fs::metadata(&resolved) {
         Ok(metadata) if metadata.is_dir() => Err(format!(
             "apply_patch: cannot delete {path}: it is a directory (no changes made)"
         )),
-        Ok(_) => Ok(Action::Delete { path: resolved }),
+        Ok(_) => {
+            if !ctx.was_read(&resolved) {
+                return Err(format!(
+                    "apply_patch: cannot delete {path}: it has not been read this session; read it first (no changes made)"
+                ));
+            }
+            Ok(Action::Delete { path: resolved })
+        }
         Err(_) => Err(format!(
             "apply_patch: cannot delete {path}: it does not exist (no changes made)"
         )),
@@ -212,19 +222,43 @@ fn plan_update(
             ));
         }
     };
+
+    // Read-before-update guard, consistent with write/edit: an existing file must have been read
+    // this session before an Update mutates it.
+    if !ctx.was_read(&resolved) {
+        return Err(format!(
+            "apply_patch: cannot update {path}: it has not been read this session; read it first (no changes made)"
+        ));
+    }
+
     let updated = apply_chunks(&current, chunks)
         .map_err(|message| format!("apply_patch: {path}: {message} (no changes made)"))?;
 
     match move_to {
-        Some(dest) => Ok(Action::Rename {
-            from: resolved,
-            to: ctx.resolve(dest),
-            contents: updated,
-        }),
-        None => Ok(Action::Overwrite {
-            path: resolved,
-            contents: updated,
-        }),
+        Some(dest) => {
+            let to = ctx.resolve(dest);
+            if let Some(reason) = ctx.writability_error(&to) {
+                return Err(format!(
+                    "apply_patch: cannot update {path}: {reason} (no changes made)"
+                ));
+            }
+            Ok(Action::Rename {
+                from: resolved,
+                to,
+                contents: updated,
+            })
+        }
+        None => {
+            if let Some(reason) = ctx.writability_error(&resolved) {
+                return Err(format!(
+                    "apply_patch: cannot update {path}: {reason} (no changes made)"
+                ));
+            }
+            Ok(Action::Overwrite {
+                path: resolved,
+                contents: updated,
+            })
+        }
     }
 }
 
@@ -345,6 +379,7 @@ mod tests {
             "import os\ndef greet():\n    print(\"Hi\")\n    return 0\n",
         )
         .unwrap();
+        ctx.record_read(dir.join("app.py"));
         let output = apply(
             &ctx,
             "*** Begin Patch\n*** Update File: app.py\n@@ def greet():\n-    print(\"Hi\")\n+    print(\"Hello\")\n+    log()\n*** End Patch",
@@ -362,6 +397,7 @@ mod tests {
         let ctx = ctx_for(&dir);
         fs::write(dir.join("old.txt"), "gone\n").unwrap();
         fs::write(dir.join("sibling.txt"), "stays\n").unwrap();
+        ctx.record_read(dir.join("old.txt"));
         let output = apply(
             &ctx,
             "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch",
@@ -380,6 +416,8 @@ mod tests {
         let ctx = ctx_for(&dir);
         fs::write(dir.join("update.txt"), "old line\n").unwrap();
         fs::write(dir.join("delete.txt"), "remove me\n").unwrap();
+        ctx.record_read(dir.join("update.txt"));
+        ctx.record_read(dir.join("delete.txt"));
         let output = apply(
             &ctx,
             "*** Begin Patch\n*** Add File: add.txt\n+created\n*** Update File: update.txt\n@@\n-old line\n+new line\n*** Delete File: delete.txt\n*** End Patch",
@@ -402,6 +440,8 @@ mod tests {
         let ctx = ctx_for(&dir);
         fs::write(dir.join("update.txt"), "old line\n").unwrap();
         fs::write(dir.join("delete.txt"), "remove me\n").unwrap();
+        ctx.record_read(dir.join("update.txt"));
+        ctx.record_read(dir.join("delete.txt"));
         // The update section's context cannot be found, so the whole envelope must fail with no
         // file created, updated, or deleted.
         let output = apply(
@@ -426,6 +466,7 @@ mod tests {
         let dir = temp_dir("fuzzy");
         let ctx = ctx_for(&dir);
         fs::write(dir.join("s.rs"), "fn main() {\n        let x = 1;\n}\n").unwrap();
+        ctx.record_read(dir.join("s.rs"));
         // The hunk's context line omits the on-disk indentation; fuzzy matching still locates it.
         let output = apply(
             &ctx,
@@ -482,6 +523,7 @@ mod tests {
         let dir = temp_dir("rename");
         let ctx = ctx_for(&dir);
         fs::write(dir.join("a.txt"), "one\n").unwrap();
+        ctx.record_read(dir.join("a.txt"));
         let output = apply(
             &ctx,
             "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-one\n+two\n*** End Patch",
@@ -533,5 +575,110 @@ mod tests {
         let output = apply(&ctx, "   ");
         assert!(output.is_error);
         assert!(output.model_content().contains("must not be empty"));
+    }
+
+    #[test]
+    fn update_of_an_unread_existing_file_is_refused_and_bytes_intact() {
+        let dir = temp_dir("update-unread");
+        let ctx = ctx_for(&dir);
+        // Seed the file WITHOUT recording a read this session.
+        fs::write(dir.join("cfg.txt"), "OLD\n").unwrap();
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Update File: cfg.txt\n@@\n-OLD\n+NEW\n*** End Patch",
+        );
+        assert!(output.is_error, "{}", output.model_content());
+        assert!(
+            output
+                .model_content()
+                .to_lowercase()
+                .contains("read it first"),
+            "got: {}",
+            output.model_content()
+        );
+        // The original bytes are untouched.
+        assert_eq!(fs::read_to_string(dir.join("cfg.txt")).unwrap(), "OLD\n");
+    }
+
+    #[test]
+    fn update_after_a_prior_read_applies() {
+        let dir = temp_dir("update-read");
+        let ctx = ctx_for(&dir);
+        fs::write(dir.join("cfg.txt"), "OLD\n").unwrap();
+        // Simulate a prior `read` of the file this session.
+        ctx.record_read(dir.join("cfg.txt"));
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Update File: cfg.txt\n@@\n-OLD\n+NEW\n*** End Patch",
+        );
+        assert!(!output.is_error, "{}", output.model_content());
+        assert_eq!(fs::read_to_string(dir.join("cfg.txt")).unwrap(), "NEW\n");
+    }
+
+    #[test]
+    fn delete_of_an_unread_existing_file_is_refused_and_file_survives() {
+        let dir = temp_dir("delete-unread");
+        let ctx = ctx_for(&dir);
+        fs::write(dir.join("cfg.txt"), "KEEP\n").unwrap();
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Delete File: cfg.txt\n*** End Patch",
+        );
+        assert!(output.is_error, "{}", output.model_content());
+        assert!(
+            output
+                .model_content()
+                .to_lowercase()
+                .contains("read it first"),
+            "got: {}",
+            output.model_content()
+        );
+        assert!(dir.join("cfg.txt").exists());
+        assert_eq!(fs::read_to_string(dir.join("cfg.txt")).unwrap(), "KEEP\n");
+    }
+
+    #[test]
+    fn add_file_needs_no_prior_read() {
+        let dir = temp_dir("add-noread");
+        let ctx = ctx_for(&dir);
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Add File: fresh.txt\n+content\n*** End Patch",
+        );
+        assert!(!output.is_error, "{}", output.model_content());
+        assert_eq!(
+            fs::read_to_string(dir.join("fresh.txt")).unwrap(),
+            "content\n"
+        );
+    }
+
+    #[test]
+    fn update_of_a_read_only_file_errors_and_leaves_bytes_intact() {
+        let dir = temp_dir("ro");
+        let ctx = ctx_for(&dir);
+        let path = dir.join("ro.txt");
+        fs::write(&path, "ORIGINAL\n").unwrap();
+        ctx.record_read(&path);
+        set_readonly(&path, true);
+        let output = apply(
+            &ctx,
+            "*** Begin Patch\n*** Update File: ro.txt\n@@\n-ORIGINAL\n+CHANGED\n*** End Patch",
+        );
+        assert!(output.is_error, "{}", output.model_content());
+        assert!(
+            output.model_content().to_lowercase().contains("permission"),
+            "got: {}",
+            output.model_content()
+        );
+        // Restore perms so the temp file content can be read back, then assert it is intact.
+        set_readonly(&path, false);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ORIGINAL\n");
+    }
+
+    /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(readonly);
+        fs::set_permissions(path, perms).unwrap();
     }
 }
