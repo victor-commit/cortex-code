@@ -104,6 +104,21 @@ impl Database {
         Ok(migrations::current_version(&self.conn)?)
     }
 
+    /// Run SQLite's `PRAGMA integrity_check` and return its single-row result.
+    ///
+    /// A healthy, uncorrupted database returns the literal `"ok"`; any other value enumerates the
+    /// corruption found. This lets callers (and the durability tests) assert that the on-disk
+    /// database survived concurrent writers or a hard kill (`SIGKILL`) without corruption.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if the pragma cannot be evaluated.
+    pub fn integrity_check(&self) -> DbResult<String> {
+        let result = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
+        Ok(result)
+    }
+
     /// The sessions repository.
     #[must_use]
     pub fn sessions(&self) -> SessionRepo<'_> {
