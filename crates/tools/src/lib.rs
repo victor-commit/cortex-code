@@ -12,9 +12,11 @@
 //! shared across a turn's tool calls.
 
 mod apply_patch;
+mod bash;
 mod edit;
 mod glob;
 mod grep;
+mod output;
 mod read;
 mod registry;
 mod ripgrep;
@@ -23,9 +25,11 @@ mod tool;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
+pub use bash::{BackgroundJob, BackgroundJobs, BashTool, JobHandle};
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+pub use output::{BoundedOutput, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, OutputLimits, bound_output};
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
 pub use todo::TodoTool;

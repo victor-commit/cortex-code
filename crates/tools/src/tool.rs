@@ -16,6 +16,8 @@ use futures_util::future::BoxFuture;
 use permissions::{PermissionEngine, request_for};
 use protocol::{TodoItem, ToolResultPart};
 
+use crate::bash::BackgroundJobs;
+
 /// A diagnostic an LSP server reports for a file a mutating tool just wrote or edited.
 ///
 /// The mutating tools re-inject these into their result so the model sees an error it introduced.
@@ -164,11 +166,12 @@ pub struct ToolContext {
     hooks: Option<Arc<dyn MutationHooks>>,
     session_id: Option<String>,
     todos: Option<Arc<dyn TodoStore>>,
+    background_jobs: Arc<BackgroundJobs>,
 }
 
 impl ToolContext {
     /// Build a context rooted at `cwd` with an empty read-tracking set, no permission gating, no
-    /// post-mutation hooks, no session, and no todo store.
+    /// post-mutation hooks, no session, no todo store, and a fresh background-job registry.
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
@@ -178,6 +181,7 @@ impl ToolContext {
             hooks: None,
             session_id: None,
             todos: None,
+            background_jobs: Arc::new(BackgroundJobs::new()),
         }
     }
 
@@ -214,6 +218,13 @@ impl ToolContext {
     #[must_use]
     pub fn todo_store(&self) -> Option<&Arc<dyn TodoStore>> {
         self.todos.as_ref()
+    }
+
+    /// The background-job registry tracking long-running `bash` jobs spawned this session, so a
+    /// surface can inspect and reap them on shutdown (no orphan process survives).
+    #[must_use]
+    pub fn background_jobs(&self) -> &Arc<BackgroundJobs> {
+        &self.background_jobs
     }
 
     /// Attach the post-mutation downstream hooks (formatter + LSP diagnostics) used after a write or

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
-use tools::{TodoStore, ToolContext, ToolRegistry};
+use tools::{BackgroundJobs, TodoStore, ToolContext, ToolRegistry};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
 pub struct RegistryDispatcher {
@@ -56,6 +56,13 @@ impl RegistryDispatcher {
             .into_iter()
             .map(|def| def.name)
             .collect()
+    }
+
+    /// The background-job registry tracking long-running `bash` jobs spawned during the run, so the
+    /// caller can reap them (terminate + await by PID) when the run ends — no orphan survives.
+    #[must_use]
+    pub fn background_jobs(&self) -> Arc<BackgroundJobs> {
+        self.context.background_jobs().clone()
     }
 }
 

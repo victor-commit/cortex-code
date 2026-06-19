@@ -186,7 +186,7 @@ pub fn run(args: RunArgs) -> Exit {
     let tool_names = dispatcher.tool_names();
 
     runtime.block_on(async {
-        match format {
+        let exit = match format {
             OutputFormat::Text => stream_text(&provider, &session_id, &db, turn, &dispatcher).await,
             OutputFormat::Jsonl => {
                 stream_jsonl(
@@ -213,7 +213,11 @@ pub fn run(args: RunArgs) -> Exit {
                 )
                 .await
             }
-        }
+        };
+        // Reap any background `bash` jobs spawned this turn by exact PID, so no orphan process
+        // outlives the run.
+        dispatcher.background_jobs().shutdown().await;
+        exit
     })
 }
 

@@ -9,6 +9,7 @@
 use llm::ToolDef;
 
 use crate::apply_patch::ApplyPatchTool;
+use crate::bash::BashTool;
 use crate::edit::EditTool;
 use crate::glob::GlobTool;
 use crate::grep::GrepTool;
@@ -31,8 +32,8 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
-    /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the non-mutating
-    /// utility tools `glob`/`grep`/`todo`. This set has no `apply_patch`.
+    /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the utility tools
+    /// `bash`/`glob`/`grep`/`todo`. This set has no `apply_patch`.
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::new();
@@ -44,9 +45,9 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
-    /// `apply_patch` plus the non-mutating utility tools `glob`/`grep`/`todo`. GPT-family models
-    /// edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately swapped
-    /// out (architecture §3.4, model-aware tool materialization); the search/todo utilities are
+    /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`todo`. GPT-family models edit
+    /// files through the `apply_patch` envelope, so `edit` and `write` are deliberately swapped out
+    /// (architecture §3.4, model-aware tool materialization); the shell/search/todo utilities are
     /// model-agnostic and present for every family.
     #[must_use]
     pub fn gpt() -> Self {
@@ -57,9 +58,9 @@ impl ToolRegistry {
         registry
     }
 
-    /// Register the non-mutating utility tools shared by every model family (`glob`, `grep`,
-    /// `todo`).
+    /// Register the utility tools shared by every model family (`bash`, `glob`, `grep`, `todo`).
     fn register_utility_tools(&mut self) {
+        self.register(Box::new(BashTool));
         self.register(Box::new(GlobTool));
         self.register(Box::new(GrepTool));
         self.register(Box::new(TodoTool));
@@ -146,7 +147,7 @@ mod tests {
     #[test]
     fn both_registries_advertise_the_utility_tools() {
         for registry in [ToolRegistry::builtin(), ToolRegistry::gpt()] {
-            for name in ["glob", "grep", "todo"] {
+            for name in ["bash", "glob", "grep", "todo"] {
                 assert!(
                     registry.get(name).is_some(),
                     "expected the `{name}` utility tool to be registered"
