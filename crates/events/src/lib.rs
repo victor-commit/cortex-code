@@ -10,4 +10,7 @@ mod bus;
 mod event;
 
 pub use bus::{EventBus, Subscriber};
-pub use event::{Event, Lifecycle, LifecyclePhase, Surface};
+pub use event::{
+    Event, Lifecycle, LifecyclePhase, PermissionAsked, PermissionDecision, PermissionReplied,
+    Surface,
+};

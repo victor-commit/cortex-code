@@ -125,6 +125,7 @@ mod tests {
                 assert_eq!(lifecycle.surface, Surface::Run);
                 assert_eq!(lifecycle.version, "0.1.0");
             }
+            other => panic!("expected a lifecycle event, got {other:?}"),
         }
     }
 

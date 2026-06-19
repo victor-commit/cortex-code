@@ -215,6 +215,45 @@ pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
     Ok(EffectiveConfig { table })
 }
 
+/// A single raw configuration layer: the file it was read from and its parsed table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigLayer {
+    /// The config file this layer was read from.
+    pub source: PathBuf,
+    /// The layer's parsed TOML table (raw: no merge, env, CLI, substitution, or validation).
+    pub table: Table,
+}
+
+/// Read each present config file as a raw, un-merged layer, in ascending precedence order
+/// (global, then project root, then nested directories closer to the CWD).
+///
+/// Unlike [`load`], which deep-merges every layer into one effective table, this returns the
+/// layers separately and in order so callers that need order-preserving, list-shaped config can
+/// combine them themselves. The permission ruleset is the motivating consumer: its rules are an
+/// ordered list whose cross-layer precedence is "last matching rule wins", which requires
+/// concatenating the per-layer rule lists in precedence order rather than letting a higher layer's
+/// array replace a lower one (the deep-merge behavior). Absent files are skipped; an
+/// empty/whitespace/comment-only file yields an empty table.
+///
+/// # Errors
+/// Returns [`ConfigError`] if a present config file cannot be read or contains invalid TOML.
+pub fn layer_tables(inputs: &ConfigInputs) -> Result<Vec<ConfigLayer>, ConfigError> {
+    let mut layers = Vec::new();
+    for path in discovery::config_files(
+        inputs.home.as_deref(),
+        inputs.xdg_config_home.as_deref(),
+        &inputs.cwd,
+    ) {
+        if let Some(table) = read_layer(&path)? {
+            layers.push(ConfigLayer {
+                source: path,
+                table,
+            });
+        }
+    }
+    Ok(layers)
+}
+
 /// The built-in defaults layer.
 fn default_table() -> Table {
     let mut table = Table::new();
