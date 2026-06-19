@@ -29,6 +29,14 @@ pub enum Command {
 
     /// Start the local loopback HTTP/SSE server.
     Serve(ServeArgs),
+
+    /// Report the effective configuration after merging every layer.
+    ///
+    /// Layers are merged lowest-precedence first:
+    /// defaults < global < project < nested < env < CLI. Environment overrides use the
+    /// `CORTEX_<KEY>` mapping (e.g. `CORTEX_MODEL`); `--model` is the highest-precedence
+    /// CLI override. Use `--format json` for a machine-parseable dump of the merged config.
+    Config(ConfigArgs),
 }
 
 /// Machine/human output format for headless runs.
@@ -74,6 +82,17 @@ pub struct RunArgs {
     /// Resume the most recent session.
     #[arg(long, short = 'c', conflicts_with = "session")]
     pub r#continue: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    /// Output format: text (default, a TOML dump) or json (a single strict JSON document).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text, value_name = "FORMAT")]
+    pub format: OutputFormat,
+
+    /// Override the effective model (highest precedence; beats env and every config file).
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Args)]

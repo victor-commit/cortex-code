@@ -1,4 +1,5 @@
 mod cli;
+mod config;
 mod run;
 mod tui;
 
@@ -19,6 +20,7 @@ fn main() -> ExitCode {
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
         Some(Command::Run(args)) => run::run(args).into(),
+        Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }

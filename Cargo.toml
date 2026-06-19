@@ -24,8 +24,10 @@ all = "warn"
 
 [workspace.dependencies]
 cortex-errors = { path = "crates/cortex-errors" }
+cortex-config = { path = "crates/cortex-config" }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
