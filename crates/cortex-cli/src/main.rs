@@ -1,4 +1,5 @@
 mod cli;
+mod run;
 mod tui;
 
 use std::process::ExitCode;
@@ -7,7 +8,7 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use cortex_errors::Exit;
 
-use crate::cli::{Cli, Command, RunArgs, ServeArgs};
+use crate::cli::{Cli, Command, ServeArgs};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -17,7 +18,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
-        Some(Command::Run(args)) => run_placeholder(args).into(),
+        Some(Command::Run(args)) => run::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
@@ -35,11 +36,6 @@ fn report_parse_error(err: clap::Error) -> ExitCode {
         | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => Exit::Success.into(),
         _ => Exit::Usage.into(),
     }
-}
-
-fn run_placeholder(_args: RunArgs) -> Exit {
-    eprintln!("cortex run: the headless run path is not wired up in this build yet.");
-    Exit::Failure
 }
 
 fn serve_placeholder(_args: ServeArgs) -> Exit {

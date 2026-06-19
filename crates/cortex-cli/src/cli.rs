@@ -19,6 +19,9 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a single headless turn (scriptable; reads the prompt from an argument or stdin).
+    ///
+    /// Input-source precedence is deterministic: a positional prompt argument always wins,
+    /// and stdin is read only when no argument is given. The two are never blended.
     Run(RunArgs),
 
     /// Launch the interactive terminal UI (same as running with no arguments).
@@ -43,7 +46,8 @@ pub enum OutputFormat {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// The prompt to send. When omitted, the prompt is read from stdin.
+    /// The prompt to send. Takes precedence over stdin: when given, stdin is not read.
+    /// When omitted, the prompt is read from stdin instead.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
