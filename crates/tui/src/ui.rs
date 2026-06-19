@@ -31,17 +31,30 @@ const MAX_TOOL_DETAIL_LINES: usize = 40;
 /// Maximum drawn width of a tool card's top/bottom border.
 const TOOL_CARD_WIDTH: usize = 76;
 
+/// Width (in columns) of the session sidebar panel when shown.
+const SIDEBAR_WIDTH: u16 = 30;
+
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    let prompt_rows = prompt_rows(app, area.height);
+    // Reserve a left column for the sidebar when it is shown, so the transcript/prompt reflow
+    // beside it; otherwise the main column spans the full width.
+    let (sidebar_area, main_area) = if app.sidebar_visible() && area.width > SIDEBAR_WIDTH + 8 {
+        let cols =
+            Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)]).split(area);
+        (Some(cols[0]), cols[1])
+    } else {
+        (None, area)
+    };
+
+    let prompt_rows = prompt_rows(app, main_area.height);
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(prompt_rows + 2),
         Constraint::Length(1),
     ])
-    .split(area);
+    .split(main_area);
 
     draw_transcript(frame, app, chunks[0]);
     draw_prompt(frame, app, chunks[1]);
@@ -50,10 +63,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_slash_menu(frame, app, chunks[1]);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
     draw_mention_menu(frame, app, chunks[1]);
+    // The sidebar occupies its reserved column beside the main content.
+    if let Some(sidebar) = sidebar_area {
+        draw_sidebar(frame, app, sidebar);
+    }
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
     draw_palette(frame, app, area);
+    // The which-key overlay lists the active leader bindings while the leader chord is armed.
+    draw_which_key(frame, app, area);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -68,7 +87,7 @@ fn prompt_rows(app: &App, total_height: u16) -> u16 {
 /// conversation tail (so the newest content and the busy indicator stay visible).
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     if app.transcript.is_empty() && !app.is_busy() {
-        draw_home(frame, area);
+        draw_home(frame, app, area);
         return;
     }
 
@@ -102,7 +121,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             }
             Entry::Notice(message) => push_notice(&mut lines, message, width),
             Entry::Shell(outcome) => push_shell(&mut lines, outcome, width),
-            Entry::Help => push_help(&mut lines),
+            Entry::Help => push_help(&mut lines, app),
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
     }
@@ -349,8 +368,9 @@ const KEYBINDINGS: &[(&str, &str)] = &[
 ];
 
 /// Append the `/help` command reference: a titled panel listing every built-in slash command (from
-/// the registry) with its description, then the keybindings. This is the visible effect of `/help`.
-fn push_help(lines: &mut Vec<Line<'static>>) {
+/// the registry) with its description, then the keybindings (including the active leader bindings).
+/// This is the visible effect of `/help`.
+fn push_help(lines: &mut Vec<Line<'static>>, app: &App) {
     let title = Style::default()
         .fg(style::INFO)
         .add_modifier(Modifier::BOLD);
@@ -382,6 +402,22 @@ fn push_help(lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(vec![
             Span::styled(format!("  {keys:<16}"), name),
             Span::styled(format!("  {what}"), desc),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    let leader = app.keybinds().leader.display();
+    lines.push(Line::from(Span::styled(
+        format!("Leader bindings ({leader} then a key)"),
+        section,
+    )));
+    for (chord, action) in app.keybinds().entries() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<16}", format!("{leader} {}", chord.display())),
+                name,
+            ),
+            Span::styled(format!("  {}", action.label()), desc),
         ]));
     }
     lines.push(Line::from(""));
@@ -449,12 +485,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn draw_home(frame: &mut Frame, area: Rect) {
+fn draw_home(frame: &mut Frame, app: &App, area: Rect) {
     let heading_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
+    let leader = app.keybinds().leader.display();
     let body = Text::from(vec![
         Line::from(Span::styled("Cortex Code", heading_style)),
         Line::from(""),
@@ -466,6 +503,10 @@ fn draw_home(frame: &mut Frame, area: Rect) {
         )),
         Line::from(Span::styled(
             "Shift+Enter inserts a newline · /exit or Ctrl+C to quit.",
+            dim,
+        )),
+        Line::from(Span::styled(
+            format!("Press {leader} for keybindings (which-key)."),
             dim,
         )),
     ]);
@@ -905,6 +946,131 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     let mut shown: Vec<Line<'static>> = Vec::with_capacity(visible + 2);
     shown.push(search_line);
     shown.extend(command_rows[offset..end].iter().cloned());
+    shown.push(Line::from(Span::styled(
+        format!("  {hint}"),
+        Style::default().fg(style::TEXT_DIM),
+    )));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Render the session sidebar: a bordered panel beside the main content listing the active session
+/// context (model / agent / mode / session) and live counters (transcript messages, token usage),
+/// so its presence is unambiguous in a snapshot.
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let label = Style::default()
+        .fg(style::INFO)
+        .add_modifier(Modifier::BOLD);
+    let value = Style::default().fg(style::TEXT);
+    let dim = Style::default().fg(style::TEXT_DIM);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let field = |lines: &mut Vec<Line<'static>>, name: &str, val: String| {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{name}: "), label),
+            Span::styled(val, value),
+        ]));
+    };
+    field(&mut lines, "Model", app.status.model.clone());
+    field(&mut lines, "Agent", app.status.agent.clone());
+    field(&mut lines, "Mode", app.status.mode.clone());
+    field(&mut lines, "Session", app.status.session.clone());
+    lines.push(Line::from(""));
+    field(&mut lines, "Messages", app.transcript.len().to_string());
+    field(
+        &mut lines,
+        "Tokens",
+        if app.usage.reported {
+            app.usage.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        },
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("{} B  toggle", app.keybinds().leader.display()),
+        dim,
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(" Session ")
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// Render the which-key overlay while the leader chord is armed: a centered popup listing each
+/// active leader binding (its key and the action it runs) so the bindings are discoverable.
+fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.leader_pending() {
+        return;
+    }
+    if area.width < 8 || area.height < 6 {
+        return;
+    }
+
+    let leader = app.keybinds().leader.display();
+    let key_style = Style::default()
+        .fg(style::INFO)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(style::TEXT);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for (chord, action) in app.keybinds().entries() {
+        rows.push(Line::from(vec![
+            Span::styled(format!("  {:<3}", chord.display()), key_style),
+            Span::styled(format!("  {}", action.label()), label_style),
+        ]));
+    }
+
+    let hint = "Esc to cancel";
+    let widest = rows
+        .iter()
+        .map(Line::width)
+        .max()
+        .unwrap_or(0)
+        .max(hint.chars().count() + 2);
+    let max_w = (area.width as usize) * 9 / 10;
+    let width = (widest + 4).clamp(28, max_w.max(28)) as u16;
+
+    let row_budget = (area.height as usize)
+        .saturating_sub(4)
+        .clamp(1, MAX_DIALOG_ROWS);
+    let visible = rows.len().min(row_budget).max(1);
+    // Borders (2) + the hint row (1) on top of the visible binding rows.
+    let height = (visible as u16).saturating_add(3);
+
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(format!(" Keybindings · leader {leader} "))
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    let end = rows.len().min(visible);
+    let mut shown: Vec<Line<'static>> = rows[..end].to_vec();
     shown.push(Line::from(Span::styled(
         format!("  {hint}"),
         Style::default().fg(style::TEXT_DIM),

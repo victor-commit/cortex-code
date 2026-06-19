@@ -8,6 +8,7 @@
 
 mod app;
 mod diff;
+mod keybind;
 mod mention;
 mod shell;
 mod slash;
@@ -60,6 +61,8 @@ fn run() -> io::Result<()> {
     let mut app = App::new(initial_status());
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
+    // Apply any user keybind overrides from config so custom/leader bindings take effect at launch.
+    app.set_keybinds(keybind::Keybinds::load());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

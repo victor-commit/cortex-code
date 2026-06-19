@@ -15,6 +15,7 @@ use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
+use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
 use crate::shell;
 use crate::slash;
@@ -255,6 +256,14 @@ pub struct App {
     /// The theme active when the theme picker opened, restored on cancel so a hovered preview does
     /// not stick. `None` whenever the picker is not open.
     theme_restore: Option<String>,
+    /// The active keybind set (leader chord + action bindings), loaded from config at launch so
+    /// user overrides take effect; defaults otherwise.
+    keybinds: Keybinds,
+    /// Whether the leader chord has been pressed and the next key selects a binding. While set, the
+    /// which-key overlay lists the active bindings; the next key runs one or cancels.
+    leader_pending: bool,
+    /// Whether the session sidebar panel is shown. Toggled by the sidebar keybind.
+    sidebar_visible: bool,
 }
 
 impl App {
@@ -284,6 +293,9 @@ impl App {
             history: Vec::new(),
             theme: default_theme_name(),
             theme_restore: None,
+            keybinds: Keybinds::default(),
+            leader_pending: false,
+            sidebar_visible: false,
         }
     }
 
@@ -296,6 +308,29 @@ impl App {
     /// Set the active theme name, used at launch to apply the persisted choice from config.
     pub fn set_theme(&mut self, name: String) {
         self.theme = name;
+    }
+
+    /// Replace the active keybind set, used at launch to apply user overrides from config.
+    pub fn set_keybinds(&mut self, keybinds: Keybinds) {
+        self.keybinds = keybinds;
+    }
+
+    /// The active keybind set (for rendering the which-key overlay and `/help`).
+    #[must_use]
+    pub fn keybinds(&self) -> &Keybinds {
+        &self.keybinds
+    }
+
+    /// Whether the leader chord is armed and the which-key overlay should be shown.
+    #[must_use]
+    pub fn leader_pending(&self) -> bool {
+        self.leader_pending
+    }
+
+    /// Whether the session sidebar panel is currently shown.
+    #[must_use]
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_visible
     }
 
     /// Whether a turn is currently streaming (the busy/spinner indicator is shown).
@@ -1135,6 +1170,24 @@ impl App {
         self.transcript.push(Entry::Error(message));
     }
 
+    /// Run a leader keybind action: the same visible effects the matching slash commands produce,
+    /// reached via the leader chord instead of the prompt.
+    fn run_keybind_action(&mut self, action: KeybindAction) {
+        match action {
+            KeybindAction::NewSession => self.new_session(),
+            KeybindAction::ModelList => self.open_models_dialog(),
+            KeybindAction::ToggleSidebar => self.toggle_sidebar(),
+            KeybindAction::Sessions => self.open_sessions_dialog(),
+            KeybindAction::Agents => self.open_agents_dialog(),
+            KeybindAction::Themes => self.open_themes_dialog(),
+        }
+    }
+
+    /// Show or hide the session sidebar panel (the sidebar-toggle keybind).
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+    }
+
     /// Start a fresh session (`/new`): clear the transcript, the conversational history, and the
     /// usage totals so the view returns to the empty home state. Ignored while a turn streams.
     fn new_session(&mut self) {
@@ -1237,6 +1290,24 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        // While the leader chord is armed the next key selects a binding: a matching action key runs
+        // its action, Esc cancels, and any other key simply disarms (a harmless no-op). The chord is
+        // consumed regardless, so the which-key overlay never lingers. Ctrl+C still quits.
+        if self.leader_pending {
+            self.leader_pending = false;
+            if ctrl && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return;
+            }
+            if key.code != KeyCode::Esc {
+                let chord = KeyChord::from_event(key.code, key.modifiers);
+                if let Some(action) = self.keybinds.action_for(chord) {
+                    self.run_keybind_action(action);
+                }
+            }
+            return;
+        }
 
         // A modal dialog (picker/status view) is modal: it owns navigation and dismissal, and
         // swallows other keys so the prompt is not edited beneath it. Ctrl+C still quits so the
@@ -1368,6 +1439,17 @@ impl App {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // The leader chord arms a leader sequence (showing the which-key overlay) so the next key
+        // runs a binding. It is recognized only in ordinary prompt mode — the slash/`@` menus, which
+        // fall through to editing above, keep their own keys.
+        if !self.slash_menu_open() && !self.mention_open() {
+            let chord = KeyChord::from_event(key.code, key.modifiers);
+            if chord == self.keybinds.leader {
+                self.leader_pending = true;
+                return;
             }
         }
 
@@ -3093,5 +3175,142 @@ mod tests {
         // A non-zero editor exit leaves the prompt unchanged (no composed text).
         let aborted = run_editor_with("false", "seed").expect("the editor runs");
         assert!(aborted.is_none(), "an aborted edit composes nothing");
+    }
+
+    /// Press the default leader chord (Ctrl+G), arming the leader sequence.
+    fn press_leader(a: &mut App) {
+        a.on_key(key_mod(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn leader_arms_the_which_key_overlay() {
+        // VAL-TUI-068: pressing the leader shows the which-key overlay (the leader-pending state).
+        let mut a = app();
+        assert!(!a.leader_pending());
+        press_leader(&mut a);
+        assert!(
+            a.leader_pending(),
+            "the leader chord arms the which-key overlay"
+        );
+        // A non-binding key disarms it without side effects.
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.leader_pending(), "Esc cancels the leader sequence");
+    }
+
+    #[test]
+    fn leader_new_session_clears_the_transcript() {
+        // VAL-TUI-065: the leader new-session binding starts a fresh session.
+        let mut a = app();
+        a.transcript.push(Entry::Notice("populated".to_owned()));
+        a.history.push(Message::user("hi"));
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('n')));
+        assert!(!a.leader_pending(), "the binding consumed the leader");
+        assert!(
+            a.transcript.is_empty(),
+            "the transcript cleared to a fresh session"
+        );
+        assert!(a.history_snapshot().is_empty(), "history cleared too");
+    }
+
+    #[test]
+    fn leader_model_list_opens_the_model_picker() {
+        // VAL-TUI-066: the leader model-list binding opens the model picker.
+        let mut a = app();
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('m')));
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Models),
+            "the model picker opened via the leader chord"
+        );
+    }
+
+    #[test]
+    fn leader_sidebar_toggles_on_then_off() {
+        // VAL-TUI-067: the sidebar-toggle binding shows then hides the sidebar.
+        let mut a = app();
+        assert!(!a.sidebar_visible());
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('b')));
+        assert!(a.sidebar_visible(), "first toggle shows the sidebar");
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('b')));
+        assert!(!a.sidebar_visible(), "second toggle hides the sidebar");
+    }
+
+    #[test]
+    fn unbound_leader_key_is_a_harmless_noop() {
+        let mut a = app();
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('z')));
+        assert!(!a.leader_pending(), "the leader is consumed");
+        assert!(!a.dialog_open());
+        assert!(!a.sidebar_visible());
+        assert!(
+            a.input_value().is_empty(),
+            "the key did not leak into the prompt"
+        );
+    }
+
+    #[test]
+    fn leader_chord_does_not_leak_into_the_prompt() {
+        let mut a = app();
+        press_leader(&mut a);
+        assert!(
+            a.input_value().is_empty(),
+            "the leader chord is not typed text"
+        );
+    }
+
+    #[test]
+    fn overridden_keybind_takes_effect_over_the_default() {
+        // VAL-TUI-069: a config override remaps new-session to `x`; `x` triggers it and the default
+        // `n` no longer does.
+        let mut a = app();
+        let mut keybinds = Keybinds::default();
+        keybinds.apply_overrides(
+            &toml::from_str(r#"new_session = "x""#).expect("valid override table"),
+        );
+        a.set_keybinds(keybinds);
+
+        a.transcript.push(Entry::Notice("populated".to_owned()));
+        // The default key no longer triggers the action.
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            a.transcript.len(),
+            1,
+            "the default `n` no longer clears the session"
+        );
+
+        // The overridden key does.
+        press_leader(&mut a);
+        a.on_key(key(KeyCode::Char('x')));
+        assert!(
+            a.transcript.is_empty(),
+            "the overridden `x` starts a fresh session"
+        );
+    }
+
+    #[test]
+    fn custom_leader_chord_arms_the_overlay() {
+        let mut a = app();
+        let mut keybinds = Keybinds::default();
+        keybinds.apply_overrides(&toml::from_str(r#"leader = "ctrl+b""#).expect("valid table"));
+        a.set_keybinds(keybinds);
+
+        // The old default leader no longer arms anything.
+        a.on_key(key_mod(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(
+            !a.leader_pending(),
+            "the old leader is inert under the override"
+        );
+        // The custom leader arms the overlay.
+        a.on_key(key_mod(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(
+            a.leader_pending(),
+            "the custom leader arms the which-key overlay"
+        );
     }
 }

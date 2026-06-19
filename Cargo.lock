@@ -2006,6 +2006,7 @@ dependencies = [
  "serde_json",
  "settings",
  "tokio",
+ "toml",
  "tools",
  "tui-components",
  "tui-widgets",
