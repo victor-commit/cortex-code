@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use cortex_config::{ConfigInputs, load};
-use cortex_errors::Exit;
+use errors::Exit;
+use settings::{ConfigInputs, load};
 
 use crate::cli::{ConfigArgs, OutputFormat};
 

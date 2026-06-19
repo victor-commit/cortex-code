@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use cortex_config::{ConfigInputs, DEFAULT_MODEL, EffectiveConfig, load};
+use settings::{ConfigInputs, DEFAULT_MODEL, EffectiveConfig, load};
 
 /// A self-cleaning scratch tree with an isolated HOME, project root, and nested CWD.
 struct Scratch {

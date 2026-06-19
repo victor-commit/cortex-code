@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use cortex_errors::Exit;
+use errors::Exit;
 
 use crate::cli::{Cli, Command, ServeArgs};
 

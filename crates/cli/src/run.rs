@@ -1,6 +1,6 @@
 use std::io::{self, IsTerminal, Read, Write};
 
-use cortex_errors::Exit;
+use errors::Exit;
 use serde::Serialize;
 
 use crate::cli::{OutputFormat, RunArgs};

@@ -126,6 +126,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "errors",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "settings",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -144,47 +157,6 @@ dependencies = [
  "ryu",
  "static_assertions",
 ]
-
-[[package]]
-name = "cortex-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "cortex-config",
- "cortex-errors",
- "crossterm",
- "ratatui",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "cortex-config"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "cortex-errors"
-version = "0.1.0"
-
-[[package]]
-name = "cortex-events"
-version = "0.1.0"
-
-[[package]]
-name = "cortex-persistence"
-version = "0.1.0"
-
-[[package]]
-name = "cortex-protocol"
-version = "0.1.0"
-
-[[package]]
-name = "cortex-redaction"
-version = "0.1.0"
 
 [[package]]
 name = "crossterm"
@@ -247,6 +219,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "db"
+version = "0.1.0"
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,6 +243,14 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "errors"
+version = "0.1.0"
+
+[[package]]
+name = "events"
+version = "0.1.0"
 
 [[package]]
 name = "fnv"
@@ -461,6 +445,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol"
+version = "0.1.0"
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -489,6 +477,10 @@ dependencies = [
  "unicode-truncate",
  "unicode-width 0.2.0",
 ]
+
+[[package]]
+name = "redaction"
+version = "0.1.0"
 
 [[package]]
 name = "redox_syscall"
@@ -580,6 +572,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

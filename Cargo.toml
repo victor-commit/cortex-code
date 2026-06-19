@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/cortex-protocol",
-    "crates/cortex-errors",
-    "crates/cortex-events",
-    "crates/cortex-redaction",
-    "crates/cortex-config",
-    "crates/cortex-persistence",
-    "crates/cortex-cli",
+    "crates/protocol",
+    "crates/errors",
+    "crates/events",
+    "crates/redaction",
+    "crates/settings",
+    "crates/db",
+    "crates/cli",
 ]
 
 [workspace.package]
@@ -23,8 +23,8 @@ unsafe_code = "forbid"
 all = "warn"
 
 [workspace.dependencies]
-cortex-errors = { path = "crates/cortex-errors" }
-cortex-config = { path = "crates/cortex-config" }
+errors = { path = "crates/errors" }
+settings = { path = "crates/settings" }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"
