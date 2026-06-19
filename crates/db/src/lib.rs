@@ -20,6 +20,7 @@ mod message;
 mod migrations;
 mod path;
 mod session;
+mod todo;
 mod usage;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ pub use message::{Message, MessageRepo};
 pub use migrations::{MIGRATIONS_TABLE, latest_version};
 pub use path::{DB_FILE_NAME, DbPathInputs, ENV_DATA_DIR, ENV_DB_PATH, default_location_hint};
 pub use session::{Session, SessionRepo};
+pub use todo::TodoRepo;
 pub use usage::{UsageRecord, UsageRepo, UsageTotals};
 
 /// How long an open/migrate operation waits on a database lock before giving up, generous
@@ -135,5 +137,11 @@ impl Database {
     #[must_use]
     pub fn usage(&self) -> UsageRepo<'_> {
         UsageRepo::new(&self.conn)
+    }
+
+    /// The todos repository.
+    #[must_use]
+    pub fn todos(&self) -> TodoRepo<'_> {
+        TodoRepo::new(&self.conn)
     }
 }

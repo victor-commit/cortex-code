@@ -10,7 +10,10 @@ use llm::ToolDef;
 
 use crate::apply_patch::ApplyPatchTool;
 use crate::edit::EditTool;
+use crate::glob::GlobTool;
+use crate::grep::GrepTool;
 use crate::read::ReadTool;
+use crate::todo::TodoTool;
 use crate::tool::{Tool, ToolContext, ToolOutput};
 use crate::write::WriteTool;
 
@@ -28,25 +31,38 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
-    /// e.g. `google/gemini-2.5-flash`): `read`, `write`, and `edit`. This set has no `apply_patch`.
+    /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the non-mutating
+    /// utility tools `glob`/`grep`/`todo`. This set has no `apply_patch`.
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(ReadTool));
         registry.register(Box::new(WriteTool));
         registry.register(Box::new(EditTool));
+        registry.register_utility_tools();
         registry
     }
 
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
-    /// `apply_patch`. GPT-family models edit files through the `apply_patch` envelope, so `edit` and
-    /// `write` are deliberately swapped out (architecture §3.4, model-aware tool materialization).
+    /// `apply_patch` plus the non-mutating utility tools `glob`/`grep`/`todo`. GPT-family models
+    /// edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately swapped
+    /// out (architecture §3.4, model-aware tool materialization); the search/todo utilities are
+    /// model-agnostic and present for every family.
     #[must_use]
     pub fn gpt() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(ReadTool));
         registry.register(Box::new(ApplyPatchTool));
+        registry.register_utility_tools();
         registry
+    }
+
+    /// Register the non-mutating utility tools shared by every model family (`glob`, `grep`,
+    /// `todo`).
+    fn register_utility_tools(&mut self) {
+        self.register(Box::new(GlobTool));
+        self.register(Box::new(GrepTool));
+        self.register(Box::new(TodoTool));
     }
 
     /// Add a tool to the registry.
@@ -125,6 +141,22 @@ mod tests {
         assert!(registry.get("write").is_some());
         assert!(defs.iter().any(|def| def.name == "edit"));
         assert!(registry.get("edit").is_some());
+    }
+
+    #[test]
+    fn both_registries_advertise_the_utility_tools() {
+        for registry in [ToolRegistry::builtin(), ToolRegistry::gpt()] {
+            for name in ["glob", "grep", "todo"] {
+                assert!(
+                    registry.get(name).is_some(),
+                    "expected the `{name}` utility tool to be registered"
+                );
+                assert!(
+                    registry.definitions().iter().any(|def| def.name == name),
+                    "expected `{name}` in the advertised catalogue"
+                );
+            }
+        }
     }
 
     #[test]

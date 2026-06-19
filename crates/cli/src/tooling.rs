@@ -7,11 +7,12 @@
 //! runner's [`ToolDispatchResult`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
-use tools::{ToolContext, ToolRegistry};
+use tools::{TodoStore, ToolContext, ToolRegistry};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
 pub struct RegistryDispatcher {
@@ -22,9 +23,16 @@ pub struct RegistryDispatcher {
 impl RegistryDispatcher {
     /// Build a dispatcher whose tool set is materialized for `model_id`'s family (architecture §4):
     /// a GPT-family model receives `apply_patch` (and loses `edit`/`write`), while every other model
-    /// keeps the default `edit`/`write` set and has no `apply_patch`.
+    /// keeps the default `edit`/`write` set and has no `apply_patch`. The context is scoped to
+    /// `session_id` and carries `todos`, so the per-session `todo` tool persists to (and reads from)
+    /// the durable store for this session.
     #[must_use]
-    pub fn for_model(cwd: PathBuf, model_id: &str) -> Self {
+    pub fn for_model(
+        cwd: PathBuf,
+        model_id: &str,
+        session_id: String,
+        todos: Arc<dyn TodoStore>,
+    ) -> Self {
         let registry = match ModelFamily::from_model_id(model_id) {
             ModelFamily::Gpt | ModelFamily::Codex => ToolRegistry::gpt(),
             ModelFamily::Anthropic | ModelFamily::Gemini | ModelFamily::Default => {
@@ -33,7 +41,9 @@ impl RegistryDispatcher {
         };
         Self {
             registry,
-            context: ToolContext::new(cwd),
+            context: ToolContext::new(cwd)
+                .with_session(session_id)
+                .with_todo_store(todos),
         }
     }
 

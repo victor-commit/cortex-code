@@ -296,6 +296,7 @@ dependencies = [
 name = "db"
 version = "0.1.0"
 dependencies = [
+ "protocol",
  "redaction",
  "rusqlite",
  "serde",

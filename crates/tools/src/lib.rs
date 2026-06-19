@@ -13,14 +13,21 @@
 
 mod apply_patch;
 mod edit;
+mod glob;
+mod grep;
 mod read;
 mod registry;
+mod ripgrep;
+mod todo;
 mod tool;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
 pub use edit::EditTool;
+pub use glob::GlobTool;
+pub use grep::GrepTool;
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
-pub use tool::{Diagnostic, MutationHooks, Tool, ToolContext, ToolOutput};
+pub use todo::TodoTool;
+pub use tool::{Diagnostic, MutationHooks, TodoStore, Tool, ToolContext, ToolOutput};
 pub use write::WriteTool;

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::future::BoxFuture;
 use permissions::{PermissionEngine, request_for};
-use protocol::ToolResultPart;
+use protocol::{TodoItem, ToolResultPart};
 
 /// A diagnostic an LSP server reports for a file a mutating tool just wrote or edited.
 ///
@@ -66,6 +66,28 @@ pub trait MutationHooks: Send + Sync {
     fn diagnostics(&self, _path: &Path) -> Vec<Diagnostic> {
         Vec::new()
     }
+}
+
+/// The per-session persistence seam the `todo` tool writes through.
+///
+/// The `todo` tool maintains a structured task list scoped to the active session. Persistence is
+/// owned outside `tools` (the `db` repository, bridged by the CLI) so the tool stays decoupled from
+/// SQLite: it reads and replaces the list through this trait keyed by the session id. The list is
+/// replaced wholesale on each write (the model commits the complete list it wants), and reads
+/// return the stored items in order. With no store attached (e.g. a context built without a durable
+/// session) the `todo` tool reports a clear error rather than silently dropping the list.
+pub trait TodoStore: Send + Sync {
+    /// The session's todo items in stored order (empty for a session with none).
+    ///
+    /// # Errors
+    /// Returns a human-readable message when the list cannot be read.
+    fn list(&self, session_id: &str) -> Result<Vec<TodoItem>, String>;
+
+    /// Replace the session's entire todo list with `items`, in order.
+    ///
+    /// # Errors
+    /// Returns a human-readable message when the list cannot be written.
+    fn replace(&self, session_id: &str, items: &[TodoItem]) -> Result<(), String>;
 }
 
 /// The structured result of running a tool.
@@ -140,11 +162,13 @@ pub struct ToolContext {
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
     hooks: Option<Arc<dyn MutationHooks>>,
+    session_id: Option<String>,
+    todos: Option<Arc<dyn TodoStore>>,
 }
 
 impl ToolContext {
-    /// Build a context rooted at `cwd` with an empty read-tracking set, no permission gating, and no
-    /// post-mutation hooks.
+    /// Build a context rooted at `cwd` with an empty read-tracking set, no permission gating, no
+    /// post-mutation hooks, no session, and no todo store.
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
@@ -152,6 +176,8 @@ impl ToolContext {
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             hooks: None,
+            session_id: None,
+            todos: None,
         }
     }
 
@@ -160,6 +186,34 @@ impl ToolContext {
     pub fn with_permissions(mut self, engine: Arc<PermissionEngine>) -> Self {
         self.permissions = Some(engine);
         self
+    }
+
+    /// Set the session id tool calls are scoped to (builder style). The `todo` tool keys its
+    /// per-session list off this id.
+    #[must_use]
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Attach the per-session todo persistence the `todo` tool writes through (builder style). With
+    /// none attached the `todo` tool reports a clear error rather than dropping the list.
+    #[must_use]
+    pub fn with_todo_store(mut self, store: Arc<dyn TodoStore>) -> Self {
+        self.todos = Some(store);
+        self
+    }
+
+    /// The session id tool calls are scoped to, if one was set.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// The attached per-session todo store, if one was set.
+    #[must_use]
+    pub fn todo_store(&self) -> Option<&Arc<dyn TodoStore>> {
+        self.todos.as_ref()
     }
 
     /// Attach the post-mutation downstream hooks (formatter + LSP diagnostics) used after a write or

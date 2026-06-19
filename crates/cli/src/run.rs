@@ -133,8 +133,8 @@ pub fn run(args: RunArgs) -> Exit {
     // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
     // when none exists), or a brand-new session otherwise. The store is touched only after setup
     // has succeeded, so a refused run (net-disabled, no-credential, bad model) leaves no session.
-    let db = match open_database() {
-        Ok(db) => db,
+    let (db, db_path) = match open_database() {
+        Ok(opened) => opened,
         Err(exit) => return exit,
     };
     let session_id = match resolve_session(&db, session_selection(args.session, args.r#continue)) {
@@ -180,7 +180,9 @@ pub fn run(args: RunArgs) -> Exit {
     // gets `apply_patch` (and loses `edit`/`write`); any other model keeps `edit`/`write`
     // (architecture §3.4 / §4).
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let dispatcher = RegistryDispatcher::for_model(cwd, &model_id);
+    let todo_store: std::sync::Arc<dyn tools::TodoStore> =
+        std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path));
+    let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
     let tool_names = dispatcher.tool_names();
 
     runtime.block_on(async {
@@ -249,8 +251,9 @@ fn session_selection(session: Option<String>, continue_latest: bool) -> SessionS
 }
 
 /// Open the durable session store at the resolved database path, mapping any failure to a clear
-/// stderr diagnostic and a non-zero exit (never a panic).
-fn open_database() -> Result<Database, Exit> {
+/// stderr diagnostic and a non-zero exit (never a panic). The resolved path is returned alongside
+/// the open database so the per-session `todo` store can open its own connection to the same file.
+fn open_database() -> Result<(Database, std::path::PathBuf), Exit> {
     let Some(path) = DbPathInputs::from_process().resolve() else {
         eprintln!(
             "cortex run: cannot determine a database location; set HOME, XDG_DATA_HOME, \
@@ -258,7 +261,7 @@ fn open_database() -> Result<Database, Exit> {
         );
         return Err(Exit::Failure);
     };
-    Database::open(&path).map_err(|err| {
+    Database::open(&path).map(|db| (db, path)).map_err(|err| {
         eprintln!("cortex run: {err}");
         Exit::Failure
     })

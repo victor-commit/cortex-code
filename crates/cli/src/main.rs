@@ -4,6 +4,7 @@ mod net;
 mod observe;
 mod run;
 mod session;
+mod todo_store;
 mod tooling;
 mod tui;
 
