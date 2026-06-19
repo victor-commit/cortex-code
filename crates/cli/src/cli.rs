@@ -44,6 +44,87 @@ pub enum Command {
     /// `CORTEX_<KEY>` mapping (e.g. `CORTEX_MODEL`); `--model` is the highest-precedence
     /// CLI override. Use `--format json` for a machine-parseable dump of the merged config.
     Config(ConfigArgs),
+
+    /// Create, list, and inspect persisted sessions and their messages.
+    ///
+    /// Sessions and messages live in a SQLite database created on first use under the data
+    /// directory (`${XDG_DATA_HOME:-$HOME/.local/share}/cortex/cortex.db` by default). Set
+    /// `CORTEX_DB_PATH` to point at an explicit database file, or `CORTEX_DATA_DIR` to relocate
+    /// the data directory; the default location is left untouched when an override is used.
+    Session(SessionArgs),
+}
+
+/// Output format shared by the `session` subcommands.
+#[derive(Debug, Args)]
+pub struct FormatArgs {
+    /// Output format: text (default) or json (a single strict JSON document).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text, value_name = "FORMAT")]
+    pub format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionArgs {
+    #[command(subcommand)]
+    pub command: SessionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommand {
+    /// Create a new session and print its id.
+    New(SessionNewArgs),
+
+    /// List existing sessions, newest first.
+    List(SessionListArgs),
+
+    /// Show a session and the messages stored under it.
+    Show(SessionShowArgs),
+
+    /// Append a message to a session (content from an argument or stdin).
+    Message(SessionMessageArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SessionNewArgs {
+    /// Optional human-facing title for the session.
+    #[arg(long, value_name = "TITLE")]
+    pub title: Option<String>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionShowArgs {
+    /// The id of the session to show.
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionMessageArgs {
+    /// The id of the session to append to.
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    /// The message content. Takes precedence over stdin; when omitted, stdin is read.
+    #[arg(value_name = "CONTENT")]
+    pub content: Option<String>,
+
+    /// The role to record for the message.
+    #[arg(long, default_value = "user", value_name = "ROLE")]
+    pub role: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 /// Machine/human output format for headless runs.
@@ -161,9 +242,59 @@ mod tests {
     fn help_lists_core_subcommands() {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
-        for sub in ["run", "tui", "serve"] {
+        for sub in ["run", "tui", "serve", "session"] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
+    }
+
+    #[test]
+    fn session_new_parses_title_and_format() {
+        let cli = Cli::try_parse_from([
+            "cortex", "session", "new", "--title", "demo", "--format", "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::New(args),
+            })) => {
+                assert_eq!(args.title.as_deref(), Some("demo"));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected session new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_message_parses_id_content_and_role() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "session",
+            "message",
+            "ses_1",
+            "hello there",
+            "--role",
+            "assistant",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::Message(args),
+            })) => {
+                assert_eq!(args.id, "ses_1");
+                assert_eq!(args.content.as_deref(), Some("hello there"));
+                assert_eq!(args.role, "assistant");
+            }
+            other => panic!("expected session message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_requires_a_subcommand() {
+        let err = Cli::try_parse_from(["cortex", "session"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 
     #[test]

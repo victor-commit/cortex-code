@@ -14,6 +14,8 @@ pub enum Surface {
     Serve,
     /// The configuration-reporting path.
     Config,
+    /// The persisted-session management path (`cortex session`).
+    Session,
 }
 
 impl Surface {
@@ -25,6 +27,7 @@ impl Surface {
             Surface::Run => "run",
             Surface::Serve => "serve",
             Surface::Config => "config",
+            Surface::Session => "session",
         }
     }
 }

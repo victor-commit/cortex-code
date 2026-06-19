@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod observe;
 mod run;
+mod session;
 mod tui;
 
 use std::process::ExitCode;
@@ -45,6 +46,7 @@ fn main() -> ExitCode {
         None | Some(Command::Tui(_)) => tui::launch(),
         Some(Command::Run(args)) => run::run(args).into(),
         Some(Command::Config(args)) => config::run(args).into(),
+        Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
@@ -55,6 +57,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         None | Some(Command::Tui(_)) => Surface::Tui,
         Some(Command::Run(_)) => Surface::Run,
         Some(Command::Config(_)) => Surface::Config,
+        Some(Command::Session(_)) => Surface::Session,
         Some(Command::Serve(_)) => Surface::Serve,
     }
 }

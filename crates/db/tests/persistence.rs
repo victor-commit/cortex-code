@@ -1,0 +1,231 @@
+//! Behavior tests for the persistence layer: migrations, durability, repositories, and the
+//! error classification for junk/unwritable paths. These back VAL-SKEL-037..042 and VAL-SKEL-068
+//! at the library level; the CLI integration tests prove the same behaviors black-box.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use db::{Database, DbError, latest_version};
+
+/// A self-cleaning scratch directory under the system temp dir.
+struct Scratch {
+    root: PathBuf,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let unique = format!(
+            "cortex-db-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create scratch dir");
+        Self { root }
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.root.join(rel)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Read the set of user table names directly from `sqlite_master`.
+fn table_names(db: &Database) -> Vec<String> {
+    // A read-only probe via a fresh connection so the test asserts on-disk schema, not cache.
+    let conn =
+        rusqlite::Connection::open(db.path()).expect("open probe connection to the same file");
+    let mut statement = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .expect("prepare table query");
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query tables")
+        .map(|r| r.expect("row"))
+        .collect();
+    names
+}
+
+// VAL-SKEL-037: a fresh DB is created with migrations applied and the expected tables present.
+#[test]
+fn fresh_database_has_expected_tables_and_version() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("nested/dir/cortex.db");
+    assert!(!db_path.exists(), "precondition: DB path is fresh");
+
+    let db = Database::open(&db_path).expect("open fresh db");
+
+    assert!(db_path.exists(), "the DB file is created on first open");
+    assert_eq!(db.schema_version().unwrap(), latest_version());
+
+    let tables = table_names(&db);
+    for expected in ["sessions", "messages", "schema_migrations"] {
+        assert!(
+            tables.iter().any(|t| t == expected),
+            "expected table `{expected}` in {tables:?}"
+        );
+    }
+}
+
+// VAL-SKEL-040: re-opening an already-migrated DB is idempotent (stable version, no error).
+#[test]
+fn reopening_is_idempotent_and_preserves_version() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    for _ in 0..3 {
+        let db = Database::open(&db_path).expect("reopen migrated db");
+        assert_eq!(db.schema_version().unwrap(), latest_version());
+        // Exactly one row per applied migration; never re-applied.
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        let migration_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(migration_rows, latest_version());
+    }
+}
+
+// VAL-SKEL-038: a session created in one "process" is retrievable after re-open.
+#[test]
+fn session_persists_across_reopen() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let session_id = {
+        let db = Database::open(&db_path).expect("open db (A)");
+        let session = db.sessions().create(Some("first run")).expect("create");
+        session.id
+    };
+
+    let db = Database::open(&db_path).expect("open db (B)");
+    let reloaded = db
+        .sessions()
+        .get(&session_id)
+        .expect("query")
+        .expect("session survives restart");
+    assert_eq!(reloaded.id, session_id);
+    assert_eq!(reloaded.title.as_deref(), Some("first run"));
+
+    let listed = db.sessions().list().expect("list");
+    assert!(listed.iter().any(|s| s.id == session_id));
+}
+
+// VAL-SKEL-039: a stored message (with content) is retrievable after re-open.
+#[test]
+fn message_content_persists_across_reopen() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let (session_id, content) = {
+        let db = Database::open(&db_path).expect("open db (A)");
+        let session = db.sessions().create(None).expect("create session");
+        let content = "remember the word: marmalade";
+        db.messages()
+            .create(&session.id, "user", content)
+            .expect("store message");
+        (session.id, content.to_owned())
+    };
+
+    let db = Database::open(&db_path).expect("open db (B)");
+    let messages = db.messages().list_for_session(&session_id).expect("list");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, content);
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].session_id, session_id);
+}
+
+#[test]
+fn message_under_unknown_session_is_a_clear_not_found() {
+    let db = Database::open_in_memory().expect("memory db");
+    let err = db
+        .messages()
+        .create("ses_does_not_exist", "user", "hi")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        DbError::NotFound {
+            kind: "session",
+            ..
+        }
+    ));
+    assert!(err.to_string().contains("ses_does_not_exist"));
+}
+
+// VAL-SKEL-042 (junk file): a non-SQLite file yields NotADatabase, not a panic.
+#[test]
+fn junk_file_is_classified_as_not_a_database() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+    std::fs::write(
+        &db_path,
+        b"this is plainly not a sqlite database header\n".repeat(8),
+    )
+    .expect("write junk");
+
+    let err = Database::open(&db_path).unwrap_err();
+    assert!(
+        matches!(err, DbError::NotADatabase { .. }),
+        "expected NotADatabase, got: {err:?}"
+    );
+    assert!(err.to_string().contains("not a valid SQLite database"));
+}
+
+// VAL-SKEL-042 (unwritable path): a path whose parent is a file cannot be created → Open error.
+#[test]
+fn unwritable_path_yields_open_error() {
+    let scratch = Scratch::new();
+    let blocker = scratch.path("a-file");
+    std::fs::write(&blocker, b"i am a file, not a directory").expect("write blocker file");
+    // The parent component `a-file` is a regular file, so the data dir cannot be created.
+    let db_path = blocker.join("cortex.db");
+
+    let err = Database::open(&db_path).unwrap_err();
+    assert!(
+        matches!(err, DbError::Open { .. }),
+        "expected Open error, got: {err:?}"
+    );
+}
+
+// VAL-SKEL-068 (best-effort, in-process): concurrent opens of one fresh path each migrate the
+// DB without error; afterwards the version is the single expected value with one row per
+// migration. True cross-process concurrency is proven by the CLI integration test.
+#[test]
+fn concurrent_opens_of_a_fresh_db_all_succeed() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let path = db_path.clone();
+        handles.push(std::thread::spawn(move || {
+            Database::open(&path).map(|db| db.schema_version().unwrap())
+        }));
+    }
+    for handle in handles {
+        let version = handle
+            .join()
+            .expect("thread")
+            .expect("open under contention");
+        assert_eq!(version, latest_version());
+    }
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let migration_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        migration_rows,
+        latest_version(),
+        "migrations applied exactly once despite concurrency"
+    );
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+}

@@ -16,6 +16,7 @@ workspace = true
 errors = { workspace = true }
 events = { workspace = true }
 settings = { workspace = true }
+db = { workspace = true }
 clap = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
@@ -26,3 +27,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+rusqlite = { workspace = true }
