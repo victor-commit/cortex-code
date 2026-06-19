@@ -42,6 +42,15 @@ pub fn config_files(
     files
 }
 
+/// The user's global config file (`<config>/cortex/config.toml`), if a config home exists.
+///
+/// This is the durable destination for interactively-set user preferences (e.g. the TUI theme
+/// picker): a value written here is read back by [`config_files`] as the global layer on the next
+/// load. Returns `None` only when neither `$XDG_CONFIG_HOME` nor `$HOME` is available.
+pub fn global_config_file(home: Option<&Path>, xdg_config_home: Option<&Path>) -> Option<PathBuf> {
+    global_config_dir(home, xdg_config_home).map(|dir| dir.join("cortex").join(CONFIG_FILE))
+}
+
 /// The directory holding the global config tree (`<config>/cortex/config.toml`).
 fn global_config_dir(home: Option<&Path>, xdg_config_home: Option<&Path>) -> Option<PathBuf> {
     if let Some(xdg) = xdg_config_home {

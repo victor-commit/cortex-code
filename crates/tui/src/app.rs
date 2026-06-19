@@ -249,6 +249,12 @@ pub struct App {
     shell_mode: bool,
     /// Canonical prior-turn messages projected into each new turn for conversational context.
     history: Vec<Message>,
+    /// The active theme name driving the rendered colors. Switched (and previewed) through the
+    /// theme picker; loaded from the effective config at launch so a persisted choice is honored.
+    theme: String,
+    /// The theme active when the theme picker opened, restored on cancel so a hovered preview does
+    /// not stick. `None` whenever the picker is not open.
+    theme_restore: Option<String>,
 }
 
 impl App {
@@ -276,7 +282,20 @@ impl App {
             editor_requested: false,
             shell_mode: false,
             history: Vec::new(),
+            theme: default_theme_name(),
+            theme_restore: None,
         }
+    }
+
+    /// The active theme name driving the rendered colors (see [`crate::ui`]).
+    #[must_use]
+    pub fn theme(&self) -> &str {
+        &self.theme
+    }
+
+    /// Set the active theme name, used at launch to apply the persisted choice from config.
+    pub fn set_theme(&mut self, name: String) {
+        self.theme = name;
     }
 
     /// Whether a turn is currently streaming (the busy/spinner indicator is shown).
@@ -946,8 +965,12 @@ impl App {
             .iter()
             .map(|name| (*name).to_owned())
             .collect();
-        let active = active_theme_name();
-        let selected = items.iter().position(|name| *name == active).unwrap_or(0);
+        let selected = items
+            .iter()
+            .position(|name| *name == self.theme)
+            .unwrap_or(0);
+        // Remember the active theme so cancelling restores it after any live preview.
+        self.theme_restore = Some(self.theme.clone());
         self.open_dialog(Dialog {
             kind: DialogKind::Themes,
             title: "Themes".to_owned(),
@@ -1016,6 +1039,7 @@ impl App {
                 dialog.selected = (dialog.selected() + 1) % len;
             }
         }
+        self.sync_theme_preview();
     }
 
     /// Move the dialog highlight to the previous row (wrapping at the start).
@@ -1025,6 +1049,73 @@ impl App {
             if len > 0 {
                 dialog.selected = (dialog.selected() + len - 1) % len;
             }
+        }
+        self.sync_theme_preview();
+    }
+
+    /// While the theme picker is open, mirror the highlighted theme into the active theme so the
+    /// rendered colors preview live as the user moves the highlight. A no-op for any other dialog.
+    fn sync_theme_preview(&mut self) {
+        if let Some(dialog) = self.dialog.as_ref() {
+            if dialog.kind == DialogKind::Themes {
+                if let Some(name) = dialog.items.get(dialog.selected()) {
+                    self.theme = name.clone();
+                }
+            }
+        }
+    }
+
+    /// Confirm the open dialog (Enter). For the theme picker this commits the highlighted theme as
+    /// the active one and persists the choice so it survives a restart; other dialogs simply close.
+    fn dialog_confirm(&mut self) {
+        if let Some(name) = self.confirm_theme_selection() {
+            self.persist_theme(&name);
+            self.transcript
+                .push(Entry::Notice(format!("Theme set to {name}")));
+        }
+        self.close_dialog();
+    }
+
+    /// Cancel the open dialog (Esc). For the theme picker this restores the theme active when the
+    /// picker opened so a hovered preview does not stick; other dialogs simply close.
+    fn dialog_cancel(&mut self) {
+        self.cancel_theme_preview();
+        self.close_dialog();
+    }
+
+    /// Commit the highlighted theme as the active one, returning its name when the open dialog is
+    /// the theme picker (so the caller persists it); `None` for any other dialog.
+    fn confirm_theme_selection(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Themes {
+            return None;
+        }
+        let name = dialog.items.get(dialog.selected())?.clone();
+        self.theme = name.clone();
+        self.theme_restore = None;
+        Some(name)
+    }
+
+    /// Restore the theme active when the picker opened, discarding any live preview. A no-op unless
+    /// the open dialog is the theme picker.
+    fn cancel_theme_preview(&mut self) {
+        let is_theme_picker = matches!(
+            self.dialog.as_ref().map(|dialog| dialog.kind),
+            Some(DialogKind::Themes)
+        );
+        if is_theme_picker {
+            if let Some(name) = self.theme_restore.take() {
+                self.theme = name;
+            }
+        }
+    }
+
+    /// Persist the selected theme to the global config so it is honored on the next launch.
+    /// Best-effort: a write failure leaves the in-session theme switched but unpersisted.
+    fn persist_theme(&self, name: &str) {
+        if let Ok(inputs) = settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
+        {
+            let _ = settings::persist_global_string(&inputs, "theme", name);
         }
     }
 
@@ -1155,7 +1246,8 @@ impl App {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
                 KeyCode::Up => self.dialog_select_prev(),
                 KeyCode::Down => self.dialog_select_next(),
-                KeyCode::Esc | KeyCode::Enter => self.close_dialog(),
+                KeyCode::Enter => self.dialog_confirm(),
+                KeyCode::Esc => self.dialog_cancel(),
                 _ => {}
             }
             return;
@@ -1445,20 +1537,24 @@ fn agent_description(name: &str) -> &'static str {
     }
 }
 
-/// The configured active theme name, read from the effective configuration's `theme` key, falling
-/// back to the first available theme when unset or unreadable.
-fn active_theme_name() -> String {
-    let default = frame::style::ThemeColors::available_themes()
+/// The built-in default theme name (the first available theme), used before any config is loaded.
+fn default_theme_name() -> String {
+    frame::style::ThemeColors::available_themes()
         .first()
         .copied()
         .unwrap_or("dark")
-        .to_owned();
+        .to_owned()
+}
+
+/// The configured active theme name, read from the effective configuration's `theme` key, falling
+/// back to the default theme when unset or unreadable.
+pub(crate) fn active_theme_name() -> String {
     effective_config()
         .as_ref()
         .and_then(|cfg| cfg.get("theme"))
         .and_then(|value| value.as_str())
         .map(str::to_owned)
-        .unwrap_or(default)
+        .unwrap_or_else(default_theme_name)
 }
 
 /// The configured MCP servers as display rows (`name — status`), read from the effective
@@ -2702,6 +2798,71 @@ mod tests {
     }
 
     #[test]
+    fn theme_picker_preselects_the_active_theme() {
+        let mut a = app();
+        a.set_theme("monokai".to_owned());
+        dispatch(&mut a, "themes");
+        let dialog = a.dialog().expect("the theme picker opened");
+        assert_eq!(
+            dialog.items[dialog.selected()],
+            "monokai",
+            "the active theme is pre-highlighted"
+        );
+    }
+
+    #[test]
+    fn theme_picker_preview_recolors_then_cancel_restores() {
+        // VAL-TUI-064: navigating previews a different theme; cancelling restores the pre-open one.
+        let mut a = app();
+        let original = a.theme().to_owned();
+        dispatch(&mut a, "themes");
+        a.on_key(key(KeyCode::Down));
+        let previewed = a.theme().to_owned();
+        assert_ne!(
+            previewed, original,
+            "moving the highlight previews a different theme"
+        );
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open(), "Esc closes the picker");
+        assert_eq!(
+            a.theme(),
+            original,
+            "cancel restores the theme active before the preview"
+        );
+    }
+
+    #[test]
+    fn confirming_a_theme_selection_switches_the_active_theme() {
+        // VAL-TUI-062: confirming a different theme switches the active theme (drives the colors).
+        let mut a = app();
+        let original = a.theme().to_owned();
+        dispatch(&mut a, "themes");
+        a.on_key(key(KeyCode::Down));
+        let chosen = a.theme().to_owned();
+        assert_ne!(chosen, original, "a different theme is highlighted");
+        // Commit the highlighted theme via the pure path (the on_key Enter path also persists).
+        let confirmed = a
+            .confirm_theme_selection()
+            .expect("the theme picker confirms a selection");
+        assert_eq!(confirmed, chosen, "the highlighted theme is committed");
+        assert_eq!(a.theme(), chosen, "the active theme is the chosen one");
+        assert!(
+            a.theme_restore.is_none(),
+            "confirming clears the cancel-restore snapshot"
+        );
+    }
+
+    #[test]
+    fn confirm_theme_selection_is_a_noop_for_other_dialogs() {
+        let mut a = app();
+        dispatch(&mut a, "agents");
+        assert!(
+            a.confirm_theme_selection().is_none(),
+            "only the theme picker commits a theme on confirm"
+        );
+    }
+
+    #[test]
     fn dispatching_mcp_opens_the_status_view_with_an_empty_state() {
         // VAL-TUI-046: `/mcp` opens the MCP view; with no servers it shows a clear empty state.
         let mut a = app();
@@ -2777,8 +2938,9 @@ mod tests {
 
     #[test]
     fn enter_closes_an_open_dialog() {
+        // A non-mutating dialog (agents) closes on Enter without side effects.
         let mut a = app();
-        dispatch(&mut a, "themes");
+        dispatch(&mut a, "agents");
         a.on_key(key(KeyCode::Enter));
         assert!(!a.dialog_open(), "Enter dismisses the dialog");
     }

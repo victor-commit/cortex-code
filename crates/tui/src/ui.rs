@@ -930,19 +930,27 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let footer = Paragraph::new(footer_line(app)).style(Style::default().bg(Color::Indexed(236)));
+    let theme = style::ThemeColors::from_name(app.theme());
+    let footer = Paragraph::new(footer_line(app)).style(Style::default().bg(theme.surface[0]));
     frame.render_widget(footer, area);
 }
 
 /// Build the status footer: model / agent / mode / session plus the token-and-cost usage segment.
 /// Before any turn reports usage the segment reads `usage —`; after a turn it shows the running
 /// token counts (and cost when reported), so a usage figure appears/increments versus before.
+///
+/// The label/value/separator colors come from the active theme, so switching theme visibly
+/// recolors the status bar (the comparable element validated for a theme change).
 pub fn footer_line(app: &App) -> Line<'static> {
+    let theme = style::ThemeColors::from_name(app.theme());
+    let label_color = theme.primary;
+    let value_color = theme.text;
+    let sep_color = theme.text_muted;
     let label = Style::default()
-        .fg(Color::DarkGray)
+        .fg(label_color)
         .add_modifier(Modifier::BOLD);
-    let value = Style::default().fg(Color::Gray);
-    let sep = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
+    let value = Style::default().fg(value_color);
+    let sep = move || Span::styled(" · ", Style::default().fg(sep_color));
 
     let mut spans = vec![
         Span::styled("model ", label),

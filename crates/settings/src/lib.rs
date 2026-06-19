@@ -224,6 +224,39 @@ pub struct ConfigLayer {
     pub table: Table,
 }
 
+/// Persist a single top-level `key = value` string into the user's global config file
+/// (`${XDG_CONFIG_HOME:-$HOME/.config}/cortex/config.toml`), creating the file and any parent
+/// directories as needed and preserving every other key already present. Returns the path written.
+///
+/// This is the durable seam for preferences set interactively (e.g. the TUI theme picker): the
+/// next [`load`] reads the value back from the global layer. The existing file is parsed, the
+/// single key is upserted, and the table is re-serialized, so unrelated keys survive untouched.
+///
+/// # Errors
+/// Returns [`ConfigError::NoConfigHome`] when no global config location can be resolved (neither
+/// `$XDG_CONFIG_HOME` nor `$HOME` set), [`ConfigError::Parse`] when the existing file holds invalid
+/// TOML, or [`ConfigError::Write`] when the file cannot be (re)written.
+pub fn persist_global_string(
+    inputs: &ConfigInputs,
+    key: &str,
+    value: &str,
+) -> Result<PathBuf, ConfigError> {
+    let path =
+        discovery::global_config_file(inputs.home.as_deref(), inputs.xdg_config_home.as_deref())
+            .ok_or(ConfigError::NoConfigHome)?;
+
+    let mut table = read_layer(&path)?.unwrap_or_default();
+    table.insert(key.to_owned(), Value::String(value.to_owned()));
+
+    let body = toml::to_string_pretty(&table)
+        .map_err(|error| ConfigError::write(&path, io::Error::other(error.to_string())))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ConfigError::write(&path, error))?;
+    }
+    std::fs::write(&path, body).map_err(|error| ConfigError::write(&path, error))?;
+    Ok(path)
+}
+
 /// Read each present config file as a raw, un-merged layer, in ascending precedence order
 /// (global, then project root, then nested directories closer to the CWD).
 ///
@@ -289,6 +322,10 @@ pub enum ConfigError {
     Read { path: PathBuf, source: io::Error },
     /// A config file contained invalid TOML.
     Parse { path: PathBuf, message: String },
+    /// A config file could not be written (e.g. by [`persist_global_string`]).
+    Write { path: PathBuf, source: io::Error },
+    /// No global config location could be resolved (neither `$XDG_CONFIG_HOME` nor `$HOME` set).
+    NoConfigHome,
     /// An `{env:NAME}` substitution referenced an environment variable that is not set.
     EnvMissing { key: String, var: String },
     /// A `{file:PATH}` substitution referenced a file that could not be read.
@@ -317,6 +354,13 @@ impl ConfigError {
         Self::Parse {
             path: path.to_path_buf(),
             message: source.to_string(),
+        }
+    }
+
+    fn write(path: &Path, source: io::Error) -> Self {
+        Self::Write {
+            path: path.to_path_buf(),
+            source,
         }
     }
 
@@ -353,8 +397,13 @@ impl ConfigError {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Read { path, .. } | Self::Parse { path, .. } => Some(path),
-            Self::EnvMissing { .. } | Self::FileRead { .. } | Self::TypeMismatch { .. } => None,
+            Self::Read { path, .. } | Self::Parse { path, .. } | Self::Write { path, .. } => {
+                Some(path)
+            }
+            Self::EnvMissing { .. }
+            | Self::FileRead { .. }
+            | Self::TypeMismatch { .. }
+            | Self::NoConfigHome => None,
         }
     }
 }
@@ -386,6 +435,19 @@ impl fmt::Display for ConfigError {
                     path.display()
                 )
             }
+            Self::Write { path, source } => {
+                write!(
+                    formatter,
+                    "failed to write config file {}: {source}",
+                    path.display()
+                )
+            }
+            Self::NoConfigHome => {
+                write!(
+                    formatter,
+                    "cannot locate a global config directory (set HOME or XDG_CONFIG_HOME)"
+                )
+            }
             Self::EnvMissing { key, var } => {
                 write!(
                     formatter,
@@ -415,8 +477,13 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Read { source, .. } | Self::FileRead { source, .. } => Some(source),
-            Self::Parse { .. } | Self::EnvMissing { .. } | Self::TypeMismatch { .. } => None,
+            Self::Read { source, .. }
+            | Self::FileRead { source, .. }
+            | Self::Write { source, .. } => Some(source),
+            Self::Parse { .. }
+            | Self::EnvMissing { .. }
+            | Self::TypeMismatch { .. }
+            | Self::NoConfigHome => None,
         }
     }
 }

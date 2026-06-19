@@ -58,6 +58,8 @@ pub fn launch() -> ExitCode {
 
 fn run() -> io::Result<()> {
     let mut app = App::new(initial_status());
+    // Honor a persisted theme choice so colors match the last selection across restarts.
+    app.set_theme(app::active_theme_name());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
