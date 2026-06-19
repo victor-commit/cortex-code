@@ -10,6 +10,7 @@ use llm::ToolDef;
 
 use crate::read::ReadTool;
 use crate::tool::{Tool, ToolContext, ToolOutput};
+use crate::write::WriteTool;
 
 /// An ordered set of callable tools.
 #[derive(Default)]
@@ -29,6 +30,7 @@ impl ToolRegistry {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(ReadTool));
+        registry.register(Box::new(WriteTool));
         registry
     }
 
@@ -99,11 +101,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_registry_advertises_read() {
+    fn builtin_registry_advertises_read_and_write() {
         let registry = ToolRegistry::builtin();
         let defs = registry.definitions();
         assert!(defs.iter().any(|def| def.name == "read"));
         assert!(registry.get("read").is_some());
+        assert!(defs.iter().any(|def| def.name == "write"));
+        assert!(registry.get("write").is_some());
     }
 
     #[tokio::test]

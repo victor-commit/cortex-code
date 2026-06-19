@@ -16,6 +16,58 @@ use futures_util::future::BoxFuture;
 use permissions::{PermissionEngine, request_for};
 use protocol::ToolResultPart;
 
+/// A diagnostic an LSP server reports for a file a mutating tool just wrote or edited.
+///
+/// The mutating tools re-inject these into their result so the model sees an error it introduced.
+/// `line` is 1-based; `severity` is a short label (e.g. `error`/`warning`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// The severity label (e.g. `error`, `warning`).
+    pub severity: String,
+    /// The 1-based line the diagnostic points at.
+    pub line: usize,
+    /// The human-readable diagnostic message.
+    pub message: String,
+}
+
+impl Diagnostic {
+    /// Build a diagnostic at `line` with `severity` and `message`.
+    #[must_use]
+    pub fn new(severity: impl Into<String>, line: usize, message: impl Into<String>) -> Self {
+        Self {
+            severity: severity.into(),
+            line,
+            message: message.into(),
+        }
+    }
+
+    /// Render the diagnostic as one stable, model-readable line (`severity at line N: message`).
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("{} at line {}: {}", self.severity, self.line, self.message)
+    }
+}
+
+/// The post-write/post-edit downstream seam: a formatter pass over the written file and the LSP
+/// diagnostics re-injected into the tool result.
+///
+/// The mutating tools (`write`, later `edit`) call these after a successful mutation. The
+/// implementation is owned outside `tools`: the `format` and `lsp` capability crates land in M4 and
+/// are bridged in then. Until then no hooks are attached, so [`format`](MutationHooks::format) is a
+/// no-op (the file is written verbatim) and [`diagnostics`](MutationHooks::diagnostics) returns
+/// none (a write with no LSP available succeeds unchanged with no error). The default method bodies
+/// make a partial implementation (formatter-only, or LSP-only) trivial.
+pub trait MutationHooks: Send + Sync {
+    /// Reformat the just-written `path` in place. The default leaves the file untouched.
+    fn format(&self, _path: &Path) {}
+
+    /// Diagnostics for the just-written `path` to re-inject into the tool result. The default
+    /// returns none (no LSP available is not an error).
+    fn diagnostics(&self, _path: &Path) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+}
+
 /// The structured result of running a tool.
 ///
 /// The parts are surfaced verbatim to machine consumers; [`model_content`](ToolOutput::model_content)
@@ -87,16 +139,19 @@ pub struct ToolContext {
     cwd: PathBuf,
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
+    hooks: Option<Arc<dyn MutationHooks>>,
 }
 
 impl ToolContext {
-    /// Build a context rooted at `cwd` with an empty read-tracking set and no permission gating.
+    /// Build a context rooted at `cwd` with an empty read-tracking set, no permission gating, and no
+    /// post-mutation hooks.
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
             cwd: cwd.into(),
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
+            hooks: None,
         }
     }
 
@@ -105,6 +160,32 @@ impl ToolContext {
     pub fn with_permissions(mut self, engine: Arc<PermissionEngine>) -> Self {
         self.permissions = Some(engine);
         self
+    }
+
+    /// Attach the post-mutation downstream hooks (formatter + LSP diagnostics) used after a write or
+    /// edit (builder style). With none attached the hooks are no-ops.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Run the post-write formatter over `path` (a resolved absolute path) through the attached
+    /// hooks. A no-op when no hooks are attached, so the file is left exactly as written.
+    pub fn format_after_write(&self, path: &Path) {
+        if let Some(hooks) = &self.hooks {
+            hooks.format(path);
+        }
+    }
+
+    /// Collect LSP diagnostics for `path` (a resolved absolute path) through the attached hooks.
+    /// Returns none when no hooks are attached (no LSP available is not an error).
+    #[must_use]
+    pub fn diagnostics_after_write(&self, path: &Path) -> Vec<Diagnostic> {
+        self.hooks
+            .as_ref()
+            .map(|hooks| hooks.diagnostics(path))
+            .unwrap_or_default()
     }
 
     /// The session working directory relative paths resolve against.

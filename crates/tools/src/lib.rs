@@ -14,7 +14,9 @@
 mod read;
 mod registry;
 mod tool;
+mod write;
 
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
-pub use tool::{Tool, ToolContext, ToolOutput};
+pub use tool::{Diagnostic, MutationHooks, Tool, ToolContext, ToolOutput};
+pub use write::WriteTool;
