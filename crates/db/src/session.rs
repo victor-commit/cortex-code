@@ -58,6 +58,48 @@ impl<'a> SessionRepo<'a> {
         Ok(session)
     }
 
+    /// Get a session by id, creating it with that exact id (and optional title) when it does not
+    /// yet exist, returning the persisted record.
+    ///
+    /// Unlike [`create`](Self::create), the caller supplies the id, so an arbitrary, externally
+    /// chosen identifier (e.g. a user-provided `--session` value) becomes a durable session that
+    /// can be resumed across process invocations. The insert is idempotent and race-tolerant
+    /// (`INSERT OR IGNORE`): two processes ensuring the same id converge on the same row rather
+    /// than one failing on a primary-key conflict, and an existing session is left untouched.
+    ///
+    /// Any title is scrubbed of API-key-shaped secrets before it is written, matching
+    /// [`create`](Self::create).
+    pub fn ensure(&self, id: &str, title: Option<&str>) -> DbResult<Session> {
+        let title = title.map(redaction::redact);
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, title, created_at, updated_at)
+             VALUES (?1, ?2, datetime('now'), datetime('now'))",
+            params![id, title],
+        )?;
+        self.require(id)
+    }
+
+    /// The most recently active session, or `None` when there are none.
+    ///
+    /// "Most recent" tracks the last activity rather than creation order: it is the session holding
+    /// the newest message (messages are appended with a monotonically increasing `rowid`), so a
+    /// `--continue` run attaches to the conversation most recently written to. Because the message
+    /// `rowid` is monotonic this is robust to the second-granular timestamps (two operations in the
+    /// same clock second still order correctly). Sessions with no messages fall back to creation
+    /// order (their own `rowid`), and sort behind any session that has activity.
+    pub fn most_recent(&self) -> DbResult<Option<Session>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM sessions AS s \
+             ORDER BY (SELECT MAX(rowid) FROM messages WHERE session_id = s.id) DESC, \
+             s.rowid DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query_map([], Session::from_row)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
     /// Fetch a session by id, or `None` if it does not exist.
     pub fn get(&self, id: &str) -> DbResult<Option<Session>> {
         let mut statement = self

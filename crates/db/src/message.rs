@@ -81,10 +81,15 @@ impl<'a> MessageRepo<'a> {
     }
 
     /// List the messages under a session in chronological order (oldest first).
+    ///
+    /// Ordering is by `created_at`, then by `rowid` so messages written within the same clock
+    /// second (timestamps are second-granular) are returned in true insertion order rather than by
+    /// the random hex id. This keeps a turn's `user` prompt ahead of its `assistant` reply when
+    /// projecting durable history back into a conversation.
     pub fn list_for_session(&self, session_id: &str) -> DbResult<Vec<Message>> {
         let mut statement = self.conn.prepare(
             "SELECT id, session_id, role, content, created_at FROM messages \
-             WHERE session_id = ?1 ORDER BY created_at ASC, id ASC",
+             WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = statement.query_map(params![session_id], Message::from_row)?;
         let mut messages = Vec::new();

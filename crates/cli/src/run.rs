@@ -24,7 +24,11 @@
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 
-use engine::{EnvironmentBlock, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn};
+use db::{Database, DbPathInputs};
+use engine::{
+    EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn,
+    project_history,
+};
 use errors::{Diagnostic, Exit};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
@@ -98,9 +102,33 @@ pub fn run(args: RunArgs) -> Exit {
         Err(diag) => return report_setup_diagnostic(&diag),
     };
 
+    // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
+    // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
+    // when none exists), or a brand-new session otherwise. The store is touched only after setup
+    // has succeeded, so a refused run (net-disabled, no-credential, bad model) leaves no session.
+    let db = match open_database() {
+        Ok(db) => db,
+        Err(exit) => return exit,
+    };
+    let session_id = match resolve_session(&db, session_selection(args.session, args.r#continue)) {
+        Ok(id) => id,
+        Err(exit) => return exit,
+    };
+
+    // Project the session's prior turns into canonical history BEFORE persisting this prompt, so
+    // the new user input is sent once (as the turn's input) and not duplicated into the history.
+    let history = match load_history(&db, &session_id) {
+        Ok(history) => history,
+        Err(exit) => return exit,
+    };
+    if let Err(err) = db.messages().create(&session_id, "user", &prompt) {
+        eprintln!("cortex run: failed to persist the prompt: {err}");
+        return Exit::Failure;
+    }
+
     let model_id = run_config.model.model_id;
     let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process()).render();
-    let turn = Turn::new(&model_id, system, prompt);
+    let turn = Turn::new(&model_id, system, prompt).with_history(history);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -113,7 +141,98 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    runtime.block_on(execute_turn(&provider, &model_id, turn, format))
+    runtime.block_on(execute_turn(
+        &provider,
+        &model_id,
+        &session_id,
+        &db,
+        turn,
+        format,
+    ))
+}
+
+/// How this run selects the session it belongs to.
+enum SessionSelection {
+    /// Start a fresh session with a store-generated id (no `--session`/`--continue`).
+    New,
+    /// Resume (or create on first use) the caller-supplied session id (`--session <id>`).
+    Explicit(String),
+    /// Attach to the most recent session, or start a fresh one when none exists (`--continue`).
+    Continue,
+}
+
+/// Map the mutually-exclusive `--session`/`--continue` flags to a [`SessionSelection`]. An explicit
+/// id wins; `--continue` attaches to the latest session; with neither a new session is created.
+fn session_selection(session: Option<String>, continue_latest: bool) -> SessionSelection {
+    match session {
+        Some(id) => SessionSelection::Explicit(id),
+        None if continue_latest => SessionSelection::Continue,
+        None => SessionSelection::New,
+    }
+}
+
+/// Open the durable session store at the resolved database path, mapping any failure to a clear
+/// stderr diagnostic and a non-zero exit (never a panic).
+fn open_database() -> Result<Database, Exit> {
+    let Some(path) = DbPathInputs::from_process().resolve() else {
+        eprintln!(
+            "cortex run: cannot determine a database location; set HOME, XDG_DATA_HOME, \
+             CORTEX_DATA_DIR, or CORTEX_DB_PATH"
+        );
+        return Err(Exit::Failure);
+    };
+    Database::open(&path).map_err(|err| {
+        eprintln!("cortex run: {err}");
+        Exit::Failure
+    })
+}
+
+/// Resolve the session id this run uses, creating or resuming durable state as the selection
+/// dictates. `--continue` on a store with no prior session deterministically starts a fresh one,
+/// so it terminates cleanly rather than erroring (VAL-RUN-010).
+fn resolve_session(db: &Database, selection: SessionSelection) -> Result<String, Exit> {
+    let resolved = match selection {
+        SessionSelection::New => db.sessions().create(None).map(|session| session.id),
+        SessionSelection::Explicit(id) => db.sessions().ensure(&id, None).map(|session| session.id),
+        SessionSelection::Continue => match db.sessions().most_recent() {
+            Ok(Some(session)) => Ok(session.id),
+            Ok(None) => db.sessions().create(None).map(|session| session.id),
+            Err(err) => Err(err),
+        },
+    };
+    resolved.map_err(|err| {
+        eprintln!("cortex run: {err}");
+        Exit::Failure
+    })
+}
+
+/// Load a session's stored turns and project them into canonical [`llm::Message`] history.
+fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Exit> {
+    match db.messages().list_for_session(session_id) {
+        Ok(messages) => {
+            let history: Vec<HistoryMessage> = messages
+                .into_iter()
+                .map(|message| HistoryMessage::new(message.role, message.content))
+                .collect();
+            Ok(project_history(&history))
+        }
+        Err(err) => {
+            eprintln!("cortex run: failed to load session history: {err}");
+            Err(Exit::Failure)
+        }
+    }
+}
+
+/// Persist the assistant's reply so a later run resuming the same session sees it. A persistence
+/// failure is reported on stderr but does not change the exit code: the answer has already been
+/// delivered to the user, so the run itself succeeded.
+fn persist_assistant(db: &Database, session_id: &str, outcome: &RunOutcome) {
+    if let Err(err) = db
+        .messages()
+        .create(session_id, "assistant", outcome.answer())
+    {
+        eprintln!("cortex run: failed to persist the assistant reply: {err}");
+    }
 }
 
 /// Report a setup-time provider diagnostic to stderr (keeping stdout byte-empty) and return its
@@ -138,23 +257,33 @@ fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {
     diag.exit()
 }
 
-/// Drive the turn through the runner and render its events in the requested format.
+/// Drive the turn through the runner, render its events in the requested format, and persist the
+/// assistant reply so the session can be resumed later. The session id is surfaced in the machine
+/// formats so it can be fed back via `--session`.
 async fn execute_turn(
     provider: &dyn llm::Provider,
     model_id: &str,
+    session_id: &str,
+    db: &Database,
     turn: Turn,
     format: OutputFormat,
 ) -> Exit {
     match format {
-        OutputFormat::Text => stream_text(provider, turn).await,
-        OutputFormat::Jsonl => stream_jsonl(provider, turn).await,
-        OutputFormat::Json => emit_json(provider, model_id, turn).await,
+        OutputFormat::Text => stream_text(provider, session_id, db, turn).await,
+        OutputFormat::Jsonl => stream_jsonl(provider, session_id, db, turn).await,
+        OutputFormat::Json => emit_json(provider, model_id, session_id, db, turn).await,
     }
 }
 
 /// Stream the assistant answer as clean prose, flushing each fragment as it arrives so output is
-/// incremental rather than a single end-of-turn dump.
-async fn stream_text(provider: &dyn llm::Provider, turn: Turn) -> Exit {
+/// incremental rather than a single end-of-turn dump. The session id is intentionally omitted from
+/// the human prose (it is available via the machine formats).
+async fn stream_text(
+    provider: &dyn llm::Provider,
+    session_id: &str,
+    db: &Database,
+    turn: Turn,
+) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let mut wrote_any = false;
@@ -187,13 +316,27 @@ async fn stream_text(provider: &dyn llm::Provider, turn: Turn) -> Exit {
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
     }
+    drop(handle);
+    persist_assistant(db, session_id, &outcome);
     Exit::Success
 }
 
-/// Stream the runner's normalized event vocabulary, one JSON object per line.
-async fn stream_jsonl(provider: &dyn llm::Provider, turn: Turn) -> Exit {
+/// Stream the runner's normalized event vocabulary, one JSON object per line. A leading `session`
+/// event announces the session id so a machine consumer can capture and reuse it via `--session`.
+async fn stream_jsonl(
+    provider: &dyn llm::Provider,
+    session_id: &str,
+    db: &Database,
+    turn: Turn,
+) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
+
+    if let Ok(line) = render_session_line(session_id) {
+        let _ = handle.write_all(line.as_bytes());
+        let _ = handle.write_all(b"\n");
+        let _ = handle.flush();
+    }
 
     let outcome = SessionRunner::default()
         .run(provider, turn, |event| {
@@ -210,6 +353,7 @@ async fn stream_jsonl(provider: &dyn llm::Provider, turn: Turn) -> Exit {
         eprintln!("cortex run: {err}");
         return err.exit();
     }
+    persist_assistant(db, session_id, &outcome);
     Exit::Success
 }
 
@@ -219,14 +363,31 @@ struct RunDocument<'a> {
     role: &'a str,
     content: &'a str,
     model: &'a str,
+    /// The stable, re-usable session id this turn ran under (feed back via `--session`).
+    session: &'a str,
     finish_reason: &'a llm::FinishReason,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<&'a llm::Usage>,
 }
 
+/// The leading `--jsonl` event announcing the session id, before the runner's own events.
+#[derive(Serialize)]
+struct SessionEvent<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    /// The stable, re-usable session id this turn ran under (feed back via `--session`).
+    session: &'a str,
+}
+
 /// Run the turn to completion, then emit a single strict JSON document on stdout. No partial
 /// document is written if the turn fails.
-async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> Exit {
+async fn emit_json(
+    provider: &dyn llm::Provider,
+    model_id: &str,
+    session_id: &str,
+    db: &Database,
+    turn: Turn,
+) -> Exit {
     let outcome = SessionRunner::default().run(provider, turn, |_| {}).await;
 
     if let Some(err) = &outcome.error {
@@ -234,7 +395,7 @@ async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> 
         return err.exit();
     }
 
-    let line = match render_json_document(model_id, &outcome) {
+    let line = match render_json_document(model_id, session_id, &outcome) {
         Ok(line) => line,
         Err(err) => {
             eprintln!("cortex run: failed to serialize output: {err}");
@@ -251,16 +412,23 @@ async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> 
     {
         return Exit::Failure;
     }
+    drop(handle);
+    persist_assistant(db, session_id, &outcome);
     Exit::Success
 }
 
-/// Build the single JSON document describing a completed turn (role, content, model, finish
-/// reason, and the optional usage object).
-fn build_run_document<'a>(model_id: &'a str, outcome: &'a RunOutcome) -> RunDocument<'a> {
+/// Build the single JSON document describing a completed turn (role, content, model, session id,
+/// finish reason, and the optional usage object).
+fn build_run_document<'a>(
+    model_id: &'a str,
+    session_id: &'a str,
+    outcome: &'a RunOutcome,
+) -> RunDocument<'a> {
     RunDocument {
         role: "assistant",
         content: outcome.answer(),
         model: model_id,
+        session: session_id,
         finish_reason: &outcome.finish_reason,
         usage: outcome.usage.as_ref(),
     }
@@ -268,10 +436,22 @@ fn build_run_document<'a>(model_id: &'a str, outcome: &'a RunOutcome) -> RunDocu
 
 /// Serialize the completed-turn document to a single line terminated by exactly one newline, so
 /// stdout carries one strict JSON value with no leading or trailing non-JSON bytes.
-fn render_json_document(model_id: &str, outcome: &RunOutcome) -> Result<String, serde_json::Error> {
-    let mut line = serde_json::to_string(&build_run_document(model_id, outcome))?;
+fn render_json_document(
+    model_id: &str,
+    session_id: &str,
+    outcome: &RunOutcome,
+) -> Result<String, serde_json::Error> {
+    let mut line = serde_json::to_string(&build_run_document(model_id, session_id, outcome))?;
     line.push('\n');
     Ok(line)
+}
+
+/// Render the leading `--jsonl` session event (without the trailing newline).
+fn render_session_line(session_id: &str) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&SessionEvent {
+        kind: "session",
+        session: session_id,
+    })
 }
 
 /// Render one normalized runner event as a single JSONL line (without the trailing newline). Every
@@ -861,8 +1041,8 @@ mod tests {
     // newline and no other framing bytes, so a strict parser accepts it whole.
     #[test]
     fn json_document_is_a_single_strict_value_with_one_trailing_newline() {
-        let rendered =
-            render_json_document("google/gemini-2.5-flash", &sample_outcome()).expect("render");
+        let rendered = render_json_document("google/gemini-2.5-flash", "ses_x", &sample_outcome())
+            .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
         assert_eq!(
             rendered.matches('\n').count(),
@@ -874,16 +1054,22 @@ mod tests {
         assert!(value.is_object(), "the document is a single JSON object");
     }
 
-    // VAL-LLM-004 / VAL-LLM-006: the document carries the assistant role, the model text as
-    // content, the model id, and a usage object with integer input/output token counts.
+    // VAL-LLM-004 / VAL-LLM-006 / VAL-LLM-018: the document carries the assistant role, the model
+    // text as content, the model id, the re-usable session id, and a usage object with integer
+    // input/output token counts.
     #[test]
-    fn json_document_carries_assistant_role_content_model_and_integer_usage() {
+    fn json_document_carries_assistant_role_content_model_session_and_integer_usage() {
         let rendered =
-            render_json_document("google/gemini-2.5-flash", &sample_outcome()).expect("render");
+            render_json_document("google/gemini-2.5-flash", "ses_abc123", &sample_outcome())
+                .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
         assert_eq!(value["model"], "google/gemini-2.5-flash");
+        assert_eq!(
+            value["session"], "ses_abc123",
+            "the document surfaces the re-usable session id"
+        );
         assert_eq!(value["finish_reason"], "stop");
         assert_eq!(value["usage"]["input_tokens"].as_u64(), Some(9));
         assert_eq!(value["usage"]["output_tokens"].as_u64(), Some(8));
@@ -894,16 +1080,50 @@ mod tests {
     }
 
     // The usage object is optional: when the provider reports none, it is omitted yet the document
-    // stays a valid, strictly-parseable JSON object with the assistant role and content.
+    // stays a valid, strictly-parseable JSON object with the assistant role, content, and session.
     #[test]
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered = render_json_document("m", &outcome).expect("render");
+        let rendered = render_json_document("m", "ses_y", &outcome).expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
+        assert_eq!(value["session"], "ses_y");
         assert!(value.get("usage").is_none(), "absent usage is omitted");
+    }
+
+    // The leading `--jsonl` session event is a typed, independently-parseable object carrying the
+    // re-usable session id, so a machine consumer can capture it before the runner's events stream.
+    #[test]
+    fn jsonl_session_line_is_typed_and_carries_the_session_id() {
+        let line = render_session_line("ses_seed42").expect("render");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(value["type"], "session");
+        assert_eq!(value["session"], "ses_seed42");
+    }
+
+    // `session_selection` maps the mutually-exclusive flags: an explicit id wins, `--continue`
+    // attaches to the latest, and neither yields a fresh session.
+    #[test]
+    fn session_selection_maps_flags() {
+        assert!(matches!(
+            session_selection(Some("val-1".to_owned()), false),
+            SessionSelection::Explicit(id) if id == "val-1"
+        ));
+        // An explicit id wins even if `--continue` were somehow also set (clap forbids this).
+        assert!(matches!(
+            session_selection(Some("val-2".to_owned()), true),
+            SessionSelection::Explicit(id) if id == "val-2"
+        ));
+        assert!(matches!(
+            session_selection(None, true),
+            SessionSelection::Continue
+        ));
+        assert!(matches!(
+            session_selection(None, false),
+            SessionSelection::New
+        ));
     }
 
     // VAL-LLM-007 / VAL-LLM-008: the JSONL stream renders >=2 independently-parseable lines, each

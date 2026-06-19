@@ -176,6 +176,101 @@ fn junk_file_is_classified_as_not_a_database() {
     assert!(err.to_string().contains("not a valid SQLite database"));
 }
 
+// `ensure` creates a session under a caller-supplied id and is idempotent: a second ensure with
+// the same id returns the same row (no duplicate, no primary-key error), so an external id like a
+// `--session` value durably resumes across invocations.
+#[test]
+fn ensure_creates_then_resumes_an_explicit_id() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let explicit = "val-1234-explicit-id";
+    {
+        let db = Database::open(&db_path).expect("open db (A)");
+        let created = db.sessions().ensure(explicit, None).expect("ensure create");
+        assert_eq!(created.id, explicit, "the supplied id is used verbatim");
+        db.messages()
+            .create(explicit, "user", "remember marmalade")
+            .expect("store message under the ensured session");
+    }
+
+    let db = Database::open(&db_path).expect("open db (B)");
+    let resumed = db.sessions().ensure(explicit, None).expect("ensure resume");
+    assert_eq!(resumed.id, explicit);
+    assert_eq!(
+        resumed.created_at, // unchanged: the existing row is reused, not recreated
+        db.sessions().require(explicit).expect("require").created_at
+    );
+    let messages = db.messages().list_for_session(explicit).expect("list");
+    assert_eq!(
+        messages.len(),
+        1,
+        "ensuring an existing id must not wipe its messages"
+    );
+    assert_eq!(messages[0].content, "remember marmalade");
+
+    let sessions = db.sessions().list().expect("list sessions");
+    assert_eq!(
+        sessions.iter().filter(|s| s.id == explicit).count(),
+        1,
+        "ensure is idempotent: exactly one row for the id"
+    );
+}
+
+// `most_recent` returns the session with the latest activity (advanced by appending a message),
+// which is what a `--continue` run attaches to; an empty database yields `None`.
+#[test]
+fn most_recent_tracks_the_latest_active_session() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+    let db = Database::open(&db_path).expect("open db");
+
+    assert!(
+        db.sessions().most_recent().expect("most_recent").is_none(),
+        "an empty database has no most-recent session"
+    );
+
+    let first = db.sessions().create(Some("first")).expect("create first");
+    let second = db.sessions().create(Some("second")).expect("create second");
+
+    // Appending to `first` makes it the most recently active session even though `second` was
+    // created later, proving activity (not creation) drives the ordering.
+    db.messages()
+        .create(&first.id, "user", "later activity on the first session")
+        .expect("append to first");
+
+    let recent = db
+        .sessions()
+        .most_recent()
+        .expect("most_recent")
+        .expect("a session exists");
+    assert_eq!(
+        recent.id, first.id,
+        "the most recently written-to session wins, got {recent:?} (second was {second:?})"
+    );
+}
+
+// Messages written within the same clock second are returned in true insertion order (user before
+// assistant), not by the random hex id, so projected history stays coherent.
+#[test]
+fn messages_in_one_turn_keep_insertion_order() {
+    let db = Database::open_in_memory().expect("memory db");
+    let session = db.sessions().create(None).expect("create");
+
+    // Both inserts land in the same second; only a rowid (insertion) tiebreak keeps them ordered.
+    db.messages()
+        .create(&session.id, "user", "Remember the word: marmalade.")
+        .expect("user message");
+    db.messages()
+        .create(&session.id, "assistant", "Acknowledged.")
+        .expect("assistant message");
+
+    let messages = db.messages().list_for_session(&session.id).expect("list");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].role, "user", "the user turn must come first");
+    assert_eq!(messages[1].role, "assistant", "the reply must come second");
+}
+
 // VAL-SKEL-042 (unwritable path): a path whose parent is a file cannot be created → Open error.
 #[test]
 fn unwritable_path_yields_open_error() {

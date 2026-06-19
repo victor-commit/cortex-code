@@ -225,6 +225,58 @@ fn net_disabled_is_checked_before_the_credential() {
     );
 }
 
+// VAL-RUN-010 (no-panic portion, offline): `--continue` on a fresh HOME/data dir terminates
+// deterministically without a panic/backtrace. Without a credential the run fails fast at provider
+// setup (before any session/DB work), proving the `--continue` flag is wired and never panics or
+// hangs; the live test proves the fresh-session-and-answer path with a real key.
+#[test]
+fn continue_on_fresh_dir_terminates_cleanly_without_a_credential() {
+    let out = run(cmd(&["run", "--continue", "Say hi"]), None);
+
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "without a credential the run must fail, not answer"
+    );
+    assert_ne!(
+        out.status.code(),
+        None,
+        "the process must exit (no signal/hang) on a fresh-dir --continue"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "no answer may be written, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("RUST_BACKTRACE"),
+        "a fresh-dir --continue must never panic, got: {stderr}"
+    );
+}
+
+// `--session <id>` likewise reaches the (refused) network path without panicking, proving the flag
+// is accepted and wired. The net kill-switch makes the outcome deterministic and key-free.
+#[test]
+fn explicit_session_flag_is_wired_without_panic() {
+    let mut command = cmd(&["run", "--session", "val-deterministic-id", "hi"]);
+    command.env("CORTEX_NO_NET", "1");
+
+    let out = run(command, None);
+
+    assert_eq!(
+        out.status.code(),
+        Some(NET_DISABLED_CODE),
+        "the kill-switch refuses before any socket, even with --session"
+    );
+    assert!(out.stdout.is_empty(), "a refusal keeps stdout byte-empty");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("RUST_BACKTRACE"),
+        "--session must never panic, got: {stderr}"
+    );
+}
+
 // VAL-SKEL-067 (preserved): with BOTH an argument and piped stdin, a single documented source
 // wins (the argument) with no blend and no hang. Observed via the net-disabled refusal, which
 // proves the prompt was resolved (the command reached the network path) without reading/blocking
