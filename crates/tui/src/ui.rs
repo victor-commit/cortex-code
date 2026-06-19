@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
+use tui_components::toast::ToastLevel;
 
 use crate::app::{App, AssistantTurn, Dialog, DialogKind, Entry, UsageSummary};
 use crate::diff::FileDiff;
@@ -33,6 +34,9 @@ const TOOL_CARD_WIDTH: usize = 76;
 
 /// Width (in columns) of the session sidebar panel when shown.
 const SIDEBAR_WIDTH: u16 = 30;
+
+/// Maximum number of toasts drawn at once in the overlay (matches the app's retention cap).
+const MAX_VISIBLE_TOASTS: usize = 4;
 
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -77,6 +81,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_palette(frame, app, area);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
     draw_which_key(frame, app, area);
+    // Transient toast notifications float above everything else (top-right) so they remain visible
+    // over any open dialog/overlay, and auto-dismiss without disturbing the layout beneath them.
+    draw_toasts(frame, app, area);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -1057,6 +1064,124 @@ fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect) {
     ));
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The fg color and human label for a toast level. Error toasts use the error color (a distinct red)
+/// so an error notification is unmistakable from a success/info one; the level is also encoded in the
+/// ASCII icon and the label text, so the distinction survives a monochrome snapshot.
+fn toast_decor(level: ToastLevel) -> (Color, &'static str) {
+    match level {
+        ToastLevel::Success => (style::SUCCESS, "Success"),
+        ToastLevel::Info => (style::INFO, "Info"),
+        ToastLevel::Warning => (style::WARNING, "Warning"),
+        ToastLevel::Error => (style::ERROR, "Error"),
+    }
+}
+
+/// Pad with trailing spaces (or truncate) so the string occupies exactly `width` columns. Used so a
+/// toast row paints a solid, fixed-width band regardless of message length.
+fn pad_or_truncate(text: &str, width: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() >= width {
+        chars[..width].iter().collect()
+    } else {
+        let mut out: String = chars.iter().collect();
+        out.extend(std::iter::repeat_n(' ', width - chars.len()));
+        out
+    }
+}
+
+/// Render a depleting progress bar `width` columns wide for the given remaining fraction (1.0 = full,
+/// 0.0 = empty), using eighth-block glyphs for sub-cell resolution so the bar visibly shrinks every
+/// frame. The continuous change is also what keeps the toast "busy" until it auto-dismisses, so a
+/// `wait-idle` observer settles exactly when the toast disappears rather than while it is still shown.
+fn toast_bar(fraction: f32, width: usize) -> String {
+    const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+    let fraction = fraction.clamp(0.0, 1.0);
+    let total = (fraction * width as f32 * 8.0).round() as usize;
+    let full = (total / 8).min(width);
+    let mut out = String::with_capacity(width);
+    for _ in 0..full {
+        out.push('█');
+    }
+    if full < width {
+        out.push(EIGHTHS[total % 8]);
+        for _ in (full + 1)..width {
+            out.push(' ');
+        }
+    }
+    out
+}
+
+/// Render the active toasts as an auto-dismissing overlay stacked at the top-right corner. Each toast
+/// is a two-row band — a colored header (`[icon] Level: message`) over a depleting progress bar — so
+/// it reads clearly as a transient notification, with error toasts styled distinctly (error color +
+/// `[x]` icon + `Error` label). Drawn with `Clear` over the underlying cells, so once a toast expires
+/// the layout beneath is repainted intact.
+fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
+    let toasts = app.toasts();
+    if toasts.is_empty() || area.width < 18 || area.height < 4 {
+        return;
+    }
+
+    let theme = style::ThemeColors::from_name(app.theme());
+    let bg = theme.surface[2];
+    let max_width = ((area.width as usize) * 2 / 5)
+        .clamp(24, 54)
+        .min(area.width.saturating_sub(2) as usize);
+
+    let mut y = area.y;
+    for toast in toasts.iter().take(MAX_VISIBLE_TOASTS) {
+        // Two content rows plus a one-row gap; stop before overrunning the frame.
+        if y + 2 > area.y + area.height {
+            break;
+        }
+
+        let (color, label) = toast_decor(toast.level);
+        let header_text = format!(" {} {label}: {} ", toast.level.icon(), toast.message);
+        let width = header_text.chars().count().clamp(12, max_width);
+        let header = pad_or_truncate(&header_text, width);
+
+        let duration = toast.duration.as_millis().max(1) as f32;
+        let remaining = toast.remaining().as_millis() as f32;
+        let bar = toast_bar(remaining / duration, width);
+
+        let x = area.x + area.width.saturating_sub(width as u16 + 1);
+        let header_area = Rect {
+            x,
+            y,
+            width: width as u16,
+            height: 1,
+        };
+        let bar_area = Rect {
+            x,
+            y: y + 1,
+            width: width as u16,
+            height: 1,
+        };
+
+        frame.render_widget(Clear, header_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                header,
+                Style::default()
+                    .fg(color)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            header_area,
+        );
+        frame.render_widget(Clear, bar_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                bar,
+                Style::default().fg(color).bg(bg),
+            ))),
+            bar_area,
+        );
+
+        y += 3;
+    }
 }
 
 /// Build a modal dialog's item rows: each selectable item with a `▸` marker and bold name on the

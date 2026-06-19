@@ -9,11 +9,12 @@ use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
+use tui_components::toast::{Toast, ToastLevel};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
@@ -26,6 +27,15 @@ use crate::turn::TurnMessage;
 /// The cap on the number of files surfaced in the `@`-mention picker at once, so a broad query (or a
 /// bare `@`) cannot build an unbounded row list; the popup scrolls within this set.
 const MENTION_MATCH_LIMIT: usize = 200;
+
+/// How long a transient toast stays on screen before it auto-dismisses. Short enough to read as a
+/// momentary notification, long enough to be seen; the same window is used for every level so the
+/// auto-dismiss timing is predictable.
+const TOAST_DURATION: Duration = Duration::from_millis(2500);
+
+/// The most toasts kept at once; older toasts are dropped so a burst of notifications cannot grow
+/// without bound (and the overlay never overruns the screen).
+const MAX_TOASTS: usize = 4;
 
 /// Status line contents reported in the footer.
 #[derive(Debug, Clone)]
@@ -318,6 +328,10 @@ pub struct App {
     ack: Option<String>,
     /// Text staged for a real terminal-clipboard copy (OSC 52), consumed once by the event loop.
     copy_request: Option<String>,
+    /// Active transient toast notifications (oldest first), rendered as an auto-dismissing overlay.
+    /// Error-level toasts render with distinct error styling; entries are removed once their display
+    /// window elapses (see [`App::tick_toasts`]).
+    toasts: Vec<Toast>,
 }
 
 impl App {
@@ -358,6 +372,7 @@ impl App {
             selected_message: None,
             ack: None,
             copy_request: None,
+            toasts: Vec::new(),
         }
     }
 
@@ -444,6 +459,37 @@ impl App {
     #[must_use]
     pub fn take_copy_request(&mut self) -> Option<String> {
         self.copy_request.take()
+    }
+
+    /// Surface a transient toast notification. The toast appears as an auto-dismissing overlay and
+    /// is removed on a timer (see [`App::tick_toasts`]); error-level toasts render with distinct
+    /// error styling. A burst is bounded to [`MAX_TOASTS`] by dropping the oldest toasts.
+    fn push_toast(&mut self, level: ToastLevel, message: impl Into<String>) {
+        self.toasts
+            .push(Toast::new(level, message).with_duration(TOAST_DURATION));
+        let overflow = self.toasts.len().saturating_sub(MAX_TOASTS);
+        if overflow > 0 {
+            self.toasts.drain(0..overflow);
+        }
+    }
+
+    /// Drop any toasts whose display window has elapsed. Driven by the event loop so toasts
+    /// auto-dismiss on a timer regardless of whether the user is interacting.
+    pub fn tick_toasts(&mut self) {
+        self.toasts.retain(|toast| !toast.is_expired());
+    }
+
+    /// The active transient toasts (oldest first), for rendering the overlay.
+    #[must_use]
+    pub fn toasts(&self) -> &[Toast] {
+        &self.toasts
+    }
+
+    /// Whether any toast is currently displayed (so the event loop can tick more frequently while
+    /// one is on screen, keeping the auto-dismiss prompt and the depletion animation smooth).
+    #[must_use]
+    pub fn has_toasts(&self) -> bool {
+        !self.toasts.is_empty()
     }
 
     /// Whether a turn is currently streaming (the busy/spinner indicator is shown).
@@ -628,6 +674,7 @@ impl App {
                 self.transcript.pop();
             }
         }
+        self.push_toast(ToastLevel::Error, message.clone());
         self.transcript.push(Entry::Error(message));
         self.turn_errored = true;
     }
@@ -1158,6 +1205,7 @@ impl App {
             Err(_) => format!("Local share reference created: {url}  ·  id {id}"),
         };
         self.transcript.push(Entry::Notice(notice));
+        self.push_toast(ToastLevel::Success, "Share link created");
     }
 
     /// Open a modal dialog, replacing any currently-open one and closing the slash menu.
@@ -1538,8 +1586,10 @@ impl App {
         self.input.set_value(value);
     }
 
-    /// Surface a transient error in the transcript (used when the external editor fails).
+    /// Surface a transient error in the transcript and as a distinct error toast (used when the
+    /// external editor fails, a session action fails, or `/export` cannot write).
     pub fn note_error(&mut self, message: String) {
+        self.push_toast(ToastLevel::Error, message.clone());
         self.transcript.push(Entry::Error(message));
     }
 
@@ -1772,11 +1822,11 @@ impl App {
             .selected_message
             .or_else(|| self.transcript.len().checked_sub(1));
         let Some(idx) = idx else {
-            self.ack = Some("Nothing to copy yet.".to_owned());
+            self.push_toast(ToastLevel::Error, "Nothing to copy yet.");
             return;
         };
         let Some(entry) = self.transcript.get(idx) else {
-            self.ack = Some("Nothing to copy yet.".to_owned());
+            self.push_toast(ToastLevel::Error, "Nothing to copy yet.");
             return;
         };
         let text = entry_copy_text(entry);
@@ -1823,13 +1873,14 @@ impl App {
     fn export_session(&mut self) {
         let markdown = self.render_session_markdown();
         match write_export(&markdown) {
-            Ok(path) => self.transcript.push(Entry::Notice(format!(
-                "Exported session to {}",
-                path.display()
-            ))),
-            Err(err) => self
-                .transcript
-                .push(Entry::Error(format!("Export failed: {err}"))),
+            Ok(path) => {
+                self.transcript.push(Entry::Notice(format!(
+                    "Exported session to {}",
+                    path.display()
+                )));
+                self.push_toast(ToastLevel::Success, "Session exported");
+            }
+            Err(err) => self.note_error(format!("Export failed: {err}")),
         }
     }
 
@@ -4365,14 +4416,78 @@ mod tests {
     fn copy_with_empty_transcript_is_graceful() {
         let mut a = app();
         a.on_key(key_mod(KeyCode::Char('y'), KeyModifiers::CONTROL));
-        assert!(
-            a.ack().is_some(),
-            "an acknowledgement explains there is nothing to copy"
+        let toast = a
+            .toasts()
+            .last()
+            .expect("a toast explains there is nothing to copy");
+        assert_eq!(
+            toast.level,
+            ToastLevel::Error,
+            "nothing-to-copy is surfaced as a distinct error toast"
         );
         assert!(
             a.take_copy_request().is_none(),
             "nothing is staged for the clipboard"
         );
+    }
+
+    #[test]
+    fn share_surfaces_a_transient_toast() {
+        // VAL-TUI-082: a notifying action (here `/share`) surfaces a transient toast.
+        let mut a = app();
+        dispatch(&mut a, "share");
+        assert!(a.has_toasts(), "the share notification surfaces as a toast");
+        assert_eq!(
+            a.toasts().last().unwrap().level,
+            ToastLevel::Success,
+            "a successful action shows a success-level toast"
+        );
+    }
+
+    #[test]
+    fn error_toast_uses_error_level() {
+        // VAL-TUI-084: an error notification is distinctly an error-level toast (rendered with the
+        // error color/icon/label), separate from a success toast.
+        let mut a = app();
+        a.note_error("boom".to_owned());
+        let toast = a.toasts().last().expect("an error toast is queued");
+        assert_eq!(toast.level, ToastLevel::Error, "error styling is distinct");
+        assert_eq!(toast.message, "boom");
+        // The success path is a different level, so the two are visually distinguishable.
+        a.push_toast(ToastLevel::Success, "ok");
+        assert_eq!(a.toasts().last().unwrap().level, ToastLevel::Success);
+    }
+
+    #[test]
+    fn toasts_auto_dismiss_when_expired() {
+        // VAL-TUI-083: a toast auto-dismisses after its window elapses, leaving no residue.
+        let mut a = app();
+        a.push_toast(ToastLevel::Info, "hello");
+        assert!(a.has_toasts(), "the toast is shown right after the action");
+        // Force the toast past its lifetime, then tick: it should be reaped.
+        for toast in &mut a.toasts {
+            toast.duration = Duration::from_millis(0);
+        }
+        a.tick_toasts();
+        assert!(
+            !a.has_toasts(),
+            "an expired toast is removed so it does not stick permanently"
+        );
+    }
+
+    #[test]
+    fn toast_queue_is_bounded() {
+        let mut a = app();
+        for i in 0..(MAX_TOASTS + 3) {
+            a.push_toast(ToastLevel::Info, format!("toast {i}"));
+        }
+        assert_eq!(
+            a.toasts().len(),
+            MAX_TOASTS,
+            "a burst of notifications is bounded to the retention cap"
+        );
+        // The oldest are dropped, so the newest survive.
+        assert_eq!(a.toasts().last().unwrap().message, "toast 6");
     }
 
     #[test]

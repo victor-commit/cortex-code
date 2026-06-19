@@ -145,8 +145,10 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         }
 
         // Poll for input with a short timeout while a turn streams (so the spinner animates and
-        // deltas are applied promptly) and a longer one when idle (so the loop stays cheap).
-        let timeout = if app.is_busy() {
+        // deltas are applied promptly) or while a toast is on screen (so it auto-dismisses on time
+        // and its depletion animation stays smooth), and a longer one when idle (so the loop stays
+        // cheap).
+        let timeout = if app.is_busy() || app.has_toasts() {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(200)
@@ -179,6 +181,9 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
 
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
+
+        // Expire any toasts whose display window has elapsed so they auto-dismiss on a timer.
+        app.tick_toasts();
 
         if app.should_quit {
             break;
