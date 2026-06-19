@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
@@ -15,6 +15,9 @@ use tui_components::style;
 use crate::app::{App, AssistantTurn, Entry, UsageSummary};
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
+
+/// Maximum number of slash-command rows shown before the menu scrolls.
+const MAX_SLASH_ROWS: usize = 10;
 
 /// Maximum number of visible prompt text rows before the box stops growing.
 const MAX_PROMPT_ROWS: usize = 8;
@@ -40,6 +43,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_transcript(frame, app, chunks[0]);
     draw_prompt(frame, app, chunks[1]);
     draw_footer(frame, app, chunks[2]);
+    // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
+    draw_slash_menu(frame, app, chunks[1]);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -86,6 +91,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     app.spinner_glyph(),
                 );
             }
+            Entry::Notice(message) => push_notice(&mut lines, message, width),
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
     }
@@ -275,6 +281,23 @@ fn push_tool(
     lines.push(Line::from(""));
 }
 
+/// Append a system notice (e.g. a dispatched slash command or an unknown-command message) as a
+/// distinct, muted line set apart from chat content.
+fn push_notice(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
+    let style = Style::default().fg(style::INFO);
+    let body: Vec<String> = wrap(message, width.saturating_sub(2).max(1));
+    let mut first = true;
+    for wrapped in body {
+        let marker = if first { "▸ " } else { "  " };
+        first = false;
+        lines.push(Line::from(vec![
+            Span::styled(marker, style),
+            Span::styled(wrapped, style),
+        ]));
+    }
+    lines.push(Line::from(""));
+}
+
 /// Append a turn-level error as a distinct, red-styled block.
 fn push_error(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
     let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
@@ -402,6 +425,93 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         let cy = inner.y + (cursor.row as u16).min(inner.height - 1);
         frame.set_cursor_position((cx, cy));
     }
+}
+
+/// Build the slash-command menu's rows for the current query, or `None` when the menu is closed.
+/// Each row shows `/name  description`; the highlighted row carries a `▸` marker and bold name.
+/// A non-empty query that matches nothing yields a single graceful "no matching commands" row.
+fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+    let _ = app.slash_query()?;
+    let matches = app.slash_matches();
+    if matches.is_empty() {
+        return Some(vec![Line::from(Span::styled(
+            "  no matching commands",
+            Style::default()
+                .fg(style::TEXT_DIM)
+                .add_modifier(Modifier::ITALIC),
+        ))]);
+    }
+
+    let selected = app.slash_selected();
+    let mut lines = Vec::with_capacity(matches.len());
+    for (i, command) in matches.iter().enumerate() {
+        let is_selected = i == selected;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let name_style = if is_selected {
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(style::TEXT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(format!("/{}", command.name), name_style),
+            Span::raw("  "),
+            Span::styled(
+                command.description.to_owned(),
+                Style::default().fg(style::TEXT_DIM),
+            ),
+        ]));
+    }
+    Some(lines)
+}
+
+/// Render the slash-command autocomplete menu as a bordered popup floating directly above the
+/// prompt box. The view scrolls to keep the highlighted row visible when the match list is long.
+fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
+    let Some(rows) = slash_menu_lines(app) else {
+        return;
+    };
+    if prompt_area.width == 0 {
+        return;
+    }
+
+    // Keep the highlighted row inside the visible window.
+    let selected = app.slash_selected();
+    let visible = rows.len().min(MAX_SLASH_ROWS);
+    let offset = if selected < visible {
+        0
+    } else {
+        selected + 1 - visible
+    };
+    let shown: Vec<Line<'static>> = rows[offset..offset + visible].to_vec();
+
+    let height = (visible as u16).saturating_add(2);
+    let width = prompt_area.width;
+    let y = prompt_area.y.saturating_sub(height);
+    let popup = Rect {
+        x: prompt_area.x,
+        y,
+        width,
+        height: height.min(prompt_area.y.saturating_sub(y).max(height)),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(" / commands ")
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(shown), inner);
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -778,6 +888,61 @@ mod tests {
             failed_border, ok_border,
             "failed and completed cards are colored distinctly"
         );
+    }
+
+    #[test]
+    fn slash_menu_lists_builtins_when_just_slash_typed() {
+        // VAL-TUI-028: the open menu lists recognizable built-ins.
+        let mut a = app();
+        a.input.set_value("/");
+        let lines = slash_menu_lines(&a).expect("menu open");
+        let text = rendered(&lines);
+        assert!(text.contains("/help"), "help listed:\n{text}");
+        assert!(text.contains("/new"), "new listed:\n{text}");
+        assert!(text.contains("/models"), "models listed:\n{text}");
+    }
+
+    #[test]
+    fn slash_menu_filters_and_highlights_the_match() {
+        // VAL-TUI-029 / VAL-TUI-030: "/mod" narrows to /models, and the top match is highlighted.
+        let mut a = app();
+        a.input.set_value("/mod");
+        let lines = slash_menu_lines(&a).expect("menu open");
+        let text = rendered(&lines);
+        assert!(text.contains("/models"), "models present:\n{text}");
+        assert!(!text.contains("/help"), "help filtered out:\n{text}");
+        // The highlighted row carries the selection marker.
+        assert!(text.contains("▸"), "selection marker shown:\n{text}");
+    }
+
+    #[test]
+    fn slash_menu_shows_a_graceful_no_match_row() {
+        // VAL-TUI-048: an unknown command renders a clear no-match state, not an empty/absent menu.
+        let mut a = app();
+        a.input.set_value("/zzznotreal");
+        let lines = slash_menu_lines(&a).expect("menu open even with no matches");
+        let text = rendered(&lines);
+        assert!(
+            text.contains("no matching commands"),
+            "no-match row:\n{text}"
+        );
+    }
+
+    #[test]
+    fn slash_menu_is_closed_for_plain_text() {
+        let mut a = app();
+        a.input.set_value("hello world");
+        assert!(slash_menu_lines(&a).is_none(), "no menu for a chat message");
+    }
+
+    #[test]
+    fn notice_entry_renders_distinctly() {
+        let mut a = app();
+        a.transcript
+            .push(Entry::Notice("/models — Open the model picker".to_owned()));
+        let text = rendered(&transcript_lines(&a, 80));
+        assert!(text.contains("/models"), "notice text shown:\n{text}");
+        assert!(text.contains("▸"), "notice marker shown:\n{text}");
     }
 
     #[test]

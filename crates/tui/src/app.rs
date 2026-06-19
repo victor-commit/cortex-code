@@ -12,6 +12,7 @@ use engine::RunnerEvent;
 use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
+use crate::slash;
 use crate::tool_card::ToolCard;
 use crate::turn::TurnMessage;
 
@@ -50,6 +51,9 @@ pub enum Entry {
     Diff(crate::diff::FileDiff),
     /// An agent tool call rendered as a labeled card (running → completed/failed, expandable).
     Tool(ToolCard),
+    /// A system notice (e.g. a dispatched slash command's acknowledgment, or an
+    /// unknown-command message) shown distinctly from chat content.
+    Notice(String),
     /// A turn-level error surfaced to the user.
     Error(String),
 }
@@ -107,6 +111,9 @@ pub struct App {
     /// Whether tool cards are expanded to reveal their full arguments and output. Toggled by the
     /// expand/collapse keybind; applies to every tool card so the detail view is unambiguous.
     pub expand_tools: bool,
+    /// Highlighted row in the open slash-command menu (index into the filtered matches). Reset to
+    /// the top whenever the typed query changes; only meaningful while the menu is open.
+    slash_selected: usize,
     /// Canonical prior-turn messages projected into each new turn for conversational context.
     history: Vec<Message>,
 }
@@ -126,6 +133,7 @@ impl App {
             turn_prompt: None,
             turn_errored: false,
             expand_tools: false,
+            slash_selected: 0,
             history: Vec::new(),
         }
     }
@@ -341,6 +349,103 @@ impl App {
         self.input.cursor_position()
     }
 
+    /// The slash-command query currently being typed, or `None` when the prompt is not a
+    /// single-token slash command.
+    ///
+    /// The menu is active only when the whole prompt starts with `/` and contains no whitespace
+    /// (so `/`, `/mod` are queries while `hello`, `/foo bar`, or a `/` mid-line are not). The query
+    /// is the text after the leading `/` (empty for a bare `/`).
+    #[must_use]
+    pub fn slash_query(&self) -> Option<String> {
+        let value = self.input.value();
+        let rest = value.strip_prefix('/')?;
+        if rest.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(rest.to_owned())
+    }
+
+    /// Whether the slash-command autocomplete menu is currently open.
+    #[must_use]
+    pub fn slash_menu_open(&self) -> bool {
+        self.slash_query().is_some()
+    }
+
+    /// The commands matching the current query, in highlight order. Empty when the menu is closed
+    /// or nothing matches.
+    #[must_use]
+    pub fn slash_matches(&self) -> Vec<&'static slash::SlashCommand> {
+        match self.slash_query() {
+            Some(query) => slash::filter(&query),
+            None => Vec::new(),
+        }
+    }
+
+    /// The highlighted match index, clamped to the current match count.
+    #[must_use]
+    pub fn slash_selected(&self) -> usize {
+        let len = self.slash_matches().len();
+        if len == 0 {
+            0
+        } else {
+            self.slash_selected.min(len - 1)
+        }
+    }
+
+    /// Move the highlight to the next match (wrapping at the end).
+    fn slash_select_next(&mut self) {
+        let len = self.slash_matches().len();
+        if len == 0 {
+            return;
+        }
+        self.slash_selected = (self.slash_selected() + 1) % len;
+    }
+
+    /// Move the highlight to the previous match (wrapping at the start).
+    fn slash_select_prev(&mut self) {
+        let len = self.slash_matches().len();
+        if len == 0 {
+            return;
+        }
+        self.slash_selected = (self.slash_selected() + len - 1) % len;
+    }
+
+    /// Close the slash menu and return to a clean, editable prompt (Esc).
+    fn close_slash_menu(&mut self) {
+        self.input.set_value("");
+        self.slash_selected = 0;
+    }
+
+    /// Dispatch the highlighted slash command (Enter). With matches, the highlighted command runs
+    /// and the prompt clears; with no match, a clear "unknown command" notice is surfaced instead
+    /// of submitting the bogus text to the model.
+    fn dispatch_slash(&mut self) {
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            let typed = self.input.value();
+            self.transcript
+                .push(Entry::Notice(format!("Unknown command: {typed}")));
+            self.close_slash_menu();
+            return;
+        }
+        let command = matches[self.slash_selected()];
+        self.close_slash_menu();
+        self.dispatch_command(command);
+    }
+
+    /// Apply a dispatched slash command's effect. `/exit` quits; every other built-in surfaces a
+    /// notice acknowledging the dispatch (its dedicated dialog/flow is wired by later features).
+    fn dispatch_command(&mut self, command: &'static slash::SlashCommand) {
+        if command.name == "exit" {
+            self.should_quit = true;
+            return;
+        }
+        self.transcript.push(Entry::Notice(format!(
+            "/{} — {}",
+            command.name, command.description
+        )));
+    }
+
     /// Handles a single key press, mutating prompt or app state as appropriate.
     ///
     /// Editing keys (characters, backspace, arrows, `Ctrl+A`/`Ctrl+E`, `Home`/`End`)
@@ -350,6 +455,31 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        // While the slash menu is open it owns vertical navigation, dispatch, and dismissal so the
+        // arrows move the highlight (not the caret) and Enter runs the command (not submit). All
+        // other keys fall through to ordinary prompt editing, which re-filters the menu.
+        if self.slash_menu_open() {
+            match key.code {
+                KeyCode::Up => {
+                    self.slash_select_prev();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.slash_select_next();
+                    return;
+                }
+                KeyCode::Enter if !shift => {
+                    self.dispatch_slash();
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.close_slash_menu();
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         match key.code {
             // Quit keybind.
@@ -363,16 +493,22 @@ impl App {
             }
             // Expand/collapse tool cards to reveal or hide their full arguments and output.
             KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
-            // Ordinary text entry (ignore other ctrl/alt chords).
-            KeyCode::Char(c) if !ctrl && !alt => self.input.insert_char(c),
+            // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
+            // slash menu, so reset the highlight to the top match.
+            KeyCode::Char(c) if !ctrl && !alt => {
+                self.input.insert_char(c);
+                self.slash_selected = 0;
+            }
             // Shift+Enter inserts a soft newline and grows the input without submitting.
             KeyCode::Enter if shift => self.input.insert_newline(),
             KeyCode::Enter => self.submit(),
             KeyCode::Backspace => {
                 self.input.delete_backward();
+                self.slash_selected = 0;
             }
             KeyCode::Delete => {
                 self.input.delete_forward();
+                self.slash_selected = 0;
             }
             KeyCode::Left => {
                 self.input.handle_key(TextAreaKey::Left, modifiers(shift));
@@ -902,5 +1038,165 @@ mod tests {
         let history = a.history_snapshot();
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].content, "Created the file.");
+    }
+
+    fn type_str(a: &mut App, text: &str) {
+        for c in text.chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn typing_slash_on_empty_prompt_opens_the_menu() {
+        // VAL-TUI-028: `/` on an empty prompt opens a menu of recognizable built-ins.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        assert!(a.slash_menu_open(), "menu open after '/'");
+        let names: Vec<&str> = a.slash_matches().iter().map(|c| c.name).collect();
+        assert!(names.contains(&"help"));
+        assert!(names.contains(&"new"));
+        assert!(names.contains(&"models"));
+    }
+
+    #[test]
+    fn slash_menu_not_opened_by_a_mid_text_slash() {
+        let mut a = app();
+        type_str(&mut a, "abc/");
+        assert!(!a.slash_menu_open(), "a `/` after text is plain input");
+    }
+
+    #[test]
+    fn typing_after_slash_filters_the_menu() {
+        // VAL-TUI-029: continuing to type narrows the list to matching commands.
+        let mut a = app();
+        type_str(&mut a, "/mod");
+        let names: Vec<&str> = a.slash_matches().iter().map(|c| c.name).collect();
+        assert!(names.contains(&"models"), "models present: {names:?}");
+        assert!(!names.contains(&"help"), "help filtered out: {names:?}");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_highlight_without_editing_the_prompt() {
+        // VAL-TUI-030: arrows move the selection (not the caret) while the menu is open.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        assert_eq!(a.slash_selected(), 0);
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.slash_selected(), 1, "Down moves the highlight");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.slash_selected(), 2);
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.slash_selected(), 1, "Up moves the highlight back");
+        // The prompt text is untouched by navigation.
+        assert_eq!(a.input_value(), "/");
+    }
+
+    #[test]
+    fn highlight_wraps_around_at_the_ends() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        let count = a.slash_matches().len();
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.slash_selected(), count - 1, "Up at top wraps to bottom");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.slash_selected(), 0, "Down at bottom wraps to top");
+    }
+
+    #[test]
+    fn enter_dispatches_the_highlighted_command_and_clears_the_prompt() {
+        // VAL-TUI-030: Enter dispatches the highlighted command (its effect appears) rather than
+        // inserting literal text or submitting to the model.
+        let mut a = app();
+        type_str(&mut a, "/mod");
+        a.on_key(key(KeyCode::Enter));
+        // No chat turn was queued.
+        assert!(a.take_pending_prompt().is_none(), "not submitted to model");
+        // The prompt is cleared and the menu closed.
+        assert_eq!(a.input_value(), "");
+        assert!(!a.slash_menu_open());
+        // A visible notice records the dispatched command.
+        match a.transcript.last() {
+            Some(Entry::Notice(text)) => assert!(text.contains("/models"), "notice: {text}"),
+            other => panic!("expected a dispatch notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_after_moving_highlight_dispatches_the_selected_command() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        a.on_key(key(KeyCode::Down)); // help -> new
+        a.on_key(key(KeyCode::Enter));
+        match a.transcript.last() {
+            Some(Entry::Notice(text)) => assert!(text.contains("/new"), "notice: {text}"),
+            other => panic!("expected a dispatch notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatching_exit_quits() {
+        let mut a = app();
+        type_str(&mut a, "/exit");
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.should_quit, "/exit dispatch quits");
+    }
+
+    #[test]
+    fn esc_closes_the_menu_and_returns_to_an_editable_prompt() {
+        // VAL-TUI-031: Esc dismisses the menu; the prompt then accepts typing again.
+        let mut a = app();
+        type_str(&mut a, "/mod");
+        assert!(a.slash_menu_open());
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.slash_menu_open(), "menu closed after Esc");
+        assert_eq!(a.input_value(), "", "prompt returned to a clean state");
+        // Typing works again afterwards.
+        type_str(&mut a, "hello");
+        assert_eq!(a.input_value(), "hello");
+        assert!(!a.slash_menu_open());
+    }
+
+    #[test]
+    fn unknown_command_is_handled_gracefully() {
+        // VAL-TUI-048: a nonexistent command shows a no-match menu and, on Enter, a clear unknown
+        // message instead of crashing or submitting it to the model.
+        let mut a = app();
+        type_str(&mut a, "/zzznotreal");
+        assert!(a.slash_menu_open(), "menu still open");
+        assert!(
+            a.slash_matches().is_empty(),
+            "no matches for a bogus command"
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.take_pending_prompt().is_none(), "not submitted to model");
+        assert_eq!(a.input_value(), "");
+        match a.transcript.last() {
+            Some(Entry::Notice(text)) => {
+                assert!(text.contains("Unknown command"), "clear message: {text}");
+                assert!(text.contains("/zzznotreal"));
+            }
+            other => panic!("expected an unknown-command notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn editing_the_query_resets_the_highlight() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.slash_selected(), 2);
+        // Typing another character re-filters and returns to the top match.
+        a.on_key(key(KeyCode::Char('m')));
+        assert_eq!(a.slash_selected(), 0);
+    }
+
+    #[test]
+    fn a_plain_prompt_still_submits_normally() {
+        let mut a = app();
+        type_str(&mut a, "just chatting");
+        assert!(!a.slash_menu_open());
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.take_pending_prompt().as_deref(), Some("just chatting"));
     }
 }
