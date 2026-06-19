@@ -9,6 +9,7 @@ members = [
     "crates/db",
     "crates/llm",
     "crates/providers",
+    "crates/engine",
     "crates/cli",
 ]
 
@@ -32,6 +33,7 @@ settings = { path = "crates/settings" }
 db = { path = "crates/db" }
 llm = { path = "crates/llm" }
 providers = { path = "crates/providers" }
+engine = { path = "crates/engine" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
