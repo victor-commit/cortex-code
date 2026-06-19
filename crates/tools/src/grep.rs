@@ -13,12 +13,9 @@
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 
+use crate::output::{OutputLimits, bound_output};
 use crate::ripgrep::{self, RgError};
 use crate::tool::{Tool, ToolContext, ToolOutput};
-
-/// The cap on the number of match lines returned, so a very broad pattern cannot flood the model.
-/// A truncated result is marked so the model knows to narrow the search.
-const MAX_RESULTS: usize = 200;
 
 const DESCRIPTION: &str = "Search file contents with a regular expression (ripgrep). Returns the \
 matching lines as `path:line:text`, one per line. Use `include` to restrict the search to files \
@@ -111,7 +108,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     }
 }
 
-/// Render ripgrep's match lines into a sorted, capped tool result, or an explicit empty result.
+/// Render ripgrep's match lines into a sorted tool result, or an explicit empty result.
+///
+/// A large match set is bounded to the configured limits with a truncation notice while the
+/// complete set is spilled to disk and named in the result (the shared [`bound_output`] path, so
+/// `grep` behaves identically to `bash` for over-limit output and nothing is silently lost).
 fn render(pattern: &str, stdout: &str) -> ToolOutput {
     let mut hits: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     hits.sort_unstable();
@@ -120,19 +121,9 @@ fn render(pattern: &str, stdout: &str) -> ToolOutput {
         return ToolOutput::text(format!("No matches for pattern: {pattern}"));
     }
 
-    let total = hits.len();
-    let mut body = hits
-        .iter()
-        .take(MAX_RESULTS)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    if total > MAX_RESULTS {
-        body.push_str(&format!(
-            "\n[truncated: showing {MAX_RESULTS} of {total} matches; narrow the pattern or use include]"
-        ));
-    }
-    ToolOutput::text(body)
+    let full = hits.join("\n");
+    let bounded = bound_output(&full, OutputLimits::default(), "grep-matches");
+    ToolOutput::text(bounded.text)
 }
 
 /// Extract a string argument from the assembled arguments object (trimming only surrounding
@@ -238,5 +229,48 @@ mod tests {
         let output = run(&json!({}), &ctx_for(&dir));
         assert!(output.is_error);
         assert!(output.model_content().contains("pattern"));
+    }
+
+    // VAL-TOOLS-037: a match set exceeding the limits is bounded in-band with a truncation notice
+    // AND the complete match set is spilled to an on-disk file named in the result.
+    #[test]
+    fn large_match_set_is_truncated_and_spilled() {
+        let dir = temp_tree("biggrep");
+        let body: String = (1..=5000).map(|_| "match_token here\n").collect();
+        fs::write(dir.join("big.txt"), body).unwrap();
+        let output = run(
+            &json!({ "pattern": "match_token", "include": "big.txt" }),
+            &ctx_for(&dir),
+        );
+        assert!(!output.is_error);
+        let text = output.model_content();
+
+        // Bounded in-band with a truncation notice (the shared bound_output notice).
+        assert!(text.contains("output truncated"), "got: {text}");
+        assert!(
+            text.lines().count() < 5000,
+            "in-band must be bounded, got {} lines",
+            text.lines().count()
+        );
+
+        // A pointer to the spill file is present, and that file holds the COMPLETE match set.
+        let marker = "written to ";
+        let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("the notice closes with ]");
+        let path = &rest[..end];
+        let spilled = std::fs::read_to_string(path).expect("read spill file");
+        assert_eq!(spilled.lines().count(), 5000, "spill holds every match");
+        let _ = std::fs::remove_file(path);
+    }
+
+    // VAL-TOOLS-037 (no regression): a small match set returns verbatim with no notice and no spill.
+    #[test]
+    fn small_match_set_returns_verbatim_with_no_spill() {
+        let dir = temp_tree("smallgrep");
+        let output = run(&json!({ "pattern": r"fn\s+\w+" }), &ctx_for(&dir));
+        let text = output.model_content();
+        assert!(!text.contains("output truncated"), "got: {text}");
+        assert!(!text.contains("written to"), "got: {text}");
     }
 }

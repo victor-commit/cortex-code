@@ -8,7 +8,9 @@
 //!   true file line numbers.
 //! - An unbounded read is capped at [`DEFAULT_READ_LIMIT`] lines with a machine-detectable
 //!   truncation marker naming the next offset, so the model knows to page rather than getting a
-//!   silent partial dump.
+//!   silent partial dump. When that window omits content (or the rendered view exceeds the byte
+//!   budget) the *complete* file content is additionally spilled to an on-disk file named in the
+//!   result, so nothing is silently lost (VAL-TOOLS-037).
 //! - A directory path yields a sorted listing with sub-directories marked by a trailing `/`.
 //! - An image or PDF is returned as a typed attachment part (media type + path), never as raw bytes
 //!   in the text channel.
@@ -23,6 +25,7 @@ use futures_util::future::BoxFuture;
 use protocol::ToolResultPart;
 use serde_json::{Value, json};
 
+use crate::output::{OutputLimits, spill_to_disk};
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
 /// The default line cap applied to an unbounded read (architecture §3.4 / VAL-TOOLS-003).
@@ -134,26 +137,77 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     }
 
     let content = String::from_utf8_lossy(&bytes);
-    let output = render_text(&content, offset, limit);
+    let output = bounded_read(&content, offset, limit);
     ctx.record_read(&resolved);
     ToolOutput::text(output)
 }
 
-/// Render a text file's windowed, line-numbered body plus any truncation/EOF indicator.
-fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+/// Render the windowed file view, then bring it to parity with `bash`/`grep` for large output: when
+/// the window omits content (offset/limit windowing truncated the file) or the rendered view exceeds
+/// the configured byte budget, spill the *complete* file content to disk via the shared spill
+/// mechanism and append a pointer naming it, so nothing the in-band result omits is silently lost
+/// (VAL-TOOLS-037). Within limits the view is returned verbatim with no notice and no spill.
+fn bounded_read(content: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    let (mut output, truncated) = render_text(content, offset, limit);
+    let limits = OutputLimits::default();
+
+    let over_bytes = output.len() > limits.max_bytes;
+    if over_bytes {
+        let mut end = limits.max_bytes;
+        while end > 0 && !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        output.truncate(end);
+    }
+
+    if !truncated && !over_bytes {
+        return output;
+    }
+
+    match spill_to_disk(content, "read") {
+        Some(path) => push_notice(
+            &mut output,
+            &format!(
+                "[complete file content ({} lines) written to {}]",
+                split_lines(content).len(),
+                path.display()
+            ),
+        ),
+        None => push_notice(
+            &mut output,
+            "[output truncated; the complete file content could not be written to a spill file]",
+        ),
+    }
+    output
+}
+
+/// Append `notice` to `output` as its own line (the spill pointer follows the windowing marker).
+fn push_notice(output: &mut String, notice: &str) {
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(notice);
+}
+
+/// Render a text file's windowed, line-numbered body plus any truncation/EOF indicator, returning
+/// the rendered text and whether the offset/limit window omitted trailing content.
+fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> (String, bool) {
     let lines = split_lines(content);
     let total = lines.len();
 
     if total == 0 {
-        return "(no content)".to_owned();
+        return ("(no content)".to_owned(), false);
     }
 
     let offset = offset.unwrap_or(1).max(1);
     let limit = limit.unwrap_or(DEFAULT_READ_LIMIT).max(1);
 
     if offset > total {
-        return format!(
-            "(no content: offset {offset} is past the end of the file, which has {total} lines)"
+        return (
+            format!(
+                "(no content: offset {offset} is past the end of the file, which has {total} lines)"
+            ),
+            false,
         );
     }
 
@@ -163,8 +217,9 @@ fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> St
     }
 
     let last = offset - 1 + rendered.len();
+    let truncated = last < total;
     let mut output = rendered.join("\n");
-    if last < total {
+    if truncated {
         if !output.is_empty() {
             output.push('\n');
         }
@@ -173,7 +228,7 @@ fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> St
             last + 1
         ));
     }
-    output
+    (output, truncated)
 }
 
 /// Split file content into lines, dropping the single trailing empty element produced by a final
@@ -414,6 +469,86 @@ mod tests {
         assert!(text.contains("of 5000"));
         // The full file is never silently dumped.
         assert!(!text.contains("4999: l4999"));
+    }
+
+    // VAL-TOOLS-037: a read far exceeding the limits is bounded in-band (window + machine-detectable
+    // marker preserved) AND the complete file content is spilled to an on-disk file named in the
+    // result, so nothing is silently lost.
+    #[test]
+    fn over_limit_read_spills_complete_file_and_keeps_window_marker() {
+        let dir = temp_dir("spill");
+        let body: String = (1..=200_000).map(|n| format!("{n}\n")).collect();
+        fs::write(dir.join("huge.txt"), &body).unwrap();
+        let output = run(&read_args("huge.txt"), &ctx_for(&dir));
+        let text = text_of(&output);
+
+        // In-band result is bounded to the window, not the whole 200k-line file.
+        let numbered = text
+            .lines()
+            .filter(|line| {
+                line.split_once(": ")
+                    .is_some_and(|(n, _)| n.parse::<u32>().is_ok())
+            })
+            .count();
+        assert_eq!(
+            numbered, DEFAULT_READ_LIMIT,
+            "in-band bounded to the window"
+        );
+
+        // The existing machine-detectable windowing marker is preserved.
+        assert!(text.contains("[truncated: showing lines 1-2000 of 200000"));
+        assert!(text.contains("use offset=2001"));
+
+        // A pointer to the spill file is present, and that file holds the COMPLETE file content.
+        let marker = "written to ";
+        let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("the notice closes with ]");
+        let path = &rest[..end];
+        let spilled = std::fs::read_to_string(path).expect("read spill file");
+        assert_eq!(spilled, body, "spill holds the complete file content");
+        assert_eq!(spilled.lines().count(), 200_000);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // VAL-TOOLS-037 (no regression): a read within limits returns verbatim with no truncation notice
+    // and no spill file.
+    #[test]
+    fn within_limits_read_returns_verbatim_with_no_spill() {
+        let dir = temp_dir("nospill");
+        fs::write(dir.join("small.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let output = run(&read_args("small.txt"), &ctx_for(&dir));
+        let text = text_of(&output);
+        assert_eq!(text, "1: alpha\n2: beta\n3: gamma");
+        assert!(!text.contains("written to"), "no spill pointer");
+        assert!(!text.contains("truncated"), "no truncation notice");
+    }
+
+    // A read whose rendered view exceeds the byte budget (few but very long lines) is byte-bounded
+    // in-band and the complete file is spilled.
+    #[test]
+    fn over_byte_budget_read_is_bounded_and_spilled() {
+        let dir = temp_dir("bytes");
+        // 10 lines of ~100 KiB each: well under the 2000-line window but far over the byte budget.
+        let line = "x".repeat(100 * 1024);
+        let body: String = (0..10).map(|_| format!("{line}\n")).collect();
+        fs::write(dir.join("wide.txt"), &body).unwrap();
+        let output = run(&read_args("wide.txt"), &ctx_for(&dir));
+        let text = text_of(&output);
+
+        assert!(
+            text.len() <= OutputLimits::default().max_bytes + 256,
+            "in-band bounded to the byte budget, got {} bytes",
+            text.len()
+        );
+        let marker = "written to ";
+        let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("the notice closes with ]");
+        let path = &rest[..end];
+        let spilled = std::fs::read_to_string(path).expect("read spill file");
+        assert_eq!(spilled, body, "spill holds the complete file content");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

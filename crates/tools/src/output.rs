@@ -1,11 +1,18 @@
 //! Bounded tool output: truncate large output to the configured limits and spill the complete
 //! output to an on-disk file referenced in the result, so nothing is silently lost.
 //!
-//! A tool that can emit unbounded output (notably `bash`) runs its captured output through
-//! [`bound_output`]. When the output exceeds [`OutputLimits`], the in-band result returned to the
-//! model is truncated to the limit with an explicit notice, and the *complete* output is written to
-//! a uniquely named on-disk spill file whose path is named in that notice. A consumer that needs
-//! the full output reads the spill file; the model sees a bounded, clearly-truncated result.
+//! A tool that can emit unbounded output (`bash` stdout/stderr, `grep` match sets) runs that output
+//! through [`bound_output`]. When the output exceeds [`OutputLimits`], the in-band result returned
+//! to the model is truncated to the limit with an explicit notice, and the *complete* output is
+//! written to a uniquely named on-disk spill file whose path is named in that notice. A consumer
+//! that needs the full output reads the spill file; the model sees a bounded, clearly-truncated
+//! result.
+//!
+//! A tool whose in-band result is instead a windowed *view* of a larger complete output (notably
+//! `read`, which returns a line-numbered offset/limit window) cannot route its model-facing text
+//! through [`bound_output`] (that would spill the window, not the complete content). Such a tool
+//! reuses the same on-disk spill mechanism via [`spill_to_disk`]: it spills its complete output and
+//! appends a pointer to its in-band result, so the truncate-and-spill behavior is identical.
 
 use std::fs;
 use std::path::PathBuf;
@@ -70,7 +77,7 @@ pub fn bound_output(full: &str, limits: OutputLimits, label: &str) -> BoundedOut
         };
     }
 
-    let spill_path = spill(full, label);
+    let spill_path = spill_to_disk(full, label);
 
     let mut kept: String = full
         .lines()
@@ -112,8 +119,16 @@ pub fn bound_output(full: &str, limits: OutputLimits, label: &str) -> BoundedOut
     }
 }
 
-/// Write `full` to a uniquely named file under the spill directory, returning its path on success.
-fn spill(full: &str, label: &str) -> Option<PathBuf> {
+/// Write `full` to a uniquely named file under the shared tool-output spill directory, returning its
+/// path on success.
+///
+/// This is the single spill mechanism every tool reuses: [`bound_output`] (used by `bash`/`grep`)
+/// spills the output it truncates, and a tool whose in-band result is a windowed *view* of a larger
+/// complete output (notably `read`) spills that complete output here directly so nothing the view
+/// omits is silently lost. The file lives under `<tmp>/cortex-tool-output` and is named
+/// `<label>-<pid>-<counter>.txt`, so concurrent spills never collide.
+#[must_use]
+pub fn spill_to_disk(full: &str, label: &str) -> Option<PathBuf> {
     let dir = std::env::temp_dir().join("cortex-tool-output");
     if fs::create_dir_all(&dir).is_err() {
         return None;

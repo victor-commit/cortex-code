@@ -219,6 +219,68 @@ async fn runner_dispatches_grep_and_returns_matching_lines() {
     assert!(!text.contains("c.txt"), "non-matching file absent: {text}");
 }
 
+// VAL-TOOLS-037: a `read` of a file far exceeding the limits, dispatched through the runner, returns
+// a bounded in-band result naming a spill file that holds the complete file content.
+#[tokio::test]
+async fn runner_dispatches_read_of_huge_file_spills_complete_content() {
+    let dir = temp_tree("readspill");
+    let body: String = (1..=200_000).map(|n| format!("{n}\n")).collect();
+    fs::write(dir.join("huge.txt"), &body).unwrap();
+
+    let (text, is_error) = dispatch_tool_text(
+        &dir,
+        ToolContext::new(dir.clone()),
+        "read",
+        r#"{"path":"huge.txt"}"#,
+    )
+    .await;
+    assert!(!is_error, "read succeeded: {text}");
+    // Bounded in-band, not the whole 200k-line file.
+    assert!(text.contains("use offset=2001"), "windowing marker: {text}");
+    assert!(text.lines().count() < 200_000, "in-band bounded");
+
+    let marker = "written to ";
+    let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+    let rest = &text[start..];
+    let end = rest.find(']').expect("notice closes with ]");
+    let path = &rest[..end];
+    let spilled = fs::read_to_string(path).expect("read spill file");
+    assert_eq!(spilled, body, "spill holds the complete file content");
+    let _ = fs::remove_file(path);
+}
+
+// VAL-TOOLS-037: a `grep` whose match set exceeds the limits, dispatched through the runner, returns
+// a bounded in-band result naming a spill file that holds the complete match set.
+#[tokio::test]
+async fn runner_dispatches_grep_large_match_set_spills_complete_set() {
+    let dir = temp_tree("grepspill");
+    let body: String = (1..=5000).map(|_| "match_token here\n").collect();
+    fs::write(dir.join("big.txt"), body).unwrap();
+
+    let (text, is_error) = dispatch_tool_text(
+        &dir,
+        ToolContext::new(dir.clone()),
+        "grep",
+        r#"{"pattern":"match_token","include":"big.txt"}"#,
+    )
+    .await;
+    assert!(!is_error, "grep succeeded: {text}");
+    assert!(
+        text.contains("output truncated"),
+        "truncation notice: {text}"
+    );
+    assert!(text.lines().count() < 5000, "in-band bounded");
+
+    let marker = "written to ";
+    let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+    let rest = &text[start..];
+    let end = rest.find(']').expect("notice closes with ]");
+    let path = &rest[..end];
+    let spilled = fs::read_to_string(path).expect("read spill file");
+    assert_eq!(spilled.lines().count(), 5000, "spill holds every match");
+    let _ = fs::remove_file(path);
+}
+
 #[tokio::test]
 async fn runner_dispatches_todo_write_then_update_persists_per_session() {
     let dir = temp_tree("todo");
