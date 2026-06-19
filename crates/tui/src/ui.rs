@@ -9,11 +9,21 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
+use tui_components::borders::ROUNDED_BORDER;
+use tui_components::style;
+
 use crate::app::{App, AssistantTurn, Entry, UsageSummary};
 use crate::diff::FileDiff;
+use crate::tool_card::{ToolCard, ToolStatus};
 
 /// Maximum number of visible prompt text rows before the box stops growing.
 const MAX_PROMPT_ROWS: usize = 8;
+
+/// Maximum number of output lines shown inside an expanded tool card before truncation.
+const MAX_TOOL_DETAIL_LINES: usize = 40;
+
+/// Maximum drawn width of a tool card's top/bottom border.
+const TOOL_CARD_WIDTH: usize = 76;
 
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -67,6 +77,15 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Entry::User(text) => push_user(&mut lines, text, width),
             Entry::Assistant(turn) => push_assistant(&mut lines, turn, width),
             Entry::Diff(diff) => push_diff(&mut lines, diff),
+            Entry::Tool(card) => {
+                push_tool(
+                    &mut lines,
+                    card,
+                    width,
+                    app.expand_tools,
+                    app.spinner_glyph(),
+                );
+            }
             Entry::Error(message) => push_error(&mut lines, message, width),
         }
     }
@@ -147,6 +166,112 @@ fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff) {
             .add_modifier(Modifier::BOLD),
     )));
     lines.extend(diff.render());
+    lines.push(Line::from(""));
+}
+
+/// Append an agent tool call as a labeled card: a colored top border carrying the tool name and its
+/// running/completed/error status, a one-line argument summary, and — when expanded — the full
+/// arguments and output. A failed card is rendered in a distinct error state (red border + glyph)
+/// and shows its failure message inline so the error is legible without expanding.
+fn push_tool(
+    lines: &mut Vec<Line<'static>>,
+    card: &ToolCard,
+    width: usize,
+    expanded: bool,
+    spinner: Option<&str>,
+) {
+    let box_w = width.clamp(8, TOOL_CARD_WIDTH);
+    let (accent, glyph, state) = match card.status {
+        ToolStatus::Running => (style::INFO, "⚙", "running"),
+        ToolStatus::Completed => (style::SUCCESS, "✓", "done"),
+        ToolStatus::Failed => (style::ERROR, "✗", "error"),
+    };
+    let border = Style::default().fg(accent);
+    let border_bold = border.add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(style::TEXT);
+    let detail_style = Style::default().fg(style::TEXT_DIM);
+    let error_style = Style::default().fg(style::ERROR);
+
+    // Top border carries the card label: tool name + status (with a spinner while running).
+    let mut header = format!("{glyph} {} · {state}", card.name);
+    if matches!(card.status, ToolStatus::Running) {
+        if let Some(s) = spinner {
+            header.push(' ');
+            header.push_str(s);
+        }
+    }
+    let prefix = format!(
+        "{}{} {header} ",
+        ROUNDED_BORDER.top_left, ROUNDED_BORDER.horizontal_top
+    );
+    let fill = box_w.saturating_sub(prefix.chars().count());
+    lines.push(Line::from(Span::styled(
+        format!("{prefix}{}", ROUNDED_BORDER.horizontal_top.repeat(fill)),
+        border_bold,
+    )));
+
+    // Body lines are prefixed with the left border bar and wrapped to the inner width.
+    let bar = format!("{} ", ROUNDED_BORDER.vertical_left);
+    let inner = box_w.saturating_sub(bar.chars().count()).max(1);
+    let emit = |lines: &mut Vec<Line<'static>>, content: &str, st: Style| {
+        for wrapped in wrap(content, inner) {
+            lines.push(Line::from(vec![
+                Span::styled(bar.clone(), border),
+                Span::styled(wrapped, st),
+            ]));
+        }
+    };
+
+    emit(lines, &card.summary, text_style);
+
+    if expanded {
+        if !card.args_detail.is_empty() {
+            emit(lines, "arguments", detail_style);
+            for line in card.args_detail.lines() {
+                emit(lines, line, text_style);
+            }
+        }
+        if !card.output.is_empty() {
+            let (label, body_style) = match card.status {
+                ToolStatus::Failed => ("error", error_style),
+                _ => ("output", text_style),
+            };
+            emit(lines, label, detail_style);
+            let out_lines: Vec<&str> = card.output.lines().collect();
+            let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
+            for line in &out_lines[..shown] {
+                emit(lines, line, body_style);
+            }
+            if out_lines.len() > shown {
+                emit(
+                    lines,
+                    &format!("… ({} more lines)", out_lines.len() - shown),
+                    detail_style,
+                );
+            }
+        }
+    } else if matches!(card.status, ToolStatus::Failed) && !card.output.is_empty() {
+        // Show the failure message inline so the error is legible without expanding.
+        emit(
+            lines,
+            card.output.lines().next().unwrap_or_default(),
+            error_style,
+        );
+        emit(lines, "Ctrl+O for detail", detail_style);
+    } else {
+        emit(lines, "Ctrl+O to expand", detail_style);
+    }
+
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{}{}",
+            ROUNDED_BORDER.bottom_left,
+            ROUNDED_BORDER
+                .horizontal_bottom
+                .repeat(box_w.saturating_sub(1))
+        ),
+        border,
+    )));
     lines.push(Line::from(""));
 }
 
@@ -543,6 +668,115 @@ mod tests {
         assert!(
             !text.contains("- "),
             "no removed lines for a new file:\n{text}"
+        );
+    }
+
+    fn tool_card(name: &str, args: &str) -> ToolCard {
+        ToolCard::new("call_1", name, args)
+    }
+
+    #[test]
+    fn running_tool_card_renders_label_and_summary() {
+        // VAL-TUI-024 / VAL-TUI-025 (running): the card names the tool, summarizes its args, and
+        // shows a running state.
+        let card = tool_card("read", r#"{"path":"src/main.rs"}"#);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 80, false, Some("⠋"));
+        let text = rendered(&lines);
+        assert!(text.contains("read"), "tool name labeled:\n{text}");
+        assert!(text.contains("running"), "running status:\n{text}");
+        assert!(text.contains("src/main.rs"), "arg summary:\n{text}");
+        // Distinct card structure: rounded border corners are drawn.
+        assert!(
+            text.contains('╭') && text.contains('╰'),
+            "card border:\n{text}"
+        );
+    }
+
+    #[test]
+    fn completed_tool_card_shows_done_state() {
+        // VAL-TUI-025 (completed): the card transitions to a completed state.
+        let mut card = tool_card("grep", r#"{"pattern":"TODO","path":"src"}"#);
+        card.complete(&[protocol::ToolResultPart::text("src/a.rs:1: TODO")], false);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 80, false, None);
+        let text = rendered(&lines);
+        assert!(text.contains("grep"), "tool labeled:\n{text}");
+        assert!(text.contains("done"), "completed status:\n{text}");
+        assert!(!text.contains("running"), "no longer running:\n{text}");
+    }
+
+    #[test]
+    fn tool_card_expands_to_reveal_output_then_collapses() {
+        // VAL-TUI-026: collapsed shows only the summary; expanded reveals the full output.
+        let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
+        card.complete(
+            &[protocol::ToolResultPart::text("1: secret detail line")],
+            false,
+        );
+
+        let mut collapsed = Vec::new();
+        push_tool(&mut collapsed, &card, 80, false, None);
+        let collapsed_text = rendered(&collapsed);
+        assert!(
+            !collapsed_text.contains("secret detail line"),
+            "collapsed hides output:\n{collapsed_text}"
+        );
+        assert!(
+            collapsed_text.contains("expand"),
+            "collapsed hints at expansion:\n{collapsed_text}"
+        );
+
+        let mut expanded = Vec::new();
+        push_tool(&mut expanded, &card, 80, true, None);
+        let expanded_text = rendered(&expanded);
+        assert!(
+            expanded_text.contains("secret detail line"),
+            "expanded reveals output:\n{expanded_text}"
+        );
+        assert!(
+            expanded_text.contains("a.txt"),
+            "expanded still shows summary:\n{expanded_text}"
+        );
+        // The expanded card occupies strictly more lines than the collapsed one.
+        assert!(
+            expanded.len() > collapsed.len(),
+            "expanded is taller: {} vs {}",
+            expanded.len(),
+            collapsed.len()
+        );
+    }
+
+    #[test]
+    fn failed_tool_card_renders_distinct_error_state() {
+        // VAL-TUI-027: a failed call shows a distinct error state with the failure message and is
+        // colored differently from a success card.
+        let mut failed = tool_card("read", r#"{"path":"nope.txt"}"#);
+        failed.complete(
+            &[protocol::ToolResultPart::text("file not found: nope.txt")],
+            true,
+        );
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &failed, 80, false, None);
+        let text = rendered(&lines);
+        assert!(text.contains("error"), "error indicator:\n{text}");
+        assert!(
+            text.contains("file not found"),
+            "failure message shown inline:\n{text}"
+        );
+
+        // The error border color differs from a completed card's border color.
+        let mut ok = tool_card("read", r#"{"path":"a.txt"}"#);
+        ok.complete(&[protocol::ToolResultPart::text("ok")], false);
+        let mut ok_lines = Vec::new();
+        push_tool(&mut ok_lines, &ok, 80, false, None);
+
+        let failed_border = lines[0].spans.first().map(|s| s.style.fg);
+        let ok_border = ok_lines[0].spans.first().map(|s| s.style.fg);
+        assert!(failed_border.is_some() && ok_border.is_some());
+        assert_ne!(
+            failed_border, ok_border,
+            "failed and completed cards are colored distinctly"
         );
     }
 

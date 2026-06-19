@@ -19,6 +19,7 @@ members = [
     "crates/tui-widgets",
     "crates/tui-syntax",
     "crates/frame",
+    "crates/tui-components",
     "crates/tui",
     "crates/cli",
 ]
@@ -54,10 +55,12 @@ tui-text = { path = "crates/tui-text" }
 tui-widgets = { path = "crates/tui-widgets" }
 tui-syntax = { path = "crates/tui-syntax" }
 frame = { path = "crates/frame" }
+tui-components = { path = "crates/tui-components" }
 tui = { path = "crates/tui" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util"] }
+tokio-test = "0.4"
 eventsource-stream = "0.2"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"

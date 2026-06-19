@@ -18,6 +18,7 @@ redaction = { workspace = true }
 protocol = { workspace = true }
 tools = { workspace = true }
 tui-widgets = { workspace = true }
+tui-components = { workspace = true }
 frame = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }

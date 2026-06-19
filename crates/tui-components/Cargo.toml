@@ -1,0 +1,43 @@
+# Provenance: ported source (direct-port-allowed), adapted to this workspace
+# Source-Repo: CortexLM/cortex-code
+# Source-Commit: 7954d0218faf6f26aa84df0f6d8b09ea9f2e5ac9
+# Source-Path: src/cortex-tui-components/Cargo.toml
+# Target-Path: crates/tui-components/Cargo.toml
+# Upstream-License: MIT
+# Adaptation: crate renamed cortex-tui-components -> tui-components (cortex_tui_components ->
+#   tui_components import paths); frame-engine dep cortex-frame -> frame; deps re-pointed to
+#   workspace entries; license retained MIT (product distributed under Apache-2.0 via NOTICE).
+# See: NOTICE (Direct-Port Provenance Ledger)
+[package]
+name = "tui-components"
+description = "Reusable TUI component library for Cortex - standardized widgets, dropdowns, modals, and forms"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Cortex frame engine (theme, palette/style constants).
+frame = { workspace = true }
+
+# TUI framework
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+# Utilities
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[[example]]
+name = "dump_previews"
+path = "examples/dump_previews.rs"

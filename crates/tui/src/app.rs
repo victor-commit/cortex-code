@@ -12,6 +12,7 @@ use engine::RunnerEvent;
 use llm::{Message, Usage};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
+use crate::tool_card::ToolCard;
 use crate::turn::TurnMessage;
 
 /// Status line contents reported in the footer.
@@ -47,6 +48,8 @@ pub enum Entry {
     Assistant(AssistantTurn),
     /// A file changed by a tool this turn, rendered as a colored unified diff.
     Diff(crate::diff::FileDiff),
+    /// An agent tool call rendered as a labeled card (running → completed/failed, expandable).
+    Tool(ToolCard),
     /// A turn-level error surfaced to the user.
     Error(String),
 }
@@ -101,6 +104,9 @@ pub struct App {
     turn_prompt: Option<String>,
     /// Whether the in-flight turn already surfaced an error (so finalization skips the answer).
     turn_errored: bool,
+    /// Whether tool cards are expanded to reveal their full arguments and output. Toggled by the
+    /// expand/collapse keybind; applies to every tool card so the detail view is unambiguous.
+    pub expand_tools: bool,
     /// Canonical prior-turn messages projected into each new turn for conversational context.
     history: Vec<Message>,
 }
@@ -119,6 +125,7 @@ impl App {
             spinner_start: None,
             turn_prompt: None,
             turn_errored: false,
+            expand_tools: false,
             history: Vec::new(),
         }
     }
@@ -216,11 +223,49 @@ impl App {
             RunnerEvent::Reasoning { text } => self.append_reasoning(&text),
             RunnerEvent::Usage(usage) => self.usage.accumulate(&usage),
             RunnerEvent::Error { message, .. } => self.set_turn_error(message),
-            // Tool calls/results and the terminal Done are not surfaced by this view; the worker's
-            // Finished marker drives turn finalization.
-            RunnerEvent::ToolCall { .. }
-            | RunnerEvent::ToolResult { .. }
-            | RunnerEvent::Done { .. } => {}
+            RunnerEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => self.push_tool_call(id, name, &arguments),
+            RunnerEvent::ToolResult {
+                id,
+                parts,
+                is_error,
+                ..
+            } => self.complete_tool_call(&id, &parts, is_error),
+            // The terminal Done is not surfaced by this view; the worker's Finished marker drives
+            // turn finalization.
+            RunnerEvent::Done { .. } => {}
+        }
+    }
+
+    /// Open a running tool card for a just-started tool call. A trailing empty in-progress assistant
+    /// entry (opened when the turn began but not yet written to) is dropped first, so the card is not
+    /// preceded by an empty assistant block; answer text arriving after the call opens a fresh entry.
+    fn push_tool_call(&mut self, id: String, name: String, arguments: &str) {
+        if let Some(Entry::Assistant(turn)) = self.transcript.last() {
+            if turn.answer.is_empty() && turn.reasoning.is_empty() {
+                self.transcript.pop();
+            }
+        }
+        self.transcript
+            .push(Entry::Tool(ToolCard::new(id, name, arguments)));
+    }
+
+    /// Transition the running tool card matching `id` to its terminal (completed/failed) state,
+    /// recording the result text. The most recent matching card wins so re-used ids never collide.
+    fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
+        if let Some(card) = self
+            .transcript
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Tool(card) if card.id == id => Some(card),
+                _ => None,
+            })
+        {
+            card.complete(parts, is_error);
         }
     }
 
@@ -316,6 +361,8 @@ impl App {
             KeyCode::Char('e') if ctrl => {
                 self.input.handle_key(TextAreaKey::End, modifiers(false));
             }
+            // Expand/collapse tool cards to reveal or hide their full arguments and output.
+            KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
             // Ordinary text entry (ignore other ctrl/alt chords).
             KeyCode::Char(c) if !ctrl && !alt => self.input.insert_char(c),
             // Shift+Enter inserts a soft newline and grows the input without submitting.
@@ -718,6 +765,116 @@ mod tests {
                 .any(|e| matches!(e, Entry::Assistant(t) if t.answer.is_empty() && t.reasoning.is_empty())),
             "no empty assistant block should precede the diff"
         );
+    }
+
+    fn tool_part(text: &str) -> protocol::ToolResultPart {
+        protocol::ToolResultPart::text(text)
+    }
+
+    fn last_tool(app: &App) -> &crate::tool_card::ToolCard {
+        app.transcript
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Tool(card) => Some(card),
+                _ => None,
+            })
+            .expect("a tool card")
+    }
+
+    #[test]
+    fn a_tool_call_opens_a_running_card_then_completes() {
+        use crate::tool_card::ToolStatus;
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("read the file".to_owned(), rx);
+
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "call_1".to_owned(),
+            name: "read".to_owned(),
+            arguments: r#"{"path":"src/main.rs"}"#.to_owned(),
+        }))
+        .unwrap();
+        a.poll_turn();
+        // A mid-execution snapshot shows the card in the running state, labeled and summarized.
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Running);
+        assert_eq!(card.name, "read");
+        assert_eq!(card.summary, "src/main.rs");
+        // The empty assistant block opened at turn start does not precede the card.
+        assert!(
+            !a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant(t) if t.answer.is_empty() && t.reasoning.is_empty())),
+            "no empty assistant block precedes the tool card"
+        );
+
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "call_1".to_owned(),
+            name: "read".to_owned(),
+            parts: vec![tool_part("1: fn main() {}")],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+        // A later snapshot shows the same card completed with its output recorded.
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Completed);
+        assert!(card.output.contains("fn main"));
+    }
+
+    #[test]
+    fn a_failed_tool_call_renders_an_error_card() {
+        use crate::tool_card::ToolStatus;
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("read a missing file".to_owned(), rx);
+
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "c".to_owned(),
+            name: "read".to_owned(),
+            arguments: r#"{"path":"nope.txt"}"#.to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "c".to_owned(),
+            name: "read".to_owned(),
+            parts: vec![tool_part("file not found: nope.txt")],
+            is_error: true,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Failed);
+        assert!(card.output.contains("not found"));
+    }
+
+    #[test]
+    fn ctrl_o_toggles_tool_card_expansion() {
+        let mut a = app();
+        assert!(!a.expand_tools);
+        a.on_key(key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(a.expand_tools, "Ctrl+O expands");
+        a.on_key(key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(!a.expand_tools, "Ctrl+O again collapses");
+    }
+
+    #[test]
+    fn tool_result_for_unknown_id_is_ignored() {
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx);
+        // A result with no matching open card must not panic or fabricate a card.
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "missing".to_owned(),
+            name: "read".to_owned(),
+            parts: vec![tool_part("x")],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+        assert!(!a.transcript.iter().any(|e| matches!(e, Entry::Tool(_))));
     }
 
     #[test]
