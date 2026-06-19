@@ -317,6 +317,67 @@ fn set_title_on_unknown_session_is_not_found() {
     ));
 }
 
+// VAL-CROSS-006 (persistence half): a session's chosen model is stored and survives a reopen, so a
+// later headless resume can read it back. A fresh session has no model; passing None clears it.
+#[test]
+fn set_model_persists_a_per_session_model_across_reopen() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let id = {
+        let db = Database::open(&db_path).expect("open db (A)");
+        let session = db.sessions().create(None).expect("create");
+        assert_eq!(session.model, None, "a fresh session has no model");
+        let chosen = db
+            .sessions()
+            .set_model(&session.id, Some("anthropic/claude-sonnet-4"))
+            .expect("set model");
+        assert_eq!(
+            chosen.model.as_deref(),
+            Some("anthropic/claude-sonnet-4"),
+            "the model is recorded"
+        );
+        session.id
+    };
+
+    let db = Database::open(&db_path).expect("open db (B)");
+    let reloaded = db.sessions().require(&id).expect("require");
+    assert_eq!(
+        reloaded.model.as_deref(),
+        Some("anthropic/claude-sonnet-4"),
+        "the chosen model survives a reopen"
+    );
+    // It is also visible through the listing path the TUI picker uses.
+    let listed = db.sessions().list().expect("list");
+    assert_eq!(
+        listed
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.model.as_deref()),
+        Some("anthropic/claude-sonnet-4"),
+        "the listing exposes the per-session model"
+    );
+
+    let cleared = db.sessions().set_model(&id, None).expect("clear model");
+    assert_eq!(cleared.model, None, "None clears the per-session model");
+}
+
+#[test]
+fn set_model_on_unknown_session_is_not_found() {
+    let db = Database::open_in_memory().expect("memory db");
+    let err = db
+        .sessions()
+        .set_model("ses_does_not_exist", Some("google/gemini-2.5-flash"))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        DbError::NotFound {
+            kind: "session",
+            ..
+        }
+    ));
+}
+
 // Deleting a session removes it from the listing and cascades to its messages; deleting an unknown
 // id is a graceful `false` rather than an error.
 #[test]

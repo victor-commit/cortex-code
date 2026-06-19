@@ -170,7 +170,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     };
     let permission_engine = prepared_permissions.engine.clone();
 
-    let run_config = match resolve_run_config(config_inputs) {
+    // Whether the caller passed an explicit `--model`: when present it always wins, so a model
+    // persisted with the resumed session is NOT consulted; when absent a per-session model (if any)
+    // governs the resume (VAL-CROSS-006).
+    let explicit_model = args.model.is_some();
+
+    let mut run_config = match resolve_run_config(config_inputs) {
         Ok(run_config) => run_config,
         Err(err) => {
             eprintln!("cortex run: {err}");
@@ -211,6 +216,26 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         Ok(id) => id,
         Err(exit) => return exit,
     };
+
+    // Honor a model persisted with the session (chosen interactively via the TUI `/models` picker)
+    // when the caller passed no explicit `--model`: resuming the session headless then uses that
+    // per-session model rather than reverting to the global default (VAL-CROSS-006). An explicit
+    // `--model` always wins; a session with no stored model leaves the config-resolved model in
+    // place. The stored id is validated the same way as a flag/config id, so a malformed stored
+    // value fails fast rather than reaching the provider.
+    let stored_model = db
+        .sessions()
+        .get(&session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| session.model);
+    if let Some(model) = session_model_override(explicit_model, stored_model.as_deref()) {
+        if let Err(message) = validate_model_id(&model) {
+            eprintln!("cortex run: {message}");
+            return Exit::Failure;
+        }
+        run_config.model = providers::resolve_model(Some(&model));
+    }
 
     // Project the session's prior turns into canonical history BEFORE persisting this prompt, so
     // the new user input is sent once (as the turn's input) and not duplicated into the history.
@@ -1031,6 +1056,22 @@ fn validate_model_id(model_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Decide whether a session's persisted model should override the config-resolved model for a
+/// resumed run.
+///
+/// A persisted, non-empty model is honored only when the caller passed no explicit `--model`
+/// (which always wins); a blank or absent stored model leaves the config-resolved model in place.
+/// Returned trimmed and owned so the caller can validate and resolve it (VAL-CROSS-006).
+fn session_model_override(explicit_model: bool, session_model: Option<&str>) -> Option<String> {
+    if explicit_model {
+        return None;
+    }
+    session_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+}
+
 /// Resolve the prompt according to the documented precedence (argument over stdin).
 ///
 /// `stdin_is_terminal` is passed in (rather than derived from `source`) because `IsTerminal`
@@ -1316,6 +1357,31 @@ mod tests {
         assert!(validate_model_id("/gemini-2.5-flash").is_err());
         assert!(validate_model_id("google/").is_err());
         assert!(validate_model_id("").is_err());
+    }
+
+    // VAL-CROSS-006 (decision half): a session's stored model governs a resume only when no
+    // explicit `--model` was passed; the flag always wins, and a blank/absent stored model leaves
+    // the config-resolved model in place.
+    #[test]
+    fn session_model_override_honors_a_stored_model_only_without_an_explicit_flag() {
+        // No flag + a stored model -> the stored model overrides (trimmed).
+        assert_eq!(
+            session_model_override(false, Some("anthropic/claude-sonnet-4")),
+            Some("anthropic/claude-sonnet-4".to_owned())
+        );
+        assert_eq!(
+            session_model_override(false, Some("  google/gemini-2.5-flash  ")),
+            Some("google/gemini-2.5-flash".to_owned()),
+            "the stored model is trimmed"
+        );
+        // An explicit `--model` always wins, so the stored model is ignored.
+        assert_eq!(
+            session_model_override(true, Some("anthropic/claude-sonnet-4")),
+            None
+        );
+        // A blank or absent stored model leaves the config-resolved model in place.
+        assert_eq!(session_model_override(false, None), None);
+        assert_eq!(session_model_override(false, Some("   ")), None);
     }
 
     // Well-formed `provider/model` ids pass validation, including ones unknown to the embedded

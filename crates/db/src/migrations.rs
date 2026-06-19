@@ -32,6 +32,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         sql: include_str!("migrations/0003_todos.sql"),
     },
+    Migration {
+        version: 4,
+        sql: include_str!("migrations/0004_session_model.sql"),
+    },
 ];
 
 /// The highest migration version known to this build.

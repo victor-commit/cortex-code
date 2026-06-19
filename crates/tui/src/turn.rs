@@ -63,12 +63,13 @@ const OUTBOUND_OPERATION: &str = "LLM turn";
 pub fn spawn(
     prompt: String,
     history: Vec<Message>,
+    model: String,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<TurnMessage> {
     let (tx, rx) = mpsc::channel();
     let tx_events = tx.clone();
     thread::spawn(move || {
-        match build_turn(&prompt, history) {
+        match build_turn(&prompt, history, &model) {
             Ok((provider, turn, model_id)) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -156,8 +157,9 @@ fn ephemeral_session_id() -> String {
     format!("tui-{}-{nanos}", std::process::id())
 }
 
-/// Build the provider and assembled [`Turn`] for a prompt, resolving the model, credential, and any
-/// endpoint override through the same configuration precedence the headless run uses.
+/// Build the provider and assembled [`Turn`] for a prompt, running against the supplied active
+/// model (the footer's model, which the `/models` picker updates) while resolving the credential
+/// and any endpoint override through the same configuration the headless run uses.
 ///
 /// # Errors
 /// Returns a human-readable, secret-scrubbed message when the kill-switch refuses the turn, a
@@ -165,6 +167,7 @@ fn ephemeral_session_id() -> String {
 fn build_turn(
     prompt: &str,
     history: Vec<Message>,
+    active_model: &str,
 ) -> Result<(llm::OpenAiCompatible, Turn, String), String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
     guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
@@ -173,7 +176,9 @@ fn build_turn(
         .map_err(|err| format!("cannot determine the working directory: {err}"))?;
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
 
-    let model = providers::resolve_model(Some(effective.model()));
+    // Run against the active model the UI shows (set from config at launch, updated by `/models`),
+    // so a per-session model choice governs the turn directly rather than via a config round-trip.
+    let model = providers::resolve_model(Some(active_model));
     validate_model_id(&model.model_id)?;
 
     let credentials =

@@ -17,6 +17,10 @@ pub struct Session {
     pub created_at: String,
     /// Last-update timestamp (UTC), advanced when a message is appended.
     pub updated_at: String,
+    /// The model chosen for this session (e.g. via the TUI `/models` picker), or `None` when no
+    /// per-session choice was made (the configured/default model then governs). Honored on a
+    /// headless `cortex run --session <id>` resume without an explicit `--model`.
+    pub model: Option<String>,
 }
 
 impl Session {
@@ -26,6 +30,7 @@ impl Session {
             title: row.get("title")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
+            model: row.get("model")?,
         })
     }
 }
@@ -51,7 +56,7 @@ impl<'a> SessionRepo<'a> {
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, created_at, updated_at)
              VALUES (?1, ?2, datetime('now'), datetime('now'))
-             RETURNING id, title, created_at, updated_at",
+             RETURNING id, title, created_at, updated_at, model",
             params![id, title],
             Session::from_row,
         )?;
@@ -89,7 +94,7 @@ impl<'a> SessionRepo<'a> {
     /// order (their own `rowid`), and sort behind any session that has activity.
     pub fn most_recent(&self) -> DbResult<Option<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at FROM sessions AS s \
+            "SELECT id, title, created_at, updated_at, model FROM sessions AS s \
              ORDER BY (SELECT MAX(rowid) FROM messages WHERE session_id = s.id) DESC, \
              s.rowid DESC LIMIT 1",
         )?;
@@ -102,9 +107,9 @@ impl<'a> SessionRepo<'a> {
 
     /// Fetch a session by id, or `None` if it does not exist.
     pub fn get(&self, id: &str) -> DbResult<Option<Session>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?1")?;
+        let mut statement = self.conn.prepare(
+            "SELECT id, title, created_at, updated_at, model FROM sessions WHERE id = ?1",
+        )?;
         let mut rows = statement.query_map(params![id], Session::from_row)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
@@ -141,6 +146,28 @@ impl<'a> SessionRepo<'a> {
         self.require(id)
     }
 
+    /// Set (or clear) the model chosen for a session, returning the updated record.
+    ///
+    /// This is the durable seam behind the TUI `/models` picker: a model selected for a session is
+    /// persisted here so a later headless `cortex run --session <id>` resume honors it without an
+    /// explicit `--model`. Passing `None` clears the per-session choice (the configured/default
+    /// model then governs). Errors with [`DbError::NotFound`] when no session has the given id.
+    ///
+    /// A model id is not secret, so it is stored verbatim (unlike a title, which is redacted).
+    pub fn set_model(&self, id: &str, model: Option<&str>) -> DbResult<Session> {
+        let affected = self.conn.execute(
+            "UPDATE sessions SET model = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, model],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound {
+                kind: "session",
+                id: id.to_owned(),
+            });
+        }
+        self.require(id)
+    }
+
     /// Delete a session and (via the `ON DELETE CASCADE` foreign key on `messages`) every message
     /// stored under it, returning whether a session row was removed.
     ///
@@ -156,7 +183,7 @@ impl<'a> SessionRepo<'a> {
     /// List sessions newest-first (by creation time, then id for a stable tiebreak).
     pub fn list(&self) -> DbResult<Vec<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at FROM sessions \
+            "SELECT id, title, created_at, updated_at, model FROM sessions \
              ORDER BY created_at DESC, id DESC",
         )?;
         let rows = statement.query_map([], Session::from_row)?;

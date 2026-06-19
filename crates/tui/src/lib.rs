@@ -72,6 +72,9 @@ fn run() -> io::Result<()> {
     // location resolves; opening never blocks launch.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     app.set_checkpoint_store(checkpoints::ShadowStore::open_default(&cwd).ok().flatten());
+    // Bind durable session persistence to the shared store so interactive turns are recorded and
+    // become resumable from headless `cortex run` and the session picker (cross-surface continuity).
+    app.set_session_store(db::DbPathInputs::from_process().resolve());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -150,7 +153,12 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         // interrupt seam: the UI sets it (Esc) to stop the turn gracefully.
         if let Some(prompt) = app.take_pending_prompt() {
             let cancel = Arc::new(AtomicBool::new(false));
-            let rx = turn::spawn(prompt.clone(), app.history_snapshot(), cancel.clone());
+            let rx = turn::spawn(
+                prompt.clone(),
+                app.history_snapshot(),
+                app.active_model(),
+                cancel.clone(),
+            );
             app.begin_turn(prompt, rx, cancel);
             continue;
         }

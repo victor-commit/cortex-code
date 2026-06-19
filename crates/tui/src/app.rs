@@ -377,6 +377,16 @@ pub struct App {
     /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
     /// modal: keys drive the approve/deny choice (the worker thread is blocked awaiting the reply).
     pending_permission: Option<PendingPermission>,
+    /// The resolved database path durable session persistence writes to, bound at launch via
+    /// [`set_session_store`](App::set_session_store). `None` disables persistence (the default in
+    /// unit tests, so they never touch a real database); the real launch sets it so interactive
+    /// turns are recorded in the shared store and become resumable across surfaces.
+    db_path: Option<PathBuf>,
+    /// The persisted id (`ses_…`) of the active conversation, or `None` until the first turn (or a
+    /// model selection) lazily creates a session, or a session is loaded from the picker. This is
+    /// the durable id a headless `cortex run --session <id>` resumes; it is surfaced in the footer
+    /// once known so the same conversation is addressable across surfaces.
+    session_id: Option<String>,
 }
 
 impl App {
@@ -422,6 +432,8 @@ impl App {
             queued_prompts: VecDeque::new(),
             cancel_flag: None,
             pending_permission: None,
+            db_path: None,
+            session_id: None,
         }
     }
 
@@ -445,6 +457,21 @@ impl App {
     /// store opened for the working directory. `None` leaves undo/redo as graceful no-ops.
     pub fn set_checkpoint_store(&mut self, store: Option<ShadowStore>) {
         self.checkpoints = store;
+    }
+
+    /// Bind durable session persistence to the resolved database path, used at launch so the TUI's
+    /// turns are recorded in the shared store and become resumable from headless `cortex run` and
+    /// the session picker. `None` (the default) disables persistence so unit tests never touch a
+    /// real database; opening per write degrades gracefully when the store cannot be opened.
+    pub fn set_session_store(&mut self, path: Option<PathBuf>) {
+        self.db_path = path;
+    }
+
+    /// The active model id (the value the footer shows and the next turn runs against), used to
+    /// drive a turn against the session's chosen model rather than re-reading global config.
+    #[must_use]
+    pub fn active_model(&self) -> String {
+        self.status.model.clone()
     }
 
     /// The active keybind set (for rendering the which-key overlay and `/help`).
@@ -593,9 +620,16 @@ impl App {
         self.transcript.push(Entry::User(header));
         self.transcript
             .push(Entry::Assistant(AssistantTurn::default()));
-        self.turn_prompt = Some(prompt);
         self.turn_errored = false;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
+        // Persist the user message to the durable store so this conversation is resumable from
+        // headless `cortex run --session <id>` and the session picker. A compaction turn's internal
+        // summarization instruction is not part of the visible conversation, so it is not persisted
+        // (the full pre-compaction transcript stays the durable record).
+        if !self.turn_compaction {
+            self.persist_message("user", &prompt);
+        }
+        self.turn_prompt = Some(prompt);
         self.turn_rx = Some(rx);
         self.cancel_flag = Some(cancel);
         self.spinner_start = Some(Instant::now());
@@ -787,7 +821,11 @@ impl App {
             self.history.push(Message::user(prompt));
             if !errored {
                 if let Some(answer) = self.latest_assistant_answer() {
-                    self.history.push(Message::assistant(answer));
+                    self.history.push(Message::assistant(answer.clone()));
+                    // Persist the assistant reply so a resumed session (headless or picker) sees the
+                    // full exchange. The user message was persisted when the turn began; an errored
+                    // turn has no answer to record, matching the headless runner.
+                    self.persist_message("assistant", &answer);
                 }
             }
         }
@@ -1291,7 +1329,7 @@ impl App {
     /// exists yet or it cannot be read, only the current session is shown, so the picker always
     /// opens with at least the current session listed.
     fn open_sessions_dialog(&mut self) {
-        let (items, entries) = session_rows(&self.status.session);
+        let (items, entries) = self.session_rows();
         self.session_entries = entries;
         self.session_rename = None;
         self.open_dialog(Dialog {
@@ -1578,6 +1616,9 @@ impl App {
             Some(DialogKind::Models) => {
                 if let Some(model) = self.select_model() {
                     self.persist_config_string("model", &model);
+                    // Also record the choice with the active session so a headless
+                    // `cortex run --session <id>` resume (no `--model`) honors it (VAL-CROSS-006).
+                    self.persist_session_model(&model);
                     self.transcript
                         .push(Entry::Notice(format!("Model set to {model}")));
                 }
@@ -1649,6 +1690,121 @@ impl App {
         }
     }
 
+    /// Open the durable session store at the bound database path, or `None` when persistence is
+    /// disabled (no path bound — the default in tests) or the store cannot be opened. Opening per
+    /// operation matches the picker's read helpers and avoids holding a connection across the loop.
+    fn open_store(&self) -> Option<db::Database> {
+        let path = self.db_path.as_ref()?;
+        db::Database::open(path).ok()
+    }
+
+    /// Ensure a durable session backs the current conversation, creating one lazily on first need,
+    /// and return its id. The new id is surfaced in the footer so the conversation is addressable
+    /// across surfaces. Best-effort: returns `None` (leaving the conversation in-memory only) when
+    /// persistence is disabled or the store cannot be opened.
+    fn ensure_session_id(&mut self) -> Option<String> {
+        if let Some(id) = &self.session_id {
+            return Some(id.clone());
+        }
+        let session = self.open_store()?.sessions().create(None).ok()?;
+        self.session_id = Some(session.id.clone());
+        self.status.session = session.id.clone();
+        Some(session.id)
+    }
+
+    /// Persist one conversation message under the active session, creating the session lazily if
+    /// needed. Best-effort: a disabled/unopenable store or a write error leaves the turn rendered
+    /// in-memory without aborting it (the answer has already been shown).
+    fn persist_message(&mut self, role: &str, content: &str) {
+        let Some(id) = self.ensure_session_id() else {
+            return;
+        };
+        if let Some(db) = self.open_store() {
+            let _ = db.messages().create(&id, role, content);
+        }
+    }
+
+    /// Persist the model chosen for the active session (the durable seam behind the `/models`
+    /// picker), creating the session lazily so the choice attaches even before the first turn. This
+    /// is what a headless `cortex run --session <id>` resume reads back (VAL-CROSS-006). Best-effort.
+    fn persist_session_model(&mut self, model: &str) {
+        let Some(id) = self.ensure_session_id() else {
+            return;
+        };
+        if let Some(db) = self.open_store() {
+            let _ = db.sessions().set_model(&id, Some(model));
+        }
+    }
+
+    /// Every persisted session newest-first from the bound store, best-effort: an empty list when
+    /// no store is bound or it cannot be opened, so the picker still opens with just the current
+    /// session. Reads through the same bound store the TUI writes to, so the picker reflects this
+    /// session's own persisted turns and any created by another surface against the shared store.
+    fn persisted_sessions(&self) -> Vec<db::Session> {
+        match self.open_store() {
+            Some(db) => db.sessions().list().unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Build the session picker's rows and their backing metadata in lockstep: the synthetic
+    /// "current session" row (no persisted id) followed by every persisted session, newest-first.
+    fn session_rows(&self) -> (Vec<String>, Vec<SessionEntry>) {
+        let mut items = vec![format!("● current — {} session", self.status.session)];
+        let mut entries = vec![SessionEntry {
+            id: None,
+            title: None,
+        }];
+        for session in self.persisted_sessions() {
+            items.push(session_picker_label(&session));
+            entries.push(SessionEntry {
+                id: Some(session.id.clone()),
+                title: session.title.clone(),
+            });
+        }
+        (items, entries)
+    }
+
+    /// Load a persisted session and its messages by id from the bound store, or `None` when the
+    /// session does not exist. Best-effort failures surface as an `Err(String)`.
+    fn load_persisted_session(&self, id: &str) -> Result<Option<LoadedSession>, String> {
+        let database = self
+            .open_store()
+            .ok_or_else(|| "no session store is available".to_owned())?;
+        let session = match database.sessions().get(id).map_err(|err| err.to_string())? {
+            Some(session) => session,
+            None => return Ok(None),
+        };
+        let messages = database
+            .messages()
+            .list_for_session(id)
+            .map_err(|err| err.to_string())?;
+        Ok(Some(LoadedSession { session, messages }))
+    }
+
+    /// Rename a persisted session (set or clear its title) by id in the bound store.
+    fn rename_persisted_session(&self, id: &str, title: Option<&str>) -> Result<(), String> {
+        let database = self
+            .open_store()
+            .ok_or_else(|| "no session store is available".to_owned())?;
+        database
+            .sessions()
+            .set_title(id, title)
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    /// Delete a persisted session by id from the bound store, returning whether a row was removed.
+    fn delete_persisted_session(&self, id: &str) -> Result<bool, String> {
+        let database = self
+            .open_store()
+            .ok_or_else(|| "no session store is available".to_owned())?;
+        database
+            .sessions()
+            .delete(id)
+            .map_err(|err| err.to_string())
+    }
+
     /// Switch the active model to the highlighted row of the open model picker, updating the footer
     /// status. Returns the new model id when it actually changed (so the caller persists it), or
     /// `None` when the dialog is not the model picker or the highlighted model is already active.
@@ -1701,7 +1857,7 @@ impl App {
         if self.is_busy() {
             return;
         }
-        let session = match load_persisted_session(id) {
+        let session = match self.load_persisted_session(id) {
             Ok(Some(loaded)) => loaded,
             Ok(None) => {
                 self.note_error(format!("Session {id} no longer exists."));
@@ -1732,6 +1888,19 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        // Adopt the loaded session as the active durable session so subsequent turns append to it,
+        // and honor its persisted model choice (if any) so the footer and the next turn match what
+        // a headless resume would use.
+        self.session_id = Some(session.session.id.clone());
+        if let Some(model) = session
+            .session
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            self.status.model = model.to_owned();
         }
         let label = session_status_label(&session.session);
         self.status.session = label.clone();
@@ -1766,7 +1935,7 @@ impl App {
         };
         let trimmed = new_title.trim();
         let title = (!trimmed.is_empty()).then_some(trimmed);
-        match rename_persisted_session(&id, title) {
+        match self.rename_persisted_session(&id, title) {
             Ok(()) => {
                 let shown = title.map(str::to_owned).unwrap_or_else(|| id.clone());
                 self.refresh_sessions_dialog();
@@ -1788,7 +1957,7 @@ impl App {
         let Some(id) = self.selected_session_id() else {
             return;
         };
-        match delete_persisted_session(&id) {
+        match self.delete_persisted_session(&id) {
             Ok(_) => {
                 self.refresh_sessions_dialog();
                 self.transcript
@@ -1807,7 +1976,7 @@ impl App {
         ) {
             return;
         }
-        let (items, entries) = session_rows(&self.status.session);
+        let (items, entries) = self.session_rows();
         let new_len = items.len();
         self.session_entries = entries;
         if let Some(dialog) = self.dialog.as_mut() {
@@ -1870,6 +2039,11 @@ impl App {
         self.transcript.clear();
         self.history.clear();
         self.usage = UsageSummary::default();
+        // Detach from the current durable session so the next turn creates a fresh one rather than
+        // appending to the prior conversation; the footer returns to the "new" placeholder until it
+        // is created.
+        self.session_id = None;
+        self.status.session = "new".to_owned();
         self.reset_view();
     }
 
@@ -2696,37 +2870,6 @@ struct LoadedSession {
 /// Build the session picker's rows and their backing metadata in lockstep: the synthetic "current
 /// session" row (no persisted id) followed by every persisted session, newest-first. The labels and
 /// entries share the same order so a highlighted row maps directly to its [`SessionEntry`].
-fn session_rows(current_label: &str) -> (Vec<String>, Vec<SessionEntry>) {
-    let mut items = vec![format!("● current — {current_label} session")];
-    let mut entries = vec![SessionEntry {
-        id: None,
-        title: None,
-    }];
-    for session in persisted_sessions() {
-        items.push(session_picker_label(&session));
-        entries.push(SessionEntry {
-            id: Some(session.id.clone()),
-            title: session.title.clone(),
-        });
-    }
-    (items, entries)
-}
-
-/// Every persisted session newest-first, best-effort: an empty list when no database exists yet or
-/// it cannot be read, so the picker still opens with just the current session.
-fn persisted_sessions() -> Vec<db::Session> {
-    let Some(path) = db::DbPathInputs::from_process().resolve() else {
-        return Vec::new();
-    };
-    if !path.exists() {
-        return Vec::new();
-    }
-    let Ok(database) = db::Database::open(&path) else {
-        return Vec::new();
-    };
-    database.sessions().list().unwrap_or_default()
-}
-
 /// A session picker row label: `id  —  title` when titled, otherwise the bare id.
 fn session_picker_label(session: &db::Session) -> String {
     match &session.title {
@@ -2741,48 +2884,6 @@ fn session_status_label(session: &db::Session) -> String {
         Some(title) if !title.trim().is_empty() => title.clone(),
         _ => session.id.clone(),
     }
-}
-
-/// Load a persisted session and its messages by id, or `None` when the session does not exist.
-/// Best-effort failures (no resolvable store, an open/read error) surface as an `Err(String)`.
-fn load_persisted_session(id: &str) -> Result<Option<LoadedSession>, String> {
-    let database = open_session_store()?;
-    let session = match database.sessions().get(id).map_err(|err| err.to_string())? {
-        Some(session) => session,
-        None => return Ok(None),
-    };
-    let messages = database
-        .messages()
-        .list_for_session(id)
-        .map_err(|err| err.to_string())?;
-    Ok(Some(LoadedSession { session, messages }))
-}
-
-/// Rename a persisted session (set or clear its title) by id.
-fn rename_persisted_session(id: &str, title: Option<&str>) -> Result<(), String> {
-    let database = open_session_store()?;
-    database
-        .sessions()
-        .set_title(id, title)
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
-/// Delete a persisted session by id, returning whether a row was removed.
-fn delete_persisted_session(id: &str) -> Result<bool, String> {
-    let database = open_session_store()?;
-    database
-        .sessions()
-        .delete(id)
-        .map_err(|err| err.to_string())
-}
-
-/// Resolve and open the session store, erroring with a clear message when no location resolves.
-fn open_session_store() -> Result<db::Database, String> {
-    let path = db::DbPathInputs::from_process()
-        .resolve()
-        .ok_or_else(|| "no session store location could be resolved".to_owned())?;
-    db::Database::open(&path).map_err(|err| err.to_string())
 }
 
 /// Load the effective configuration with no CLI overrides, or `None` if it cannot be resolved.
@@ -5252,5 +5353,198 @@ mod tests {
         let mut a = app();
         a.undo();
         assert_eq!(last_notice(&a), "Nothing to undo.");
+    }
+
+    /// A unique temp database path bound to an app for session-persistence tests, so a real DB is
+    /// exercised without touching any shared location.
+    fn session_store_path(tag: &str) -> PathBuf {
+        let unique = UNDO_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "cortex-tui-session-{tag}-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create session store dir");
+        root.join("cortex.db")
+    }
+
+    // VAL-CROSS-002 (persistence half): a turn driven in the TUI persists its user and assistant
+    // messages under a real session and surfaces that session id, so `cortex run --session <id>`
+    // can resume the exact conversation.
+    #[test]
+    fn a_tui_turn_persists_its_exchange_and_surfaces_the_session_id() {
+        let path = session_store_path("exchange");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        assert_eq!(
+            a.status.session, "new",
+            "no session id before the first turn"
+        );
+
+        run_turn(&mut a, "remember the word marmalade", "noted: marmalade");
+
+        let id = a.session_id.clone().expect("a session was created");
+        assert_eq!(
+            a.status.session, id,
+            "the footer surfaces the new session id"
+        );
+        assert!(id.starts_with("ses_"), "a real persisted id, got {id}");
+
+        // The exchange is durable and resumable: reopening the store shows both messages in order.
+        let db = db::Database::open(&path).expect("reopen store");
+        let messages = db.messages().list_for_session(&id).expect("list messages");
+        assert_eq!(messages.len(), 2, "user + assistant persisted");
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "remember the word marmalade");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content, "noted: marmalade");
+    }
+
+    // A second turn appends to the same session rather than creating a new one, so a multi-turn TUI
+    // conversation resumes as a single coherent session headless.
+    #[test]
+    fn successive_tui_turns_append_to_one_session() {
+        let path = session_store_path("append");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        run_turn(&mut a, "first", "one");
+        let id = a.session_id.clone().expect("session created");
+        run_turn(&mut a, "second", "two");
+        assert_eq!(
+            a.session_id.as_deref(),
+            Some(id.as_str()),
+            "the session id is stable across turns"
+        );
+
+        let db = db::Database::open(&path).expect("reopen");
+        let messages = db.messages().list_for_session(&id).expect("messages");
+        assert_eq!(messages.len(), 4, "both turns persisted under one session");
+    }
+
+    // VAL-CROSS-006 (TUI half): selecting a model for the session via `/models` persists it with the
+    // session row, so a headless resume reads it back. Driven through the dialog-confirm path.
+    #[test]
+    fn selecting_a_model_persists_it_with_the_session() {
+        let path = session_store_path("model");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        a.persist_session_model("anthropic/claude-sonnet-4");
+        let id = a.session_id.clone().expect("session created for the model");
+
+        let db = db::Database::open(&path).expect("reopen");
+        let session = db.sessions().require(&id).expect("session");
+        assert_eq!(
+            session.model.as_deref(),
+            Some("anthropic/claude-sonnet-4"),
+            "the per-session model is persisted"
+        );
+    }
+
+    // A compaction turn does not persist its internal summarization instruction, so the durable
+    // record stays the faithful pre-compaction transcript that a headless resume reads (VAL-CROSS-010).
+    #[test]
+    fn compaction_does_not_persist_its_internal_prompt() {
+        let path = session_store_path("compact");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        run_turn(&mut a, "remember token ZULU-42", "noted ZULU-42");
+        let id = a.session_id.clone().expect("session created");
+
+        // Drive a compaction turn the way `/compact` does (a flagged turn with the summary prompt).
+        a.pending_compaction = true;
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(COMPACTION_PROMPT.to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "Summary: user shared token ZULU-42.".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        // Only the real exchange persisted; the compaction instruction/summary are not recorded, so
+        // the durable transcript still contains the original pre-compaction fact verbatim.
+        let db = db::Database::open(&path).expect("reopen");
+        let messages = db.messages().list_for_session(&id).expect("messages");
+        assert_eq!(
+            messages.len(),
+            2,
+            "only the real user+assistant turn persisted"
+        );
+        assert!(
+            messages.iter().all(|m| m.content != COMPACTION_PROMPT),
+            "the compaction instruction is never persisted"
+        );
+        assert!(
+            messages.iter().any(|m| m.content.contains("ZULU-42")),
+            "the pre-compaction fact survives in the durable record"
+        );
+    }
+
+    // `/new` detaches from the active session so the next turn starts a fresh one rather than
+    // appending to the prior conversation.
+    #[test]
+    fn new_session_detaches_from_the_active_session() {
+        let path = session_store_path("new");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        run_turn(&mut a, "first", "one");
+        let first = a.session_id.clone().expect("first session");
+
+        a.new_session();
+        assert_eq!(a.session_id, None, "detached from the prior session");
+        assert_eq!(a.status.session, "new", "footer returns to the placeholder");
+
+        run_turn(&mut a, "second", "two");
+        let second = a.session_id.clone().expect("second session");
+        assert_ne!(first, second, "a fresh session was created");
+    }
+
+    // Loading a session from the picker adopts it as active and honors its persisted model, so
+    // subsequent turns append to it and the footer matches a headless resume.
+    #[test]
+    fn loading_a_session_adopts_it_and_honors_its_model() {
+        let path = session_store_path("load");
+        // Seed a session with a model and a prior message directly in the store.
+        let seeded = {
+            let db = db::Database::open(&path).expect("open seed");
+            let session = db.sessions().create(Some("seed")).expect("create");
+            db.sessions()
+                .set_model(&session.id, Some("anthropic/claude-sonnet-4"))
+                .expect("set model");
+            db.messages()
+                .create(&session.id, "user", "earlier fact")
+                .expect("seed message");
+            session.id
+        };
+
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        a.load_session(&seeded);
+
+        assert_eq!(a.session_id.as_deref(), Some(seeded.as_str()), "adopted");
+        assert_eq!(
+            a.status.model, "anthropic/claude-sonnet-4",
+            "the session's model is honored on load"
+        );
+        assert!(
+            a.history_snapshot()
+                .iter()
+                .any(|m| m.content == "earlier fact"),
+            "the prior transcript is loaded into history"
+        );
+    }
+
+    // Persistence is gated on a bound store: without one (the unit-test default) a turn never
+    // touches a database, so tests stay hermetic.
+    #[test]
+    fn without_a_store_a_turn_persists_nothing() {
+        let mut a = app();
+        run_turn(&mut a, "hi", "hello");
+        assert_eq!(a.session_id, None, "no session created without a store");
+        assert_eq!(a.status.session, "new", "footer unchanged without a store");
     }
 }
