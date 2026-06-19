@@ -277,3 +277,224 @@ fn cli_undo_json_output_is_strict() {
     assert!(paths.iter().any(|p| p == "x.txt"), "paths: {paths:?}");
     assert_eq!(h.read("x.txt"), "H0");
 }
+
+/// Run a git command inside `dir`, asserting success.
+fn git_in(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Run a git query inside `dir`, returning trimmed stdout.
+fn git_query(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+// VAL-CKPT-006 / VAL-CKPT-013: with the workspace a REAL git project, `cortex undo`/`cortex redo`
+// leave the project's HEAD, reflog, and porcelain status byte-identical, and no shadow-store
+// artifacts appear inside the project (the store lives under the external checkpoint base).
+#[test]
+fn cli_checkpoint_ops_leave_a_git_project_pristine() {
+    let h = Harness::new("git-pristine");
+    h.write("tracked.txt", "H0\n");
+    git_in(&h.workspace, &["init", "-q"]);
+    git_in(&h.workspace, &["add", "tracked.txt"]);
+    git_in(
+        &h.workspace,
+        &[
+            "-c",
+            "user.name=tester",
+            "-c",
+            "user.email=tester@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+    );
+
+    let head0 = git_query(&h.workspace, &["rev-parse", "HEAD"]);
+    let reflog0 = git_query(&h.workspace, &["reflog"]);
+    let status0 = git_query(&h.workspace, &["status", "--porcelain"]);
+    assert!(status0.is_empty(), "the project starts clean");
+
+    // Create the shadow store (first `cortex undo` is a clean no-op), then record an edit turn.
+    assert_success(&h.cortex(&["undo"]));
+    let store = h.open_store();
+    let tracked = h.path("tracked.txt");
+    record_turn(&store, "edit", &[tracked.as_path()], || {
+        std::fs::write(&tracked, "H1 agent edit\n").unwrap();
+    });
+
+    // `cortex undo` (separate process) restores the committed bytes; `cortex redo` re-applies them.
+    assert_success(&h.cortex(&["undo"]));
+    assert_eq!(h.read("tracked.txt"), "H0\n");
+    assert_success(&h.cortex(&["redo"]));
+    assert_eq!(h.read("tracked.txt"), "H1 agent edit\n");
+    assert_success(&h.cortex(&["undo"]));
+    assert_eq!(h.read("tracked.txt"), "H0\n");
+
+    // The project's git state is untouched by all that checkpoint activity.
+    assert_eq!(
+        git_query(&h.workspace, &["rev-parse", "HEAD"]),
+        head0,
+        "HEAD untouched"
+    );
+    assert_eq!(
+        git_query(&h.workspace, &["reflog"]),
+        reflog0,
+        "reflog untouched"
+    );
+    assert_eq!(
+        git_query(&h.workspace, &["status", "--porcelain"]),
+        status0,
+        "porcelain status untouched (no shadow-store pollution)"
+    );
+    assert!(
+        git_query(&h.workspace, &["status", "--porcelain"]).is_empty(),
+        "no untracked shadow-store artifacts inside the project"
+    );
+}
+
+// VAL-CKPT-007: `cortex undo` on a file changed out-of-band since the snapshot reports a conflict
+// (non-zero exit) and does not clobber the external change.
+#[test]
+fn cli_undo_detects_out_of_band_conflict() {
+    let h = Harness::new("conflict");
+    h.write("x.txt", "H0\n");
+
+    assert_success(&h.cortex(&["undo"]));
+    let store = h.open_store();
+    let x = h.path("x.txt");
+    record_turn(&store, "agent-edit", &[x.as_path()], || {
+        std::fs::write(&x, "H1 agent edit\n").unwrap();
+    });
+
+    // An external process appends to X after the snapshot was finalized.
+    let external = "H1 agent edit\nEXTERNAL APPEND\n";
+    std::fs::write(&x, external).unwrap();
+
+    let undo = h.cortex(&["undo", "--format", "json"]);
+    assert!(
+        !undo.status.success(),
+        "an out-of-band conflict must make `cortex undo` exit non-zero"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&undo.stdout).trim()).expect("strict JSON");
+    assert_eq!(value["status"], "conflict");
+    let conflicts = value["conflicts"].as_array().expect("conflicts array");
+    assert!(
+        conflicts.iter().any(|p| p == "x.txt"),
+        "the conflict names the affected file: {conflicts:?}"
+    );
+
+    // The external append is preserved (no silent destructive restore).
+    assert_eq!(h.read("x.txt"), external);
+}
+
+// VAL-CKPT-011: the checkpoint history is durable on disk — a turn recorded by one process is undone
+// by a SEPARATE later `cortex` process, restoring the pre-edit bytes byte-identically.
+#[test]
+fn cli_undo_persists_across_separate_processes() {
+    let h = Harness::new("durable");
+    let h0 = "H0 durable\nsecond line\n";
+    h.write("x.txt", h0);
+
+    // Process A: create the shadow store and record an edit (the journal is written to disk).
+    assert_success(&h.cortex(&["undo"]));
+    let store = h.open_store();
+    let x = h.path("x.txt");
+    record_turn(&store, "process-a", &[x.as_path()], || {
+        std::fs::write(&x, "H1 changed\n").unwrap();
+    });
+    drop(store);
+    assert_eq!(h.read("x.txt"), "H1 changed\n");
+
+    // Process B: a fresh `cortex undo` invocation reads the on-disk history and restores H0.
+    assert_success(&h.cortex(&["undo"]));
+    assert_eq!(
+        h.read("x.txt"),
+        h0,
+        "a separate process restores the pre-edit bytes byte-identically"
+    );
+}
+
+// VAL-CKPT-012: `cortex undo` works in a directory that is NOT a git repository and creates no
+// `.git` in the working tree (the shadow store is fully independent).
+#[test]
+fn cli_undo_works_without_a_project_git() {
+    let h = Harness::new("no-git");
+    assert!(
+        !h.path(".git").exists(),
+        "the scratch workspace is not a git repository"
+    );
+    let h0 = "H0 no-git\n";
+    h.write("x.txt", h0);
+
+    assert_success(&h.cortex(&["undo"]));
+    let store = h.open_store();
+    let x = h.path("x.txt");
+    record_turn(&store, "edit", &[x.as_path()], || {
+        std::fs::write(&x, "H1 no-git\n").unwrap();
+    });
+
+    let undo = h.cortex(&["undo"]);
+    assert_success(&undo);
+    assert!(
+        !String::from_utf8_lossy(&undo.stderr)
+            .to_lowercase()
+            .contains("repository"),
+        "no missing-repository error: {}",
+        String::from_utf8_lossy(&undo.stderr)
+    );
+    assert_eq!(h.read("x.txt"), h0, "undo restores H0 with no project .git");
+    assert!(
+        !h.path(".git").exists(),
+        "the working tree still contains no .git"
+    );
+}
+
+// VAL-CKPT-014: `cortex undo` restores only the files the turn changed, leaving an unrelated sibling
+// file byte-identical.
+#[test]
+fn cli_undo_leaves_unrelated_files_untouched() {
+    let h = Harness::new("unrelated");
+    let hu = "UNRELATED CONTENT the agent never touches\n";
+    let h0 = "A H0\n";
+    h.write("U.txt", hu);
+    h.write("A.txt", h0);
+
+    assert_success(&h.cortex(&["undo"]));
+    let store = h.open_store();
+    let a = h.path("A.txt");
+    record_turn(&store, "edit-A", &[a.as_path()], || {
+        std::fs::write(&a, "A H1\n").unwrap();
+    });
+
+    assert_success(&h.cortex(&["undo"]));
+    assert_eq!(h.read("A.txt"), h0, "A.txt restored to H0");
+    assert_eq!(
+        h.read("U.txt"),
+        hu,
+        "the untouched sibling remains byte-identical"
+    );
+}
