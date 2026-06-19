@@ -13,3 +13,6 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+clap = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
