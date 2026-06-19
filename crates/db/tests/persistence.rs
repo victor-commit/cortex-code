@@ -271,6 +271,94 @@ fn messages_in_one_turn_keep_insertion_order() {
     assert_eq!(messages[1].role, "assistant", "the reply must come second");
 }
 
+// Renaming a session updates its title and persists across reopen; clearing the title is supported.
+#[test]
+fn set_title_renames_a_session_and_persists() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let id = {
+        let db = Database::open(&db_path).expect("open db (A)");
+        let session = db.sessions().create(Some("before")).expect("create");
+        let renamed = db
+            .sessions()
+            .set_title(&session.id, Some("after"))
+            .expect("rename");
+        assert_eq!(renamed.title.as_deref(), Some("after"), "title updated");
+        session.id
+    };
+
+    let db = Database::open(&db_path).expect("open db (B)");
+    let reloaded = db.sessions().require(&id).expect("require");
+    assert_eq!(
+        reloaded.title.as_deref(),
+        Some("after"),
+        "the rename survives a reopen"
+    );
+
+    // Passing None clears the title.
+    let cleared = db.sessions().set_title(&id, None).expect("clear title");
+    assert_eq!(cleared.title, None, "None clears the title");
+}
+
+#[test]
+fn set_title_on_unknown_session_is_not_found() {
+    let db = Database::open_in_memory().expect("memory db");
+    let err = db
+        .sessions()
+        .set_title("ses_does_not_exist", Some("x"))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        DbError::NotFound {
+            kind: "session",
+            ..
+        }
+    ));
+}
+
+// Deleting a session removes it from the listing and cascades to its messages; deleting an unknown
+// id is a graceful `false` rather than an error.
+#[test]
+fn delete_removes_a_session_and_cascades_to_messages() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let db = Database::open(&db_path).expect("open db");
+    let keep = db.sessions().create(Some("keep")).expect("create keep");
+    let drop = db.sessions().create(Some("drop")).expect("create drop");
+    db.messages()
+        .create(&drop.id, "user", "remember marmalade")
+        .expect("message under the doomed session");
+
+    let removed = db.sessions().delete(&drop.id).expect("delete");
+    assert!(removed, "an existing session reports a removal");
+
+    let listed = db.sessions().list().expect("list");
+    assert!(
+        listed.iter().any(|s| s.id == keep.id),
+        "the surviving session remains"
+    );
+    assert!(
+        !listed.iter().any(|s| s.id == drop.id),
+        "the deleted session is gone from the listing"
+    );
+    assert!(
+        db.sessions().get(&drop.id).expect("get").is_none(),
+        "the deleted session is unfetchable"
+    );
+    assert!(
+        db.messages()
+            .list_for_session(&drop.id)
+            .expect("list messages")
+            .is_empty(),
+        "the deleted session's messages cascade away"
+    );
+
+    let absent = db.sessions().delete("ses_never_existed").expect("delete");
+    assert!(!absent, "deleting an unknown id is a graceful false");
+}
+
 // VAL-SKEL-042 (unwritable path): a path whose parent is a file cannot be created → Open error.
 #[test]
 fn unwritable_path_yields_open_error() {

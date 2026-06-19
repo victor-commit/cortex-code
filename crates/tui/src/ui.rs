@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
 
-use crate::app::{App, AssistantTurn, Dialog, Entry, UsageSummary};
+use crate::app::{App, AssistantTurn, Dialog, DialogKind, Entry, UsageSummary};
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
@@ -796,8 +796,14 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
 
     let rows = dialog_lines(dialog);
     let widest = rows.iter().map(Line::width).max().unwrap_or(0);
-    let hint = "↑/↓ to move · Esc to close";
-    let content_w = widest.max(hint.chars().count() + 2);
+    // The session picker, when renaming, shows the in-progress new title above the hint.
+    let rename = (dialog.kind == DialogKind::Sessions)
+        .then(|| app.session_rename())
+        .flatten();
+    let hint = dialog_hint(dialog.kind, rename.is_some());
+    let content_w = widest
+        .max(hint.chars().count() + 2)
+        .max(rename.map_or(0, |text| text.chars().count() + 12));
     let max_w = (area.width as usize) * 9 / 10;
     let width = (content_w + 4).clamp(24, max_w.max(24)) as u16;
 
@@ -805,8 +811,10 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(4)
         .clamp(1, MAX_DIALOG_ROWS);
     let visible = rows.len().min(row_budget).max(1);
-    // Borders (2) + the hint row (1) on top of the visible item rows.
-    let height = (visible as u16).saturating_add(3);
+    // Borders (2) + the hint row (1) on top of the visible item rows, plus the rename input row
+    // (1) while renaming.
+    let extra = u16::from(rename.is_some());
+    let height = (visible as u16).saturating_add(3).saturating_add(extra);
 
     let popup = centered_rect(width, height, area);
 
@@ -831,6 +839,19 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
     };
     let end = (offset + visible).min(rows.len());
     let mut shown: Vec<Line<'static>> = rows[offset..end].to_vec();
+    if let Some(text) = rename {
+        // A text-input row reading as `Rename: <typed title>█`, with a block cursor.
+        shown.push(Line::from(vec![
+            Span::styled(
+                "  Rename: ",
+                Style::default()
+                    .fg(style::INFO)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text.to_owned(), Style::default().fg(style::TEXT)),
+            Span::styled("█", Style::default().fg(style::INFO)),
+        ]));
+    }
     shown.push(Line::from(Span::styled(
         format!("  {hint}"),
         Style::default().fg(style::TEXT_DIM),
@@ -839,6 +860,18 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// The footer hint for a dialog: the session picker advertises its switch/rename/delete actions
+/// (and the commit/cancel keys while renaming); every other picker shows the plain navigation hint.
+fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
+    match (kind, renaming) {
+        (DialogKind::Sessions, true) => "type a name · Enter to save · Esc to cancel",
+        (DialogKind::Sessions, false) => {
+            "↑/↓ move · Enter switch · r rename · d delete · Esc close"
+        }
+        _ => "↑/↓ to move · Esc to close",
+    }
 }
 
 /// Build the command palette's command rows for the current query: each matching command as

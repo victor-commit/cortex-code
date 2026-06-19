@@ -120,6 +120,19 @@ impl Dialog {
     }
 }
 
+/// One backing entry behind a row of the open session picker, parallel to the dialog's item rows.
+///
+/// The session picker's first row is a synthetic "current session" entry with no persisted id
+/// (switching/renaming/deleting it is a no-op); every other row carries the persisted session's id
+/// and title so the switch/rename/delete actions can act on the real record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionEntry {
+    /// The persisted session id, or `None` for the synthetic "current session" row.
+    id: Option<String>,
+    /// The persisted session's title (used to seed a rename), if any.
+    title: Option<String>,
+}
+
 /// The open `@`-file picker: the cached candidate file list (loaded when the picker opened) and the
 /// highlighted row. The query and visible matches are derived from the prompt text + cursor (see
 /// [`App::mention_query`] / [`App::mention_matches`]); this state only carries what cannot be
@@ -264,6 +277,13 @@ pub struct App {
     leader_pending: bool,
     /// Whether the session sidebar panel is shown. Toggled by the sidebar keybind.
     sidebar_visible: bool,
+    /// The persisted-session metadata backing the open session picker, parallel to the dialog's
+    /// item rows (index 0 is the synthetic "current session" row). Populated when the session
+    /// picker opens; consulted by switch/rename/delete; cleared when the dialog closes.
+    session_entries: Vec<SessionEntry>,
+    /// While renaming a session in the picker, the in-progress new title text. `None` when not
+    /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
+    session_rename: Option<String>,
 }
 
 impl App {
@@ -296,6 +316,8 @@ impl App {
             keybinds: Keybinds::default(),
             leader_pending: false,
             sidebar_visible: false,
+            session_entries: Vec::new(),
+            session_rename: None,
         }
     }
 
@@ -936,8 +958,9 @@ impl App {
     /// exists yet or it cannot be read, only the current session is shown, so the picker always
     /// opens with at least the current session listed.
     fn open_sessions_dialog(&mut self) {
-        let mut items = vec![format!("● current — {} session", self.status.session)];
-        items.extend(persisted_session_labels());
+        let (items, entries) = session_rows(&self.status.session);
+        self.session_entries = entries;
+        self.session_rename = None;
         self.open_dialog(Dialog {
             kind: DialogKind::Sessions,
             title: "Sessions".to_owned(),
@@ -1064,6 +1087,56 @@ impl App {
     /// Close the open dialog, returning focus to the prompt.
     fn close_dialog(&mut self) {
         self.dialog = None;
+        self.session_entries.clear();
+        self.session_rename = None;
+    }
+
+    /// Handle a key while a modal dialog is open. The dialog is modal: it owns navigation and
+    /// dismissal, and swallows other keys so the prompt is not edited beneath it. `Ctrl+C` still
+    /// quits so the user is never trapped, and `Esc`/`Enter` close the dialog and return focus to
+    /// the prompt. The session picker adds in-place actions: `r` renames the highlighted session
+    /// (a sub-mode where typing edits the new title, `Enter` commits, `Esc` cancels the rename),
+    /// and `d`/`Delete` removes it.
+    fn on_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+
+        // The session rename sub-mode captures typing so the new title is edited in place; Enter
+        // commits and Esc cancels the rename without closing the picker.
+        if self.session_rename.is_some() {
+            match key.code {
+                KeyCode::Enter => self.commit_session_rename(),
+                KeyCode::Esc => self.cancel_session_rename(),
+                KeyCode::Backspace => {
+                    if let Some(buffer) = self.session_rename.as_mut() {
+                        buffer.pop();
+                    }
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    if let Some(buffer) = self.session_rename.as_mut() {
+                        buffer.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        let is_sessions = matches!(
+            self.dialog.as_ref().map(|dialog| dialog.kind),
+            Some(DialogKind::Sessions)
+        );
+        match key.code {
+            KeyCode::Up => self.dialog_select_prev(),
+            KeyCode::Down => self.dialog_select_next(),
+            KeyCode::Enter => self.dialog_confirm(),
+            KeyCode::Esc => self.dialog_cancel(),
+            KeyCode::Char('r') if is_sessions => self.begin_session_rename(),
+            KeyCode::Char('d') | KeyCode::Delete if is_sessions => self.delete_selected_session(),
+            _ => {}
+        }
     }
 
     /// Move the dialog highlight to the next row (wrapping at the end).
@@ -1100,13 +1173,39 @@ impl App {
         }
     }
 
-    /// Confirm the open dialog (Enter). For the theme picker this commits the highlighted theme as
-    /// the active one and persists the choice so it survives a restart; other dialogs simply close.
+    /// Confirm the open dialog (Enter), dispatching by kind: the theme picker commits and persists
+    /// the highlighted theme; the model/agent pickers switch the active model/agent (updating the
+    /// footer and persisting the choice); the session picker switches to the highlighted session
+    /// (loading its transcript). Every confirm closes the dialog and returns focus to the prompt.
     fn dialog_confirm(&mut self) {
-        if let Some(name) = self.confirm_theme_selection() {
-            self.persist_theme(&name);
-            self.transcript
-                .push(Entry::Notice(format!("Theme set to {name}")));
+        match self.dialog.as_ref().map(|dialog| dialog.kind) {
+            Some(DialogKind::Themes) => {
+                if let Some(name) = self.confirm_theme_selection() {
+                    self.persist_theme(&name);
+                    self.transcript
+                        .push(Entry::Notice(format!("Theme set to {name}")));
+                }
+            }
+            Some(DialogKind::Models) => {
+                if let Some(model) = self.select_model() {
+                    self.persist_config_string("model", &model);
+                    self.transcript
+                        .push(Entry::Notice(format!("Model set to {model}")));
+                }
+            }
+            Some(DialogKind::Agents) => {
+                if let Some(agent) = self.select_agent() {
+                    self.persist_config_string("agent", &agent);
+                    self.transcript
+                        .push(Entry::Notice(format!("Agent set to {agent}")));
+                }
+            }
+            Some(DialogKind::Sessions) => {
+                if let Some(id) = self.selected_session_id() {
+                    self.load_session(&id);
+                }
+            }
+            _ => {}
         }
         self.close_dialog();
     }
@@ -1148,10 +1247,191 @@ impl App {
     /// Persist the selected theme to the global config so it is honored on the next launch.
     /// Best-effort: a write failure leaves the in-session theme switched but unpersisted.
     fn persist_theme(&self, name: &str) {
+        self.persist_config_string("theme", name);
+    }
+
+    /// Persist a single top-level `key = value` string to the global config so it is honored on the
+    /// next launch (the seam behind the theme/model/agent pickers). Best-effort: a write failure
+    /// leaves the in-session choice switched but unpersisted.
+    fn persist_config_string(&self, key: &str, value: &str) {
         if let Ok(inputs) = settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
         {
-            let _ = settings::persist_global_string(&inputs, "theme", name);
+            let _ = settings::persist_global_string(&inputs, key, value);
         }
+    }
+
+    /// Switch the active model to the highlighted row of the open model picker, updating the footer
+    /// status. Returns the new model id when it actually changed (so the caller persists it), or
+    /// `None` when the dialog is not the model picker or the highlighted model is already active.
+    fn select_model(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Models {
+            return None;
+        }
+        let model = dialog.items.get(dialog.selected())?.clone();
+        if model == self.status.model {
+            return None;
+        }
+        self.status.model = model.clone();
+        Some(model)
+    }
+
+    /// Switch the active agent to the highlighted row of the open agent picker, updating the footer
+    /// status. Returns the new agent name when it actually changed (so the caller persists it), or
+    /// `None` when the dialog is not the agent picker or the highlighted agent is already active.
+    fn select_agent(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Agents {
+            return None;
+        }
+        let name = Agent::ALL.get(dialog.selected())?.name().to_owned();
+        if name == self.status.agent {
+            return None;
+        }
+        self.status.agent = name.clone();
+        Some(name)
+    }
+
+    /// The persisted id of the highlighted session-picker row, or `None` for the synthetic
+    /// "current session" row (and when the open dialog is not the session picker).
+    fn selected_session_id(&self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Sessions {
+            return None;
+        }
+        self.session_entries
+            .get(dialog.selected())
+            .and_then(|entry| entry.id.clone())
+    }
+
+    /// Load a persisted session's transcript into the view (`Enter` on a session-picker row): the
+    /// stored user/assistant messages replace the current transcript and projected history, and the
+    /// footer's session label updates. Ignored while a turn streams; a read failure surfaces a
+    /// clear error rather than crashing.
+    fn load_session(&mut self, id: &str) {
+        if self.is_busy() {
+            return;
+        }
+        let session = match load_persisted_session(id) {
+            Ok(Some(loaded)) => loaded,
+            Ok(None) => {
+                self.note_error(format!("Session {id} no longer exists."));
+                return;
+            }
+            Err(err) => {
+                self.note_error(format!("Could not load session: {err}"));
+                return;
+            }
+        };
+
+        self.transcript.clear();
+        self.history.clear();
+        self.usage = UsageSummary::default();
+        for message in &session.messages {
+            match message.role.as_str() {
+                "user" => {
+                    self.transcript.push(Entry::User(message.content.clone()));
+                    self.history.push(Message::user(message.content.clone()));
+                }
+                "assistant" => {
+                    self.transcript.push(Entry::Assistant(AssistantTurn {
+                        reasoning: String::new(),
+                        answer: message.content.clone(),
+                    }));
+                    self.history
+                        .push(Message::assistant(message.content.clone()));
+                }
+                _ => {}
+            }
+        }
+        let label = session_status_label(&session.session);
+        self.status.session = label.clone();
+        self.transcript
+            .push(Entry::Notice(format!("Switched to session {label}")));
+    }
+
+    /// Begin renaming the highlighted session-picker row, seeding the rename buffer with its current
+    /// title. A no-op for the synthetic "current session" row (which has no persisted id).
+    fn begin_session_rename(&mut self) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        let selected = dialog.selected();
+        let Some(entry) = self.session_entries.get(selected) else {
+            return;
+        };
+        if entry.id.is_none() {
+            return;
+        }
+        self.session_rename = Some(entry.title.clone().unwrap_or_default());
+    }
+
+    /// Commit the in-progress session rename to the store and refresh the picker so the new label
+    /// shows. An empty new title clears the session's title (falling back to its id as the label).
+    fn commit_session_rename(&mut self) {
+        let Some(new_title) = self.session_rename.take() else {
+            return;
+        };
+        let Some(id) = self.selected_session_id() else {
+            return;
+        };
+        let trimmed = new_title.trim();
+        let title = (!trimmed.is_empty()).then_some(trimmed);
+        match rename_persisted_session(&id, title) {
+            Ok(()) => {
+                let shown = title.map(str::to_owned).unwrap_or_else(|| id.clone());
+                self.refresh_sessions_dialog();
+                self.transcript
+                    .push(Entry::Notice(format!("Renamed session to {shown}")));
+            }
+            Err(err) => self.note_error(format!("Rename failed: {err}")),
+        }
+    }
+
+    /// Cancel an in-progress session rename, returning the picker to navigation without closing it.
+    fn cancel_session_rename(&mut self) {
+        self.session_rename = None;
+    }
+
+    /// Delete the highlighted session-picker row from the store and refresh the picker so the entry
+    /// disappears. A no-op for the synthetic "current session" row.
+    fn delete_selected_session(&mut self) {
+        let Some(id) = self.selected_session_id() else {
+            return;
+        };
+        match delete_persisted_session(&id) {
+            Ok(_) => {
+                self.refresh_sessions_dialog();
+                self.transcript
+                    .push(Entry::Notice(format!("Deleted session {id}")));
+            }
+            Err(err) => self.note_error(format!("Delete failed: {err}")),
+        }
+    }
+
+    /// Rebuild the open session picker's rows from the store (after a rename/delete), keeping the
+    /// highlight on a valid row. A no-op unless the session picker is open.
+    fn refresh_sessions_dialog(&mut self) {
+        if !matches!(
+            self.dialog.as_ref().map(|dialog| dialog.kind),
+            Some(DialogKind::Sessions)
+        ) {
+            return;
+        }
+        let (items, entries) = session_rows(&self.status.session);
+        let new_len = items.len();
+        self.session_entries = entries;
+        if let Some(dialog) = self.dialog.as_mut() {
+            let clamped = dialog.selected.min(new_len.saturating_sub(1));
+            dialog.items = items;
+            dialog.selected = clamped;
+        }
+    }
+
+    /// The in-progress session-rename text, when the session picker is in rename mode (for the UI).
+    #[must_use]
+    pub fn session_rename(&self) -> Option<&str> {
+        self.session_rename.as_deref()
     }
 
     /// Take the `/editor` request (if any), clearing it so the editor opens exactly once.
@@ -1313,14 +1593,7 @@ impl App {
         // swallows other keys so the prompt is not edited beneath it. Ctrl+C still quits so the
         // user is never trapped, and Esc/Enter both close the dialog and return focus to the prompt.
         if self.dialog_open() {
-            match key.code {
-                KeyCode::Char('c') if ctrl => self.should_quit = true,
-                KeyCode::Up => self.dialog_select_prev(),
-                KeyCode::Down => self.dialog_select_next(),
-                KeyCode::Enter => self.dialog_confirm(),
-                KeyCode::Esc => self.dialog_cancel(),
-                _ => {}
-            }
+            self.on_dialog_key(key, ctrl);
             return;
         }
 
@@ -1655,10 +1928,34 @@ fn configured_mcp_servers() -> Vec<String> {
         .collect()
 }
 
-/// Session labels for the picker: persisted sessions newest-first as `id — title`, best-effort.
-/// Returns an empty list when no database exists yet or it cannot be read, so the picker still
-/// opens with just the current session.
-fn persisted_session_labels() -> Vec<String> {
+/// A persisted session plus its messages, loaded for switching the active session in the picker.
+struct LoadedSession {
+    session: db::Session,
+    messages: Vec<db::Message>,
+}
+
+/// Build the session picker's rows and their backing metadata in lockstep: the synthetic "current
+/// session" row (no persisted id) followed by every persisted session, newest-first. The labels and
+/// entries share the same order so a highlighted row maps directly to its [`SessionEntry`].
+fn session_rows(current_label: &str) -> (Vec<String>, Vec<SessionEntry>) {
+    let mut items = vec![format!("● current — {current_label} session")];
+    let mut entries = vec![SessionEntry {
+        id: None,
+        title: None,
+    }];
+    for session in persisted_sessions() {
+        items.push(session_picker_label(&session));
+        entries.push(SessionEntry {
+            id: Some(session.id.clone()),
+            title: session.title.clone(),
+        });
+    }
+    (items, entries)
+}
+
+/// Every persisted session newest-first, best-effort: an empty list when no database exists yet or
+/// it cannot be read, so the picker still opens with just the current session.
+fn persisted_sessions() -> Vec<db::Session> {
     let Some(path) = db::DbPathInputs::from_process().resolve() else {
         return Vec::new();
     };
@@ -1668,16 +1965,65 @@ fn persisted_session_labels() -> Vec<String> {
     let Ok(database) = db::Database::open(&path) else {
         return Vec::new();
     };
-    let Ok(sessions) = database.sessions().list() else {
-        return Vec::new();
+    database.sessions().list().unwrap_or_default()
+}
+
+/// A session picker row label: `id  —  title` when titled, otherwise the bare id.
+fn session_picker_label(session: &db::Session) -> String {
+    match &session.title {
+        Some(title) if !title.trim().is_empty() => format!("{}  —  {title}", session.id),
+        _ => session.id.clone(),
+    }
+}
+
+/// The footer's session label for a switched-to session: its title when set, otherwise its id.
+fn session_status_label(session: &db::Session) -> String {
+    match &session.title {
+        Some(title) if !title.trim().is_empty() => title.clone(),
+        _ => session.id.clone(),
+    }
+}
+
+/// Load a persisted session and its messages by id, or `None` when the session does not exist.
+/// Best-effort failures (no resolvable store, an open/read error) surface as an `Err(String)`.
+fn load_persisted_session(id: &str) -> Result<Option<LoadedSession>, String> {
+    let database = open_session_store()?;
+    let session = match database.sessions().get(id).map_err(|err| err.to_string())? {
+        Some(session) => session,
+        None => return Ok(None),
     };
-    sessions
-        .into_iter()
-        .map(|session| match session.title {
-            Some(title) if !title.trim().is_empty() => format!("{}  —  {title}", session.id),
-            _ => session.id,
-        })
-        .collect()
+    let messages = database
+        .messages()
+        .list_for_session(id)
+        .map_err(|err| err.to_string())?;
+    Ok(Some(LoadedSession { session, messages }))
+}
+
+/// Rename a persisted session (set or clear its title) by id.
+fn rename_persisted_session(id: &str, title: Option<&str>) -> Result<(), String> {
+    let database = open_session_store()?;
+    database
+        .sessions()
+        .set_title(id, title)
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// Delete a persisted session by id, returning whether a row was removed.
+fn delete_persisted_session(id: &str) -> Result<bool, String> {
+    let database = open_session_store()?;
+    database
+        .sessions()
+        .delete(id)
+        .map_err(|err| err.to_string())
+}
+
+/// Resolve and open the session store, erroring with a clear message when no location resolves.
+fn open_session_store() -> Result<db::Database, String> {
+    let path = db::DbPathInputs::from_process()
+        .resolve()
+        .ok_or_else(|| "no session store location could be resolved".to_owned())?;
+    db::Database::open(&path).map_err(|err| err.to_string())
 }
 
 /// Load the effective configuration with no CLI overrides, or `None` if it cannot be resolved.
@@ -3025,6 +3371,184 @@ mod tests {
         dispatch(&mut a, "agents");
         a.on_key(key(KeyCode::Enter));
         assert!(!a.dialog_open(), "Enter dismisses the dialog");
+    }
+
+    #[test]
+    fn model_picker_selection_updates_the_active_model() {
+        // VAL-TUI-074: selecting a different model from the model picker updates the active model
+        // (which the footer renders). Exercise the pure selection path so the test does not write
+        // to the global config (the on_key Enter path also persists).
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let before = a.status.model.clone();
+        // Move the highlight to a different model than the pre-selected active one.
+        a.on_key(key(KeyCode::Down));
+        let highlighted = {
+            let dialog = a.dialog().expect("the model picker is open");
+            dialog.items[dialog.selected()].clone()
+        };
+        assert_ne!(highlighted, before, "a different model is highlighted");
+        let chosen = a.select_model().expect("a changed model is committed");
+        assert_eq!(chosen, highlighted, "the highlighted model is committed");
+        assert_eq!(a.status.model, highlighted, "the active model updates");
+    }
+
+    #[test]
+    fn model_picker_reselecting_the_active_model_is_a_noop() {
+        let mut a = app();
+        dispatch(&mut a, "models");
+        // The active model is pre-highlighted, so confirming without moving changes nothing.
+        assert!(
+            a.select_model().is_none(),
+            "confirming the already-active model reports no change"
+        );
+    }
+
+    #[test]
+    fn agent_picker_selection_updates_the_active_agent() {
+        // VAL-TUI-075: selecting a different agent updates the active agent (rendered in the footer).
+        let mut a = app();
+        assert_eq!(a.status.agent, "build", "precondition: build is active");
+        dispatch(&mut a, "agents");
+        a.on_key(key(KeyCode::Down)); // build -> plan
+        let chosen = a.select_agent().expect("a changed agent is committed");
+        assert_eq!(chosen, "plan", "the highlighted agent is committed");
+        assert_eq!(a.status.agent, "plan", "the active agent updates");
+    }
+
+    #[test]
+    fn agent_picker_reselecting_the_active_agent_is_a_noop() {
+        let mut a = app();
+        dispatch(&mut a, "agents");
+        assert!(
+            a.select_agent().is_none(),
+            "confirming the already-active agent reports no change"
+        );
+    }
+
+    #[test]
+    fn closing_each_picker_returns_focus_to_the_prompt() {
+        // VAL-TUI-076: dismissing any dialog with Esc returns focus to the prompt so typing resumes.
+        for command in ["sessions", "models", "agents", "themes", "mcp"] {
+            let mut a = app();
+            dispatch(&mut a, command);
+            assert!(a.dialog_open(), "{command} opened a dialog");
+            a.on_key(key(KeyCode::Esc));
+            assert!(!a.dialog_open(), "{command} dialog closed on Esc");
+            type_str(&mut a, "hello");
+            assert_eq!(
+                a.input_value(),
+                "hello",
+                "typing reaches the prompt after closing the {command} dialog"
+            );
+        }
+    }
+
+    #[test]
+    fn session_picker_lists_the_current_session() {
+        // VAL-TUI-070 (current-session floor): the picker always opens with at least the current
+        // session, and the synthetic current row has no persisted id (so it is non-actionable).
+        let mut a = app();
+        dispatch(&mut a, "sessions");
+        let dialog = a.dialog().expect("the session picker opened");
+        assert_eq!(dialog.kind, DialogKind::Sessions);
+        assert!(
+            dialog.items[0].contains("current"),
+            "the first row is the current session: {:?}",
+            dialog.items
+        );
+        assert!(
+            a.selected_session_id().is_none(),
+            "the current row carries no persisted id"
+        );
+    }
+
+    /// Manually drive the session picker into a state with one persisted entry, bypassing the store
+    /// so the rename state-machine can be exercised without touching the filesystem.
+    fn sessions_dialog_with_one_persisted(a: &mut App) {
+        a.dialog = Some(Dialog {
+            kind: DialogKind::Sessions,
+            title: "Sessions".to_owned(),
+            items: vec![
+                "● current — new session".to_owned(),
+                "ses_demo  —  old title".to_owned(),
+            ],
+            selected: 1,
+            empty: None,
+        });
+        a.session_entries = vec![
+            SessionEntry {
+                id: None,
+                title: None,
+            },
+            SessionEntry {
+                id: Some("ses_demo".to_owned()),
+                title: Some("old title".to_owned()),
+            },
+        ];
+    }
+
+    #[test]
+    fn selected_session_id_targets_the_highlighted_persisted_row() {
+        let mut a = app();
+        sessions_dialog_with_one_persisted(&mut a);
+        assert_eq!(
+            a.selected_session_id().as_deref(),
+            Some("ses_demo"),
+            "the highlighted persisted row is the action target"
+        );
+    }
+
+    #[test]
+    fn pressing_r_enters_rename_mode_and_typing_edits_the_title() {
+        // VAL-TUI-072 (input path): `r` opens rename mode seeded with the current title; typing and
+        // backspace edit the in-progress name; Esc cancels back to navigation without closing.
+        let mut a = app();
+        sessions_dialog_with_one_persisted(&mut a);
+        a.on_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            a.session_rename(),
+            Some("old title"),
+            "rename mode seeds with the existing title"
+        );
+        // Clear the seed, then type a fresh name.
+        for _ in 0.."old title".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        type_str(&mut a, "fresh name");
+        assert_eq!(a.session_rename(), Some("fresh name"));
+        // Esc cancels the rename but keeps the picker open.
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(a.session_rename(), None, "Esc cancels the rename");
+        assert!(a.dialog_open(), "cancelling a rename keeps the picker open");
+    }
+
+    #[test]
+    fn rename_mode_is_unavailable_for_the_current_row() {
+        let mut a = app();
+        dispatch(&mut a, "sessions");
+        // The current row (index 0) has no persisted id, so `r` does not enter rename mode.
+        a.on_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            a.session_rename(),
+            None,
+            "the synthetic current row cannot be renamed"
+        );
+    }
+
+    #[test]
+    fn rename_mode_swallows_navigation_and_action_keys() {
+        // While renaming, typing edits the title rather than triggering navigation/delete.
+        let mut a = app();
+        sessions_dialog_with_one_persisted(&mut a);
+        a.on_key(key(KeyCode::Char('r')));
+        for _ in 0.."old title".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        // 'd' would delete outside rename mode; here it must be captured as a character.
+        type_str(&mut a, "d");
+        assert_eq!(a.session_rename(), Some("d"), "'d' is typed, not a delete");
+        assert!(a.dialog_open(), "the picker remains open");
     }
 
     #[test]

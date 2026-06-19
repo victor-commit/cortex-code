@@ -120,6 +120,39 @@ impl<'a> SessionRepo<'a> {
         })
     }
 
+    /// Rename a session (set or clear its title), returning the updated record.
+    ///
+    /// The title is scrubbed of API-key-shaped secrets (replaced by the canonical
+    /// [`redaction::PLACEHOLDER`]) before it is written, matching [`create`](Self::create), so a
+    /// secret pasted into a rename never lands in the database file. Passing `None` clears the
+    /// title. Errors with [`DbError::NotFound`] when no session has the given id.
+    pub fn set_title(&self, id: &str, title: Option<&str>) -> DbResult<Session> {
+        let title = title.map(redaction::redact);
+        let affected = self.conn.execute(
+            "UPDATE sessions SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, title],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound {
+                kind: "session",
+                id: id.to_owned(),
+            });
+        }
+        self.require(id)
+    }
+
+    /// Delete a session and (via the `ON DELETE CASCADE` foreign key on `messages`) every message
+    /// stored under it, returning whether a session row was removed.
+    ///
+    /// Deleting an unknown id is not an error: it returns `false` so a caller can treat the
+    /// "already gone" case idempotently.
+    pub fn delete(&self, id: &str) -> DbResult<bool> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        Ok(affected > 0)
+    }
+
     /// List sessions newest-first (by creation time, then id for a stable tiebreak).
     pub fn list(&self) -> DbResult<Vec<Session>> {
         let mut statement = self.conn.prepare(
