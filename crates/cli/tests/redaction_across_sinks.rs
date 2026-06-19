@@ -1,11 +1,14 @@
-//! Black-box proof that secret redaction is wired into every sink (VAL-SKEL-031, 043, 044, 045,
-//! 046, 047).
+//! Black-box proof that secret redaction is wired into every (network-free) sink (VAL-SKEL-031,
+//! 043, 044, 046, 047).
 //!
-//! A single fake-but-realistic OpenRouter key is pushed through the config dump, the headless
-//! `run` echo, persisted session storage, and the verbose log stream. Each test runs the real
-//! binary with a cleared environment in an isolated scratch tree and inspects the produced bytes:
-//! the raw key must never appear, the canonical placeholder must, and non-secret data alongside it
-//! must survive verbatim.
+//! A single fake-but-realistic OpenRouter key is pushed through the config dump, persisted session
+//! storage, and the verbose log stream. Each test runs the real binary with a cleared environment
+//! in an isolated scratch tree and inspects the produced bytes: the raw key must never appear, the
+//! canonical placeholder must, and non-secret data alongside it must survive verbatim.
+//!
+//! NOTE (M0→M1 transition): the M0 `cortex run` echo sink was a fourth redaction surface here. The
+//! echo path has been superseded by a real OpenRouter turn, so the run-echo redaction sub-checks
+//! were removed; redaction of model output on the live run path is proven elsewhere (VAL-LLM-024).
 
 use std::fs;
 use std::io::Read;
@@ -200,31 +203,6 @@ fn config_dump_scrubs_resolved_secret_but_keeps_non_secrets() {
     );
 }
 
-// VAL-SKEL-045 + VAL-SKEL-047: a secret echoed back by `run --format json` is masked, with the
-// surrounding non-secret text preserved.
-#[test]
-fn run_json_echo_scrubs_the_secret() {
-    let scratch = Scratch::new();
-    let secret = secret_key();
-    let prompt = format!("here is my key {secret} please keep it safe");
-    let output = scratch.run(&[], &["run", "--format", "json", &prompt], None);
-    assert_eq!(output.status.code(), Some(0), "run must exit 0");
-    assert!(
-        !contains_bytes(&output.stdout, secret.as_bytes()),
-        "raw secret must be absent from run output"
-    );
-
-    let doc: Value = serde_json::from_slice(&output.stdout).expect("strict JSON echo");
-    assert_eq!(
-        doc["output"],
-        "here is my key [REDACTED] please keep it safe"
-    );
-    assert_eq!(
-        doc["input"],
-        "here is my key [REDACTED] please keep it safe"
-    );
-}
-
 // VAL-SKEL-044 + VAL-SKEL-047: a secret pushed through persisted storage never lands in the DB
 // file (or any on-disk artifact); the placeholder is stored where the value was and adjacent
 // non-secret text survives.
@@ -307,8 +285,8 @@ fn verbose_logs_never_emit_the_secret() {
     );
 }
 
-// VAL-SKEL-046: the placeholder is one identical canonical token across the config dump, the run
-// echo, and persisted storage for the same secret.
+// VAL-SKEL-046: the placeholder is one identical canonical token across the config dump and
+// persisted storage for the same secret.
 #[test]
 fn placeholder_is_canonical_across_every_sink() {
     let scratch = Scratch::new();
@@ -328,10 +306,6 @@ fn placeholder_is_canonical_across_every_sink() {
     let config_report: Value = serde_json::from_slice(&config.stdout).expect("config JSON");
     let from_config = config_report["auth"]["key"].as_str().expect("config key");
 
-    let run = scratch.run(&[], &["run", "--format", "json", &secret], None);
-    let run_doc: Value = serde_json::from_slice(&run.stdout).expect("run JSON");
-    let from_run = run_doc["output"].as_str().expect("run output");
-
     let created = scratch.run(
         &[("CORTEX_DB_PATH", db)],
         &["session", "new", "--format", "json"],
@@ -348,8 +322,6 @@ fn placeholder_is_canonical_across_every_sink() {
     let from_db = message["content"].as_str().expect("message content");
 
     assert_eq!(from_config, PLACEHOLDER);
-    assert_eq!(from_run, PLACEHOLDER);
     assert_eq!(from_db, PLACEHOLDER);
-    assert_eq!(from_config, from_run, "config and run agree");
-    assert_eq!(from_run, from_db, "run and persistence agree");
+    assert_eq!(from_config, from_db, "config and persistence agree");
 }

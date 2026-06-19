@@ -75,14 +75,18 @@ fn run(mut command: Command, stdin_data: Option<&str>) -> Output {
 }
 
 // VAL-SKEL-048: a published event is observable by a subscriber via the verbose log path.
+//
+// The vehicle is the local-only `config` command: after the M0→M1 transition `cortex run`
+// performs a real network turn, so a key-free, network-free command is used to exercise the bus
+// in isolation. The startup lifecycle event is published before any subcommand dispatch, so the
+// surface here is `config`.
 #[test]
 fn verbose_run_shows_published_event_received_by_a_subscriber() {
-    let out = run(cmd(&["-v", "run", "hi"]), None);
+    let out = run(cmd(&["-v", "config"]), None);
 
-    assert_eq!(out.status.code(), Some(0), "verbose run still exits 0");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "hi\n",
+    assert_eq!(out.status.code(), Some(0), "verbose config still exits 0");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("event delivered to subscriber"),
         "the event log must not pollute stdout"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -96,7 +100,7 @@ fn verbose_run_shows_published_event_received_by_a_subscriber() {
 // not an opaque/empty record.
 #[test]
 fn logged_event_carries_typed_named_fields() {
-    let out = run(cmd(&["-v", "run", "hi"]), None);
+    let out = run(cmd(&["-v", "config"]), None);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     for needle in [
@@ -104,7 +108,7 @@ fn logged_event_carries_typed_named_fields() {
         "phase",
         "startup",
         "surface",
-        "run",
+        "config", // the surface that published the startup event
         "version",
         "0.1.0",
     ] {
@@ -119,7 +123,7 @@ fn logged_event_carries_typed_named_fields() {
 // publish is observed exactly once by each, with no loss and no duplicate delivery.
 #[test]
 fn two_subscribers_each_observe_the_publish_exactly_once() {
-    let out = run(cmd(&["-v", "run", "hi"]), None);
+    let out = run(cmd(&["-v", "config"]), None);
     assert_eq!(out.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -145,17 +149,16 @@ fn two_subscribers_each_observe_the_publish_exactly_once() {
 // exit 0, and nothing leaks onto stderr.
 #[test]
 fn publish_with_no_subscribers_is_a_clean_noop() {
-    let out = run(cmd(&["run", "hi"]), None);
+    let out = run(cmd(&["config"]), None);
 
     assert_eq!(
         out.status.code(),
         Some(0),
         "a no-subscriber publish path must complete normally"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "hi\n",
-        "stdout carries only the intended payload"
+    assert!(
+        !out.stdout.is_empty(),
+        "stdout carries the intended payload (the config dump)"
     );
     assert!(
         out.stderr.is_empty(),
@@ -167,7 +170,7 @@ fn publish_with_no_subscribers_is_a_clean_noop() {
 // The RUST_LOG path also makes delivery observable (verbose flag is not the only trigger).
 #[test]
 fn rust_log_env_enables_event_observability() {
-    let mut command = cmd(&["run", "hi"]);
+    let mut command = cmd(&["config"]);
     command.env("RUST_LOG", "cortex=debug");
     let out = run(command, None);
 
@@ -177,9 +180,8 @@ fn rust_log_env_enables_event_observability() {
         stderr.contains("event delivered to subscriber"),
         "RUST_LOG must enable the debug event sink, got: {stderr}"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "hi\n",
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("event delivered to subscriber"),
         "RUST_LOG must not affect stdout"
     );
 }

@@ -163,28 +163,9 @@ fn local_only_commands_succeed_under_the_kill_switch() {
         .expect("spawn cortex");
     assert_eq!(help.status.code(), Some(0), "--help must still exit 0");
 
-    // echo `run`
-    let run = cortex()
-        .env("CORTEX_NO_NET", "1")
-        .args(["run", "hi"])
-        .output()
-        .expect("spawn cortex");
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "the echo run path is local-only"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&run.stdout).trim_end(),
-        "hi",
-        "the echo path returns its input"
-    );
-    assert!(
-        !String::from_utf8_lossy(&run.stderr)
-            .to_lowercase()
-            .contains("network disabled"),
-        "a local-only command must not emit a spurious net-disabled error"
-    );
+    // NOTE: after the M0→M1 transition `cortex run` performs a real network turn, so it is no
+    // longer a local-only command — under the kill-switch it fails closed with net-disabled (see
+    // run_echo.rs). It is intentionally not asserted here.
 
     // config read
     let config = cortex()

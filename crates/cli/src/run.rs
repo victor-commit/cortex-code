@@ -1,20 +1,34 @@
+//! The headless `cortex run` path: a single real, streamed turn against OpenRouter.
+//!
+//! A positional prompt argument is sent to the durable [`SessionRunner`](engine::SessionRunner)
+//! and the assistant's answer is streamed to stdout as it arrives. The default output is clean
+//! human prose (the streamed answer text only — no JSON envelope or event scaffolding); `--format
+//! json` emits a single document built from the completed turn, and `--jsonl` streams the runner's
+//! normalized event vocabulary one object per line.
+//!
+//! Input-source precedence is fixed and deterministic: a positional prompt argument always wins,
+//! and stdin is consulted only when no argument is given. When no prompt is available at all
+//! (`</dev/null`, a closed pipe, or an interactive terminal with nothing piped in) the command
+//! fails fast with [`Exit::MissingInput`] rather than hanging.
+//!
+//! The `CORTEX_NO_NET` kill-switch is consulted before a credential is resolved or any socket is
+//! opened, so a run fails closed with a `net-disabled` diagnostic. When the credential is absent
+//! the run fails with the canonical `no-credential` diagnostic; in neither case is any partial
+//! answer written to stdout.
+
 use std::io::{self, IsTerminal, Read, Write};
 
+use engine::{EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn};
 use errors::Exit;
+use redaction::guard_outbound;
 use serde::Serialize;
 
 use crate::cli::{OutputFormat, RunArgs};
 
-/// Execute the headless `cortex run` echo/minimal path (pre-LLM).
-///
-/// Input-source precedence is fixed and deterministic: a positional prompt argument always
-/// wins, and stdin is consulted only when no argument is given. When the argument is present,
-/// stdin is never read, so the two are never blended and an interactive terminal can never
-/// block the command.
-///
-/// When there is no argument and stdin yields no prompt (`</dev/null`, a closed pipe, or an
-/// interactive terminal with nothing piped in), the command fails fast with [`Exit::MissingInput`]
-/// and a `no input` diagnostic on stderr rather than hanging.
+/// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
+const OUTBOUND_OPERATION: &str = "LLM turn";
+
+/// Execute a single headless `cortex run` turn.
 pub fn run(args: RunArgs) -> Exit {
     let stdin = io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
@@ -30,18 +44,159 @@ pub fn run(args: RunArgs) -> Exit {
         }
     };
 
-    // The echoed output is a reporting sink, so scrub API-key-shaped secrets before rendering;
-    // the canonical placeholder is identical to the one used by logs and persistence.
-    let prompt = redaction::redact(&prompt);
+    let format = effective_format(args.jsonl, args.format);
+
+    // Fail closed on the network kill-switch before resolving a credential or opening any socket,
+    // so a refusal never touches the network even when a key is present.
+    if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
+        eprintln!("cortex run: {diag}");
+        return diag.exit();
+    }
+
+    let resolved = providers::resolve_model(args.model.as_deref());
+    let inputs = providers::CredentialInputs::openrouter_from_process(None);
+    let provider = match providers::resolve_openrouter(&inputs) {
+        Ok(provider) => provider,
+        Err(diag) => {
+            eprintln!("cortex run: {diag}");
+            return diag.exit();
+        }
+    };
+
+    let system =
+        SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
+    let turn = Turn::new(&resolved.model_id, system, prompt);
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("cortex run: failed to start the async runtime: {err}");
+            return Exit::Failure;
+        }
+    };
+
+    runtime.block_on(execute_turn(&provider, &resolved.model_id, turn, format))
+}
+
+/// Drive the turn through the runner and render its events in the requested format.
+async fn execute_turn(
+    provider: &dyn llm::Provider,
+    model_id: &str,
+    turn: Turn,
+    format: OutputFormat,
+) -> Exit {
+    match format {
+        OutputFormat::Text => stream_text(provider, turn).await,
+        OutputFormat::Jsonl => stream_jsonl(provider, turn).await,
+        OutputFormat::Json => emit_json(provider, model_id, turn).await,
+    }
+}
+
+/// Stream the assistant answer as clean prose, flushing each fragment as it arrives so output is
+/// incremental rather than a single end-of-turn dump.
+async fn stream_text(provider: &dyn llm::Provider, turn: Turn) -> Exit {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    let mut wrote_any = false;
+
+    let outcome = SessionRunner::default()
+        .run(provider, turn, |event| {
+            if let RunnerEvent::TextDelta { text } = event {
+                if !text.is_empty() {
+                    let _ = handle.write_all(text.as_bytes());
+                    let _ = handle.flush();
+                    wrote_any = true;
+                }
+            }
+        })
+        .await;
+
+    if let Some(err) = &outcome.error {
+        if wrote_any {
+            let _ = handle.write_all(b"\n");
+            let _ = handle.flush();
+        }
+        drop(handle);
+        eprintln!("cortex run: {err}");
+        return err.exit();
+    }
+
+    // Terminate the streamed answer with a newline so shell capture and the next prompt are clean,
+    // without disturbing the model's own trailing newline if it already emitted one.
+    if wrote_any && !outcome.answer().ends_with('\n') {
+        let _ = handle.write_all(b"\n");
+        let _ = handle.flush();
+    }
+    Exit::Success
+}
+
+/// Stream the runner's normalized event vocabulary, one JSON object per line.
+async fn stream_jsonl(provider: &dyn llm::Provider, turn: Turn) -> Exit {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+
+    let outcome = SessionRunner::default()
+        .run(provider, turn, |event| {
+            if let Ok(line) = serde_json::to_string(&event) {
+                let _ = handle.write_all(line.as_bytes());
+                let _ = handle.write_all(b"\n");
+                let _ = handle.flush();
+            }
+        })
+        .await;
+
+    drop(handle);
+    if let Some(err) = &outcome.error {
+        eprintln!("cortex run: {err}");
+        return err.exit();
+    }
+    Exit::Success
+}
+
+/// A single JSON document describing a completed turn for `--format json`.
+#[derive(Serialize)]
+struct RunDocument<'a> {
+    role: &'a str,
+    content: &'a str,
+    model: &'a str,
+    finish_reason: &'a llm::FinishReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<&'a llm::Usage>,
+}
+
+/// Run the turn to completion, then emit a single strict JSON document on stdout. No partial
+/// document is written if the turn fails.
+async fn emit_json(provider: &dyn llm::Provider, model_id: &str, turn: Turn) -> Exit {
+    let outcome = SessionRunner::default().run(provider, turn, |_| {}).await;
+
+    if let Some(err) = &outcome.error {
+        eprintln!("cortex run: {err}");
+        return err.exit();
+    }
+
+    let document = RunDocument {
+        role: "assistant",
+        content: outcome.answer(),
+        model: model_id,
+        finish_reason: &outcome.finish_reason,
+        usage: outcome.usage.as_ref(),
+    };
+    let mut line = match serde_json::to_string(&document) {
+        Ok(line) => line,
+        Err(err) => {
+            eprintln!("cortex run: failed to serialize output: {err}");
+            return Exit::Failure;
+        }
+    };
+    line.push('\n');
 
     let stdout = io::stdout();
-    let format = effective_format(args.jsonl, args.format);
-    let colorize = should_colorize(format, stdout.is_terminal(), no_color_requested());
-    let rendered = render(&prompt, format, colorize);
-
     let mut handle = stdout.lock();
     if handle
-        .write_all(rendered.as_bytes())
+        .write_all(line.as_bytes())
         .and_then(|()| handle.flush())
         .is_err()
     {
@@ -54,86 +209,6 @@ pub fn run(args: RunArgs) -> Exit {
 /// shorthand is mutually exclusive with `--format` at the arg layer, so it wins only when set.
 fn effective_format(jsonl: bool, format: OutputFormat) -> OutputFormat {
     if jsonl { OutputFormat::Jsonl } else { format }
-}
-
-/// Decide whether human (text) output may carry ANSI styling.
-///
-/// Styling is applied only when ALL hold: the format is human `text` (machine `json`/`jsonl`
-/// is never colorized), stdout is an interactive TTY (auto-detected, so piped output stays
-/// clean), and `NO_COLOR` was not requested (per the NO_COLOR convention).
-fn should_colorize(format: OutputFormat, stdout_is_terminal: bool, no_color: bool) -> bool {
-    format == OutputFormat::Text && stdout_is_terminal && !no_color
-}
-
-/// `NO_COLOR` is honored when present and non-empty, matching <https://no-color.org/>.
-fn no_color_requested() -> bool {
-    std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
-}
-
-/// Render the resolved prompt into the bytes written to stdout for the chosen format.
-fn render(prompt: &str, format: OutputFormat, colorize: bool) -> String {
-    match format {
-        OutputFormat::Text => render_text(prompt, colorize),
-        OutputFormat::Json => render_json(prompt),
-        OutputFormat::Jsonl => render_jsonl(prompt),
-    }
-}
-
-/// ANSI cyan applied to the echoed line when colorizing; never emitted on a pipe.
-const STYLE_PREFIX: &str = "\u{1b}[36m";
-const STYLE_SUFFIX: &str = "\u{1b}[0m";
-
-fn render_text(prompt: &str, colorize: bool) -> String {
-    if colorize {
-        format!("{STYLE_PREFIX}{prompt}{STYLE_SUFFIX}\n")
-    } else {
-        format!("{prompt}\n")
-    }
-}
-
-/// The single JSON document emitted by `--format json` on the echo path. The key set is fixed
-/// so downstream scripts can rely on it across runs (VAL-SKEL-060).
-#[derive(Serialize)]
-struct EchoDocument<'a> {
-    r#type: &'a str,
-    input: &'a str,
-    output: &'a str,
-}
-
-fn render_json(prompt: &str) -> String {
-    let document = EchoDocument {
-        r#type: "echo",
-        input: prompt,
-        output: prompt,
-    };
-    let mut line = serialize(&document);
-    line.push('\n');
-    line
-}
-
-/// A single newline-delimited event in `--jsonl` output. Internally tagged with `type` so the
-/// vocabulary stays stable and discriminable as richer turns are added in later milestones.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum EchoEvent<'a> {
-    Text { text: &'a str },
-    Done,
-}
-
-fn render_jsonl(prompt: &str) -> String {
-    let events = [EchoEvent::Text { text: prompt }, EchoEvent::Done];
-    let mut out = String::new();
-    for event in &events {
-        out.push_str(&serialize(event));
-        out.push('\n');
-    }
-    out
-}
-
-/// Serialize a value that is statically known to be JSON-serializable (only `&str` fields, so
-/// serialization is infallible) into a compact single-line string.
-fn serialize<T: Serialize>(value: &T) -> String {
-    serde_json::to_string(value).expect("echo output is always serializable")
 }
 
 /// Resolve the prompt according to the documented precedence (argument over stdin).
@@ -222,6 +297,14 @@ mod tests {
     }
 
     #[test]
+    fn unicode_stdin_is_preserved_without_corruption() {
+        assert_eq!(
+            normalize_stdin("日本語-café-🚀\n"),
+            Some("日本語-café-🚀".to_owned())
+        );
+    }
+
+    #[test]
     fn argument_takes_precedence_over_stdin() {
         let resolved = resolve_prompt(Some("FROM_ARG".to_owned()), false, piped("FROM_STDIN\n"))
             .expect("resolve");
@@ -274,70 +357,5 @@ mod tests {
             effective_format(false, OutputFormat::Text),
             OutputFormat::Text
         );
-    }
-
-    #[test]
-    fn color_only_for_text_on_a_terminal() {
-        // Machine formats are never colorized, regardless of TTY or NO_COLOR.
-        assert!(!should_colorize(OutputFormat::Json, true, false));
-        assert!(!should_colorize(OutputFormat::Jsonl, true, false));
-        // Text colorizes only on a TTY (piped output stays clean) ...
-        assert!(!should_colorize(OutputFormat::Text, false, false));
-        assert!(should_colorize(OutputFormat::Text, true, false));
-        // ... and NO_COLOR disables styling even on a TTY.
-        assert!(!should_colorize(OutputFormat::Text, true, true));
-    }
-
-    #[test]
-    fn text_render_colorizes_only_when_asked() {
-        let plain = render_text("hi", false);
-        assert_eq!(plain, "hi\n");
-        assert!(!plain.contains('\u{1b}'), "plain text carries no ANSI");
-
-        let styled = render_text("hi", true);
-        assert!(styled.contains('\u{1b}'), "styled text carries ANSI");
-        assert!(styled.starts_with(STYLE_PREFIX) && styled.ends_with("\n"));
-        assert!(styled.contains("hi"));
-    }
-
-    #[test]
-    fn json_render_is_a_single_parseable_object_with_stable_keys() {
-        let rendered = render_json("hello \"world\"\nsecond");
-        assert!(rendered.ends_with('\n'));
-        assert_eq!(rendered.trim_end_matches('\n').lines().count(), 1);
-        assert!(!rendered.contains('\u{1b}'), "json is never colorized");
-
-        let value: serde_json::Value =
-            serde_json::from_str(rendered.trim_end()).expect("valid JSON");
-        assert_eq!(value["type"], "echo");
-        assert_eq!(value["input"], "hello \"world\"\nsecond");
-        assert_eq!(value["output"], "hello \"world\"\nsecond");
-
-        let mut keys: Vec<&str> = value
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["input", "output", "type"]);
-    }
-
-    #[test]
-    fn jsonl_render_emits_one_object_per_line_ending_with_done() {
-        let rendered = render_jsonl("payload");
-        assert!(!rendered.contains('\u{1b}'), "jsonl is never colorized");
-
-        let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 2, "a text event followed by a done event");
-        for line in &lines {
-            let value: serde_json::Value = serde_json::from_str(line).expect("each line is JSON");
-            assert!(value.is_object());
-        }
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["type"], "text");
-        assert_eq!(first["text"], "payload");
-        let last: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(last["type"], "done");
     }
 }
