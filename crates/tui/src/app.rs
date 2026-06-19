@@ -4,6 +4,7 @@
 //! readline-style editing and multi-line text. Rendering is done with `ratatui`
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
+use std::cell::Cell;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
@@ -159,6 +160,22 @@ pub struct Palette {
     selected: usize,
 }
 
+/// The open find-in-chat search bar: the live query, the active-match index, and the cached match
+/// count for the `match N of M` indicator.
+///
+/// Find is opened with `Ctrl+F`; while open, typing edits the query, Enter/Down step to the next
+/// match, Up steps to the previous match, and Esc closes it. The query highlights every occurrence
+/// in the transcript and scrolls the active match into view.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FindState {
+    /// The live search query.
+    pub query: String,
+    /// The active match index among the ordered matches (clamped to the match count).
+    pub active: usize,
+    /// The number of matches for the current query (cached for the indicator and navigation).
+    pub matches: usize,
+}
+
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
 const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
     important files, then create (or update) an AGENTS.md file at the project root that documents \
@@ -284,6 +301,23 @@ pub struct App {
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
     /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
     session_rename: Option<String>,
+    /// How many lines the transcript is scrolled up from the bottom. 0 pins to the latest content
+    /// (auto-scroll); larger values reveal earlier content. Clamped to the scrollable range when
+    /// rendered, so it never strands the view past the available content.
+    scroll: usize,
+    /// The most recent transcript viewport `(width, height)` captured during rendering, so key
+    /// handlers can page-scroll and locate find matches/messages without re-deriving the layout.
+    viewport: Cell<(usize, usize)>,
+    /// The open find-in-chat search bar, or `None` when find mode is closed.
+    find: Option<FindState>,
+    /// The selected transcript message (entry index) for message-level navigation, or `None` when
+    /// no message is focused.
+    selected_message: Option<usize>,
+    /// A transient acknowledgement (e.g. a copy confirmation) shown above the prompt, cleared on the
+    /// next key press so it reads as a momentary status note.
+    ack: Option<String>,
+    /// Text staged for a real terminal-clipboard copy (OSC 52), consumed once by the event loop.
+    copy_request: Option<String>,
 }
 
 impl App {
@@ -318,6 +352,12 @@ impl App {
             sidebar_visible: false,
             session_entries: Vec::new(),
             session_rename: None,
+            scroll: 0,
+            viewport: Cell::new((80, 24)),
+            find: None,
+            selected_message: None,
+            ack: None,
+            copy_request: None,
         }
     }
 
@@ -353,6 +393,57 @@ impl App {
     #[must_use]
     pub fn sidebar_visible(&self) -> bool {
         self.sidebar_visible
+    }
+
+    /// The current scroll offset (lines up from the bottom; 0 = pinned to the latest content).
+    #[must_use]
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Record the transcript viewport size during rendering so key handlers can page-scroll and
+    /// locate find matches/messages against the same layout.
+    pub fn set_viewport(&self, width: usize, height: usize) {
+        self.viewport.set((width.max(1), height.max(1)));
+    }
+
+    /// The last recorded transcript viewport `(width, height)`, each at least 1.
+    fn viewport(&self) -> (usize, usize) {
+        let (w, h) = self.viewport.get();
+        (w.max(1), h.max(1))
+    }
+
+    /// The open find-in-chat state (for rendering the search bar and highlights), or `None`.
+    #[must_use]
+    pub fn find(&self) -> Option<&FindState> {
+        self.find.as_ref()
+    }
+
+    /// The find indicator state as `(active_index, match_count)`; `(0, 0)` when find is closed.
+    #[must_use]
+    pub fn find_status(&self) -> (usize, usize) {
+        match &self.find {
+            Some(find) => (find.active, find.matches),
+            None => (0, 0),
+        }
+    }
+
+    /// The selected transcript message (entry index) for message-level navigation, or `None`.
+    #[must_use]
+    pub fn selected_message(&self) -> Option<usize> {
+        self.selected_message
+    }
+
+    /// The transient acknowledgement shown above the prompt (e.g. a copy confirmation), or `None`.
+    #[must_use]
+    pub fn ack(&self) -> Option<&str> {
+        self.ack.as_deref()
+    }
+
+    /// Take any text staged for a real terminal-clipboard copy, clearing it so it is sent once.
+    #[must_use]
+    pub fn take_copy_request(&mut self) -> Option<String> {
+        self.copy_request.take()
     }
 
     /// Whether a turn is currently streaming (the busy/spinner indicator is shown).
@@ -398,6 +489,8 @@ impl App {
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
         self.turn_rx = Some(rx);
         self.spinner_start = Some(Instant::now());
+        // Pin to the latest so the streaming reply stays in view.
+        self.pin_to_bottom();
     }
 
     /// Drain every pending turn message from the worker, applying each to the transcript, usage,
@@ -1477,6 +1570,218 @@ impl App {
         self.transcript.clear();
         self.history.clear();
         self.usage = UsageSummary::default();
+        self.reset_view();
+    }
+
+    /// Reset transcript navigation back to the pinned-bottom, nothing-selected, find-closed state
+    /// (used when the conversation changes underneath the view).
+    fn reset_view(&mut self) {
+        self.scroll = 0;
+        self.find = None;
+        self.selected_message = None;
+        self.ack = None;
+    }
+
+    /// Pin the transcript to the latest content (used when new content is appended so it stays in
+    /// view).
+    fn pin_to_bottom(&mut self) {
+        self.scroll = 0;
+    }
+
+    /// The number of lines the transcript can be scrolled up given the last viewport.
+    fn max_scroll(&self) -> usize {
+        let (width, height) = self.viewport();
+        let total = crate::ui::transcript_lines(self, width).len();
+        total.saturating_sub(height)
+    }
+
+    /// Set the scroll offset so the given rendered line is comfortably in view (near the top, with a
+    /// small margin), clamped to the scrollable range.
+    fn scroll_to_line(&mut self, target: usize) {
+        let (width, height) = self.viewport();
+        let total = crate::ui::transcript_lines(self, width).len();
+        let max = total.saturating_sub(height);
+        let margin = height / 3;
+        let desired_start = target.saturating_sub(margin).min(max);
+        self.scroll = max - desired_start;
+    }
+
+    /// Scroll the transcript up by one page (revealing earlier content), clamped to the top.
+    fn scroll_page_up(&mut self) {
+        let (_, height) = self.viewport();
+        let page = height.saturating_sub(1).max(1);
+        self.scroll = (self.scroll + page).min(self.max_scroll());
+    }
+
+    /// Scroll the transcript down by one page (toward the latest content), stopping at the bottom.
+    fn scroll_page_down(&mut self) {
+        let (_, height) = self.viewport();
+        let page = height.saturating_sub(1).max(1);
+        self.scroll = self.scroll.saturating_sub(page);
+    }
+
+    /// Open the find-in-chat search bar (Ctrl+F) with an empty query.
+    fn open_find(&mut self) {
+        if self.find.is_none() {
+            self.find = Some(FindState::default());
+        }
+    }
+
+    /// Close the find-in-chat search bar (Esc / Ctrl+F toggle), clearing the highlight.
+    fn close_find(&mut self) {
+        self.find = None;
+    }
+
+    /// Append a character to the find query and refresh the matches/highlight.
+    fn find_input(&mut self, c: char) {
+        if let Some(find) = self.find.as_mut() {
+            find.query.push(c);
+            find.active = 0;
+        }
+        self.recompute_find();
+    }
+
+    /// Delete the last character of the find query and refresh the matches/highlight.
+    fn find_backspace(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.query.pop();
+            find.active = 0;
+        }
+        self.recompute_find();
+    }
+
+    /// Recompute the find match count for the current query (against the last viewport), clamp the
+    /// active index, and scroll the active match into view.
+    fn recompute_find(&mut self) {
+        let Some(query) = self.find.as_ref().map(|f| f.query.clone()) else {
+            return;
+        };
+        let (width, _) = self.viewport();
+        let lines = crate::ui::transcript_lines(self, width);
+        let matches = crate::ui::transcript_matches(&lines, &query);
+        let count = matches.len();
+        let active = self
+            .find
+            .as_ref()
+            .map(|f| {
+                if count == 0 {
+                    0
+                } else {
+                    f.active.min(count - 1)
+                }
+            })
+            .unwrap_or(0);
+        if let Some(target) = matches.get(active).map(|m| m.line) {
+            self.scroll_to_line(target);
+        }
+        if let Some(find) = self.find.as_mut() {
+            find.matches = count;
+            find.active = active;
+        }
+    }
+
+    /// Move to the next find match (wrapping), scrolling it into view.
+    fn find_next(&mut self) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        if find.matches == 0 {
+            return;
+        }
+        find.active = (find.active + 1) % find.matches;
+        self.scroll_to_active_match();
+    }
+
+    /// Move to the previous find match (wrapping), scrolling it into view.
+    fn find_prev(&mut self) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        if find.matches == 0 {
+            return;
+        }
+        find.active = (find.active + find.matches - 1) % find.matches;
+        self.scroll_to_active_match();
+    }
+
+    /// Scroll the current active find match into view (recomputing match positions for the layout).
+    fn scroll_to_active_match(&mut self) {
+        let Some((query, active)) = self.find.as_ref().map(|f| (f.query.clone(), f.active)) else {
+            return;
+        };
+        let (width, _) = self.viewport();
+        let lines = crate::ui::transcript_lines(self, width);
+        let matches = crate::ui::transcript_matches(&lines, &query);
+        if let Some(target) = matches.get(active).map(|m| m.line) {
+            self.scroll_to_line(target);
+        }
+    }
+
+    /// Select the previous (earlier) transcript message and scroll it into view. With nothing
+    /// selected yet, selects the last message.
+    fn select_prev_message(&mut self) {
+        if self.transcript.is_empty() {
+            return;
+        }
+        let last = self.transcript.len() - 1;
+        let next = match self.selected_message {
+            None => last,
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.selected_message = Some(next);
+        self.scroll_to_message(next);
+    }
+
+    /// Select the next (later) transcript message and scroll it into view. With nothing selected
+    /// yet, selects the last message.
+    fn select_next_message(&mut self) {
+        if self.transcript.is_empty() {
+            return;
+        }
+        let last = self.transcript.len() - 1;
+        let next = match self.selected_message {
+            None => last,
+            Some(i) if i >= last => last,
+            Some(i) => i + 1,
+        };
+        self.selected_message = Some(next);
+        self.scroll_to_message(next);
+    }
+
+    /// Scroll the transcript so the given message (entry index) is in view.
+    fn scroll_to_message(&mut self, idx: usize) {
+        let (width, _) = self.viewport();
+        let starts = crate::ui::entry_start_lines(self, width);
+        if let Some(&target) = starts.get(idx) {
+            self.scroll_to_line(target);
+        }
+    }
+
+    /// Clear transcript navigation focus (Esc): drop any message selection (the scroll position is
+    /// left untouched so the user keeps their place).
+    fn clear_navigation(&mut self) {
+        self.selected_message = None;
+    }
+
+    /// Copy the selected message (or, with none selected, the most recent message) to the terminal
+    /// clipboard and acknowledge it. The acknowledgement is the user-visible proof; the actual copy
+    /// is performed by the event loop via an OSC 52 sequence.
+    fn copy_selected_message(&mut self) {
+        let idx = self
+            .selected_message
+            .or_else(|| self.transcript.len().checked_sub(1));
+        let Some(idx) = idx else {
+            self.ack = Some("Nothing to copy yet.".to_owned());
+            return;
+        };
+        let Some(entry) = self.transcript.get(idx) else {
+            self.ack = Some("Nothing to copy yet.".to_owned());
+            return;
+        };
+        let text = entry_copy_text(entry);
+        self.ack = Some(format!("Copied message {} to clipboard", idx + 1));
+        self.copy_request = Some(text);
     }
 
     /// Queue a slash flow turn (`/init`, `/review`): push a notice describing the flow, then queue
@@ -1571,6 +1876,10 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
+        // A transient acknowledgement (e.g. a copy confirmation) lives until the next key press, so
+        // clear it here; an action below may set a fresh one for this key.
+        self.ack = None;
+
         // While the leader chord is armed the next key selects a binding: a matching action key runs
         // its action, Esc cancels, and any other key simply disarms (a harmless no-op). The chord is
         // consumed regardless, so the which-key overlay never lingers. Ctrl+C still quits.
@@ -1610,6 +1919,23 @@ impl App {
                 KeyCode::Esc => self.close_palette(),
                 KeyCode::Backspace => self.palette_backspace(),
                 KeyCode::Char(c) if !ctrl && !alt => self.palette_input(c),
+                _ => {}
+            }
+            return;
+        }
+
+        // The find-in-chat search bar is modal while open: typing edits the query (re-highlighting
+        // matches), Enter/Down step to the next match, Up to the previous, Ctrl+F or Esc close it,
+        // and Ctrl+C still quits so the user is never trapped.
+        if self.find.is_some() {
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('f') if ctrl => self.close_find(),
+                KeyCode::Esc => self.close_find(),
+                KeyCode::Enter | KeyCode::Down => self.find_next(),
+                KeyCode::Up => self.find_prev(),
+                KeyCode::Backspace => self.find_backspace(),
+                KeyCode::Char(c) if !ctrl && !alt => self.find_input(c),
                 _ => {}
             }
             return;
@@ -1740,6 +2066,13 @@ impl App {
             KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
             // Ctrl+P opens the searchable command palette overlay.
             KeyCode::Char('p') if ctrl => self.open_palette(),
+            // Ctrl+F opens find-in-chat (highlight + next/prev navigation) over the transcript.
+            KeyCode::Char('f') if ctrl => self.open_find(),
+            // Ctrl+Y copies the selected message (or the latest) to the clipboard, acknowledged.
+            KeyCode::Char('y') if ctrl => self.copy_selected_message(),
+            // Message-level navigation: Ctrl+K / Ctrl+N select the previous / next message.
+            KeyCode::Char('k') if ctrl => self.select_prev_message(),
+            KeyCode::Char('n') if ctrl => self.select_next_message(),
             // `!` at the start of an empty prompt enters shell mode (the `!` is the mode trigger,
             // not literal text); typed elsewhere it is ordinary text handled by the arm below.
             KeyCode::Char('!') if !ctrl && !alt && self.input.value().is_empty() => {
@@ -1768,6 +2101,10 @@ impl App {
             KeyCode::Right => {
                 self.input.handle_key(TextAreaKey::Right, modifiers(shift));
             }
+            // Alt+Up / Alt+Down select the previous / next message (must precede the plain arrows,
+            // which move the prompt caret).
+            KeyCode::Up if alt => self.select_prev_message(),
+            KeyCode::Down if alt => self.select_next_message(),
             KeyCode::Up => {
                 self.input.handle_key(TextAreaKey::Up, modifiers(shift));
             }
@@ -1780,6 +2117,11 @@ impl App {
             KeyCode::End => {
                 self.input.handle_key(TextAreaKey::End, modifiers(shift));
             }
+            // Page-scroll the transcript to reach earlier / later content.
+            KeyCode::PageUp => self.scroll_page_up(),
+            KeyCode::PageDown => self.scroll_page_down(),
+            // Esc clears the message selection focus.
+            KeyCode::Esc => self.clear_navigation(),
             _ => {}
         }
     }
@@ -1809,6 +2151,9 @@ impl App {
         self.pending_prompt = Some(expanded);
         self.mention = None;
         self.input.set_value("");
+        // A new turn is about to append content; return to the latest and drop any stale
+        // navigation focus so the streaming reply stays in view.
+        self.reset_view();
     }
 
     /// Whether the prompt is in `!` shell mode (rendered with a distinct affordance).
@@ -1830,6 +2175,8 @@ impl App {
         let outcome = shell::run(command, &cwd);
         self.transcript.push(Entry::Shell(outcome));
         self.input.set_value("");
+        // Keep the freshly appended command output in view.
+        self.pin_to_bottom();
     }
 
     /// Leave `!` shell mode and return to chat input (Esc, or backspacing out an empty command),
@@ -1843,6 +2190,32 @@ impl App {
 /// Builds [`TextAreaModifiers`] from a shift flag (ctrl/alt are never forwarded here).
 fn modifiers(shift: bool) -> TextAreaModifiers {
     TextAreaModifiers::new(shift, false, false)
+}
+
+/// The plain-text content of a transcript entry, used when copying a message to the clipboard.
+fn entry_copy_text(entry: &Entry) -> String {
+    match entry {
+        Entry::User(text) => text.clone(),
+        Entry::Assistant(turn) => {
+            if turn.answer.trim().is_empty() {
+                turn.reasoning.clone()
+            } else {
+                turn.answer.clone()
+            }
+        }
+        Entry::Diff(diff) => diff.path.clone(),
+        Entry::Tool(card) => {
+            let mut out = format!("{}: {}", card.name, card.summary);
+            if !card.output.trim().is_empty() {
+                out.push('\n');
+                out.push_str(&card.output);
+            }
+            out
+        }
+        Entry::Notice(text) | Entry::Error(text) => text.clone(),
+        Entry::Shell(outcome) => format!("$ {}\n{}", outcome.command, outcome.output),
+        Entry::Help => "Help — commands & keybindings".to_owned(),
+    }
 }
 
 /// Write a session export Markdown document to a timestamped file under the data directory's
@@ -3835,6 +4208,194 @@ mod tests {
         assert!(
             a.leader_pending(),
             "the custom leader arms the which-key overlay"
+        );
+    }
+
+    #[test]
+    fn ctrl_f_opens_find_and_esc_closes_it() {
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple pie".to_owned()));
+        assert!(a.find().is_none());
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert!(a.find().is_some(), "Ctrl+F opens the find bar");
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.find().is_none(), "Esc closes the find bar");
+    }
+
+    #[test]
+    fn find_query_locates_matches() {
+        // VAL-TUI-077: a query present in the transcript is located (and thus highlightable).
+        let mut a = app();
+        a.transcript.push(Entry::Notice("xq apple here".to_owned()));
+        a.transcript
+            .push(Entry::Notice("another apple line".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "apple".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status(), (0, 2), "both apple occurrences are found");
+    }
+
+    #[test]
+    fn find_next_and_prev_move_the_active_match() {
+        // VAL-TUI-078: next/prev move the active match (wrapping at the ends).
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple one".to_owned()));
+        a.transcript.push(Entry::Notice("apple two".to_owned()));
+        a.transcript.push(Entry::Notice("apple three".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "apple".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status(), (0, 3));
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.find_status().0, 1, "Down advances to the next match");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.find_status().0, 2, "Enter advances to the next match");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.find_status().0, 0, "next wraps back to the first match");
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.find_status().0, 2, "prev wraps to the last match");
+    }
+
+    #[test]
+    fn find_backspace_edits_the_query() {
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple".to_owned()));
+        a.transcript.push(Entry::Notice("apricot".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "ap".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status().1, 2, "`ap` matches both lines");
+        for c in "ple".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status().1, 1, "`apple` matches one line");
+        for _ in 0..3 {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(a.find_status().1, 2, "back to `ap` matches both again");
+    }
+
+    #[test]
+    fn alt_arrows_navigate_messages() {
+        // VAL-TUI-079: message navigation moves the selection between messages.
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
+        a.transcript.push(Entry::User("third".to_owned()));
+        assert_eq!(a.selected_message(), None);
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(
+            a.selected_message(),
+            Some(2),
+            "first selection is the last message"
+        );
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(a.selected_message(), Some(1));
+        a.on_key(key_mod(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(a.selected_message(), Some(2));
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(a.selected_message(), None, "Esc clears the selection");
+    }
+
+    #[test]
+    fn ctrl_k_and_ctrl_n_navigate_messages() {
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(a.selected_message(), Some(1));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(a.selected_message(), Some(0));
+        a.on_key(key_mod(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(a.selected_message(), Some(1));
+    }
+
+    #[test]
+    fn page_up_reveals_earlier_then_page_down_returns_to_latest() {
+        // VAL-TUI-080: page up reveals earlier content; page down returns to the latest.
+        let mut a = app();
+        for i in 0..100 {
+            a.transcript.push(Entry::Notice(format!("line {i}")));
+        }
+        a.set_viewport(80, 10);
+        assert_eq!(a.scroll(), 0, "starts pinned to the latest content");
+        a.on_key(key(KeyCode::PageUp));
+        let after_up = a.scroll();
+        assert!(after_up > 0, "page up scrolls toward earlier content");
+        assert!(after_up <= a.max_scroll(), "scroll stays within bounds");
+        for _ in 0..200 {
+            a.on_key(key(KeyCode::PageDown));
+        }
+        assert_eq!(a.scroll(), 0, "page down returns to the latest content");
+        for _ in 0..200 {
+            a.on_key(key(KeyCode::PageUp));
+        }
+        assert_eq!(a.scroll(), a.max_scroll(), "page up clamps at the top");
+    }
+
+    #[test]
+    fn copying_a_selected_message_is_acknowledged_and_staged() {
+        // VAL-TUI-081: copying a message is acknowledged (and the text is staged for the clipboard).
+        let mut a = app();
+        a.transcript.push(Entry::User("hello world".to_owned()));
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert!(a.ack().is_some(), "the copy is acknowledged");
+        assert_eq!(
+            a.take_copy_request().as_deref(),
+            Some("hello world"),
+            "the selected message text is staged for the clipboard"
+        );
+    }
+
+    #[test]
+    fn copy_without_selection_copies_the_latest_message() {
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::Notice("latest note".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(a.take_copy_request().as_deref(), Some("latest note"));
+        assert!(a.ack().is_some());
+    }
+
+    #[test]
+    fn copy_with_empty_transcript_is_graceful() {
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert!(
+            a.ack().is_some(),
+            "an acknowledgement explains there is nothing to copy"
+        );
+        assert!(
+            a.take_copy_request().is_none(),
+            "nothing is staged for the clipboard"
+        );
+    }
+
+    #[test]
+    fn submitting_resets_navigation_to_the_latest() {
+        let mut a = app();
+        for i in 0..40 {
+            a.transcript.push(Entry::Notice(format!("note {i}")));
+        }
+        a.set_viewport(80, 10);
+        // Select a message first (which scrolls it into view), then page up so the view is both
+        // scrolled away from the bottom and has a selection.
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key(KeyCode::PageUp));
+        assert!(a.scroll() > 0 && a.selected_message().is_some());
+        for c in "hello".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.scroll(), 0, "submitting returns the view to the latest");
+        assert_eq!(
+            a.selected_message(),
+            None,
+            "submitting clears the selection"
         );
     }
 }

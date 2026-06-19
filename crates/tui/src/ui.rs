@@ -63,6 +63,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_slash_menu(frame, app, chunks[1]);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
     draw_mention_menu(frame, app, chunks[1]);
+    // The find-in-chat search bar floats above the prompt while find mode is active.
+    draw_find_bar(frame, app, chunks[1]);
+    // A transient acknowledgement (e.g. a copy confirmation) shows just above the prompt.
+    draw_ack(frame, app, chunks[1]);
     // The sidebar occupies its reserved column beside the main content.
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(frame, app, sidebar);
@@ -84,7 +88,9 @@ fn prompt_rows(app: &App, total_height: u16) -> u16 {
 }
 
 /// Render the transcript area: the home screen before any exchange, otherwise the streamed
-/// conversation tail (so the newest content and the busy indicator stay visible).
+/// conversation. The view is normally pinned to the latest content, but the message-selection
+/// highlight, find-match highlight, and the scroll offset let the user reach and mark earlier
+/// content; the most-recent content returns into view when the scroll offset is zero.
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     if app.transcript.is_empty() && !app.is_busy() {
         draw_home(frame, app, area);
@@ -92,20 +98,63 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let width = area.width.max(1) as usize;
-    let lines = transcript_lines(app, width);
-    // Keep the latest lines visible (auto-scroll to the bottom) by dropping the leading overflow.
     let height = area.height as usize;
-    let start = lines.len().saturating_sub(height);
-    let visible: Vec<Line> = lines.into_iter().skip(start).collect();
+    // Record the viewport so key handlers can page-scroll and locate find matches/messages
+    // without re-deriving the layout.
+    app.set_viewport(width, height);
+
+    let RenderedTranscript {
+        mut lines,
+        entry_starts,
+    } = render_transcript(app, width);
+
+    // Mark the selected message (message-level navigation) with a full-width background band so the
+    // focused message is unmistakable across snapshots.
+    if let Some(selected) = app.selected_message() {
+        let theme = style::ThemeColors::from_name(app.theme());
+        highlight_selected(&mut lines, &entry_starts, selected, width, theme.surface[3]);
+    }
+
+    // Highlight find matches; the active match carries a distinct, bolder style so next/prev
+    // navigation is visible as the emphasis moves between occurrences.
+    if let Some(find) = app.find() {
+        if !find.query.is_empty() {
+            highlight_find(
+                &mut lines,
+                &find.query,
+                find.active,
+                style::INFO,
+                style::WARNING,
+            );
+        }
+    }
+
+    // Apply the scroll offset: 0 pins to the bottom (latest), larger values reveal earlier content.
+    let max_scroll = lines.len().saturating_sub(height);
+    let scroll = app.scroll().min(max_scroll);
+    let start = max_scroll - scroll;
+    let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
 
     frame.render_widget(Paragraph::new(visible), area);
 }
 
-/// Build the full transcript as pre-wrapped lines (so scrolling is exact). The in-progress
-/// assistant entry grows as deltas arrive, and the busy indicator is appended while a turn streams.
-pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+/// The fully rendered transcript: the pre-wrapped lines plus the first line index of each transcript
+/// entry (so message-level navigation can scroll a chosen message into view).
+pub struct RenderedTranscript {
+    /// Every rendered transcript line, top to bottom.
+    pub lines: Vec<Line<'static>>,
+    /// `entry_starts[i]` is the index in `lines` where transcript entry `i` begins.
+    pub entry_starts: Vec<usize>,
+}
+
+/// Build the full transcript as pre-wrapped lines (so scrolling is exact), recording where each
+/// entry begins. The in-progress assistant entry grows as deltas arrive, and the busy indicator is
+/// appended while a turn streams.
+pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut entry_starts: Vec<usize> = Vec::with_capacity(app.transcript.len());
     for entry in &app.transcript {
+        entry_starts.push(lines.len());
         match entry {
             Entry::User(text) => push_user(&mut lines, text, width),
             Entry::Assistant(turn) => push_assistant(&mut lines, turn, width),
@@ -133,7 +182,177 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )));
     }
-    lines
+    RenderedTranscript {
+        lines,
+        entry_starts,
+    }
+}
+
+/// Build the full transcript as pre-wrapped lines (so scrolling is exact). The in-progress
+/// assistant entry grows as deltas arrive, and the busy indicator is appended while a turn streams.
+pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    render_transcript(app, width).lines
+}
+
+/// The first line index of each transcript entry, used to scroll a selected message into view.
+pub fn entry_start_lines(app: &App, width: usize) -> Vec<usize> {
+    render_transcript(app, width).entry_starts
+}
+
+/// A single find-in-chat match: the rendered line it falls on and its char span within that line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindMatch {
+    /// Index into the rendered transcript lines.
+    pub line: usize,
+    /// Char offset of the match within the line's plain text.
+    pub start: usize,
+    /// Match length in chars.
+    pub len: usize,
+}
+
+/// The plain text of a rendered line (its span contents concatenated).
+fn line_text(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// Find every (non-overlapping, case-insensitive) occurrence of `query` across the rendered
+/// transcript lines, in top-to-bottom, left-to-right order. An empty query yields no matches.
+pub fn transcript_matches(lines: &[Line], query: &str) -> Vec<FindMatch> {
+    let mut out: Vec<FindMatch> = Vec::new();
+    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    if needle.is_empty() {
+        return out;
+    }
+    for (li, line) in lines.iter().enumerate() {
+        let hay: Vec<char> = line_text(line).to_lowercase().chars().collect();
+        if hay.len() < needle.len() {
+            continue;
+        }
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if hay[i..i + needle.len()] == needle[..] {
+                out.push(FindMatch {
+                    line: li,
+                    start: i,
+                    len: needle.len(),
+                });
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Re-style the lines holding find matches: every match gets a background band and the active match
+/// (the `active`-th in order) gets a brighter background plus bold, so next/prev navigation visibly
+/// moves the emphasis between occurrences.
+fn highlight_find(
+    lines: &mut [Line<'static>],
+    query: &str,
+    active: usize,
+    base_bg: Color,
+    active_bg: Color,
+) {
+    let matches = transcript_matches(lines, query);
+    if matches.is_empty() {
+        return;
+    }
+    let active = active.min(matches.len() - 1);
+    let mut per_line: std::collections::BTreeMap<usize, Vec<(usize, usize, bool)>> =
+        std::collections::BTreeMap::new();
+    for (gi, m) in matches.iter().enumerate() {
+        per_line
+            .entry(m.line)
+            .or_default()
+            .push((m.start, m.start + m.len, gi == active));
+    }
+    for (line_idx, ranges) in per_line {
+        lines[line_idx] = apply_highlights_to_line(&lines[line_idx], &ranges, base_bg, active_bg);
+    }
+}
+
+/// Rebuild one line, splitting its spans at the given char ranges and applying a highlight
+/// background (the active range gets `active_bg` + bold; others get `base_bg`), while preserving
+/// each span's original foreground/modifiers elsewhere.
+fn apply_highlights_to_line(
+    line: &Line<'static>,
+    ranges: &[(usize, usize, bool)],
+    base_bg: Color,
+    active_bg: Color,
+) -> Line<'static> {
+    let highlight_at = |abs: usize| -> Option<bool> {
+        ranges
+            .iter()
+            .find(|(s, e, _)| abs >= *s && abs < *e)
+            .map(|(_, _, a)| *a)
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0usize;
+    for span in &line.spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let style = span.style;
+        let mut i = 0;
+        while i < chars.len() {
+            let hl = highlight_at(offset + i);
+            let mut j = i + 1;
+            while j < chars.len() && highlight_at(offset + j) == hl {
+                j += 1;
+            }
+            let text: String = chars[i..j].iter().collect();
+            let st = match hl {
+                Some(true) => style.bg(active_bg).add_modifier(Modifier::BOLD),
+                Some(false) => style.bg(base_bg),
+                None => style,
+            };
+            spans.push(Span::styled(text, st));
+            i = j;
+        }
+        offset += chars.len();
+    }
+    Line::from(spans)
+}
+
+/// Paint a full-width background band over the lines of the selected message so message-level
+/// navigation shows which message is focused. Each line keeps its text styling but gains the band
+/// background, padded to the full width.
+fn highlight_selected(
+    lines: &mut [Line<'static>],
+    entry_starts: &[usize],
+    selected: usize,
+    width: usize,
+    bg: Color,
+) {
+    let Some(&begin) = entry_starts.get(selected) else {
+        return;
+    };
+    let end = entry_starts
+        .get(selected + 1)
+        .copied()
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    for line in lines.iter_mut().take(end).skip(begin) {
+        *line = apply_row_bg(line, bg, width);
+    }
+}
+
+/// Re-style one line with a background band, padded with spaces to `width`.
+fn apply_row_bg(line: &Line<'static>, bg: Color, width: usize) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|s| Span::styled(s.content.to_string(), s.style.bg(bg)))
+        .collect();
+    let used = line.width();
+    if used < width {
+        spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(bg),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Append a user prompt: a bold marker header followed by the wrapped prompt body.
@@ -364,6 +583,10 @@ const KEYBINDINGS: &[(&str, &str)] = &[
     ("Esc", "Close the slash-command menu"),
     ("Ctrl+A / Ctrl+E", "Jump to line start / end"),
     ("Ctrl+O", "Expand / collapse tool cards"),
+    ("Ctrl+F", "Find in chat (Enter/Up next/prev, Esc close)"),
+    ("PageUp / PageDown", "Scroll the transcript up / down"),
+    ("Ctrl+K / Ctrl+N", "Select previous / next message"),
+    ("Ctrl+Y", "Copy the selected message"),
     ("Ctrl+C", "Quit Cortex Code"),
 ];
 
@@ -745,6 +968,95 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Render the find-in-chat search bar as a single-row bordered popup floating above the prompt. It
+/// shows the live query and a `match N of M` indicator (or `no matches` / a hint), so the search
+/// affordance and the active-match position are both visible in a snapshot.
+fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect) {
+    let Some(find) = app.find() else {
+        return;
+    };
+    if prompt_area.width == 0 {
+        return;
+    }
+
+    let (active, total) = app.find_status();
+    let status = if find.query.is_empty() {
+        "type to search".to_owned()
+    } else if total == 0 {
+        "no matches".to_owned()
+    } else {
+        format!("match {} of {}", active + 1, total)
+    };
+
+    let row = Line::from(vec![
+        Span::styled(
+            "Find: ",
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(find.query.clone(), Style::default().fg(style::TEXT)),
+        Span::raw("  "),
+        Span::styled(status, Style::default().fg(style::TEXT_DIM)),
+    ]);
+
+    let height = 3u16;
+    let width = prompt_area.width;
+    let y = prompt_area.y.saturating_sub(height);
+    let popup = Rect {
+        x: prompt_area.x,
+        y,
+        width,
+        height: height.min(prompt_area.y.saturating_sub(y).max(height)),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(style::INFO))
+        .title(" find ")
+        .title_style(
+            Style::default()
+                .fg(style::INFO)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(row), inner);
+}
+
+/// Render a transient acknowledgement (e.g. a copy confirmation) as a single highlighted row
+/// directly above the prompt. Shown only in ordinary mode (never while the find bar is open) so the
+/// two affordances do not collide.
+fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect) {
+    if app.find().is_some() {
+        return;
+    }
+    let Some(message) = app.ack() else {
+        return;
+    };
+    if prompt_area.width == 0 || prompt_area.y == 0 {
+        return;
+    }
+
+    let area = Rect {
+        x: prompt_area.x,
+        y: prompt_area.y - 1,
+        width: prompt_area.width,
+        height: 1,
+    };
+    let line = Line::from(Span::styled(
+        format!("✓ {message}"),
+        Style::default()
+            .fg(style::SUCCESS)
+            .add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Build a modal dialog's item rows: each selectable item with a `▸` marker and bold name on the
@@ -1805,6 +2117,206 @@ mod tests {
         assert!(
             rendered.contains("/help"),
             "command entries are drawn in the overlay"
+        );
+    }
+
+    fn press(a: &mut App, code: crossterm::event::KeyCode) {
+        a.on_key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    fn press_ctrl(a: &mut App, c: char) {
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+    }
+
+    fn screen(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn transcript_matches_finds_all_occurrences() {
+        let mut a = app();
+        a.transcript
+            .push(Entry::Notice("apple and apple".to_owned()));
+        a.transcript.push(Entry::Notice("banana".to_owned()));
+        let lines = transcript_lines(&a, 80);
+        assert_eq!(transcript_matches(&lines, "apple").len(), 2);
+        assert_eq!(transcript_matches(&lines, "banana").len(), 1);
+        assert_eq!(transcript_matches(&lines, "missing").len(), 0);
+        assert_eq!(transcript_matches(&lines, "").len(), 0);
+    }
+
+    #[test]
+    fn find_highlight_applies_background_to_matches() {
+        // VAL-TUI-077: the matched text carries a highlight background.
+        let mut a = app();
+        a.transcript
+            .push(Entry::Notice("find ZTOKEN now".to_owned()));
+        let mut lines = transcript_lines(&a, 80);
+        highlight_find(&mut lines, "ztoken", 0, style::INFO, style::WARNING);
+        let highlighted = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.content.eq_ignore_ascii_case("ztoken") && s.style.bg.is_some());
+        assert!(
+            highlighted,
+            "the matched token carries a highlight background"
+        );
+    }
+
+    #[test]
+    fn active_find_match_is_styled_distinctly() {
+        // VAL-TUI-078: the active match is visually distinct from the other matches.
+        let mut a = app();
+        a.transcript.push(Entry::Notice("ZTOKEN one".to_owned()));
+        a.transcript.push(Entry::Notice("ZTOKEN two".to_owned()));
+        let mut lines = transcript_lines(&a, 80);
+        highlight_find(&mut lines, "ztoken", 1, style::INFO, style::WARNING);
+        let mut active = Vec::new();
+        let mut base = Vec::new();
+        for s in lines.iter().flat_map(|l| &l.spans) {
+            if s.content.eq_ignore_ascii_case("ztoken") {
+                if s.style.add_modifier.contains(Modifier::BOLD) {
+                    active.push(s.style.bg);
+                } else {
+                    base.push(s.style.bg);
+                }
+            }
+        }
+        assert_eq!(
+            active,
+            vec![Some(style::WARNING)],
+            "exactly one active match with the active background"
+        );
+        assert_eq!(
+            base,
+            vec![Some(style::INFO)],
+            "the other match uses the base background"
+        );
+    }
+
+    #[test]
+    fn selected_message_gets_a_full_width_band() {
+        // VAL-TUI-079: the focused message is marked with a full-width background band.
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
+        let width = 40;
+        let RenderedTranscript {
+            mut lines,
+            entry_starts,
+        } = render_transcript(&a, width);
+        highlight_selected(&mut lines, &entry_starts, 1, width, style::SURFACE_2);
+        let begin = entry_starts[1];
+        let banded = lines[begin]
+            .spans
+            .iter()
+            .all(|s| s.style.bg == Some(style::SURFACE_2));
+        assert!(banded, "the selected message's first row is fully banded");
+        let line_width: usize = lines[begin]
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum();
+        assert_eq!(line_width, width, "the band is padded to the full width");
+    }
+
+    #[test]
+    fn find_bar_renders_query_and_match_count() {
+        // VAL-TUI-077/078: the find bar shows the live query and the active-match indicator.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple one".to_owned()));
+        a.transcript.push(Entry::Notice("apple two".to_owned()));
+        press_ctrl(&mut a, 'f');
+        for c in "apple".chars() {
+            press(&mut a, crossterm::event::KeyCode::Char(c));
+        }
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let rendered = screen(&terminal);
+        assert!(
+            rendered.contains("Find:"),
+            "the find bar is drawn:\n{rendered}"
+        );
+        assert!(rendered.contains("apple"), "the query text is shown");
+        assert!(
+            rendered.contains("match 1 of 2"),
+            "the active-match indicator is shown:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn scrolling_reveals_earlier_and_later_content() {
+        // VAL-TUI-080: page up reveals earlier content; page down returns to the latest.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        for i in 0..50 {
+            a.transcript.push(Entry::Notice(format!("LINE{i:02}")));
+        }
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        assert!(
+            screen(&terminal).contains("LINE49"),
+            "the latest content is shown initially"
+        );
+
+        for _ in 0..40 {
+            press(&mut a, crossterm::event::KeyCode::PageUp);
+        }
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let scrolled = screen(&terminal);
+        assert!(
+            scrolled.contains("LINE00"),
+            "earlier content is revealed after scrolling up:\n{scrolled}"
+        );
+
+        for _ in 0..40 {
+            press(&mut a, crossterm::event::KeyCode::PageDown);
+        }
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        assert!(
+            screen(&terminal).contains("LINE49"),
+            "the latest content returns after scrolling down"
+        );
+    }
+
+    #[test]
+    fn copy_acknowledgement_renders_above_the_prompt() {
+        // VAL-TUI-081: copying a message shows a confirmation acknowledgement.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::User("hello world".to_owned()));
+        press_ctrl(&mut a, 'y');
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let rendered = screen(&terminal);
+        assert!(
+            rendered.contains("Copied message"),
+            "a copy acknowledgement is shown:\n{rendered}"
         );
     }
 }

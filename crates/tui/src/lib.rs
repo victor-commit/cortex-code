@@ -92,6 +92,42 @@ fn restore<B: Backend + Write>(terminal: &mut Terminal<B>) -> io::Result<()> {
     Ok(())
 }
 
+/// Copy `text` to the terminal's clipboard using the OSC 52 escape sequence. This is a real,
+/// dependency-free clipboard mechanism honored by modern terminals; the sequence is non-printing,
+/// so it does not disturb the rendered screen.
+fn copy_to_clipboard<B: Backend + Write>(terminal: &mut Terminal<B>, text: &str) -> io::Result<()> {
+    let sequence = format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()));
+    let backend = terminal.backend_mut();
+    backend.write_all(sequence.as_bytes())?;
+    Write::flush(backend)
+}
+
+/// Standard-alphabet Base64 encoding (with `=` padding), used for the OSC 52 clipboard payload. Kept
+/// inline to avoid pulling in a dependency for a single small encoder.
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -133,6 +169,12 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         // composed text back in the prompt before the next draw.
         if app.take_editor_request() {
             compose_in_editor(terminal, app)?;
+        }
+
+        // Honor a pending message-copy by writing the text to the terminal clipboard via OSC 52.
+        // The on-screen acknowledgement is shown by the app; this performs the real copy.
+        if let Some(text) = app.take_copy_request() {
+            let _ = copy_to_clipboard(terminal, &text);
         }
 
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
