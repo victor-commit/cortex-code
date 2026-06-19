@@ -6,9 +6,9 @@
 // Target-Path: crates/frame/src/markdown/mod.rs
 // Port-Mode: adapt
 // Adaptation: crate renamed cortex-frame -> frame (cortex_frame -> frame import paths);
-//   code_block.rs + languages.rs (tree-sitter syntax highlighting via tui-syntax) are NOT
-//   ported here -- they belong to the syntax-highlight feature. Fenced code blocks render via
-//   the renderer's built-in simple bordered container (render_simple_code_block).
+//   code_block.rs + languages.rs (tree-sitter syntax highlighting via tui-syntax) are ported by
+//   the syntax-highlight feature. Fenced code blocks render highlighted when the fence language
+//   maps to a registered grammar (rust/bash), else via the simple bordered fallback.
 // Upstream-License: MIT
 // See: NOTICE (Direct-Port Provenance Ledger)
 
@@ -71,14 +71,18 @@
 //! ```
 
 // Sub-modules
+pub mod code_block;
 pub mod inline;
+pub mod languages;
 pub mod list;
 pub mod renderer;
 pub mod table;
 pub mod theme;
 
 // Re-exports for convenient access
+pub use code_block::{CodeBlockRenderer, IncrementalCodeBlock};
 pub use inline::{InlineStyleStack, parse_inline_spans, render_blockquote_prefix, render_hr};
+pub use languages::{get_default_highlighter, normalize_language_name};
 pub use list::{ListContext, ListItem, render_list_item};
 pub use renderer::{IncrementalMarkdownRenderer, MarkdownRenderer};
 pub use table::{Alignment, Table, TableBuilder, TableCell, render_table};

@@ -158,9 +158,9 @@ impl<'a> RenderState<'a> {
     pub(super) fn end_code_block(&mut self) {
         self.in_code_block = false;
 
-        // Render the code block in a distinct bordered container (no syntax highlighting;
-        // that is layered on by the syntax-highlight feature via tui-syntax).
-        let code_lines = self.render_simple_code_block();
+        // Render the code block: syntax-highlighted in a bordered container when the fence
+        // language has a registered grammar, else a plain bordered fallback.
+        let code_lines = self.render_code_block();
 
         // Add blockquote prefix to each line if needed
         if self.blockquote_depth > 0 {
@@ -560,11 +560,45 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Render the current code block, syntax-highlighting it when the fence language maps to a
+    /// registered tree-sitter grammar (rust/bash). Unknown languages, and partial blocks whose
+    /// language has no grammar, degrade gracefully to the plain bordered container.
+    ///
+    /// Highlighting produces styled ratatui spans inside the same `┌─┐ │ │ └─┘` frame the plain
+    /// fallback uses, so partial/streaming code stays legible (no raw escapes) and reflows into
+    /// the correctly-formatted final block once the fence closes.
+    pub(super) fn render_code_block(&self) -> Vec<Line<'static>> {
+        use crate::markdown::code_block::CodeBlockRenderer;
+        use crate::markdown::languages::{get_default_highlighter, normalize_language_name};
+
+        if let Some(raw_lang) = self.code_language.as_deref() {
+            if let Some(canonical) = normalize_language_name(raw_lang) {
+                let highlighter = get_default_highlighter();
+                if highlighter.has_language(canonical) {
+                    let block = CodeBlockRenderer::new(highlighter)
+                        .with_border_color(self.renderer.theme.code_block_border)
+                        .with_background(self.renderer.theme.code_block_bg)
+                        .with_text_style(self.renderer.theme.code_block_text)
+                        .with_lang_tag_style(self.renderer.theme.code_lang_tag);
+                    // Trim a single trailing newline so the closing fence does not add a blank
+                    // content row inside the box.
+                    let code = self
+                        .code_buffer
+                        .strip_suffix('\n')
+                        .unwrap_or(&self.code_buffer);
+                    return block.render(code, Some(canonical), self.renderer.width);
+                }
+            }
+        }
+
+        self.render_simple_code_block()
+    }
+
     /// Render a code block in a distinct box-drawing container (no syntax highlighting).
     ///
     /// The opening/closing ``` fences are consumed: the language (if any) becomes a tag in the
     /// top border and the code is framed by `┌─┐ │ │ └─┘`, preserving each line's indentation.
-    /// Syntax highlighting is layered on later by the syntax-highlight feature (via tui-syntax).
+    /// Used as the fallback for unknown languages and partial streaming blocks.
     pub(super) fn render_simple_code_block(&self) -> Vec<Line<'static>> {
         let style = self.renderer.theme.code_block_text;
         let border_style = Style::default().fg(self.renderer.theme.code_block_border);

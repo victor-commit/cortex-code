@@ -25,3 +25,12 @@ ratatui = { workspace = true }
 pulldown-cmark = { workspace = true }
 unicode-width = { workspace = true }
 ahash = { workspace = true }
+
+# Syntax highlighting seam for fenced code blocks.
+tui-syntax = { workspace = true }
+tui-text = { workspace = true }
+once_cell = { workspace = true }
+
+# Tree-sitter grammars registered with the default highlighter.
+tree-sitter-bash = { workspace = true }
+tree-sitter-rust = { workspace = true }

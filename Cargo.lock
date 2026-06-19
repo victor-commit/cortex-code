@@ -428,8 +428,13 @@ name = "frame"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "once_cell",
  "pulldown-cmark",
  "ratatui",
+ "tree-sitter-bash",
+ "tree-sitter-rust",
+ "tui-syntax",
+ "tui-text",
  "unicode-width 0.2.0",
 ]
 
@@ -1946,6 +1951,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
+name = "tree-sitter-rust"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1984,6 +1999,20 @@ dependencies = [
  "ratatui",
  "smallvec",
  "thiserror",
+]
+
+[[package]]
+name = "tui-syntax"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "once_cell",
+ "parking_lot",
+ "streaming-iterator",
+ "thiserror",
+ "tree-sitter",
+ "tree-sitter-rust",
+ "tui-text",
 ]
 
 [[package]]

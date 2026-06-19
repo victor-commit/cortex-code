@@ -226,8 +226,10 @@ impl<'a> RenderState<'a> {
             // Auto-close the code block to prevent rendering issues
             self.in_code_block = false;
 
-            // Render the code block even if unclosed
-            let code_lines = self.render_simple_code_block();
+            // Render the (still-streaming) code block even if unclosed: highlighted when the
+            // language has a grammar, else the plain bordered fallback. Either way it stays
+            // legible mid-stream and reflows into the final block once the fence closes.
+            let code_lines = self.render_code_block();
 
             // Add blockquote prefix to each line if needed
             if self.blockquote_depth > 0 {

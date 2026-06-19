@@ -6,9 +6,9 @@
 //! bulleted/numbered/task lists, fenced code blocks (in a distinct bordered container), tables,
 //! and blockquotes, with incremental rendering for streaming content.
 //!
-//! Tree-sitter syntax highlighting of code blocks is intentionally NOT part of this crate; it is
-//! layered on by the syntax-highlight feature (via `tui-syntax`). Fenced code blocks here render
-//! in a plain bordered container that preserves line breaks and indentation.
+//! Fenced code blocks are syntax-highlighted via `tui-syntax` (tree-sitter) when the fence info
+//! string maps to a registered grammar (rust/bash); unknown languages and still-streaming partial
+//! blocks fall back to a plain bordered container that preserves line breaks and indentation.
 //!
 //! ## Usage
 //!
