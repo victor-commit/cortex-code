@@ -5,9 +5,14 @@
 //! last-matching-rule-wins by the [`PermissionEngine`] the headless [`tools::ToolContext`] consults
 //! before every gated tool effect (architecture §3.4 / §4):
 //!
-//! 1. **Config-file `[[permission]]` layers** — loaded via [`load_layered`] in the documented
-//!    settings layering order (global → project → nested) as the BASE ruleset, so a project-level
-//!    `cortex.toml` in the working dir overrides a conflicting global rule (VAL-PERM-017).
+//! 1. **Config-file `[[permission]]` layers** — loaded in the documented settings layering order
+//!    (global → project → nested) as the BASE ruleset, so a project-level `cortex.toml` in the
+//!    working dir overrides a conflicting global rule (VAL-PERM-017). When an `--agent` is active
+//!    the base is that agent's effective ruleset ([`load_agent_rulesets`] →
+//!    [`permissions::AgentRulesets::for_agent`]: the top-level `[[permission]]` rules followed by
+//!    the agent's `[[agent.<name>.permission]]` overrides), so a per-agent rule gates the turn
+//!    (VAL-PERM-009); with no `--agent` the base is the top-level layered ruleset
+//!    ([`load_layered`]) exactly as before.
 //! 2. **CLI `--permission-allow`/`--permission-deny` flags** — parsed here and appended ON TOP of
 //!    the config base, so a CLI rule overrides a conflicting config rule.
 //!
@@ -35,7 +40,7 @@ use std::sync::Arc;
 use events::EventBus;
 use permissions::{
     ANY_TOOL, Action, Decision, PermissionEngine, PermissionRequest, Responder, Rule, RuleError,
-    SavedDecision, SavedDecisions, ScopedDecision, load_layered, scope_of,
+    SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets, load_layered, scope_of,
 };
 use settings::ConfigInputs;
 
@@ -92,14 +97,23 @@ pub struct HeadlessPermissions {
 }
 
 /// Assemble the headless permission engine from every source a `cortex run` honors: the config-file
-/// `[[permission]]` layers, the CLI allow/deny flags, the previously saved cross-process decisions,
-/// and the `--permission-allow-save` "ask-and-remember" specs.
+/// `[[permission]]` layers (scoped to the active agent when one is selected), the CLI allow/deny
+/// flags, the previously saved cross-process decisions, and the `--permission-allow-save`
+/// "ask-and-remember" specs.
 ///
-/// The combined ruleset is, in last-matching-rule-wins order: the config layers (global → project →
-/// nested), then the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an
-/// `ask` rule (so a matching action is surfaced as an ask — recording a `permission.asked` event —
-/// and the [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern). The engine
-/// also carries:
+/// `agent` is the active `--agent` name, or `None` when no agent flag is present. When `Some(name)`,
+/// the BASE ruleset is that agent's effective ruleset ([`load_agent_rulesets`] →
+/// [`permissions::AgentRulesets::for_agent`]: the top-level `[[permission]]` base followed by the
+/// agent's `[[agent.<name>.permission]]` overrides), so a per-agent rule gates the turn and two
+/// agents whose rules differ decide the same action differently (VAL-PERM-009). An agent with no
+/// overrides falls back to the top-level base. With `None` the base is the top-level layered ruleset
+/// ([`load_layered`]) exactly as before.
+///
+/// The combined ruleset is, in last-matching-rule-wins order: the (agent-scoped) config base, then
+/// the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an `ask` rule (so
+/// a matching action is surfaced as an ask — recording a `permission.asked` event — and the
+/// [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern). The engine also
+/// carries:
 /// - the `saved` store (consulted BEFORE the ruleset, so a previously saved decision is honored
 ///   with no new ask — VAL-CROSS-027), seeded from `loaded`;
 /// - the event `bus`, so `permission.asked`/`permission.replied` are observable;
@@ -115,12 +129,19 @@ pub struct HeadlessPermissions {
 /// malformed.
 pub fn prepare_headless_permissions(
     inputs: &ConfigInputs,
+    agent: Option<&str>,
     cli_rules: Vec<Rule>,
     save_specs: Vec<Rule>,
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
 ) -> Result<HeadlessPermissions, RuleError> {
-    let mut ruleset = load_layered(inputs)?;
+    // When an agent is active its effective ruleset (base ++ that agent's overrides) is the base, so
+    // a per-agent rule gates the turn (VAL-PERM-009); otherwise the top-level layered ruleset is the
+    // base exactly as before.
+    let mut ruleset = match agent {
+        Some(name) => load_agent_rulesets(inputs)?.for_agent(name),
+        None => load_layered(inputs)?,
+    };
     for rule in cli_rules {
         ruleset.push(rule);
     }
@@ -302,10 +323,21 @@ mod tests {
     }
 
     /// Build the headless engine option from config layers + CLI rules alone (no save specs, no
-    /// prior saved decisions), as the layered-precedence tests exercise it.
+    /// prior saved decisions), with no active agent — as the layered-precedence tests exercise it.
     fn engine_for(inputs: &ConfigInputs, cli_rules: Vec<Rule>) -> Option<Arc<PermissionEngine>> {
+        engine_for_agent(inputs, None, cli_rules)
+    }
+
+    /// Build the headless engine option scoped to `agent` (the active `--agent` name, or `None` for
+    /// the top-level layered base) from config layers + CLI rules alone.
+    fn engine_for_agent(
+        inputs: &ConfigInputs,
+        agent: Option<&str>,
+        cli_rules: Vec<Rule>,
+    ) -> Option<Arc<PermissionEngine>> {
         prepare_headless_permissions(
             inputs,
+            agent,
             cli_rules,
             Vec::new(),
             Vec::new(),
@@ -379,6 +411,110 @@ mod tests {
         assert_eq!(engine.classify("read", "secrets/k.txt"), Action::Allow);
     }
 
+    /// A project config declaring per-agent `[[agent.<name>.permission]]` overrides: agent `plan`
+    /// denies `write **` while agent `build` allows it.
+    const AGENT_WRITE_RULES: &str = "[[agent.plan.permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"deny\"\n\n\
+         [[agent.build.permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"allow\"\n";
+
+    // VAL-PERM-009: with agent `plan` denying `write **` and agent `build` allowing it in the SAME
+    // config, the active agent's ruleset governs the turn — the identical write is denied under
+    // `plan` and allowed under `build`.
+    #[test]
+    fn agent_ruleset_decides_the_same_write_differently_per_agent() {
+        let scratch = Scratch::new("agent-perm009");
+        scratch.write_project(AGENT_WRITE_RULES);
+
+        let plan = engine_for_agent(&scratch.inputs(), Some("plan"), Vec::new())
+            .expect("plan's deny attaches an engine");
+        assert_eq!(
+            plan.classify("write", "src/a.txt"),
+            Action::Deny,
+            "agent `plan` denies the write"
+        );
+
+        let build = engine_for_agent(&scratch.inputs(), Some("build"), Vec::new())
+            .expect("build's allow attaches an engine");
+        assert_eq!(
+            build.classify("write", "src/a.txt"),
+            Action::Allow,
+            "agent `build` allows the same write on the same config"
+        );
+    }
+
+    // An agent with no `[[agent.<name>.permission]]` override falls back to the top-level
+    // `[[permission]]` base, while an agent that DOES override wins under last-matching-rule-wins.
+    #[test]
+    fn agent_without_overrides_falls_back_to_the_top_level_base() {
+        let scratch = Scratch::new("agent-fallback");
+        // Top-level base allows `write **`; only agent `plan` overrides it to deny.
+        scratch.write_project(
+            "[[permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"allow\"\n\n\
+             [[agent.plan.permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"deny\"\n",
+        );
+
+        let general = engine_for_agent(&scratch.inputs(), Some("general"), Vec::new())
+            .expect("the base rule attaches an engine");
+        assert_eq!(
+            general.classify("write", "src/a.txt"),
+            Action::Allow,
+            "an agent with no override is governed by the top-level base"
+        );
+
+        let plan = engine_for_agent(&scratch.inputs(), Some("plan"), Vec::new())
+            .expect("the agent override attaches an engine");
+        assert_eq!(
+            plan.classify("write", "src/a.txt"),
+            Action::Deny,
+            "agent `plan`'s override wins over the base"
+        );
+    }
+
+    // A CLI `--permission-deny` is appended ON TOP of the agent ruleset, so a CLI deny overrides an
+    // agent's allow for the same action (the CLI layer wins last).
+    #[test]
+    fn cli_deny_overrides_an_agent_allow() {
+        let scratch = Scratch::new("agent-cli-over");
+        scratch.write_project(AGENT_WRITE_RULES);
+
+        let cli_rules = rules_from_flags(&[], &flags(&["write:**"])).expect("parse cli rules");
+        let build = engine_for_agent(&scratch.inputs(), Some("build"), cli_rules)
+            .expect("rules present so an engine is attached");
+        assert_eq!(
+            build.classify("write", "src/a.txt"),
+            Action::Deny,
+            "the appended CLI deny overrides agent `build`'s allow"
+        );
+    }
+
+    // With no `--agent` active the base is the top-level layered ruleset and the per-agent
+    // `[[agent.<name>.permission]]` rules are ignored, so behavior is unchanged: a config with ONLY
+    // agent overrides (no top-level `[[permission]]`) yields no rules and stays ungated.
+    #[test]
+    fn no_agent_ignores_agent_config_and_uses_the_top_level_base() {
+        let scratch = Scratch::new("agent-none");
+        scratch.write_project(AGENT_WRITE_RULES);
+        assert!(
+            engine_for(&scratch.inputs(), Vec::new()).is_none(),
+            "without --agent the agent-only config contributes no top-level rules, so the run stays \
+             ungated exactly as before"
+        );
+
+        // And when a top-level base IS present, the no-agent run is governed by it alone (the agent
+        // deny is not applied).
+        let scratch = Scratch::new("agent-none-base");
+        scratch.write_project(
+            "[[permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"allow\"\n\n\
+             [[agent.plan.permission]]\ntool = \"write\"\npattern = \"**\"\naction = \"deny\"\n",
+        );
+        let engine = engine_for(&scratch.inputs(), Vec::new())
+            .expect("the top-level base attaches an engine");
+        assert_eq!(
+            engine.classify("write", "src/a.txt"),
+            Action::Allow,
+            "with no --agent the top-level base governs and the agent override is ignored"
+        );
+    }
+
     // The combination is deterministic: loading the same fixtures twice yields the same decision.
     #[test]
     fn combination_is_stable_across_repeated_loads() {
@@ -400,6 +536,7 @@ mod tests {
         scratch.write_project("[[permission]]\ntool = \"bash\"\n");
         let err = match prepare_headless_permissions(
             &scratch.inputs(),
+            None,
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -562,6 +699,7 @@ mod tests {
         bus1.subscribe(collector1.clone());
         let prepared1 = prepare_headless_permissions(
             &scratch.inputs(),
+            None,
             Vec::new(),
             rules_from_save_flags(&flags(&["bash:echo *"])).expect("save specs"),
             Vec::new(),
@@ -596,9 +734,15 @@ mod tests {
         let bus2 = Arc::new(EventBus::new());
         let collector2 = Arc::new(EventCollector::default());
         bus2.subscribe(collector2.clone());
-        let prepared2 =
-            prepare_headless_permissions(&scratch.inputs(), Vec::new(), Vec::new(), loaded, bus2)
-                .expect("prepare run 2");
+        let prepared2 = prepare_headless_permissions(
+            &scratch.inputs(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            loaded,
+            bus2,
+        )
+        .expect("prepare run 2");
         assert!(
             !prepared2.persist,
             "run 2 records nothing new, so it does not rewrite the store"

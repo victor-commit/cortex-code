@@ -138,16 +138,25 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // this run without re-asking (VAL-CROSS-027). A missing/corrupt store yields no decisions.
     let loaded_decisions = permission_store::load_for(&permission_cwd);
 
+    // When an `--agent` is active, the permission BASE is that agent's effective ruleset (the
+    // top-level `[[permission]]` base followed by the agent's `[[agent.<name>.permission]]`
+    // overrides), so a per-agent rule gates the turn (VAL-PERM-009); with no `--agent` the base is
+    // the top-level layered ruleset exactly as before. The flag's presence (not the resolved
+    // default persona) decides this, so a default run keeps its unchanged top-level behavior.
+    let active_agent = args.agent.is_some().then(|| agent.name());
+
     // Build the headless permission engine from every source `cortex run` honors: the config-file
-    // `[[permission]]` layers (global → project → nested) as the BASE ruleset, the CLI allow/deny
-    // rules appended ON TOP (last-matching-rule-wins), the previously saved cross-process decisions
-    // (consulted before the ruleset, so a saved decision is honored with no new ask), and the
-    // `--permission-allow-save` specs (each surfaced as an ask answered "always allow" and recorded
-    // for reuse). The engine is attached whenever any of these is non-empty; with none of them the
-    // run stays ungated (the default the other M2 tool features rely on). A malformed config-file
-    // rule (or an unreadable/invalid config layer) fails fast with the stable config exit code.
+    // `[[permission]]` layers (global → project → nested), agent-scoped when an `--agent` is active,
+    // as the BASE ruleset, the CLI allow/deny rules appended ON TOP (last-matching-rule-wins), the
+    // previously saved cross-process decisions (consulted before the ruleset, so a saved decision is
+    // honored with no new ask), and the `--permission-allow-save` specs (each surfaced as an ask
+    // answered "always allow" and recorded for reuse). The engine is attached whenever any of these
+    // is non-empty; with none of them the run stays ungated (the default the other M2 tool features
+    // rely on). A malformed config-file rule (or an unreadable/invalid config layer) fails fast with
+    // the stable config exit code.
     let prepared_permissions = match permission::prepare_headless_permissions(
         &config_inputs,
+        active_agent,
         cli_permission_rules,
         save_specs,
         loaded_decisions,
