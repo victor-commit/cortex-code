@@ -7,6 +7,7 @@ members = [
     "crates/redaction",
     "crates/settings",
     "crates/db",
+    "crates/llm",
     "crates/cli",
 ]
 
@@ -28,7 +29,13 @@ events = { path = "crates/events" }
 redaction = { path = "crates/redaction" }
 settings = { path = "crates/settings" }
 db = { path = "crates/db" }
+llm = { path = "crates/llm" }
 rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+eventsource-stream = "0.2"
+futures-util = "0.3"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"

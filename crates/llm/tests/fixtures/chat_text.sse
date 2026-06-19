@@ -1,0 +1,14 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-text","object":"chat.completion.chunk","model":"google/gemini-2.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"gen-text","object":"chat.completion.chunk","model":"google/gemini-2.5-flash","choices":[{"index":0,"delta":{"content":", "},"finish_reason":null}]}
+
+data: {"id":"gen-text","object":"chat.completion.chunk","model":"google/gemini-2.5-flash","choices":[{"index":0,"delta":{"content":"world!"},"finish_reason":null}]}
+
+data: {"id":"gen-text","object":"chat.completion.chunk","model":"google/gemini-2.5-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"gen-text","object":"chat.completion.chunk","model":"google/gemini-2.5-flash","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12,"cost":0.0000056}}
+
+data: [DONE]
+

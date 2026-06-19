@@ -21,6 +21,11 @@ pub enum Diagnostic {
     /// A transport/connection error occurred while reaching a remote endpoint. The payload
     /// carries the underlying detail.
     TransportUnavailable(String),
+    /// A remote provider accepted the connection but returned an error response (e.g. an
+    /// authentication rejection, an unknown model, or a rate-limit). The payload carries the
+    /// normalized upstream detail. This is distinct from a [`Diagnostic::TransportUnavailable`]
+    /// (the connection itself succeeded) and from a [`Diagnostic::NoCredential`] (no local key).
+    Upstream(String),
     /// A test cassette/fixture was required but could not be found (tests only). The payload
     /// names the missing cassette.
     CassetteMissing(String),
@@ -45,6 +50,12 @@ impl Diagnostic {
         Diagnostic::TransportUnavailable(detail.into())
     }
 
+    /// Construct a [`Diagnostic::Upstream`] carrying the normalized provider-side detail.
+    #[must_use]
+    pub fn upstream(detail: impl Into<String>) -> Self {
+        Diagnostic::Upstream(detail.into())
+    }
+
     /// Construct a [`Diagnostic::CassetteMissing`] naming the missing cassette.
     #[must_use]
     pub fn cassette_missing(name: impl Into<String>) -> Self {
@@ -60,6 +71,7 @@ impl Diagnostic {
             Diagnostic::NetDisabled(_) => "net-disabled",
             Diagnostic::NoCredential(_) => "no-credential",
             Diagnostic::TransportUnavailable(_) => "transport-unavailable",
+            Diagnostic::Upstream(_) => "upstream",
             Diagnostic::CassetteMissing(_) => "cassette-missing",
         }
     }
@@ -75,6 +87,7 @@ impl Diagnostic {
             Diagnostic::NetDisabled(_) => Exit::NetDisabled,
             Diagnostic::NoCredential(_)
             | Diagnostic::TransportUnavailable(_)
+            | Diagnostic::Upstream(_)
             | Diagnostic::CassetteMissing(_) => Exit::Failure,
         }
     }
@@ -92,6 +105,9 @@ impl fmt::Display for Diagnostic {
             }
             Diagnostic::TransportUnavailable(detail) => {
                 write!(f, "transport unavailable: {detail}")
+            }
+            Diagnostic::Upstream(detail) => {
+                write!(f, "upstream error: {detail}")
             }
             Diagnostic::CassetteMissing(name) => {
                 write!(f, "cassette missing: no recorded fixture named {name}")
@@ -114,12 +130,14 @@ mod tests {
             Diagnostic::transport_unavailable("x").kind(),
             "transport-unavailable"
         );
+        assert_eq!(Diagnostic::upstream("x").kind(), "upstream");
         assert_eq!(Diagnostic::cassette_missing("x").kind(), "cassette-missing");
 
         let kinds = [
             Diagnostic::net_disabled("x").kind(),
             Diagnostic::no_credential("x").kind(),
             Diagnostic::transport_unavailable("x").kind(),
+            Diagnostic::upstream("x").kind(),
             Diagnostic::cassette_missing("x").kind(),
         ];
         let mut unique = kinds.to_vec();
