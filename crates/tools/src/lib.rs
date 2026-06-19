@@ -11,11 +11,13 @@
 //! the per-session read-tracking ledger, and path resolution are carried by the [`ToolContext`]
 //! shared across a turn's tool calls.
 
+mod edit;
 mod read;
 mod registry;
 mod tool;
 mod write;
 
+pub use edit::EditTool;
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
 pub use tool::{Diagnostic, MutationHooks, Tool, ToolContext, ToolOutput};
