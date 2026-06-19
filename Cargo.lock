@@ -1017,6 +1017,19 @@ name = "protocol"
 version = "0.1.0"
 
 [[package]]
+name = "providers"
+version = "0.1.0"
+dependencies = [
+ "errors",
+ "futures-util",
+ "llm",
+ "redaction",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
