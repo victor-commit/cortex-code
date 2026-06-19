@@ -26,8 +26,8 @@ use std::io::{self, IsTerminal, Read, Write};
 
 use db::{Database, DbPathInputs};
 use engine::{
-    EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner, SystemContext, Turn,
-    project_history,
+    Agent, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner, SystemContext,
+    Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
 use providers::ResolvedModel;
@@ -57,6 +57,19 @@ pub fn run(args: RunArgs) -> Exit {
     };
 
     let format = effective_format(args.jsonl, args.format);
+
+    // Resolve the agent persona before any network consideration so an unknown agent fails fast
+    // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
+    // durable store and never writing an assistant answer to stdout.
+    let agent = match resolve_agent(args.agent.as_deref()) {
+        Ok(agent) => agent,
+        Err(err) => {
+            eprintln!(
+                "cortex run: {err}; select one with --agent <name> (for example --agent build)"
+            );
+            return Exit::Failure;
+        }
+    };
 
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
     // so a refusal never touches the network even when a key is present.
@@ -127,7 +140,9 @@ pub fn run(args: RunArgs) -> Exit {
     }
 
     let model_id = run_config.model.model_id;
-    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process()).render();
+    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
+        .with_agent(agent)
+        .render();
     let turn = Turn::new(&model_id, system, prompt).with_history(history);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -144,11 +159,25 @@ pub fn run(args: RunArgs) -> Exit {
     runtime.block_on(execute_turn(
         &provider,
         &model_id,
+        agent.name(),
         &session_id,
         &db,
         turn,
         format,
     ))
+}
+
+/// Resolve the agent persona for the run from the optional `--agent` flag, defaulting to the
+/// built-in default agent when the flag is absent.
+///
+/// # Errors
+/// Returns [`engine::UnknownAgent`] (naming the offending input and the available agents) when the
+/// supplied name matches no built-in persona.
+fn resolve_agent(name: Option<&str>) -> Result<Agent, engine::UnknownAgent> {
+    match name {
+        Some(name) => Agent::from_name(name),
+        None => Ok(Agent::default()),
+    }
 }
 
 /// How this run selects the session it belongs to.
@@ -263,6 +292,7 @@ fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {
 async fn execute_turn(
     provider: &dyn llm::Provider,
     model_id: &str,
+    agent: &str,
     session_id: &str,
     db: &Database,
     turn: Turn,
@@ -270,8 +300,8 @@ async fn execute_turn(
 ) -> Exit {
     match format {
         OutputFormat::Text => stream_text(provider, session_id, db, turn).await,
-        OutputFormat::Jsonl => stream_jsonl(provider, session_id, db, turn).await,
-        OutputFormat::Json => emit_json(provider, model_id, session_id, db, turn).await,
+        OutputFormat::Jsonl => stream_jsonl(provider, agent, session_id, db, turn).await,
+        OutputFormat::Json => emit_json(provider, model_id, agent, session_id, db, turn).await,
     }
 }
 
@@ -325,6 +355,7 @@ async fn stream_text(
 /// event announces the session id so a machine consumer can capture and reuse it via `--session`.
 async fn stream_jsonl(
     provider: &dyn llm::Provider,
+    agent: &str,
     session_id: &str,
     db: &Database,
     turn: Turn,
@@ -332,7 +363,7 @@ async fn stream_jsonl(
     let stdout = io::stdout();
     let mut handle = stdout.lock();
 
-    if let Ok(line) = render_session_line(session_id) {
+    if let Ok(line) = render_session_line(agent, session_id) {
         let _ = handle.write_all(line.as_bytes());
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
@@ -363,6 +394,8 @@ struct RunDocument<'a> {
     role: &'a str,
     content: &'a str,
     model: &'a str,
+    /// The agent persona this turn ran under (the value passed to `--agent`, or the default).
+    agent: &'a str,
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
     finish_reason: &'a llm::FinishReason,
@@ -370,11 +403,14 @@ struct RunDocument<'a> {
     usage: Option<&'a llm::Usage>,
 }
 
-/// The leading `--jsonl` event announcing the session id, before the runner's own events.
+/// The leading `--jsonl` event announcing the agent persona and session id, before the runner's
+/// own events.
 #[derive(Serialize)]
 struct SessionEvent<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
+    /// The agent persona this turn ran under (the value passed to `--agent`, or the default).
+    agent: &'a str,
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
 }
@@ -384,6 +420,7 @@ struct SessionEvent<'a> {
 async fn emit_json(
     provider: &dyn llm::Provider,
     model_id: &str,
+    agent: &str,
     session_id: &str,
     db: &Database,
     turn: Turn,
@@ -395,7 +432,7 @@ async fn emit_json(
         return err.exit();
     }
 
-    let line = match render_json_document(model_id, session_id, &outcome) {
+    let line = match render_json_document(model_id, agent, session_id, &outcome) {
         Ok(line) => line,
         Err(err) => {
             eprintln!("cortex run: failed to serialize output: {err}");
@@ -421,6 +458,7 @@ async fn emit_json(
 /// finish reason, and the optional usage object).
 fn build_run_document<'a>(
     model_id: &'a str,
+    agent: &'a str,
     session_id: &'a str,
     outcome: &'a RunOutcome,
 ) -> RunDocument<'a> {
@@ -428,6 +466,7 @@ fn build_run_document<'a>(
         role: "assistant",
         content: outcome.answer(),
         model: model_id,
+        agent,
         session: session_id,
         finish_reason: &outcome.finish_reason,
         usage: outcome.usage.as_ref(),
@@ -438,18 +477,21 @@ fn build_run_document<'a>(
 /// stdout carries one strict JSON value with no leading or trailing non-JSON bytes.
 fn render_json_document(
     model_id: &str,
+    agent: &str,
     session_id: &str,
     outcome: &RunOutcome,
 ) -> Result<String, serde_json::Error> {
-    let mut line = serde_json::to_string(&build_run_document(model_id, session_id, outcome))?;
+    let mut line =
+        serde_json::to_string(&build_run_document(model_id, agent, session_id, outcome))?;
     line.push('\n');
     Ok(line)
 }
 
 /// Render the leading `--jsonl` session event (without the trailing newline).
-fn render_session_line(session_id: &str) -> Result<String, serde_json::Error> {
+fn render_session_line(agent: &str, session_id: &str) -> Result<String, serde_json::Error> {
     serde_json::to_string(&SessionEvent {
         kind: "session",
+        agent,
         session: session_id,
     })
 }
@@ -682,6 +724,32 @@ mod tests {
     /// Write an arbitrary project `cortex.toml` body into the given directory.
     fn write_config(dir: &Path, body: &str) {
         std::fs::write(dir.join("cortex.toml"), body).expect("write cortex.toml");
+    }
+
+    // With no `--agent` flag the run uses the default agent; an explicit valid name resolves to
+    // that persona (case-insensitively).
+    #[test]
+    fn resolve_agent_defaults_and_honors_explicit_names() {
+        assert_eq!(resolve_agent(None), Ok(Agent::default()));
+        assert_eq!(resolve_agent(Some("plan")), Ok(Agent::Plan));
+        assert_eq!(resolve_agent(Some("build")), Ok(Agent::Build));
+        assert_eq!(resolve_agent(Some(" General ")), Ok(Agent::General));
+    }
+
+    // VAL-LLM-028 (resolution half): an unknown agent name is rejected with an error that names the
+    // offending agent and hints the available agents, so the CLI can fail fast before any network.
+    #[test]
+    fn resolve_agent_rejects_unknown_names_with_an_actionable_error() {
+        let err = resolve_agent(Some("no-such-agent")).expect_err("unknown agent must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("no-such-agent"),
+            "the error must name the unknown agent, got: {message}"
+        );
+        assert!(
+            message.contains("plan") && message.contains("build"),
+            "the error must hint the available agents, got: {message}"
+        );
     }
 
     #[test]
@@ -1041,8 +1109,13 @@ mod tests {
     // newline and no other framing bytes, so a strict parser accepts it whole.
     #[test]
     fn json_document_is_a_single_strict_value_with_one_trailing_newline() {
-        let rendered = render_json_document("google/gemini-2.5-flash", "ses_x", &sample_outcome())
-            .expect("render");
+        let rendered = render_json_document(
+            "google/gemini-2.5-flash",
+            "build",
+            "ses_x",
+            &sample_outcome(),
+        )
+        .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
         assert_eq!(
             rendered.matches('\n').count(),
@@ -1059,13 +1132,21 @@ mod tests {
     // input/output token counts.
     #[test]
     fn json_document_carries_assistant_role_content_model_session_and_integer_usage() {
-        let rendered =
-            render_json_document("google/gemini-2.5-flash", "ses_abc123", &sample_outcome())
-                .expect("render");
+        let rendered = render_json_document(
+            "google/gemini-2.5-flash",
+            "plan",
+            "ses_abc123",
+            &sample_outcome(),
+        )
+        .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
         assert_eq!(value["model"], "google/gemini-2.5-flash");
+        assert_eq!(
+            value["agent"], "plan",
+            "the document surfaces the selected agent"
+        );
         assert_eq!(
             value["session"], "ses_abc123",
             "the document surfaces the re-usable session id"
@@ -1085,10 +1166,11 @@ mod tests {
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered = render_json_document("m", "ses_y", &outcome).expect("render");
+        let rendered = render_json_document("m", "general", "ses_y", &outcome).expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
+        assert_eq!(value["agent"], "general");
         assert_eq!(value["session"], "ses_y");
         assert!(value.get("usage").is_none(), "absent usage is omitted");
     }
@@ -1096,10 +1178,11 @@ mod tests {
     // The leading `--jsonl` session event is a typed, independently-parseable object carrying the
     // re-usable session id, so a machine consumer can capture it before the runner's events stream.
     #[test]
-    fn jsonl_session_line_is_typed_and_carries_the_session_id() {
-        let line = render_session_line("ses_seed42").expect("render");
+    fn jsonl_session_line_is_typed_and_carries_the_agent_and_session_id() {
+        let line = render_session_line("plan", "ses_seed42").expect("render");
         let value: serde_json::Value = serde_json::from_str(&line).expect("json");
         assert_eq!(value["type"], "session");
+        assert_eq!(value["agent"], "plan");
         assert_eq!(value["session"], "ses_seed42");
     }
 

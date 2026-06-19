@@ -5,9 +5,11 @@
 //! Its pieces are:
 //!
 //! - [`ModelFamily`] / base prompts — the per-family base system prompt ([`family`]).
+//! - [`Agent`] — the selectable agent persona whose fragment shapes the turn ([`agent`]).
 //! - [`EnvironmentBlock`] — the dynamic environment snapshot (cwd, OS/platform, date, git status)
 //!   injected into the system context ([`environment`]).
-//! - [`SystemContext`] — the system-context epoch: base prompt + environment block ([`context`]).
+//! - [`SystemContext`] — the system-context epoch: base prompt + environment block + persona
+//!   ([`context`]).
 //! - [`project_history`] — projection of stored history into canonical [`llm::Message`]s
 //!   ([`history`]).
 //! - [`RunnerEvent`] / [`RunOutcome`] — the single normalized output vocabulary and turn outcome
@@ -21,6 +23,7 @@
 //! runner code drives a real OpenRouter turn and the offline tests, differing only in the provider
 //! implementation behind the [`llm::Provider`] trait.
 
+mod agent;
 mod context;
 mod environment;
 mod event;
@@ -28,6 +31,7 @@ mod family;
 mod history;
 mod runner;
 
+pub use agent::{Agent, UnknownAgent};
 pub use context::SystemContext;
 pub use environment::{EnvironmentBlock, GitStatus};
 pub use event::{RunError, RunOutcome, RunnerEvent};
