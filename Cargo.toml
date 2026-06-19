@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cortex-protocol",
+    "crates/cortex-errors",
+    "crates/cortex-events",
+    "crates/cortex-redaction",
+    "crates/cortex-config",
+    "crates/cortex-persistence",
+    "crates/cortex-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[workspace.dependencies]
