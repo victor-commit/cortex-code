@@ -8,9 +8,9 @@
 
 use std::sync::Mutex;
 
-use engine::{RunnerEvent, SessionRunner, Turn};
+use engine::{RunnerEvent, SessionRunner, ToolDispatchResult, ToolDispatcher, Turn};
 use futures_util::future::BoxFuture;
-use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, Usage};
+use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, ToolDef, Usage};
 
 /// A provider that replays a pre-scripted sequence of event batches, one batch per round-trip.
 struct ScriptedProvider {
@@ -235,6 +235,102 @@ async fn multi_round_trip_continues_to_one_final_answer() {
         "the single Done is the last event"
     );
     assert!(outcome.is_success());
+}
+
+#[tokio::test]
+async fn errored_tool_results_are_reinjected_with_error_context() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push(request.messages.clone());
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_boom".to_owned(),
+                            name: "demo_boom".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "acknowledged failure".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct ErrorDispatcher;
+
+    impl ToolDispatcher for ErrorDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "demo_boom".to_owned(),
+                description: "Return an MCP error result".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            Box::pin(async {
+                ToolDispatchResult {
+                    content: "MCP-TOOL-FAILED".to_owned(),
+                    parts: vec![protocol::ToolResultPart::text("MCP-TOOL-FAILED")],
+                    is_error: true,
+                }
+            })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = ErrorDispatcher;
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "call the failing MCP tool"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    assert!(events.iter().any(|event| {
+        matches!(event, RunnerEvent::ToolResult { is_error: true, name, .. } if name == "demo_boom")
+    }));
+    let requests = provider.requests.lock().unwrap();
+    let second = requests
+        .get(1)
+        .expect("second provider round after tool result");
+    let tool_message = second
+        .iter()
+        .find(|message| message.role == llm::Role::Tool)
+        .expect("tool result message is re-injected");
+    assert!(
+        tool_message.content.contains("Tool error from demo_boom")
+            && tool_message.content.contains("MCP-TOOL-FAILED"),
+        "errored tool result must reach the model as an error, got: {}",
+        tool_message.content
+    );
 }
 
 #[tokio::test]

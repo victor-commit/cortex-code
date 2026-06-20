@@ -71,6 +71,18 @@ pub enum McpError {
         /// The qualified tool id that did not resolve.
         id: String,
     },
+    /// A resource id/URI did not resolve to any connected MCP resource.
+    #[error("unknown MCP resource `{id}`")]
+    UnknownResource {
+        /// The qualified resource id or URI that did not resolve.
+        id: String,
+    },
+    /// A prompt id/name did not resolve to any connected MCP prompt.
+    #[error("unknown MCP prompt `{id}`")]
+    UnknownPrompt {
+        /// The qualified prompt id or prompt name that did not resolve.
+        id: String,
+    },
 }
 
 impl McpError {
@@ -119,5 +131,13 @@ impl McpError {
 
     pub(crate) fn unknown_tool(id: &str) -> Self {
         Self::UnknownTool { id: id.to_owned() }
+    }
+
+    pub(crate) fn unknown_resource(id: &str) -> Self {
+        Self::UnknownResource { id: id.to_owned() }
+    }
+
+    pub(crate) fn unknown_prompt(id: &str) -> Self {
+        Self::UnknownPrompt { id: id.to_owned() }
     }
 }

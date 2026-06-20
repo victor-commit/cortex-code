@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use http::{HeaderMap, HeaderName, HeaderValue};
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
+    ReadResourceRequestParams, ReadResourceResult,
+};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::TokioChildProcess;
@@ -22,7 +25,9 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::catalogue::{LiveCatalogue, McpTool, qualify_tools};
+use crate::catalogue::{
+    LiveCatalogue, McpServerCatalogue, qualify_prompts, qualify_resources, qualify_tools,
+};
 use crate::config::McpServerConfig;
 use crate::error::McpError;
 use crate::handler::NotifyHandler;
@@ -56,7 +61,7 @@ impl McpClient {
         server_name: &str,
         config: &McpServerConfig,
         catalogue: &LiveCatalogue,
-    ) -> Result<(Self, Vec<McpTool>), McpError> {
+    ) -> Result<(Self, McpServerCatalogue), McpError> {
         let (program, args) = config
             .program_and_args()
             .ok_or_else(|| McpError::config(server_name, "the `command` array is empty"))?;
@@ -85,11 +90,18 @@ impl McpClient {
             })?;
         let pid = transport.id();
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
-        let service = tokio::time::timeout(timeout, handler.serve(transport))
-            .await
-            .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
-            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
+        let service = match tokio::time::timeout(timeout, handler.serve(transport)).await {
+            Ok(Ok(service)) => service,
+            Ok(Err(err)) => {
+                kill_spawned_tree(pid).await;
+                return Err(McpError::handshake(server_name, err.to_string()));
+            }
+            Err(_) => {
+                kill_spawned_tree(pid).await;
+                return Err(McpError::timeout(server_name, "initialize", timeout));
+            }
+        };
 
         let client = Self {
             server_name: server_name.to_owned(),
@@ -116,7 +128,7 @@ impl McpClient {
         config: &McpServerConfig,
         auth_header: Option<String>,
         catalogue: &LiveCatalogue,
-    ) -> Result<(Self, Vec<McpTool>), McpError> {
+    ) -> Result<(Self, McpServerCatalogue), McpError> {
         let url = config
             .url
             .as_deref()
@@ -151,7 +163,7 @@ impl McpClient {
         auth_header: Option<String>,
         timeout: Duration,
         catalogue: &LiveCatalogue,
-    ) -> Result<(Self, Vec<McpTool>), McpError> {
+    ) -> Result<(Self, McpServerCatalogue), McpError> {
         let mut custom: HashMap<HeaderName, HeaderValue> = HashMap::new();
         let oauth_header_supplied = auth_header.is_some();
         for (name, value) in header_map {
@@ -170,7 +182,7 @@ impl McpClient {
         }
         let transport = StreamableHttpClientTransport::from_config(transport_config);
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
@@ -193,12 +205,12 @@ impl McpClient {
         header_map: HeaderMap,
         timeout: Duration,
         catalogue: &LiveCatalogue,
-    ) -> Result<(Self, Vec<McpTool>), McpError> {
+    ) -> Result<(Self, McpServerCatalogue), McpError> {
         let transport = SseClientTransport::connect(url, header_map, timeout)
             .await
             .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
@@ -214,18 +226,39 @@ impl McpClient {
         Ok((client, tools))
     }
 
-    /// List the server's tools, qualify them, record them in the catalogue, and return them.
-    async fn list_and_record(&self, catalogue: &LiveCatalogue) -> Result<Vec<McpTool>, McpError> {
-        let advertised = match self.list_tools().await {
+    /// List the server's tools, resources, and prompts, qualify them, record them in the
+    /// catalogue, and return the full advertised catalogue. `tools/list` is required for the tool
+    /// pipeline; prompts/resources are best-effort because many MCP servers do not implement those
+    /// capabilities.
+    async fn list_and_record(
+        &self,
+        catalogue: &LiveCatalogue,
+    ) -> Result<McpServerCatalogue, McpError> {
+        let advertised_tools = match self.list_tools().await {
             Ok(advertised) => advertised,
             Err(err) => {
                 self.shutdown().await;
                 return Err(err);
             }
         };
-        let tools = qualify_tools(&self.server_name, advertised);
-        catalogue.set_initial(&self.server_name, tools.clone());
-        Ok(tools)
+        let tools = qualify_tools(&self.server_name, advertised_tools);
+        let resources = self
+            .list_resources()
+            .await
+            .map(|advertised| qualify_resources(&self.server_name, advertised))
+            .unwrap_or_default();
+        let prompts = self
+            .list_prompts()
+            .await
+            .map(|advertised| qualify_prompts(&self.server_name, advertised))
+            .unwrap_or_default();
+        let server_catalogue = McpServerCatalogue {
+            tools,
+            resources,
+            prompts,
+        };
+        catalogue.set_initial(&self.server_name, server_catalogue.clone());
+        Ok(server_catalogue)
     }
 
     /// The configured per-operation timeout, or the built-in default.
@@ -255,6 +288,87 @@ impl McpClient {
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "tools/list", self.timeout))?
             .map_err(|err| McpError::service(&self.server_name, "tools/list", err.to_string()))
+    }
+
+    /// Issue `resources/list` (following pagination) and return the server's advertised resources.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when the session is closed or the request fails/times out.
+    pub async fn list_resources(&self) -> Result<Vec<rmcp::model::Resource>, McpError> {
+        let guard = self.service.lock().await;
+        let service = guard
+            .as_ref()
+            .ok_or_else(|| McpError::closed(&self.server_name))?;
+        tokio::time::timeout(self.timeout, service.list_all_resources())
+            .await
+            .map_err(|_| McpError::timeout(&self.server_name, "resources/list", self.timeout))?
+            .map_err(|err| McpError::service(&self.server_name, "resources/list", err.to_string()))
+    }
+
+    /// Issue `resources/read` for a resource URI and return the server's content.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when the session is closed or the request fails/times out.
+    pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+        let params = ReadResourceRequestParams::new(uri.to_owned());
+        let guard = self.service.lock().await;
+        let service = guard
+            .as_ref()
+            .ok_or_else(|| McpError::closed(&self.server_name))?;
+        tokio::time::timeout(self.timeout, service.read_resource(params))
+            .await
+            .map_err(|_| McpError::timeout(&self.server_name, "resources/read", self.timeout))?
+            .map_err(|err| McpError::service(&self.server_name, "resources/read", err.to_string()))
+    }
+
+    /// Issue `prompts/list` (following pagination) and return the server's advertised prompts.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when the session is closed or the request fails/times out.
+    pub async fn list_prompts(&self) -> Result<Vec<rmcp::model::Prompt>, McpError> {
+        let guard = self.service.lock().await;
+        let service = guard
+            .as_ref()
+            .ok_or_else(|| McpError::closed(&self.server_name))?;
+        tokio::time::timeout(self.timeout, service.list_all_prompts())
+            .await
+            .map_err(|_| McpError::timeout(&self.server_name, "prompts/list", self.timeout))?
+            .map_err(|err| McpError::service(&self.server_name, "prompts/list", err.to_string()))
+    }
+
+    /// Issue `prompts/get` with arguments and return the server's prompt messages.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when the session is closed, arguments are not an object, or the request
+    /// fails/times out.
+    pub async fn get_prompt(
+        &self,
+        prompt: &str,
+        arguments: serde_json::Value,
+    ) -> Result<GetPromptResult, McpError> {
+        let arguments = match arguments {
+            serde_json::Value::Object(map) => Some(map),
+            serde_json::Value::Null => None,
+            other => {
+                return Err(McpError::service(
+                    &self.server_name,
+                    "prompts/get",
+                    format!("arguments must be a JSON object, got {other}"),
+                ));
+            }
+        };
+        let mut params = GetPromptRequestParams::new(prompt.to_owned());
+        if let Some(arguments) = arguments {
+            params = params.with_arguments(arguments);
+        }
+        let guard = self.service.lock().await;
+        let service = guard
+            .as_ref()
+            .ok_or_else(|| McpError::closed(&self.server_name))?;
+        tokio::time::timeout(self.timeout, service.get_prompt(params))
+            .await
+            .map_err(|_| McpError::timeout(&self.server_name, "prompts/get", self.timeout))?
+            .map_err(|err| McpError::service(&self.server_name, "prompts/get", err.to_string()))
     }
 
     /// Issue a real `tools/call` for `tool` with `arguments` and return the server's result.
@@ -317,6 +431,15 @@ impl McpClient {
         if let Some(pids) = tree {
             crate::process_tree::kill_all(&pids).await;
         }
+    }
+}
+
+/// Kill a stdio child and every currently visible descendant after a failed initialize path, where
+/// no [`McpClient`] exists yet to run the normal shutdown path.
+async fn kill_spawned_tree(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let pids = crate::process_tree::process_tree(pid);
+        crate::process_tree::kill_all(&pids).await;
     }
 }
 

@@ -22,6 +22,19 @@ fn remote_server_bin() -> Option<PathBuf> {
     bin.exists().then_some(bin)
 }
 
+fn echo_server_bin() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bin = exe.parent()?.parent()?.join("cortex-mcp-echo-server");
+    bin.exists().then_some(bin)
+}
+
+fn toml_string(value: &Path) -> String {
+    value
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 fn temp_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "cortex-mcp-cli-{tag}-{}-{}",
@@ -420,5 +433,53 @@ url = "http://127.0.0.1:3226/mcp"
     assert!(
         !String::from_utf8_lossy(&observed).contains(&token),
         "OAuth access token must never appear in CLI output or logs"
+    );
+}
+
+#[test]
+fn mcp_list_reports_resources_and_prompts() {
+    let Some(bin) = echo_server_bin() else {
+        eprintln!("skipping: cortex-mcp-echo-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("list-resources-prompts");
+    scratch.write_project_config(&format!(
+        r#"
+[mcp.demo]
+type = "local"
+command = ["{}"]
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS = "1"
+CORTEX_MCP_ECHO_RESOURCE_CONTENT = "RESOURCE-CONTENT-CLI"
+"#,
+        toml_string(&bin)
+    ));
+
+    let list = mcp_list_json(&scratch);
+    let server = &list["servers"][0];
+    assert_eq!(server["status"], "connected");
+    assert!(
+        server["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["id"] == "demo_add"),
+        "tools are still listed: {list}"
+    );
+    assert!(
+        server["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["uri"] == "notes://demo"),
+        "resources must be enumerated in mcp list JSON: {list}"
+    );
+    assert!(
+        server["prompts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|prompt| prompt["name"] == "greet"),
+        "prompts must be enumerated in mcp list JSON: {list}"
     );
 }

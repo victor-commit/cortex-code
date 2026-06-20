@@ -329,13 +329,20 @@ impl SessionRunner {
                             arguments: call.arguments.clone(),
                         });
                         let result = dispatcher.dispatch(call).await;
+                        let is_error = result.is_error;
+                        let content = result.content;
                         sink(RunnerEvent::ToolResult {
                             id: call.id.clone(),
                             name: call.name.clone(),
                             parts: result.parts,
-                            is_error: result.is_error,
+                            is_error,
                         });
-                        messages.push(Message::tool_result(call.id.clone(), result.content));
+                        let tool_content = if is_error {
+                            format!("Tool error from {}:\n{}", call.name, content)
+                        } else {
+                            content
+                        };
+                        messages.push(Message::tool_result(call.id.clone(), tool_content));
                     }
                 }
                 None => {

@@ -344,6 +344,8 @@ struct ServerDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     tools: Vec<ToolDocument>,
+    resources: Vec<ResourceDocument>,
+    prompts: Vec<PromptDocument>,
 }
 
 /// One server-qualified tool in the machine-readable listing.
@@ -351,6 +353,37 @@ struct ServerDocument {
 struct ToolDocument {
     id: String,
     tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+/// One MCP resource in the machine-readable listing.
+#[derive(Serialize)]
+struct ResourceDocument {
+    id: String,
+    uri: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+}
+
+/// One MCP prompt in the machine-readable listing.
+#[derive(Serialize)]
+struct PromptDocument {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    arguments: Vec<PromptArgumentDocument>,
+}
+
+/// One MCP prompt argument in the machine-readable listing.
+#[derive(Serialize)]
+struct PromptArgumentDocument {
+    name: String,
+    required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
@@ -415,6 +448,35 @@ fn list_servers(args: McpListArgs) -> Exit {
                         description: tool.description.clone(),
                     })
                     .collect(),
+                resources: status
+                    .resources
+                    .iter()
+                    .map(|resource| ResourceDocument {
+                        id: resource.id.clone(),
+                        uri: resource.uri.clone(),
+                        name: resource.name.clone(),
+                        description: resource.description.clone(),
+                        mime_type: resource.mime_type.clone(),
+                    })
+                    .collect(),
+                prompts: status
+                    .prompts
+                    .iter()
+                    .map(|prompt| PromptDocument {
+                        id: prompt.id.clone(),
+                        name: prompt.name.clone(),
+                        description: prompt.description.clone(),
+                        arguments: prompt
+                            .arguments
+                            .iter()
+                            .map(|argument| PromptArgumentDocument {
+                                name: argument.name.clone(),
+                                required: argument.required,
+                                description: argument.description.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             })
             .collect::<Vec<_>>();
         manager.shutdown().await;
@@ -472,6 +534,24 @@ fn render_text(servers: &[ServerDocument]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             line.push_str(&format!("  tools: {ids}"));
+        }
+        if !server.resources.is_empty() {
+            let uris = server
+                .resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            line.push_str(&format!("  resources: {uris}"));
+        }
+        if !server.prompts.is_empty() {
+            let names = server
+                .prompts
+                .iter()
+                .map(|prompt| prompt.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            line.push_str(&format!("  prompts: {names}"));
         }
         lines.push(line);
     }

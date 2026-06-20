@@ -15,13 +15,13 @@ use std::sync::Arc;
 use events::EventBus;
 use rmcp::model::CallToolResult;
 
-use crate::catalogue::{LiveCatalogue, McpTool};
+use crate::catalogue::{LiveCatalogue, McpPrompt, McpResource, McpTool};
 use crate::client::McpClient;
 use crate::config::{McpServerConfig, McpTransport};
 use crate::credentials::CredentialStore;
 use crate::error::McpError;
 use crate::oauth;
-use crate::result::{RelayedResult, relay};
+use crate::result::{RelayedResult, relay, relay_get_prompt, relay_read_resource};
 
 /// Clock skew (seconds) used to refresh an OAuth token slightly before it actually expires.
 const TOKEN_EXPIRY_SKEW_SECS: u64 = 30;
@@ -65,6 +65,10 @@ pub struct ServerStatus {
     pub error: Option<String>,
     /// The tools the server exposed at connect time (empty unless connected).
     pub tools: Vec<McpTool>,
+    /// The resources the server exposed at connect time (empty unless connected or unsupported).
+    pub resources: Vec<McpResource>,
+    /// The prompts the server exposed at connect time (empty unless connected or unsupported).
+    pub prompts: Vec<McpPrompt>,
 }
 
 /// Options controlling how the manager connects (event bus + credential store).
@@ -111,6 +115,8 @@ impl McpManager {
                     pid: None,
                     error: None,
                     tools: Vec::new(),
+                    resources: Vec::new(),
+                    prompts: Vec::new(),
                 });
                 continue;
             }
@@ -124,7 +130,7 @@ impl McpManager {
             };
 
             match outcome {
-                Ok((client, tools)) => {
+                Ok((client, server_catalogue)) => {
                     let pid = client.pid();
                     clients.insert(name.clone(), Arc::new(client));
                     statuses.push(ServerStatus {
@@ -132,7 +138,9 @@ impl McpManager {
                         state: ConnectionState::Connected,
                         pid,
                         error: None,
-                        tools,
+                        tools: server_catalogue.tools,
+                        resources: server_catalogue.resources,
+                        prompts: server_catalogue.prompts,
                     });
                 }
                 Err(err @ McpError::NeedsAuth { .. }) => {
@@ -142,6 +150,8 @@ impl McpManager {
                         pid: None,
                         error: Some(err.to_string()),
                         tools: Vec::new(),
+                        resources: Vec::new(),
+                        prompts: Vec::new(),
                     });
                 }
                 Err(err) => {
@@ -151,6 +161,8 @@ impl McpManager {
                         pid: None,
                         error: Some(err.to_string()),
                         tools: Vec::new(),
+                        resources: Vec::new(),
+                        prompts: Vec::new(),
                     });
                 }
             }
@@ -166,7 +178,19 @@ impl McpManager {
     /// The session's live qualified MCP tool catalogue (reflecting any runtime tool-set changes).
     #[must_use]
     pub fn tools(&self) -> Vec<McpTool> {
-        self.catalogue.flatten()
+        self.catalogue.flatten_tools()
+    }
+
+    /// The session's live qualified MCP resource catalogue.
+    #[must_use]
+    pub fn resources(&self) -> Vec<McpResource> {
+        self.catalogue.flatten_resources()
+    }
+
+    /// The session's live qualified MCP prompt catalogue.
+    #[must_use]
+    pub fn prompts(&self) -> Vec<McpPrompt> {
+        self.catalogue.flatten_prompts()
     }
 
     /// The per-server connection statuses (connected/disabled/needs_auth/failed), in configured
@@ -179,7 +203,28 @@ impl McpManager {
     /// Whether `id` resolves to a currently-advertised MCP tool.
     #[must_use]
     pub fn has_tool(&self, id: &str) -> bool {
-        self.catalogue.flatten().iter().any(|tool| tool.id == id)
+        self.catalogue
+            .flatten_tools()
+            .iter()
+            .any(|tool| tool.id == id)
+    }
+
+    /// Whether `id` resolves to a currently-advertised MCP resource.
+    #[must_use]
+    pub fn has_resource(&self, id: &str) -> bool {
+        self.catalogue
+            .flatten_resources()
+            .iter()
+            .any(|resource| resource.id == id || resource.uri == id)
+    }
+
+    /// Whether `id` resolves to a currently-advertised MCP prompt.
+    #[must_use]
+    pub fn has_prompt(&self, id: &str) -> bool {
+        self.catalogue
+            .flatten_prompts()
+            .iter()
+            .any(|prompt| prompt.id == id || prompt.name == id)
     }
 
     /// Perform a real `tools/call` for the qualified tool `id` and relay the server's result.
@@ -192,7 +237,7 @@ impl McpManager {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<RelayedResult, McpError> {
-        let tools = self.catalogue.flatten();
+        let tools = self.catalogue.flatten_tools();
         let tool = tools
             .iter()
             .find(|tool| tool.id == id)
@@ -203,6 +248,49 @@ impl McpManager {
             .ok_or_else(|| McpError::closed(&tool.server))?;
         let result: CallToolResult = client.call_tool(&tool.tool, arguments).await?;
         Ok(relay(&result))
+    }
+
+    /// Perform a real `resources/read` for the qualified resource `id` and relay the content.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when `id` does not resolve, its server is not connected, or the read
+    /// fails/times out.
+    pub async fn read_resource(&self, id: &str) -> Result<RelayedResult, McpError> {
+        let resources = self.catalogue.flatten_resources();
+        let resource = resources
+            .iter()
+            .find(|resource| resource.id == id || resource.uri == id)
+            .ok_or_else(|| McpError::unknown_resource(id))?;
+        let client = self
+            .clients
+            .get(&resource.server)
+            .ok_or_else(|| McpError::closed(&resource.server))?;
+        let result = client.read_resource(&resource.uri).await?;
+        Ok(relay_read_resource(&result))
+    }
+
+    /// Perform a real `prompts/get` for the qualified prompt `id` with `arguments` and relay the
+    /// returned prompt messages.
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when `id` does not resolve, its server is not connected, or the get
+    /// fails/times out.
+    pub async fn get_prompt(
+        &self,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RelayedResult, McpError> {
+        let prompts = self.catalogue.flatten_prompts();
+        let prompt = prompts
+            .iter()
+            .find(|prompt| prompt.id == id || prompt.name == id)
+            .ok_or_else(|| McpError::unknown_prompt(id))?;
+        let client = self
+            .clients
+            .get(&prompt.server)
+            .ok_or_else(|| McpError::closed(&prompt.server))?;
+        let result = client.get_prompt(&prompt.name, arguments).await?;
+        Ok(relay_get_prompt(&result))
     }
 
     /// Terminate every connected server (cancelling its session and killing stdio descendants by
@@ -217,10 +305,7 @@ impl McpManager {
 /// Resolve the OAuth bearer token for a remote server from the credential store, refreshing it in
 /// place when it is expired. Returns `None` when no usable token is available (the connect attempt
 /// then surfaces `needs_auth` if the server requires it).
-async fn resolve_auth(
-    server: &str,
-    credentials: &Option<Arc<CredentialStore>>,
-) -> Option<String> {
+async fn resolve_auth(server: &str, credentials: &Option<Arc<CredentialStore>>) -> Option<String> {
     let store = credentials.as_ref()?;
     let stored = store.get(server).ok().flatten()?;
     if !stored.is_expired(TOKEN_EXPIRY_SKEW_SECS) {

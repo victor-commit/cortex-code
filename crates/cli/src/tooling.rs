@@ -94,13 +94,13 @@ impl RegistryDispatcher {
         self.definitions().into_iter().map(|def| def.name).collect()
     }
 
-    /// The MCP tool definitions advertised this turn (server-qualified id, description, schema),
-    /// empty when no manager is attached.
+    /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
+    /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
     fn mcp_definitions(&self) -> Vec<ToolDef> {
         self.mcp
             .as_ref()
             .map(|manager| {
-                manager
+                let mut definitions = manager
                     .tools()
                     .iter()
                     .map(|tool| ToolDef {
@@ -108,7 +108,63 @@ impl RegistryDispatcher {
                         description: tool.description.clone().unwrap_or_default(),
                         parameters: tool.input_schema.clone(),
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                definitions.extend(manager.resources().iter().map(|resource| ToolDef {
+                    name: resource.id.clone(),
+                    description: resource.description.clone().unwrap_or_else(|| {
+                        format!(
+                            "Read MCP resource `{}` from server `{}`.",
+                            resource.uri, resource.server
+                        )
+                    }),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                }));
+                definitions.extend(manager.prompts().iter().map(|prompt| {
+                    let properties = prompt
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            let mut schema = serde_json::Map::new();
+                            schema.insert(
+                                "type".to_owned(),
+                                serde_json::Value::String("string".to_owned()),
+                            );
+                            if let Some(description) = &argument.description {
+                                schema.insert(
+                                    "description".to_owned(),
+                                    serde_json::Value::String(description.clone()),
+                                );
+                            }
+                            (argument.name.clone(), serde_json::Value::Object(schema))
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    let required = prompt
+                        .arguments
+                        .iter()
+                        .filter(|argument| argument.required)
+                        .map(|argument| serde_json::Value::String(argument.name.clone()))
+                        .collect::<Vec<_>>();
+                    ToolDef {
+                        name: prompt.id.clone(),
+                        description: prompt.description.clone().unwrap_or_else(|| {
+                            format!(
+                                "Fetch MCP prompt `{}` from server `{}`.",
+                                prompt.name, prompt.server
+                            )
+                        }),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": properties,
+                            "required": required,
+                            "additionalProperties": false
+                        }),
+                    }
+                }));
+                definitions
             })
             .unwrap_or_default()
     }
@@ -135,7 +191,10 @@ impl ToolDispatcher for RegistryDispatcher {
             // MCP call is permission-gated by its namespaced qualified id BEFORE the manager is
             // consulted, so a denied tool is refused here and the server receives zero `tools/call`.
             if let Some(manager) = &self.mcp {
-                if manager.has_tool(&call.name) {
+                if manager.has_tool(&call.name)
+                    || manager.has_resource(&call.name)
+                    || manager.has_prompt(&call.name)
+                {
                     if !self.context.permits(&call.name, &call.name) {
                         let message = format!("{}: permission denied", call.name);
                         return ToolDispatchResult {
@@ -182,7 +241,15 @@ async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResu
         }
     };
 
-    match manager.call(&call.name, arguments).await {
+    let result = if manager.has_resource(&call.name) {
+        manager.read_resource(&call.name).await
+    } else if manager.has_prompt(&call.name) {
+        manager.get_prompt(&call.name, arguments).await
+    } else {
+        manager.call(&call.name, arguments).await
+    };
+
+    match result {
         Ok(relayed) => ToolDispatchResult {
             content: relayed.content,
             parts: relayed.parts,

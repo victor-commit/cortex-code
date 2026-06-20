@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use protocol::ToolResultPart;
-use rmcp::model::{CallToolResult, RawContent};
+use rmcp::model::{
+    CallToolResult, GetPromptResult, PromptMessageContent, PromptMessageRole, RawContent,
+    ReadResourceResult,
+};
 
 /// The default cap on the bytes of relayed in-band MCP tool output before truncation and spill.
 pub const DEFAULT_MAX_RELAY_BYTES: usize = 64 * 1024;
@@ -80,6 +83,47 @@ pub fn relay_with_limit(result: &CallToolResult, max_bytes: usize) -> RelayedRes
     }
 }
 
+/// Relay a `resources/read` result into bounded model-facing text.
+#[must_use]
+pub fn relay_read_resource(result: &ReadResourceResult) -> RelayedResult {
+    let blocks = result
+        .contents
+        .iter()
+        .map(relay_resource)
+        .collect::<Vec<_>>()
+        .join("\n");
+    relayed_text(blocks, false, "mcp-resource")
+}
+
+/// Relay a `prompts/get` result into bounded model-facing text.
+#[must_use]
+pub fn relay_get_prompt(result: &GetPromptResult) -> RelayedResult {
+    let mut blocks = Vec::new();
+    if let Some(description) = &result.description {
+        blocks.push(format!("[prompt description]\n{description}"));
+    }
+    for message in &result.messages {
+        let role = match message.role {
+            PromptMessageRole::User => "user",
+            PromptMessageRole::Assistant => "assistant",
+        };
+        blocks.push(format!(
+            "[{role}]\n{}",
+            relay_prompt_content(&message.content)
+        ));
+    }
+    relayed_text(blocks.join("\n"), false, "mcp-prompt")
+}
+
+fn relayed_text(content: String, is_error: bool, label: &str) -> RelayedResult {
+    let bounded = bound(&content, DEFAULT_MAX_RELAY_BYTES, label);
+    RelayedResult {
+        content: bounded.clone(),
+        parts: vec![ToolResultPart::text(bounded)],
+        is_error,
+    }
+}
+
 /// Render an embedded resource's contents as text for the in-band relay.
 fn relay_resource(resource: &rmcp::model::ResourceContents) -> String {
     match resource {
@@ -89,6 +133,19 @@ fn relay_resource(resource: &rmcp::model::ResourceContents) -> String {
         rmcp::model::ResourceContents::BlobResourceContents { uri, blob, .. } => {
             format!("[binary resource {uri} ({} base64 chars)]", blob.len())
         }
+    }
+}
+
+fn relay_prompt_content(content: &PromptMessageContent) -> String {
+    match content {
+        PromptMessageContent::Text { text } => text.clone(),
+        PromptMessageContent::Image { image } => format!(
+            "[image content: {} ({} base64 chars)]",
+            image.mime_type,
+            image.data.len()
+        ),
+        PromptMessageContent::Resource { resource } => relay_resource(&resource.resource),
+        PromptMessageContent::ResourceLink { link } => format!("[resource link: {}]", link.uri),
     }
 }
 
@@ -213,5 +270,27 @@ mod tests {
         let exact = "y".repeat(256);
         let relayed = relay_with_limit(&text_result(&exact), 256);
         assert_eq!(relayed.content, exact);
+    }
+
+    #[test]
+    fn relays_read_resource_text() {
+        let result = ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+            "RESOURCE-CONTENT-1",
+            "notes://demo",
+        )]);
+        let relayed = relay_read_resource(&result);
+        assert!(relayed.content.contains("RESOURCE-CONTENT-1"));
+        assert!(!relayed.is_error);
+    }
+
+    #[test]
+    fn relays_prompt_messages() {
+        let result = GetPromptResult::new(vec![rmcp::model::PromptMessage::new_text(
+            rmcp::model::PromptMessageRole::User,
+            "Hello cortex from MCP",
+        )]);
+        let relayed = relay_get_prompt(&result);
+        assert!(relayed.content.contains("[user]"));
+        assert!(relayed.content.contains("Hello cortex from MCP"));
     }
 }

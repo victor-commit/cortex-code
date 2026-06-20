@@ -133,6 +133,26 @@ pub struct McpToolsChanged {
     pub tools: Vec<String>,
 }
 
+/// A connected MCP server's advertised resource set changed at runtime, so subscribers can refresh
+/// without restarting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct McpResourcesChanged {
+    /// The configured MCP server whose resource set changed.
+    pub server: String,
+    /// The resource URIs now advertised by that server, after the re-list.
+    pub resources: Vec<String>,
+}
+
+/// A connected MCP server's advertised prompt set changed at runtime, so subscribers can refresh
+/// without restarting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct McpPromptsChanged {
+    /// The configured MCP server whose prompt set changed.
+    pub server: String,
+    /// The prompt names now advertised by that server, after the re-list.
+    pub prompts: Vec<String>,
+}
+
 /// A typed event delivered on the [`EventBus`](crate::EventBus).
 ///
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
@@ -152,6 +172,12 @@ pub enum Event {
     /// A connected MCP server's advertised tool set changed at runtime.
     #[serde(rename = "mcp.tools.changed")]
     McpToolsChanged(McpToolsChanged),
+    /// A connected MCP server's advertised resource set changed at runtime.
+    #[serde(rename = "mcp.resources.changed")]
+    McpResourcesChanged(McpResourcesChanged),
+    /// A connected MCP server's advertised prompt set changed at runtime.
+    #[serde(rename = "mcp.prompts.changed")]
+    McpPromptsChanged(McpPromptsChanged),
 }
 
 impl Event {
@@ -163,6 +189,8 @@ impl Event {
             Event::PermissionAsked(_) => "permission.asked",
             Event::PermissionReplied(_) => "permission.replied",
             Event::McpToolsChanged(_) => "mcp.tools.changed",
+            Event::McpResourcesChanged(_) => "mcp.resources.changed",
+            Event::McpPromptsChanged(_) => "mcp.prompts.changed",
         }
     }
 
@@ -213,6 +241,24 @@ impl Event {
         Event::McpToolsChanged(McpToolsChanged {
             server: server.into(),
             tools,
+        })
+    }
+
+    /// Construct an `mcp.resources.changed` event naming the server and its re-listed resource URIs.
+    #[must_use]
+    pub fn mcp_resources_changed(server: impl Into<String>, resources: Vec<String>) -> Self {
+        Event::McpResourcesChanged(McpResourcesChanged {
+            server: server.into(),
+            resources,
+        })
+    }
+
+    /// Construct an `mcp.prompts.changed` event naming the server and its re-listed prompt names.
+    #[must_use]
+    pub fn mcp_prompts_changed(server: impl Into<String>, prompts: Vec<String>) -> Self {
+        Event::McpPromptsChanged(McpPromptsChanged {
+            server: server.into(),
+            prompts,
         })
     }
 }
@@ -285,7 +331,8 @@ mod tests {
 
     #[test]
     fn mcp_tools_changed_serializes_with_named_typed_fields() {
-        let event = Event::mcp_tools_changed("demo", vec!["demo_a".to_owned(), "demo_b".to_owned()]);
+        let event =
+            Event::mcp_tools_changed("demo", vec!["demo_a".to_owned(), "demo_b".to_owned()]);
         assert_eq!(event.kind(), "mcp.tools.changed");
 
         let value = serde_json::to_value(&event).expect("serialize");
@@ -293,5 +340,20 @@ mod tests {
         assert_eq!(value["server"], "demo");
         assert_eq!(value["tools"][0], "demo_a");
         assert_eq!(value["tools"][1], "demo_b");
+    }
+
+    #[test]
+    fn mcp_resources_and_prompts_changed_serialize_with_named_typed_fields() {
+        let resources = Event::mcp_resources_changed("demo", vec!["notes://demo".to_owned()]);
+        assert_eq!(resources.kind(), "mcp.resources.changed");
+        let value = serde_json::to_value(&resources).expect("serialize");
+        assert_eq!(value["kind"], "mcp.resources.changed");
+        assert_eq!(value["resources"][0], "notes://demo");
+
+        let prompts = Event::mcp_prompts_changed("demo", vec!["greet".to_owned()]);
+        assert_eq!(prompts.kind(), "mcp.prompts.changed");
+        let value = serde_json::to_value(&prompts).expect("serialize");
+        assert_eq!(value["kind"], "mcp.prompts.changed");
+        assert_eq!(value["prompts"][0], "greet");
     }
 }

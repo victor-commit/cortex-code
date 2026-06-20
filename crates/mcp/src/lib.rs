@@ -32,7 +32,10 @@ mod qualify;
 mod result;
 mod transport_sse;
 
-pub use catalogue::{LiveCatalogue, McpTool, qualify_tools};
+pub use catalogue::{
+    LiveCatalogue, McpPrompt, McpPromptArgument, McpResource, McpServerCatalogue, McpTool,
+    qualify_prompts, qualify_resources, qualify_tools,
+};
 pub use client::{DEFAULT_TIMEOUT, McpClient};
 pub use config::{McpConfigError, McpServerConfig, McpTransport, servers_from_value};
 pub use credentials::{CredentialStore, StoredToken, now_secs};
@@ -42,4 +45,7 @@ pub use manager::{
 };
 pub use process_tree::{pid_alive, process_tree};
 pub use qualify::qualified_id;
-pub use result::{DEFAULT_MAX_RELAY_BYTES, RelayedResult, relay, relay_with_limit};
+pub use result::{
+    DEFAULT_MAX_RELAY_BYTES, RelayedResult, relay, relay_get_prompt, relay_read_resource,
+    relay_with_limit,
+};

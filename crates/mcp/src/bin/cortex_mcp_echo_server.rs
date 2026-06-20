@@ -21,8 +21,11 @@ use rmcp::ErrorData as McpError;
 use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    AnnotateAble, CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams,
+    GetPromptResult, JsonObject, ListPromptsResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, PromptMessageRole, RawResource,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Value, json};
@@ -30,12 +33,21 @@ use serde_json::{Value, json};
 #[derive(Clone)]
 struct EchoServer {
     label: Option<String>,
+    resources_prompts: bool,
+    error_tool: bool,
+    stall_tool: bool,
+    resource_content: String,
 }
 
 impl EchoServer {
     fn new() -> Self {
         Self {
             label: std::env::var("CORTEX_MCP_ECHO_LABEL").ok(),
+            resources_prompts: std::env::var("CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS").is_ok(),
+            error_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL").is_ok(),
+            stall_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_STALL_TOOL").is_ok(),
+            resource_content: std::env::var("CORTEX_MCP_ECHO_RESOURCE_CONTENT")
+                .unwrap_or_else(|_| "RESOURCE-CONTENT-default".to_owned()),
         }
     }
 
@@ -48,7 +60,7 @@ impl EchoServer {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
             Tool::new(
                 Cow::Borrowed("add"),
                 Cow::Borrowed("Add two integers a and b and return their sum."),
@@ -104,7 +116,53 @@ impl EchoServer {
                     "additionalProperties": false
                 })),
             ),
+        ];
+        if self.error_tool {
+            tools.push(Tool::new(
+                Cow::Borrowed("boom"),
+                Cow::Borrowed("Return an MCP tool error result containing MCP-TOOL-FAILED."),
+                Self::schema(json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                })),
+            ));
+        }
+        if self.stall_tool {
+            tools.push(Tool::new(
+                Cow::Borrowed("stall"),
+                Cow::Borrowed("Sleep forever to prove the client's tools/call timeout."),
+                Self::schema(json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                })),
+            ));
+        }
+        tools
+    }
+
+    fn resources(&self) -> Vec<rmcp::model::Resource> {
+        if !self.resources_prompts {
+            return Vec::new();
+        }
+        vec![
+            RawResource::new("notes://demo", "demo-notes")
+                .with_description("Demo resource exported by the Cortex MCP fixture")
+                .with_mime_type("text/plain")
+                .no_annotation(),
         ]
+    }
+
+    fn prompts(&self) -> Vec<Prompt> {
+        if !self.resources_prompts {
+            return Vec::new();
+        }
+        vec![Prompt::new(
+            "greet",
+            Some("Greet a caller by name from the MCP fixture."),
+            Some(vec![PromptArgument::new("name").with_required(true)]),
+        )]
     }
 
     fn log_call(&self, name: &str, arguments: &Option<JsonObject>) {
@@ -112,7 +170,10 @@ impl EchoServer {
             .as_ref()
             .map(|map| Value::Object(map.clone()))
             .unwrap_or(Value::Null);
-        let line = format!("tools/call name={name} args={args}");
+        self.log_line(&format!("tools/call name={name} args={args}"));
+    }
+
+    fn log_line(&self, line: &str) {
         eprintln!("{line}");
         if let Ok(path) = std::env::var("CORTEX_MCP_ECHO_LOG") {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
@@ -147,7 +208,15 @@ impl ServerHandler for EchoServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.instructions = Some("Cortex MCP echo/add proof server.".to_owned());
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        if self.resources_prompts {
+            capabilities = ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build();
+        }
+        info.capabilities = capabilities;
         info
     }
 
@@ -161,6 +230,77 @@ impl ServerHandler for EchoServer {
             next_cursor: None,
             meta: None,
         })
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: self.resources(),
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        self.log_line(&format!("resources/read uri={}", request.uri));
+        if request.uri != "notes://demo" {
+            return Err(McpError::invalid_params(
+                format!("unknown resource: {}", request.uri),
+                None,
+            ));
+        }
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            self.resource_content.clone(),
+            request.uri,
+        )]))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult {
+            prompts: self.prompts(),
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let args = request
+            .arguments
+            .as_ref()
+            .map(|map| Value::Object(map.clone()))
+            .unwrap_or(Value::Null);
+        self.log_line(&format!("prompts/get name={} args={args}", request.name));
+        if request.name != "greet" {
+            return Err(McpError::invalid_params(
+                format!("unknown prompt: {}", request.name),
+                None,
+            ));
+        }
+        let name = request
+            .arguments
+            .as_ref()
+            .and_then(|map| map.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("friend");
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            format!("Hello {name} from MCP"),
+        )]))
     }
 
     async fn call_tool(
@@ -198,6 +338,13 @@ impl ServerHandler for EchoServer {
                     "x".repeat(size),
                 )]))
             }
+            "boom" if self.error_tool => Ok(CallToolResult::error(vec![Content::text(
+                "MCP-TOOL-FAILED",
+            )])),
+            "stall" if self.stall_tool => {
+                std::future::pending::<()>().await;
+                unreachable!("pending future never resolves")
+            }
             "env" => {
                 // The working directory the child was actually spawned in (proves the configured
                 // `cwd` is applied) and the value of an optional named env var (proves the
@@ -231,12 +378,20 @@ impl ServerHandler for EchoServer {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("CORTEX_MCP_ECHO_EXIT_IMMEDIATELY").is_ok() {
+        return Ok(());
+    }
+
     let startup = format!("cortex-mcp-echo-server started pid={}", std::process::id());
     eprintln!("{startup}");
     if let Ok(path) = std::env::var("CORTEX_MCP_ECHO_LOG") {
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{startup}");
         }
+    }
+
+    if std::env::var("CORTEX_MCP_ECHO_STALL_BEFORE_SERVE").is_ok() {
+        std::future::pending::<()>().await;
     }
 
     // Optionally fork a long-lived grandchild so a black-box validator can prove the whole process
