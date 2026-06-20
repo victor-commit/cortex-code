@@ -239,6 +239,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Optionally fork a long-lived grandchild so a black-box validator can prove the whole process
+    // tree (not just the direct child) is terminated by PID on shutdown. The grandchild's PID is
+    // written to the requested file so the test can assert it is reaped.
+    if std::env::var("CORTEX_MCP_ECHO_SPAWN_CHILD").is_ok() {
+        if let Ok(child) = std::process::Command::new("sleep").arg("600").spawn() {
+            if let Ok(path) = std::env::var("CORTEX_MCP_ECHO_CHILD_PID_FILE") {
+                let _ = std::fs::write(path, child.id().to_string());
+            }
+            std::mem::forget(child);
+        }
+    }
+
     let service = EchoServer::new()
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await?;

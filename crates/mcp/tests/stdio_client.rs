@@ -53,7 +53,8 @@ async fn connects_lists_calls_and_kills_child_on_shutdown() {
         ]
     );
     // Schemas are relayed (no fabrication): the `add` tool advertises its a/b integer params.
-    let add = manager.tools().iter().find(|t| t.id == "demo_add").unwrap();
+    let tools = manager.tools();
+    let add = tools.iter().find(|t| t.id == "demo_add").unwrap();
     assert_eq!(add.input_schema["properties"]["a"]["type"], "integer");
     assert_eq!(add.tool, "add");
 

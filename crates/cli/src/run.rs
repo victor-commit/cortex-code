@@ -173,7 +173,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         save_specs,
         trust_rules,
         loaded_decisions,
-        bus,
+        bus.clone(),
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -293,9 +293,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     let mcp_manager: Option<std::sync::Arc<mcp::McpManager>> = if mcp_servers.is_empty() {
         None
     } else {
-        Some(std::sync::Arc::new(
-            runtime.block_on(mcp::McpManager::connect(mcp_servers)),
-        ))
+        let options = mcp::McpConnectOptions {
+            bus: Some(bus.clone()),
+            credentials: crate::mcp_store::store_from_process(),
+        };
+        Some(std::sync::Arc::new(runtime.block_on(
+            mcp::McpManager::connect_with(mcp_servers, options),
+        )))
     };
 
     // Materialize the per-turn tool set for the model's family, scoped to the process working

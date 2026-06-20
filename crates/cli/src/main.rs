@@ -2,6 +2,7 @@ mod checkpoint;
 mod cli;
 mod config;
 mod mcp_cmd;
+mod mcp_store;
 mod net;
 mod observe;
 mod permission;

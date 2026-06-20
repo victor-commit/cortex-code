@@ -10,16 +10,27 @@ workspace = true
 
 [dependencies]
 protocol = { workspace = true }
+events = { workspace = true }
+redaction = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+futures-util = { workspace = true }
+http = { workspace = true }
+url = { workspace = true }
 
 [[bin]]
 name = "cortex-mcp-echo-server"
 path = "src/bin/cortex_mcp_echo_server.rs"
+
+[[bin]]
+name = "cortex-mcp-remote-server"
+path = "src/bin/cortex_mcp_remote_server.rs"
 
 [dev-dependencies]
 tokio = { workspace = true }

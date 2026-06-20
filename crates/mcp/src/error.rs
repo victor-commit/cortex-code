@@ -31,6 +31,14 @@ pub enum McpError {
         /// The normalized handshake error.
         message: String,
     },
+    /// A remote server requires OAuth authorization before it will serve.
+    #[error("MCP server `{server}`: authorization required (run `cortex mcp auth {server}`)")]
+    NeedsAuth {
+        /// The server name.
+        server: String,
+        /// The server's `WWW-Authenticate` challenge, when provided.
+        www_authenticate: Option<String>,
+    },
     /// An operation timed out.
     #[error("MCP server `{server}`: {operation} timed out after {timeout:?}")]
     Timeout {
@@ -77,6 +85,13 @@ impl McpError {
         Self::Handshake {
             server: server.to_owned(),
             message: message.into(),
+        }
+    }
+
+    pub(crate) fn needs_auth(server: &str, www_authenticate: Option<String>) -> Self {
+        Self::NeedsAuth {
+            server: server.to_owned(),
+            www_authenticate,
         }
     }
 

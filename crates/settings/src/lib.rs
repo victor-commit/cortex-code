@@ -262,14 +262,32 @@ pub fn persist_global_string(
 /// This mirrors the subset of the `mcp` crate's server config that the `cortex mcp add` CLI
 /// surface lets a user set; it is expressed in primitive types here so the `settings` crate (which
 /// owns the on-disk config representation) stays decoupled from the `mcp` crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerSpecTransport {
+    /// A local stdio server launched from a command array.
+    Local,
+    /// A remote HTTP/SSE server reached at a URL.
+    Remote,
+}
+
+/// A declarative MCP server entry to persist under `[mcp.<name>]` in the global config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpServerSpec {
+    /// The transport kind to persist. `Local` omits `type = "local"` because it is the runtime
+    /// default; `Remote` writes `type = "remote"`.
+    pub transport: McpServerSpecTransport,
     /// The command to launch the local stdio server: the program followed by its arguments.
     pub command: Vec<String>,
+    /// The URL of the remote HTTP/SSE server, when `transport` is remote.
+    pub url: Option<String>,
+    /// Extra HTTP headers set on the remote client, in declared order.
+    pub headers: Vec<(String, String)>,
     /// The working directory the server child is spawned in, when set.
     pub cwd: Option<String>,
     /// Extra environment variables set on the server child, in declared order.
     pub environment: Vec<(String, String)>,
+    /// The per-operation timeout in seconds, when set.
+    pub timeout: Option<u64>,
     /// Whether the server is enabled. A disabled entry is recorded but never spawned.
     pub enabled: bool,
 }
@@ -280,15 +298,32 @@ impl McpServerSpec {
     /// re-adding an identical server is detected as unchanged rather than as a conflict.
     fn to_table(&self) -> Table {
         let mut table = Table::new();
-        table.insert(
-            "command".to_owned(),
-            Value::Array(
-                self.command
-                    .iter()
-                    .map(|arg| Value::String(arg.clone()))
-                    .collect(),
-            ),
-        );
+        match self.transport {
+            McpServerSpecTransport::Local => {
+                table.insert(
+                    "command".to_owned(),
+                    Value::Array(
+                        self.command
+                            .iter()
+                            .map(|arg| Value::String(arg.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            McpServerSpecTransport::Remote => {
+                table.insert("type".to_owned(), Value::String("remote".to_owned()));
+                if let Some(url) = &self.url {
+                    table.insert("url".to_owned(), Value::String(url.clone()));
+                }
+                if !self.headers.is_empty() {
+                    let mut headers = Table::new();
+                    for (key, value) in &self.headers {
+                        headers.insert(key.clone(), Value::String(value.clone()));
+                    }
+                    table.insert("headers".to_owned(), Value::Table(headers));
+                }
+            }
+        }
         if let Some(cwd) = &self.cwd {
             table.insert("cwd".to_owned(), Value::String(cwd.clone()));
         }
@@ -298,6 +333,9 @@ impl McpServerSpec {
                 env.insert(key.clone(), Value::String(value.clone()));
             }
             table.insert("environment".to_owned(), Value::Table(env));
+        }
+        if let Some(timeout) = self.timeout {
+            table.insert("timeout".to_owned(), Value::Integer(timeout as i64));
         }
         if !self.enabled {
             table.insert("enabled".to_owned(), Value::Boolean(false));
@@ -630,9 +668,13 @@ mod persist_mcp_tests {
 
     fn spec() -> McpServerSpec {
         McpServerSpec {
+            transport: McpServerSpecTransport::Local,
             command: vec!["/abs/echo-server".to_owned(), "--flag".to_owned()],
+            url: None,
+            headers: Vec::new(),
             cwd: Some("/work".to_owned()),
             environment: vec![("FOO".to_owned(), "bar".to_owned())],
+            timeout: None,
             enabled: true,
         }
     }
@@ -741,6 +783,44 @@ mod persist_mcp_tests {
             "the pre-existing model key must survive the mcp add"
         );
         assert!(effective.get("mcp").is_some(), "the mcp entry was added");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn add_can_persist_a_remote_server_with_headers() {
+        let home = scratch_home("remote");
+        let inputs = inputs_with_home(&home);
+        let spec = McpServerSpec {
+            transport: McpServerSpecTransport::Remote,
+            command: Vec::new(),
+            url: Some("http://127.0.0.1:3210/mcp".to_owned()),
+            headers: vec![("X-Cortex".to_owned(), "yes".to_owned())],
+            cwd: None,
+            environment: Vec::new(),
+            timeout: Some(7),
+            enabled: true,
+        };
+
+        persist_global_mcp_server(&inputs, "remote", &spec, false).expect("persist");
+        let effective = load(inputs_with_home(&home)).expect("load");
+        let remote = effective
+            .get("mcp")
+            .and_then(|mcp| mcp.get("remote"))
+            .expect("remote entry present");
+
+        assert_eq!(remote.get("type").and_then(Value::as_str), Some("remote"));
+        assert_eq!(
+            remote.get("url").and_then(Value::as_str),
+            Some("http://127.0.0.1:3210/mcp")
+        );
+        assert_eq!(
+            remote
+                .get("headers")
+                .and_then(|headers| headers.get("X-Cortex"))
+                .and_then(Value::as_str),
+            Some("yes")
+        );
+        assert_eq!(remote.get("timeout").and_then(Value::as_integer), Some(7));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

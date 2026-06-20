@@ -1,22 +1,32 @@
-//! A single connected stdio MCP server: spawn the child, complete the initialize handshake, and
-//! expose `tools/list` and `tools/call` over the running session.
+//! A single connected MCP server session — local (stdio child) or remote (HTTP) — exposing the
+//! initialize handshake, `tools/list`, and `tools/call` over the running session.
 //!
-//! The client spawns the configured command as a child process parented under cortex, runs the
-//! `rmcp` client handshake over the child's stdio, and records the child PID. The running session is
-//! held behind a mutex so a call serializes against shutdown; [`shutdown`](McpClient::shutdown)
-//! cancels the session, which closes the transport and terminates the child (no orphan survives).
+//! A local server is spawned as a child process parented under cortex; its PID is recorded so the
+//! whole process tree can be terminated on shutdown (no orphan survives). A remote server is reached
+//! over HTTP: the client first tries the Streamable HTTP transport and, if the server rejects it,
+//! falls back to the legacy HTTP+SSE transport, so either kind of remote server connects. Optional
+//! per-server headers and an OAuth bearer token are sent with every remote request. Every session is
+//! served with a [`NotifyHandler`] so a server's tool-list-changed notification refreshes the live
+//! catalogue without a restart.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
+use http::{HeaderMap, HeaderName, HeaderValue};
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{RoleClient, RunningService};
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::catalogue::{LiveCatalogue, McpTool, qualify_tools};
 use crate::config::McpServerConfig;
 use crate::error::McpError;
+use crate::handler::NotifyHandler;
+use crate::transport_sse::SseClientTransport;
 
 /// The default per-operation timeout (handshake and each request) when a server sets none.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -24,11 +34,11 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Environment variables never forwarded into a spawned MCP child, so host secrets do not leak.
 const STRIPPED_ENV: &[&str] = &["OPENROUTER_API_KEY"];
 
-/// A connected stdio MCP server session.
+/// A connected MCP server session (stdio or remote).
 pub struct McpClient {
     server_name: String,
     pid: Option<u32>,
-    service: Mutex<Option<RunningService<RoleClient, ()>>>,
+    service: Mutex<Option<RunningService<RoleClient, NotifyHandler>>>,
     timeout: Duration,
 }
 
@@ -36,16 +46,17 @@ impl McpClient {
     /// Spawn the configured local server and complete the MCP initialize handshake.
     ///
     /// The child inherits the cortex environment minus known host secrets, with the configured
-    /// `environment` overrides applied and the optional `cwd` honored. The handshake is bounded by
-    /// the configured `timeout` (or [`DEFAULT_TIMEOUT`]).
+    /// `environment` overrides applied and the optional `cwd` honored. After the handshake the
+    /// server's tools are listed, qualified, and recorded in `catalogue`.
     ///
     /// # Errors
     /// Returns [`McpError`] when the command is empty, the child cannot be spawned, or the handshake
-    /// fails or times out.
+    /// or tool listing fails or times out.
     pub async fn connect_stdio(
         server_name: &str,
         config: &McpServerConfig,
-    ) -> Result<Self, McpError> {
+        catalogue: &LiveCatalogue,
+    ) -> Result<(Self, Vec<McpTool>), McpError> {
         let (program, args) = config
             .program_and_args()
             .ok_or_else(|| McpError::config(server_name, "the `command` array is empty"))?;
@@ -62,10 +73,7 @@ impl McpClient {
             command.env(key, value);
         }
 
-        let timeout = config
-            .timeout
-            .map(Duration::from_secs)
-            .unwrap_or(DEFAULT_TIMEOUT);
+        let timeout = Self::timeout_of(config);
 
         let (transport, _stderr) = TokioChildProcess::builder(command)
             .stderr(std::process::Stdio::null())
@@ -77,20 +85,158 @@ impl McpClient {
             })?;
         let pid = transport.id();
 
-        let service = tokio::time::timeout(timeout, ().serve(transport))
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
             .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
 
-        Ok(Self {
+        let client = Self {
             server_name: server_name.to_owned(),
             pid,
             service: Mutex::new(Some(service)),
             timeout,
-        })
+        };
+        let tools = client.list_and_record(catalogue).await?;
+        Ok((client, tools))
     }
 
-    /// The PID of the spawned child process, if the OS reported one.
+    /// Connect to the configured remote server over HTTP and complete the handshake.
+    ///
+    /// The Streamable HTTP transport is tried first; if the server rejects it (a non-streamable
+    /// server) the legacy HTTP+SSE transport is tried. `auth_header` carries an OAuth bearer token
+    /// (without the `Bearer ` prefix) when one is available. A server that responds `401` before any
+    /// transport connects yields [`McpError::NeedsAuth`].
+    ///
+    /// # Errors
+    /// Returns [`McpError`] when no URL is configured, the server needs authorization, or neither
+    /// transport can complete the handshake/listing.
+    pub async fn connect_remote(
+        server_name: &str,
+        config: &McpServerConfig,
+        auth_header: Option<String>,
+        catalogue: &LiveCatalogue,
+    ) -> Result<(Self, Vec<McpTool>), McpError> {
+        let url = config
+            .url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| McpError::config(server_name, "a remote server requires a `url`"))?;
+        let timeout = Self::timeout_of(config);
+        let header_map = build_header_map(server_name, &config.headers, auth_header.as_deref())?;
+
+        match probe(url, &header_map, timeout).await {
+            Probe::NeedsAuth(www) => Err(McpError::needs_auth(server_name, www)),
+            Probe::Streamable => {
+                Self::connect_streamable(
+                    server_name,
+                    url,
+                    &header_map,
+                    auth_header,
+                    timeout,
+                    catalogue,
+                )
+                .await
+            }
+            Probe::Sse => Self::connect_sse(server_name, url, header_map, timeout, catalogue).await,
+            Probe::Unreachable(message) => Err(McpError::handshake(server_name, message)),
+        }
+    }
+
+    /// Connect over the Streamable HTTP transport.
+    async fn connect_streamable(
+        server_name: &str,
+        url: &str,
+        header_map: &HeaderMap,
+        auth_header: Option<String>,
+        timeout: Duration,
+        catalogue: &LiveCatalogue,
+    ) -> Result<(Self, Vec<McpTool>), McpError> {
+        let mut custom: HashMap<HeaderName, HeaderValue> = HashMap::new();
+        let oauth_header_supplied = auth_header.is_some();
+        for (name, value) in header_map {
+            // An OAuth bearer token is supplied via auth_header below. A caller-configured
+            // Authorization header, however, is a normal custom header and must survive when no
+            // OAuth token is active.
+            if name == http::header::AUTHORIZATION && oauth_header_supplied {
+                continue;
+            }
+            custom.insert(name.clone(), value.clone());
+        }
+        let mut transport_config =
+            StreamableHttpClientTransportConfig::with_uri(url.to_owned()).custom_headers(custom);
+        if let Some(token) = auth_header {
+            transport_config = transport_config.auth_header(token);
+        }
+        let transport = StreamableHttpClientTransport::from_config(transport_config);
+
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
+            .await
+            .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
+            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+
+        let client = Self {
+            server_name: server_name.to_owned(),
+            pid: None,
+            service: Mutex::new(Some(service)),
+            timeout,
+        };
+        let tools = client.list_and_record(catalogue).await?;
+        Ok((client, tools))
+    }
+
+    /// Connect over the legacy HTTP+SSE transport (fallback).
+    async fn connect_sse(
+        server_name: &str,
+        url: &str,
+        header_map: HeaderMap,
+        timeout: Duration,
+        catalogue: &LiveCatalogue,
+    ) -> Result<(Self, Vec<McpTool>), McpError> {
+        let transport = SseClientTransport::connect(url, header_map, timeout)
+            .await
+            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+
+        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone());
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
+            .await
+            .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
+            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+
+        let client = Self {
+            server_name: server_name.to_owned(),
+            pid: None,
+            service: Mutex::new(Some(service)),
+            timeout,
+        };
+        let tools = client.list_and_record(catalogue).await?;
+        Ok((client, tools))
+    }
+
+    /// List the server's tools, qualify them, record them in the catalogue, and return them.
+    async fn list_and_record(&self, catalogue: &LiveCatalogue) -> Result<Vec<McpTool>, McpError> {
+        let advertised = match self.list_tools().await {
+            Ok(advertised) => advertised,
+            Err(err) => {
+                self.shutdown().await;
+                return Err(err);
+            }
+        };
+        let tools = qualify_tools(&self.server_name, advertised);
+        catalogue.set_initial(&self.server_name, tools.clone());
+        Ok(tools)
+    }
+
+    /// The configured per-operation timeout, or the built-in default.
+    fn timeout_of(config: &McpServerConfig) -> Duration {
+        config
+            .timeout
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_TIMEOUT)
+    }
+
+    /// The PID of the spawned child process (stdio servers only).
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
         self.pid
@@ -100,7 +246,7 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns [`McpError`] when the session is closed or the request fails/times out.
-    pub async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+    pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, McpError> {
         let guard = self.service.lock().await;
         let service = guard
             .as_ref()
@@ -112,8 +258,6 @@ impl McpClient {
     }
 
     /// Issue a real `tools/call` for `tool` with `arguments` and return the server's result.
-    ///
-    /// `arguments` must be a JSON object (or null/empty for a no-argument tool).
     ///
     /// # Errors
     /// Returns [`McpError`] when the session is closed, the arguments are not an object, or the
@@ -149,17 +293,112 @@ impl McpClient {
             .map_err(|err| McpError::service(&self.server_name, "tools/call", err.to_string()))
     }
 
-    /// Cancel the session and terminate the child, awaiting cleanup so no orphan process survives.
+    /// Cancel the session and terminate the child and every descendant by exact PID.
+    ///
+    /// The descendant set is snapshotted before the session is cancelled so a grandchild cannot be
+    /// orphaned by the parent dying first; the whole tree is then `SIGKILL`ed by PID. A remote
+    /// session has no child, so only the transport is closed.
     pub async fn shutdown(&self) {
-        let mut guard = self.service.lock().await;
-        if let Some(service) = guard.take() {
-            if let Err(err) = service.cancel().await {
-                tracing::warn!(
-                    target: "cortex::events",
-                    server = %self.server_name,
-                    "failed to cancel MCP session cleanly: {err}"
-                );
+        let tree = self.pid.map(crate::process_tree::process_tree);
+
+        {
+            let mut guard = self.service.lock().await;
+            if let Some(service) = guard.take() {
+                if let Err(err) = service.cancel().await {
+                    tracing::warn!(
+                        target: "cortex::events",
+                        server = %self.server_name,
+                        "failed to cancel MCP session cleanly: {err}"
+                    );
+                }
             }
         }
+
+        if let Some(pids) = tree {
+            crate::process_tree::kill_all(&pids).await;
+        }
     }
+}
+
+/// The classification of a remote server from a lightweight probe.
+enum Probe {
+    /// The server answered `401`/needs-auth; the contained challenge is its `WWW-Authenticate`.
+    NeedsAuth(Option<String>),
+    /// The server accepts Streamable HTTP.
+    Streamable,
+    /// The server rejected Streamable HTTP; try the legacy SSE transport.
+    Sse,
+    /// The server could not be reached at all.
+    Unreachable(String),
+}
+
+/// Probe a remote MCP endpoint with a single `initialize` POST to classify how to connect.
+async fn probe(url: &str, headers: &HeaderMap, timeout: Duration) -> Probe {
+    let client = match reqwest::Client::builder().build() {
+        Ok(client) => client,
+        Err(err) => return Probe::Unreachable(err.to_string()),
+    };
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "cortex", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    let request = client
+        .post(url)
+        .headers(headers.clone())
+        .header(http::header::ACCEPT, "application/json, text/event-stream")
+        .json(&body);
+
+    let response = match tokio::time::timeout(timeout, request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => return Probe::Unreachable(err.to_string()),
+        Err(_) => {
+            return Probe::Unreachable("the remote server did not respond in time".to_owned());
+        }
+    };
+
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let www = response
+            .headers()
+            .get(http::header::WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        return Probe::NeedsAuth(www);
+    }
+    if status.is_success() {
+        return Probe::Streamable;
+    }
+    // Method-not-allowed / not-found / not-implemented signal a non-streamable endpoint; fall back
+    // to the legacy SSE transport. Any other non-success status also gets the SSE attempt.
+    Probe::Sse
+}
+
+/// Build the HTTP header map sent with every remote request: the configured headers plus an optional
+/// `Authorization: Bearer <token>`.
+fn build_header_map(
+    server_name: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+    auth_header: Option<&str>,
+) -> Result<HeaderMap, McpError> {
+    let mut map = HeaderMap::new();
+    for (key, value) in headers {
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| McpError::config(server_name, format!("invalid header name `{key}`")))?;
+        let value = HeaderValue::from_str(value).map_err(|_| {
+            McpError::config(server_name, format!("invalid header value for `{key}`"))
+        })?;
+        map.insert(name, value);
+    }
+    if let Some(token) = auth_header {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| McpError::config(server_name, "invalid OAuth token"))?;
+        map.insert(http::header::AUTHORIZATION, value);
+    }
+    Ok(map)
 }

@@ -81,9 +81,10 @@ pub enum Command {
     /// Manage and inspect Model Context Protocol (MCP) servers.
     ///
     /// MCP servers are declared in the layered config under `mcp.<name>` (a local stdio server has
-    /// `type = "local"` and a `command` array). `cortex mcp list` connects to each enabled server,
-    /// completes the MCP handshake, and reports its status (connected/disabled/failed), live PID,
-    /// and advertised tools under their server-qualified ids.
+    /// `type = "local"` and a `command` array; a remote server has `type = "remote"` and a `url`).
+    /// `cortex mcp list` connects to each enabled server, completes the MCP handshake, and reports
+    /// its status (connected/disabled/failed/needs_auth), live PID, and advertised tools under
+    /// their server-qualified ids.
     Mcp(McpArgs),
 }
 
@@ -103,6 +104,8 @@ pub enum McpCommand {
     /// `cortex run` on the next invocation. Re-adding the same definition is idempotent; adding a
     /// different one under an existing name errors (unless `--force`) without corrupting the config.
     Add(McpAddArgs),
+    /// Authorize an OAuth-protected remote MCP server and persist its token in the 0600 store.
+    Auth(McpAuthArgs),
 }
 
 #[derive(Debug, Args)]
@@ -117,9 +120,17 @@ pub struct McpAddArgs {
     #[arg(value_name = "NAME")]
     pub name: String,
 
-    /// The command to launch the stdio server: the program followed by its arguments.
-    #[arg(long = "command", num_args = 1.., required = true, value_name = "CMD")]
+    /// The command to launch a local stdio server: the program followed by its arguments.
+    #[arg(long = "command", num_args = 1.., conflicts_with = "url", value_name = "CMD")]
     pub command: Vec<String>,
+
+    /// The URL of a remote HTTP/SSE MCP server.
+    #[arg(long = "url", conflicts_with = "command", value_name = "URL")]
+    pub url: Option<String>,
+
+    /// An HTTP header to send to a remote server, as `KEY=VALUE` (repeatable).
+    #[arg(long = "header", value_name = "KEY=VALUE")]
+    pub headers: Vec<String>,
 
     /// The working directory the server child is spawned in.
     #[arg(long = "cwd", value_name = "DIR")]
@@ -129,6 +140,10 @@ pub struct McpAddArgs {
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
 
+    /// Per-operation timeout in seconds.
+    #[arg(long = "timeout", value_name = "SECS")]
+    pub timeout_secs: Option<u64>,
+
     /// Register the server but leave it disabled (it is recorded but never spawned).
     #[arg(long = "disabled")]
     pub disabled: bool,
@@ -136,6 +151,24 @@ pub struct McpAddArgs {
     /// Overwrite an existing server of the same name instead of erroring on a conflict.
     #[arg(long = "force")]
     pub force: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct McpAuthArgs {
+    /// The configured remote MCP server to authorize.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Pin the loopback OAuth callback port. Must be in 3200-3299.
+    #[arg(long = "callback-port", value_name = "PORT")]
+    pub callback_port: Option<u16>,
+
+    /// Timeout in seconds while waiting for the loopback callback.
+    #[arg(long = "timeout", default_value_t = 120, value_name = "SECS")]
+    pub timeout_secs: u64,
 
     #[command(flatten)]
     pub format: FormatArgs,
@@ -602,6 +635,65 @@ mod tests {
                 assert_eq!(args.port, 3200);
             }
             other => panic!("expected serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_parses_remote_url_headers_and_timeout() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "mcp",
+            "add",
+            "api",
+            "--url",
+            "http://127.0.0.1:3210/mcp",
+            "--header",
+            "Authorization=Bearer static-token",
+            "--timeout",
+            "5",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Add(args),
+            })) => {
+                assert_eq!(args.name, "api");
+                assert_eq!(args.url.as_deref(), Some("http://127.0.0.1:3210/mcp"));
+                assert_eq!(args.headers, vec!["Authorization=Bearer static-token"]);
+                assert_eq!(args.timeout_secs, Some(5));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected mcp add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_auth_parses_callback_port_and_timeout() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "mcp",
+            "auth",
+            "api",
+            "--callback-port",
+            "3214",
+            "--timeout",
+            "10",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Auth(args),
+            })) => {
+                assert_eq!(args.name, "api");
+                assert_eq!(args.callback_port, Some(3214));
+                assert_eq!(args.timeout_secs, 10);
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected mcp auth, got {other:?}"),
         }
     }
 

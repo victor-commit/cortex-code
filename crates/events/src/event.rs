@@ -122,6 +122,17 @@ pub struct PermissionReplied {
     pub decision: PermissionDecision,
 }
 
+/// A connected MCP server's advertised tool set changed at runtime (the server sent a
+/// tool-list-changed notification and the catalogue was re-listed), so subscribers can refresh
+/// without restarting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct McpToolsChanged {
+    /// The configured MCP server whose tool set changed.
+    pub server: String,
+    /// The server-qualified ids of the tools now advertised by that server, after the re-list.
+    pub tools: Vec<String>,
+}
+
 /// A typed event delivered on the [`EventBus`](crate::EventBus).
 ///
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
@@ -138,6 +149,9 @@ pub enum Event {
     /// A pending permission ask was answered with a decision.
     #[serde(rename = "permission.replied")]
     PermissionReplied(PermissionReplied),
+    /// A connected MCP server's advertised tool set changed at runtime.
+    #[serde(rename = "mcp.tools.changed")]
+    McpToolsChanged(McpToolsChanged),
 }
 
 impl Event {
@@ -148,6 +162,7 @@ impl Event {
             Event::Lifecycle(_) => "lifecycle",
             Event::PermissionAsked(_) => "permission.asked",
             Event::PermissionReplied(_) => "permission.replied",
+            Event::McpToolsChanged(_) => "mcp.tools.changed",
         }
     }
 
@@ -189,6 +204,15 @@ impl Event {
             pattern: pattern.into(),
             request: request.into(),
             decision,
+        })
+    }
+
+    /// Construct an `mcp.tools.changed` event naming the server and its re-listed tool ids.
+    #[must_use]
+    pub fn mcp_tools_changed(server: impl Into<String>, tools: Vec<String>) -> Self {
+        Event::McpToolsChanged(McpToolsChanged {
+            server: server.into(),
+            tools,
         })
     }
 }
@@ -257,5 +281,17 @@ mod tests {
     fn permission_decision_names_match_serialization() {
         assert_eq!(PermissionDecision::Allow.as_str(), "allow");
         assert_eq!(PermissionDecision::Deny.as_str(), "deny");
+    }
+
+    #[test]
+    fn mcp_tools_changed_serializes_with_named_typed_fields() {
+        let event = Event::mcp_tools_changed("demo", vec!["demo_a".to_owned(), "demo_b".to_owned()]);
+        assert_eq!(event.kind(), "mcp.tools.changed");
+
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["kind"], "mcp.tools.changed");
+        assert_eq!(value["server"], "demo");
+        assert_eq!(value["tools"][0], "demo_a");
+        assert_eq!(value["tools"][1], "demo_b");
     }
 }

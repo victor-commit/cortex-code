@@ -7,18 +7,20 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::time::Duration;
 
 use errors::Exit;
 use serde::Serialize;
-use settings::{ConfigInputs, McpServerPersist, McpServerSpec};
+use settings::{ConfigInputs, McpServerPersist, McpServerSpec, McpServerSpecTransport};
 
-use crate::cli::{McpAddArgs, McpArgs, McpCommand, McpListArgs, OutputFormat};
+use crate::cli::{McpAddArgs, McpArgs, McpAuthArgs, McpCommand, McpListArgs, OutputFormat};
 
 /// Dispatch the `cortex mcp` subcommands.
 pub fn run(args: McpArgs) -> Exit {
     match args.command {
         McpCommand::List(list) => list_servers(list),
         McpCommand::Add(add) => add_server(add),
+        McpCommand::Auth(auth) => auth_server(auth),
     }
 }
 
@@ -31,6 +33,17 @@ struct AddDocument<'a> {
     path: String,
 }
 
+/// The single JSON document emitted by `cortex mcp auth --format json`.
+#[derive(Serialize)]
+struct AuthDocument<'a> {
+    r#type: &'a str,
+    name: &'a str,
+    status: &'a str,
+    authorize_url: &'a str,
+    redirect_uri: &'a str,
+    store: String,
+}
+
 /// Register a new MCP server in the global config file and report the result.
 ///
 /// The definition is persisted under `[mcp.<name>]`. Re-adding the identical definition is
@@ -38,18 +51,49 @@ struct AddDocument<'a> {
 /// a clear message (unless `--force`) and leaves the existing config untouched, so a duplicate add
 /// never corrupts the file.
 fn add_server(args: McpAddArgs) -> Exit {
-    let environment = match parse_env_assignments(&args.env) {
+    let environment = match parse_key_value_assignments(&args.env, "--env") {
         Ok(environment) => environment,
         Err(message) => {
             eprintln!("cortex mcp add: {message}");
             return Exit::Usage;
         }
     };
+    let headers = match parse_key_value_assignments(&args.headers, "--header") {
+        Ok(headers) => headers,
+        Err(message) => {
+            eprintln!("cortex mcp add: {message}");
+            return Exit::Usage;
+        }
+    };
+    let transport = if args.url.is_some() {
+        if !args.command.is_empty() || args.cwd.is_some() || !environment.is_empty() {
+            eprintln!(
+                "cortex mcp add: --url registers a remote server and cannot be combined with \
+                 --command, --cwd, or --env"
+            );
+            return Exit::Usage;
+        }
+        McpServerSpecTransport::Remote
+    } else {
+        if args.command.is_empty() {
+            eprintln!("cortex mcp add: pass either --command <CMD>... or --url <URL>");
+            return Exit::Usage;
+        }
+        if !headers.is_empty() {
+            eprintln!("cortex mcp add: --header requires --url for a remote server");
+            return Exit::Usage;
+        }
+        McpServerSpecTransport::Local
+    };
 
     let spec = McpServerSpec {
+        transport,
         command: args.command,
+        url: args.url,
+        headers,
         cwd: args.cwd,
         environment,
+        timeout: args.timeout_secs,
         enabled: !args.disabled,
     };
 
@@ -123,20 +167,168 @@ fn emit_add(name: &str, status: &str, path: String, format: OutputFormat) -> Exi
     Exit::Success
 }
 
-/// Parse repeatable `--env KEY=VALUE` assignments into ordered pairs.
+/// Run the OAuth authorization-code flow for a configured remote server and persist the resulting
+/// token to the process-resolved 0600 MCP credential store.
+fn auth_server(args: McpAuthArgs) -> Exit {
+    let inputs = match ConfigInputs::from_process(BTreeMap::new()) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            eprintln!("cortex mcp auth: cannot determine the working directory: {err}");
+            return Exit::Failure;
+        }
+    };
+    let effective = match settings::load(inputs) {
+        Ok(effective) => effective,
+        Err(err) => {
+            eprintln!("cortex mcp auth: {err}");
+            return Exit::Config;
+        }
+    };
+    let servers = crate::run::mcp_servers_from_config(&effective);
+    let Some(server) = servers.get(&args.name) else {
+        eprintln!(
+            "cortex mcp auth: no MCP server named '{}' is configured",
+            args.name
+        );
+        return Exit::Failure;
+    };
+    if server.transport != mcp::McpTransport::Remote {
+        eprintln!(
+            "cortex mcp auth: MCP server '{}' is not remote; OAuth applies only to remote servers",
+            args.name
+        );
+        return Exit::Usage;
+    }
+    let Some(url) = server.url.as_deref().filter(|url| !url.is_empty()) else {
+        eprintln!("cortex mcp auth: remote server '{}' has no url", args.name);
+        return Exit::Config;
+    };
+    let Some(credentials) = crate::mcp_store::store_from_process() else {
+        eprintln!(
+            "cortex mcp auth: cannot determine an MCP credential-store location; set HOME, \
+             XDG_DATA_HOME, or CORTEX_DATA_DIR"
+        );
+        return Exit::Failure;
+    };
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("cortex mcp auth: failed to start the async runtime: {err}");
+            return Exit::Failure;
+        }
+    };
+
+    runtime.block_on(async {
+        let oauth_config = match mcp::oauth::discover(url, "cortex").await {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("cortex mcp auth: {err}");
+                return Exit::Failure;
+            }
+        };
+        let request = match mcp::oauth::begin(oauth_config, args.callback_port).await {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!("cortex mcp auth: {err}");
+                return Exit::Failure;
+            }
+        };
+        let authorize_url = request.authorize_url.clone();
+        let redirect_uri = request.redirect_uri.clone();
+        let store_path = credentials.path().display().to_string();
+        if emit_auth_start(
+            &args.name,
+            &authorize_url,
+            &redirect_uri,
+            store_path.clone(),
+            args.format.format,
+        ) != Exit::Success
+        {
+            return Exit::Failure;
+        }
+
+        let token = match request
+            .complete(Duration::from_secs(args.timeout_secs))
+            .await
+        {
+            Ok(token) => token,
+            Err(err) => {
+                eprintln!("cortex mcp auth: {err}");
+                return Exit::Failure;
+            }
+        };
+        if let Err(err) = credentials.put(&args.name, token) {
+            eprintln!("cortex mcp auth: failed to persist token: {err}");
+            return Exit::Failure;
+        }
+        if args.format.format == OutputFormat::Text {
+            println!(
+                "MCP server '{}' authorized; token stored in {store_path}",
+                args.name
+            );
+        }
+        Exit::Success
+    })
+}
+
+/// Emit the authorization URL before waiting for the callback, so a browser or validator can visit
+/// it while the loopback listener is live. The URL carries only the CSRF state, never a token.
+fn emit_auth_start(
+    name: &str,
+    authorize_url: &str,
+    redirect_uri: &str,
+    store: String,
+    format: OutputFormat,
+) -> Exit {
+    let mut body = match format {
+        OutputFormat::Text => format!(
+            "Open this URL to authorize MCP server '{name}':\n{authorize_url}\ncallback: {redirect_uri}\nwaiting for OAuth callback..."
+        ),
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let document = AuthDocument {
+                r#type: "mcp-auth",
+                name,
+                status: "waiting",
+                authorize_url,
+                redirect_uri,
+                store,
+            };
+            serde_json::to_string(&document).expect("mcp-auth output is always serializable")
+        }
+    };
+    body.push('\n');
+
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    if handle
+        .write_all(body.as_bytes())
+        .and_then(|()| handle.flush())
+        .is_err()
+    {
+        return Exit::Failure;
+    }
+    Exit::Success
+}
+
+/// Parse repeatable `KEY=VALUE` assignments into ordered pairs.
 ///
 /// Each entry must contain `=`; the key (before the first `=`) must be non-empty. The value (after
 /// the first `=`) may be empty and may itself contain `=`.
-fn parse_env_assignments(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+fn parse_key_value_assignments(
+    raw: &[String],
+    flag: &str,
+) -> Result<Vec<(String, String)>, String> {
     let mut pairs = Vec::with_capacity(raw.len());
     for entry in raw {
         let (key, value) = entry
             .split_once('=')
-            .ok_or_else(|| format!("invalid --env '{entry}': expected KEY=VALUE"))?;
+            .ok_or_else(|| format!("invalid {flag} '{entry}': expected KEY=VALUE"))?;
         if key.is_empty() {
-            return Err(format!(
-                "invalid --env '{entry}': the variable name is empty"
-            ));
+            return Err(format!("invalid {flag} '{entry}': the key is empty"));
         }
         pairs.push((key.to_owned(), value.to_owned()));
     }
@@ -201,7 +393,11 @@ fn list_servers(args: McpListArgs) -> Exit {
     };
 
     let documents = runtime.block_on(async {
-        let manager = mcp::McpManager::connect(servers).await;
+        let options = mcp::McpConnectOptions {
+            bus: None,
+            credentials: crate::mcp_store::store_from_process(),
+        };
+        let manager = mcp::McpManager::connect_with(servers, options).await;
         let documents = manager
             .statuses()
             .iter()

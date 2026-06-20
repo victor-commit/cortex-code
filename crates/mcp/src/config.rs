@@ -1,9 +1,10 @@
 //! Declarative configuration for an MCP server entry (`mcp.<name>` in the layered TOML config).
 //!
-//! A server is declared by transport `type` (`local` stdio, or `remote` for the HTTP/SSE transport
-//! a later milestone wires in), a `command` array (the program plus its arguments for a local
-//! server), and the optional `cwd`/`environment`/`timeout` knobs. An entry can be turned off with
-//! `enabled = false` so a configured server is skipped without removing its definition.
+//! A server is declared by transport `type` (`local` stdio, or `remote` for the HTTP/SSE
+//! transport), a `command` array (the program plus its arguments for a local server) or a `url`
+//! (plus optional `headers`) for a remote server, and the optional `cwd`/`environment`/`timeout`
+//! knobs. An entry can be turned off with `enabled = false` so a configured server is skipped
+//! without removing its definition.
 //!
 //! Parsing is decoupled from the config crate's TOML representation: the CLI converts the merged
 //! `mcp` table to a [`serde_json::Value`] (which `toml::Value` serializes into losslessly) and hands
@@ -20,7 +21,8 @@ pub enum McpTransport {
     /// A local server spawned as a child process and spoken to over stdio (the default).
     #[default]
     Local,
-    /// A remote server reached over HTTP/SSE (wired in by a later milestone).
+    /// A remote server reached over HTTP (Streamable HTTP, falling back to the legacy HTTP+SSE
+    /// transport).
     Remote,
 }
 
@@ -33,6 +35,13 @@ pub struct McpServerConfig {
     /// The command to launch for a local server: the program followed by its arguments.
     #[serde(default)]
     pub command: Vec<String>,
+    /// The base URL of a remote server (HTTP/SSE transport). Required for a `remote` entry.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Extra HTTP headers sent with every request to a remote server (e.g. an API token). The
+    /// `Authorization` header obtained via the OAuth flow is layered on top of these.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// The working directory the local server child is spawned in (defaults to the cortex cwd).
     #[serde(default)]
     pub cwd: Option<String>,
@@ -154,6 +163,21 @@ mod tests {
             servers_from_value(&value).expect("parse")["api"].transport,
             McpTransport::Remote
         );
+    }
+
+    #[test]
+    fn parses_remote_url_and_headers() {
+        let value = json!({
+            "api": {
+                "type": "remote",
+                "url": "http://127.0.0.1:3201/mcp",
+                "headers": { "X-Api": "abc" }
+            }
+        });
+        let api = &servers_from_value(&value).expect("parse")["api"];
+        assert_eq!(api.transport, McpTransport::Remote);
+        assert_eq!(api.url.as_deref(), Some("http://127.0.0.1:3201/mcp"));
+        assert_eq!(api.headers.get("X-Api").map(String::as_str), Some("abc"));
     }
 
     #[test]
