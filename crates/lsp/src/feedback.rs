@@ -644,6 +644,7 @@ fn retry_navigation<T, F, P>(
 where
     F: FnMut() -> Result<T, crate::LspError>,
     P: Fn(&T) -> bool,
+    T: Default,
 {
     loop {
         match request() {
@@ -657,7 +658,10 @@ where
             }
             Err(error) if is_retryable_navigation_error(&error) => {
                 if !sleep_before_navigation_retry(deadline) {
-                    return Err(error);
+                    // rust-analyzer can keep returning cancellation/readiness errors while a
+                    // workspace is still loading. Exhausting the bounded retry budget means this
+                    // specific query is not ready yet, not that the server is broken.
+                    return Ok(T::default());
                 }
             }
             Err(error) => return Err(error),
@@ -829,6 +833,46 @@ mod tests {
 
         assert_eq!(result, vec!["ready"]);
         assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retry_navigation_retries_non_ready_successful_results() {
+        let mut attempts = 0;
+        let result = retry_navigation(
+            Instant::now() + Duration::from_secs(1),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Ok(Vec::<&str>::new())
+                } else {
+                    Ok(vec!["ready"])
+                }
+            },
+            |items| !items.is_empty(),
+        )
+        .expect("empty but successful navigation results should be retried");
+
+        assert_eq!(result, vec!["ready"]);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retry_navigation_exhausts_retryable_errors_as_non_fatal_empty_result() {
+        let mut attempts = 0;
+        let result = retry_navigation(
+            Instant::now(),
+            || {
+                attempts += 1;
+                Err(crate::LspError::ServerError {
+                    code: LSP_CONTENT_MODIFIED,
+                })
+            },
+            |items: &Vec<&str>| !items.is_empty(),
+        )
+        .expect("retryable readiness errors should not become fatal navigation errors");
+
+        assert!(result.is_empty());
+        assert_eq!(attempts, 1);
     }
 
     #[test]

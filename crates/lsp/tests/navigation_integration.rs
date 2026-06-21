@@ -3,7 +3,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use lsp::{FeedbackManager, LspConfigSet, NavigationOutcome, NavigationRequest, ServerRunState};
+use lsp::{
+    FeedbackManager, LspConfigSet, LspServerConfig, NavigationOutcome, NavigationRequest,
+    ServerRunState,
+};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -40,20 +43,27 @@ fn write_rust_project(dir: &Path) -> PathBuf {
     file
 }
 
-#[test]
-fn rust_analyzer_returns_hover_definition_references_and_symbols() {
-    if !has_command("rust-analyzer") {
-        eprintln!("skipping real navigation test: rust-analyzer is not on PATH");
-        return;
-    }
+fn write_retry_proxy(dir: &Path) -> PathBuf {
+    let script = dir.join("rust_analyzer_retry_proxy.py");
+    std::fs::write(&script, RUST_ANALYZER_RETRY_PROXY).expect("write retry proxy");
+    script
+}
 
-    let dir = temp_dir("rust");
-    let file = write_rust_project(&dir);
-    let mut manager =
-        FeedbackManager::new(&dir, LspConfigSet::defaults()).with_budget(Duration::from_secs(20));
+fn retry_proxy_config(script: &Path, log: &Path) -> LspConfigSet {
+    LspConfigSet::empty().with_server(
+        LspServerConfig::new("rust", "python3")
+            .with_arg(script.display().to_string())
+            .with_arg("rust-analyzer")
+            .with_arg(log.display().to_string())
+            .with_extension("rs")
+            .with_root_marker("Cargo.toml")
+            .with_request_timeout(Duration::from_secs(10)),
+    )
+}
 
+fn assert_rust_analyzer_results(manager: &mut FeedbackManager, file: &Path) {
     let hover = manager.navigate(NavigationRequest::Hover {
-        file_path: file.clone(),
+        file_path: file.to_path_buf(),
         line: 6,
         character: 7,
     });
@@ -67,7 +77,7 @@ fn rust_analyzer_returns_hover_definition_references_and_symbols() {
     );
 
     let definition = manager.navigate(NavigationRequest::Definition {
-        file_path: file.clone(),
+        file_path: file.to_path_buf(),
         line: 6,
         character: 7,
     });
@@ -82,7 +92,7 @@ fn rust_analyzer_returns_hover_definition_references_and_symbols() {
     );
 
     let references = manager.navigate(NavigationRequest::References {
-        file_path: file.clone(),
+        file_path: file.to_path_buf(),
         line: 6,
         character: 7,
         include_declaration: true,
@@ -103,7 +113,7 @@ fn rust_analyzer_returns_hover_definition_references_and_symbols() {
     }
 
     let document_symbols = manager.navigate(NavigationRequest::DocumentSymbols {
-        file_path: file.clone(),
+        file_path: file.to_path_buf(),
     });
     let NavigationOutcome::DocumentSymbols(symbols) = document_symbols else {
         panic!("expected document symbols, got {document_symbols:?}");
@@ -116,7 +126,7 @@ fn rust_analyzer_returns_hover_definition_references_and_symbols() {
 
     let workspace_symbols = manager.navigate(NavigationRequest::WorkspaceSymbols {
         query: "add_one".to_owned(),
-        file_path: Some(file),
+        file_path: Some(file.to_path_buf()),
     });
     let NavigationOutcome::WorkspaceSymbols(symbols) = workspace_symbols else {
         panic!("expected workspace symbols, got {workspace_symbols:?}");
@@ -124,6 +134,120 @@ fn rust_analyzer_returns_hover_definition_references_and_symbols() {
     assert!(
         symbols.iter().any(|symbol| symbol.name == "add_one"),
         "workspace symbols should include add_one, got {symbols:?}"
+    );
+}
+
+fn rust_server_pid(manager: &mut FeedbackManager) -> u32 {
+    manager
+        .statuses()
+        .into_iter()
+        .find_map(|status| match status.state {
+            ServerRunState::Running(pid) if status.language_id == "rust" => Some(pid),
+            _ => None,
+        })
+        .expect("rust language server pid recorded")
+}
+
+fn assert_pid_gone(pid: u32) {
+    assert!(
+        Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| !status.success()),
+        "test-owned LSP PID {pid} should be gone after shutdown"
+    );
+}
+
+#[test]
+fn rust_analyzer_returns_hover_definition_references_and_symbols() {
+    if !has_command("rust-analyzer") {
+        eprintln!("skipping real navigation test: rust-analyzer is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("rust");
+    let file = write_rust_project(&dir);
+    let mut manager =
+        FeedbackManager::new(&dir, LspConfigSet::defaults()).with_budget(Duration::from_secs(20));
+
+    assert_rust_analyzer_results(&mut manager, &file);
+
+    let workspace_symbols = manager.navigate(NavigationRequest::WorkspaceSymbols {
+        query: "add_one".to_owned(),
+        file_path: None,
+    });
+    let NavigationOutcome::WorkspaceSymbols(symbols) = workspace_symbols else {
+        panic!("expected workspace symbols without a file hint, got {workspace_symbols:?}");
+    };
+    assert!(
+        symbols.iter().any(|symbol| symbol.name == "add_one"),
+        "workspace symbols without a file hint should include add_one, got {symbols:?}"
+    );
+}
+
+#[test]
+fn rust_analyzer_retries_readiness_errors_for_all_navigation_operations() {
+    if !has_command("rust-analyzer") {
+        eprintln!("skipping real retry navigation test: rust-analyzer is not on PATH");
+        return;
+    }
+    if !has_command("python3") {
+        eprintln!("skipping real retry navigation test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("retry");
+    let file = write_rust_project(&dir);
+    let script = write_retry_proxy(&dir);
+    let log = dir.join("retry-log.json");
+    let mut manager = FeedbackManager::new(&dir, retry_proxy_config(&script, &log))
+        .with_budget(Duration::from_secs(20));
+
+    assert_rust_analyzer_results(&mut manager, &file);
+
+    let workspace_symbols_without_hint = manager.navigate(NavigationRequest::WorkspaceSymbols {
+        query: "add_one".to_owned(),
+        file_path: None,
+    });
+    assert!(
+        matches!(
+            workspace_symbols_without_hint,
+            NavigationOutcome::WorkspaceSymbols(_)
+        ),
+        "workspace symbols without a file hint should use the already-running real rust-analyzer server, got {workspace_symbols_without_hint:?}"
+    );
+
+    let pid = rust_server_pid(&mut manager);
+    manager.shutdown_all();
+    assert_pid_gone(pid);
+
+    let log_text = std::fs::read_to_string(&log).expect("retry proxy wrote its log");
+    let log_json: serde_json::Value =
+        serde_json::from_str(&log_text).expect("retry proxy log is json");
+    for method in [
+        "textDocument/hover",
+        "textDocument/definition",
+        "textDocument/references",
+        "textDocument/documentSymbol",
+        "workspace/symbol",
+    ] {
+        assert_eq!(
+            log_json
+                .get("injected")
+                .and_then(|injected| injected.get(method))
+                .and_then(serde_json::Value::as_u64),
+            Some(1),
+            "proxy should inject exactly one retryable readiness error for {method}; log was {log_text}"
+        );
+    }
+    assert_eq!(
+        log_json
+            .get("server_exit")
+            .and_then(serde_json::Value::as_i64),
+        Some(0),
+        "real rust-analyzer should shut down cleanly behind the retry proxy; log was {log_text}"
     );
 }
 
@@ -161,14 +285,7 @@ fn killed_language_server_is_reported_unavailable_and_reaped() {
         "server should start and answer before crash, got {started:?}"
     );
 
-    let pid = manager
-        .statuses()
-        .into_iter()
-        .find_map(|status| match status.state {
-            ServerRunState::Running(pid) if status.language_id == "rust" => Some(pid),
-            _ => None,
-        })
-        .expect("rust-analyzer pid recorded");
+    let pid = rust_server_pid(&mut manager);
     let status = Command::new("kill")
         .arg(pid.to_string())
         .status()
@@ -184,13 +301,111 @@ fn killed_language_server_is_reported_unavailable_and_reaped() {
     assert_eq!(after_crash, NavigationOutcome::Unavailable);
 
     manager.shutdown_all();
-    assert!(
-        Command::new("ps")
-            .args(["-p", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| !status.success()),
-        "test-owned LSP PID {pid} should be gone after shutdown"
-    );
+    assert_pid_gone(pid);
 }
+
+const RUST_ANALYZER_RETRY_PROXY: &str = r#"
+import json
+import subprocess
+import sys
+import threading
+
+RETRY_METHODS = {
+    "textDocument/hover": -32802,
+    "textDocument/definition": -32802,
+    "textDocument/references": -32802,
+    "textDocument/documentSymbol": -32802,
+    "workspace/symbol": -32802,
+}
+
+injected = {}
+
+
+def read_message(stream):
+    headers = {}
+    while True:
+        line = stream.readline()
+        if line == b"":
+            return None
+        if line in (b"\r\n", b"\n"):
+            break
+        name, _, value = line.decode("ascii", "replace").partition(":")
+        headers[name.lower()] = value.strip()
+    length = int(headers.get("content-length", "0"))
+    if length <= 0:
+        return None
+    body = stream.read(length)
+    if len(body) != length:
+        return None
+    return json.loads(body.decode("utf-8"))
+
+
+def write_message(stream, message):
+    body = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    stream.write(b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body)
+    stream.flush()
+
+
+server = subprocess.Popen(
+    [sys.argv[1]],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+
+
+def relay_server_to_client():
+    while True:
+        message = read_message(server.stdout)
+        if message is None:
+            break
+        write_message(sys.stdout.buffer, message)
+
+
+def drain_stderr():
+    while server.stderr.read(8192):
+        pass
+
+
+relay = threading.Thread(target=relay_server_to_client, daemon=True)
+relay.start()
+threading.Thread(target=drain_stderr, daemon=True).start()
+server_exit = None
+
+try:
+    while True:
+        message = read_message(sys.stdin.buffer)
+        if message is None:
+            break
+        method = message.get("method")
+        if method in RETRY_METHODS and "id" in message and injected.get(method, 0) == 0:
+            injected[method] = 1
+            write_message(
+                sys.stdout.buffer,
+                {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {
+                        "code": RETRY_METHODS[method],
+                        "message": "test-injected rust-analyzer readiness cancellation",
+                    },
+                },
+            )
+            continue
+        write_message(server.stdin, message)
+        if method == "exit":
+            break
+finally:
+    try:
+        server.stdin.close()
+    except Exception:
+        pass
+    try:
+        server_exit = server.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server_exit = server.wait(timeout=5)
+    relay.join(timeout=1)
+    with open(sys.argv[2], "w", encoding="utf-8") as handle:
+        json.dump({"injected": injected, "server_exit": server_exit}, handle)
+"#;
