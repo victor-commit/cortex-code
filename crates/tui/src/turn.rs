@@ -116,7 +116,8 @@ pub fn spawn(
                             )
                             .with_permissions(engine)
                             .with_hooks(mutation_hooks)
-                            .with_lsp_service(lsp_hooks.clone());
+                            .with_lsp_service(lsp_hooks.clone())
+                            .with_skills(setup.skills.clone());
                             if let Some(recorder) = &recorder {
                                 dispatcher = dispatcher.with_checkpoints(Arc::new(
                                     crate::checkpoint::RecorderBridge::new(recorder.clone()),
@@ -203,6 +204,7 @@ struct TurnSetup {
     turn: Turn,
     model_id: String,
     formatter_config: format::FormatterConfig,
+    skills: Vec<skills::Skill>,
 }
 
 fn build_turn(
@@ -219,6 +221,11 @@ fn build_turn(
     for warning in project_memory.warnings() {
         eprintln!("cortex tui: {warning}");
     }
+    let discovered_skills = skills::discover(&inputs);
+    for warning in &discovered_skills.warnings {
+        eprintln!("cortex tui: {warning}");
+    }
+    let discovered_skill_list = discovered_skills.ordered_skills();
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
@@ -239,10 +246,7 @@ fn build_turn(
 
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
-    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
-        .with_project_memory(project_memory.render())
-        .with_agent(Agent::default())
-        .render();
+    let system = render_system_context(&model_id, project_memory.render(), &discovered_skill_list);
     let turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
@@ -252,7 +256,24 @@ fn build_turn(
         turn,
         model_id,
         formatter_config,
+        skills: discovered_skill_list,
     })
+}
+
+fn render_system_context(
+    model_id: &str,
+    project_memory: Option<String>,
+    skills: &[skills::Skill],
+) -> String {
+    let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory)
+        .with_agent(Agent::default())
+        .render();
+    if let Some(hint) = skills::render_system_hint(skills) {
+        system.push_str("\n\n");
+        system.push_str(&hint);
+    }
+    system
 }
 
 /// Build the per-turn permission engine that gates the TUI's tools with an interactive prompt,
@@ -443,5 +464,27 @@ mod tests {
                 "{tool} must be allowed by default"
             );
         }
+    }
+
+    #[test]
+    fn system_context_advertises_discovered_skills_without_guidance() {
+        let system = render_system_context(
+            "google/gemini-2.5-flash",
+            None,
+            &[skills::Skill {
+                name: "cross-skill".to_owned(),
+                description: "Use for cross-surface skill prompts".to_owned(),
+                guidance: "Prefix every final answer with TUI-SKILL-SECRET.".to_owned(),
+                source: std::path::PathBuf::from("SKILL.md"),
+            }],
+        );
+
+        assert!(system.contains("Discovered skills are available"));
+        assert!(system.contains("cross-skill"));
+        assert!(system.contains("Use for cross-surface skill prompts"));
+        assert!(
+            !system.contains("TUI-SKILL-SECRET"),
+            "skill bodies must remain inactive until the skill tool is called"
+        );
     }
 }

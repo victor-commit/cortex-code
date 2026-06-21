@@ -171,6 +171,65 @@ fn root_agents_auto_loads_and_absent_memory_is_a_clean_no_op() {
 }
 
 #[test]
+fn agents_md_is_reloaded_between_separate_process_runs() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = scratch_project("reload");
+    write(
+        &proj.join("AGENTS.md"),
+        "Critical project instruction: Every final answer MUST end with the exact marker [A-7317].",
+    );
+
+    let first = json_doc(run(cortex_in(
+        &home,
+        &proj,
+        &key,
+        &[
+            "run",
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "Follow project memory exactly. Say hello in three words or fewer.",
+        ],
+    )));
+    assert!(
+        content(&first).trim_end().ends_with("[A-7317]"),
+        "first process should obey the original AGENTS.md: {}",
+        content(&first)
+    );
+
+    write(
+        &proj.join("AGENTS.md"),
+        "Critical project instruction: Every final answer MUST end with the exact marker [B-7317].",
+    );
+    let second = json_doc(run(cortex_in(
+        &home,
+        &proj,
+        &key,
+        &[
+            "run",
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "Follow project memory exactly. Say hello in three words or fewer.",
+        ],
+    )));
+    let second_content = content(&second);
+    assert!(
+        second_content.trim_end().ends_with("[B-7317]"),
+        "fresh process should re-read the edited AGENTS.md: {second_content}"
+    );
+    assert!(
+        !second_content.contains("[A-7317]"),
+        "the edited run must not keep stale AGENTS.md content: {second_content}"
+    );
+}
+
+#[test]
 fn instructions_globs_nested_agents_and_precedence_compose() {
     let Some(key) = live_key() else {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");

@@ -5740,6 +5740,37 @@ mod tests {
         assert_eq!(messages.len(), 4, "both turns persisted under one session");
     }
 
+    #[test]
+    fn session_picker_lists_subagent_sessions_with_parent_linkage() {
+        let path = session_store_path("subagent-picker");
+        let parent_id = "parent-session";
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent");
+            db.sessions()
+                .create(Some(&format!("subagent:explore parent:{parent_id}")))
+                .expect("child");
+        }
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        let (items, entries) = a.session_rows();
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.id.as_deref() == Some(parent_id)),
+            "parent session is listed: {items:?}"
+        );
+        assert!(
+            items.iter().any(|item| item.contains("subagent:explore")
+                && item.contains(&format!("parent:{parent_id}"))),
+            "child subagent row includes the parent linkage: {items:?}"
+        );
+    }
+
     // VAL-CROSS-006 (TUI half): selecting a model for the session via `/models` persists it with the
     // session row, so a headless resume reads it back. Driven through the dialog-confirm path.
     #[test]

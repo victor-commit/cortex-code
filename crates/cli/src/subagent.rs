@@ -489,6 +489,14 @@ mod tests {
                 .as_deref()
                 .is_some_and(|title| title.contains("subagent:explore"))
         );
+        assert!(
+            child
+                .title
+                .as_deref()
+                .is_some_and(|title| title.contains("parent:parent-session")),
+            "child title should expose durable parent linkage: {:?}",
+            child.title
+        );
         let messages = Database::open(&db_path)
             .expect("db reopen")
             .messages()

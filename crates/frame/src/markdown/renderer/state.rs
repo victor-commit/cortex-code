@@ -160,9 +160,11 @@ impl<'a> RenderState<'a> {
             // Handle math events (treat as inline code)
             Event::InlineMath(math) => self.handle_code(&math),
             Event::DisplayMath(math) => self.handle_code(&math),
-            // Ignore HTML and footnotes for now
-            Event::Html(_) => {}
-            Event::InlineHtml(_) => {}
+            // Render raw HTML literals as text instead of dropping them. Coding-agent answers often
+            // use angle-bracket sentinels (for example `<<TOKEN>>`) for validation markers; treating
+            // the parsed HTML event as invisible would make the TUI hide content the model emitted.
+            Event::Html(html) => self.handle_text(&html),
+            Event::InlineHtml(html) => self.handle_text(&html),
             Event::FootnoteReference(_) => {}
         }
     }

@@ -2664,6 +2664,7 @@ dependencies = [
  "redaction",
  "serde_json",
  "settings",
+ "skills",
  "tokio",
  "toml",
  "tools",

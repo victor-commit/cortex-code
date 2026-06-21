@@ -101,6 +101,14 @@ impl TurnDispatcher {
         self
     }
 
+    /// Attach discovered skills to the per-turn registry so the model can engage one through the
+    /// `skill` tool. Skill guidance remains inactive until that tool succeeds, matching headless.
+    #[must_use]
+    pub fn with_skills(mut self, skills: Vec<skills::Skill>) -> Self {
+        self.registry.register_skills(skills);
+        self
+    }
+
     /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
     /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
     fn mcp_definitions(&self) -> Vec<ToolDef> {
@@ -547,5 +555,40 @@ mod tests {
         );
         let diffs = drain_diffs(&rx);
         assert_eq!(diffs.len(), 1, "the formatted write still emits one diff");
+    }
+
+    #[test]
+    fn with_skills_registers_the_skill_tool_without_leaking_guidance() {
+        let dir = scratch_dir("skills");
+        let (tx, _rx) = channel();
+        let dispatcher = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx)
+            .with_skills(vec![skills::Skill {
+                name: "cross-skill".to_owned(),
+                description: "Use for cross-surface skill checks".to_owned(),
+                guidance: "Prefix every answer with TUI-SKILL-SECRET.".to_owned(),
+                source: PathBuf::from("SKILL.md"),
+            }]);
+
+        let skill = dispatcher
+            .definitions()
+            .into_iter()
+            .find(|definition| definition.name == "skill")
+            .expect("skill tool is advertised");
+
+        assert_eq!(
+            skill.parameters["properties"]["name"]["enum"],
+            serde_json::json!(["cross-skill"])
+        );
+        assert!(
+            skill
+                .description
+                .contains("Use for cross-surface skill checks"),
+            "description is visible: {}",
+            skill.description
+        );
+        assert!(
+            !skill.description.contains("TUI-SKILL-SECRET"),
+            "guidance remains isolated until the skill tool is called"
+        );
     }
 }

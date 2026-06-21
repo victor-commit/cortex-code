@@ -62,6 +62,20 @@ mod tests {
     }
 
     #[test]
+    fn test_angle_bracket_markers_render_as_visible_text() {
+        let renderer = MarkdownRenderer::new();
+        let lines = renderer.render("Done <<CORTEX-OK>>");
+        let content: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(
+            content.contains("<<CORTEX-OK>>"),
+            "angle-bracket markers must remain visible in TUI markdown: {content}"
+        );
+    }
+
+    #[test]
     fn test_multiple_paragraphs() {
         let renderer = MarkdownRenderer::new();
         let lines = renderer.render("First paragraph.\n\nSecond paragraph.");
