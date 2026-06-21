@@ -13,6 +13,8 @@
 //!   segments with [`split_bash_commands`] so each is classified on its own; the `bash` tool feeds
 //!   tree-sitter-extracted commands through the same matcher for robust, obfuscation-resistant
 //!   classification.
+//! - **`task`** scopes by its requested subagent name, so a rule like `task:explore` governs
+//!   whether that exact subagent type may be spawned (VAL-AGENT-013/014).
 //!
 //! These builders produce a [`PermissionRequest`] with the right subject; the engine then resolves
 //! it against the active (per-agent, possibly subagent-capped) ruleset.
@@ -28,6 +30,8 @@ pub enum ToolScope {
     Path,
     /// The subject is the shell command the tool runs (`bash`).
     Command,
+    /// The subject is the requested target name (`task`).
+    Target,
 }
 
 /// The file tools whose permission subject is their target path.
@@ -44,6 +48,9 @@ const PATH_TOOLS: [&str; 7] = [
 /// The tool whose permission subject is the shell command it runs.
 const COMMAND_TOOL: &str = "bash";
 
+/// Tools whose permission subject is the requested target name.
+const TARGET_TOOLS: [&str; 1] = ["task"];
+
 /// How `tool` derives its permission subject, or `None` for a tool with no path/command scoping.
 #[must_use]
 pub fn scope_of(tool: &str) -> Option<ToolScope> {
@@ -51,6 +58,8 @@ pub fn scope_of(tool: &str) -> Option<ToolScope> {
         Some(ToolScope::Command)
     } else if PATH_TOOLS.contains(&tool) {
         Some(ToolScope::Path)
+    } else if TARGET_TOOLS.contains(&tool) {
+        Some(ToolScope::Target)
     } else {
         None
     }
@@ -117,7 +126,7 @@ pub fn request_for(tool: &str, target: &str) -> PermissionRequest {
     let subject = match scope_of(tool) {
         Some(ToolScope::Path) => file_subject(target),
         Some(ToolScope::Command) => command_subject(target),
-        None => target.trim().to_owned(),
+        Some(ToolScope::Target) | None => target.trim().to_owned(),
     };
     PermissionRequest::new(tool, subject)
 }
@@ -245,6 +254,7 @@ mod tests {
         }
         assert_eq!(scope_of("bash"), Some(ToolScope::Command));
         assert!(is_command_tool("bash"));
+        assert_eq!(scope_of("task"), Some(ToolScope::Target));
         // A tool with no path/command scope (e.g. todo) has no scope.
         assert_eq!(scope_of("todo"), None);
         assert!(!is_file_tool("todo") && !is_command_tool("todo"));
@@ -276,6 +286,10 @@ mod tests {
         let bash = request_for("bash", "  git status --short  ");
         assert_eq!(bash.tool, "bash");
         assert_eq!(bash.subject, "git status --short");
+
+        let task = request_for("task", "  explore  ");
+        assert_eq!(task.tool, "task");
+        assert_eq!(task.subject, "explore");
     }
 
     #[test]

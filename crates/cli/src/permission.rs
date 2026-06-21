@@ -23,7 +23,7 @@
 //! ## CLI rule spec form
 //! Each flag value is `TOOL:GLOB`, split on the first `:`:
 //! - `TOOL` selects the gated tool
-//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`) or
+//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`/`task`) or
 //!   `*` for any tool. An unknown tool is rejected so a mistyped rule never silently fails open.
 //! - `GLOB` is matched against the action's subject — a normalized file path for the file tools, or
 //!   the parsed command for `bash` (see [`permissions::request_for`]).
@@ -335,7 +335,7 @@ fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
     if tool != ANY_TOOL && scope_of(tool).is_none() {
         return Err(format!(
             "invalid permission rule `{spec}`: unknown tool `{tool}` \
-             (expected read, write, edit, apply_patch, glob, grep, format, bash, or *)"
+             (expected read, write, edit, apply_patch, glob, grep, format, bash, task, or *)"
         ));
     }
     Ok(Rule::new(tool, glob, action))
@@ -826,6 +826,10 @@ mod tests {
         assert_eq!(
             parse_spec("bash:rm *", Action::Deny).expect("rule"),
             Rule::new("bash", "rm *", Action::Deny)
+        );
+        assert_eq!(
+            parse_spec("task:explore", Action::Allow).expect("rule"),
+            Rule::new("task", "explore", Action::Allow)
         );
     }
 

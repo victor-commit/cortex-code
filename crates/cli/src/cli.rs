@@ -392,10 +392,12 @@ pub struct RunArgs {
 
     /// Allow a gated tool action, in `TOOL:GLOB` form (repeatable).
     ///
-    /// `TOOL` selects the gated tool (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`bash`) or
-    /// `*` for any tool; `GLOB` is matched against the action's subject (a file path for the file
-    /// tools, or the parsed command for `bash`). Example: `--permission-allow '*:**'` allows
-    /// everything, `--permission-allow 'write:src/**'` allows writes under `src/`. Allow rules are
+    /// `TOOL` selects the gated tool
+    /// (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`bash`/`task`) or `*` for any tool;
+    /// `GLOB` is matched against the action's subject (a file path for file tools, the parsed
+    /// command for `bash`, or the subagent name for `task`). Example: `--permission-allow '*:**'`
+    /// allows everything, `--permission-allow 'write:src/**'` allows writes under `src/`, and
+    /// `--permission-allow 'task:explore'` allows spawning the explore subagent. Allow rules are
     /// applied before deny rules, so an explicit `--permission-deny` always overrides a broader
     /// allow. With no permission flags the run is ungated (every tool action proceeds).
     #[arg(long = "permission-allow", value_name = "TOOL:GLOB")]

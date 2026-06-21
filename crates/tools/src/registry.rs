@@ -15,8 +15,9 @@ use crate::glob::GlobTool;
 use crate::grep::GrepTool;
 use crate::lsp::LspTool;
 use crate::read::ReadTool;
+use crate::task::TaskTool;
 use crate::todo::TodoTool;
-use crate::tool::{Tool, ToolContext, ToolOutput};
+use crate::tool::{TaskTarget, Tool, ToolContext, ToolOutput};
 use crate::write::WriteTool;
 
 /// An ordered set of callable tools.
@@ -67,6 +68,16 @@ impl ToolRegistry {
         self.register(Box::new(GrepTool));
         self.register(Box::new(LspTool));
         self.register(Box::new(TodoTool));
+    }
+
+    /// Add the `task` tool with the already-filtered subagent targets.
+    ///
+    /// The registry omits `task` when `targets` is empty, so the model is not offered a delegation
+    /// tool that could never spawn anything.
+    pub fn register_task(&mut self, targets: Vec<TaskTarget>) {
+        if !targets.is_empty() {
+            self.register(Box::new(TaskTool::new(targets)));
+        }
     }
 
     /// Add a tool to the registry.
@@ -161,6 +172,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn task_tool_is_registered_only_when_targets_exist() {
+        let mut registry = ToolRegistry::builtin();
+        registry.register_task(Vec::new());
+        assert!(registry.get("task").is_none());
+
+        registry.register_task(vec![TaskTarget::new("explore", "Read-only exploration")]);
+        assert!(registry.get("task").is_some());
+        let task = registry
+            .definitions()
+            .into_iter()
+            .find(|def| def.name == "task")
+            .expect("task definition");
+        let enum_values: Vec<&str> = task.parameters["properties"]["agent"]["enum"]
+            .as_array()
+            .expect("enum")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert_eq!(enum_values, vec!["explore"]);
     }
 
     #[test]

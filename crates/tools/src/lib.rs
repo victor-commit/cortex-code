@@ -21,6 +21,7 @@ mod output;
 mod read;
 mod registry;
 mod ripgrep;
+mod task;
 mod todo;
 mod tool;
 mod write;
@@ -34,9 +35,10 @@ pub use lsp::LspTool;
 pub use output::{BoundedOutput, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, OutputLimits, bound_output};
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
+pub use task::TaskTool;
 pub use todo::TodoTool;
 pub use tool::{
     CheckpointRecorder, Diagnostic, DiagnosticFeedback, LspOperation, LspRequest, LspService,
-    MutationHooks, TodoStore, Tool, ToolContext, ToolOutput,
+    MutationHooks, TaskRequest, TaskRunner, TaskTarget, TodoStore, Tool, ToolContext, ToolOutput,
 };
 pub use write::WriteTool;

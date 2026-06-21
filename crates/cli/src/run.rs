@@ -41,6 +41,7 @@ use engine::{
 };
 use errors::{Diagnostic, Exit};
 use events::EventBus;
+use llm::ToolDef;
 use protocol::ToolResultPart;
 use providers::ResolvedModel;
 use redaction::guard_outbound;
@@ -197,6 +198,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // governs the resume (VAL-CROSS-006).
     let explicit_model = args.model.is_some();
 
+    let subagent_config_inputs = config_inputs.clone();
     let mut run_config = match resolve_run_config(config_inputs) {
         Ok(run_config) => run_config,
         Err(err) => {
@@ -236,6 +238,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         Ok(provider) => provider,
         Err(diag) => return report_setup_diagnostic(&diag),
     };
+    let provider: Arc<dyn llm::Provider> = Arc::new(provider);
 
     // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
     // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
@@ -332,7 +335,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // (architecture §3.4 / §4).
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let todo_store: std::sync::Arc<dyn tools::TodoStore> =
-        std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path));
+        std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path.clone()));
 
     // Open the shadow checkpoint store for the working directory and begin recording this turn, so a
     // pre-mutation snapshot is captured BEFORE any write/edit/apply_patch changes the tree (powering
@@ -354,7 +357,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         lsp_hooks.clone(),
     ));
 
-    let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
+    let parent_permission_cap = permission_engine
+        .as_ref()
+        .map(|engine| engine.ruleset().clone());
+    let task_catalog =
+        crate::subagent::permitted_catalog(&discovered_agents, permission_engine.as_ref());
+
+    let dispatcher =
+        RegistryDispatcher::for_model(cwd.clone(), &model_id, session_id.clone(), todo_store);
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
     // by the same engine the tools already call via `ctx.permits`.
     let dispatcher = match permission_engine {
@@ -381,17 +391,40 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         Some(manager) => dispatcher.with_mcp(manager.clone()),
         None => dispatcher,
     };
-    let tool_names = dispatcher.tool_names();
+    let dispatcher = if task_catalog.targets.is_empty() {
+        dispatcher
+    } else {
+        let task_runner = task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
+            provider: provider.clone(),
+            db_path: db_path.clone(),
+            cwd: cwd.clone(),
+            parent_session_id: session_id.clone(),
+            parent_cap: parent_permission_cap,
+            parent_model_id: model_id.clone(),
+            formatter_config: run_config.formatter_config.clone(),
+            config_inputs: subagent_config_inputs,
+            bus: bus.clone(),
+        });
+        dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
+    };
+    let tool_definitions = dispatcher.definitions();
+    let tool_names: Vec<String> = tool_definitions
+        .iter()
+        .map(|def| def.name.clone())
+        .collect();
 
     let exit = runtime.block_on(async {
         let exit = match format {
-            OutputFormat::Text => stream_text(&provider, &session_id, &db, turn, &dispatcher).await,
+            OutputFormat::Text => {
+                stream_text(provider.as_ref(), &session_id, &db, turn, &dispatcher).await
+            }
             OutputFormat::Jsonl => {
                 stream_jsonl(
-                    &provider,
+                    provider.as_ref(),
                     agent.name(),
                     &session_id,
                     &tool_names,
+                    &tool_definitions,
                     &db,
                     turn,
                     &dispatcher,
@@ -400,11 +433,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             }
             OutputFormat::Json => {
                 emit_json(
-                    &provider,
+                    provider.as_ref(),
                     &model_id,
                     agent.name(),
                     &session_id,
                     &tool_names,
+                    &tool_definitions,
                     &db,
                     turn,
                     &dispatcher,
@@ -730,6 +764,7 @@ async fn stream_jsonl(
     agent: &str,
     session_id: &str,
     tool_names: &[String],
+    tool_definitions: &[ToolDef],
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -737,7 +772,7 @@ async fn stream_jsonl(
     let stdout = io::stdout();
     let mut handle = stdout.lock();
 
-    if let Ok(line) = render_session_line(agent, session_id, tool_names) {
+    if let Ok(line) = render_session_line(agent, session_id, tool_names, tool_definitions) {
         let _ = handle.write_all(line.as_bytes());
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
@@ -798,6 +833,10 @@ struct RunDocument<'a> {
     /// model lists `apply_patch` (and no `edit`/`write`); any other model lists `edit`/`write`
     /// (and no `apply_patch`). This is the observable per-turn tool advertisement (VAL-TOOLS-019/020).
     tools: &'a [String],
+    /// The full tool definitions advertised this turn, including descriptions and JSON schema.
+    /// This lets validators inspect dynamic tool-specific availability such as the `task`
+    /// subagent target enum (VAL-AGENT-013).
+    tool_definitions: &'a [ToolDef],
     /// The structured results of every tool the model invoked this turn, in call order. Carries
     /// text parts and any media attachments (images/PDFs) so a machine consumer sees the tool
     /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
@@ -828,6 +867,8 @@ struct SessionEvent<'a> {
     /// The per-turn tool set materialized for the model's family, in advertised order (the
     /// observable per-turn tool advertisement; see [`RunDocument::tools`]).
     tools: &'a [String],
+    /// Full advertised tool definitions for this turn.
+    tool_definitions: &'a [ToolDef],
 }
 
 /// Run the turn to completion, then emit a single strict JSON document on stdout. No partial
@@ -839,6 +880,7 @@ async fn emit_json(
     agent: &str,
     session_id: &str,
     tool_names: &[String],
+    tool_definitions: &[ToolDef],
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -893,6 +935,7 @@ async fn emit_json(
         agent,
         session_id,
         tool_names,
+        tool_definitions,
         &outcome,
         session_usage,
         tool_results,
@@ -920,11 +963,13 @@ async fn emit_json(
 
 /// Build the single JSON document describing a completed turn (role, content, model, session id,
 /// finish reason, and the optional usage object).
+#[allow(clippy::too_many_arguments)]
 fn build_run_document<'a>(
     model_id: &'a str,
     agent: &'a str,
     session_id: &'a str,
     tool_names: &'a [String],
+    tool_definitions: &'a [ToolDef],
     outcome: &'a RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
@@ -940,6 +985,7 @@ fn build_run_document<'a>(
         usage: outcome.usage.as_ref(),
         session_usage,
         tools: tool_names,
+        tool_definitions,
         tool_results,
     }
 }
@@ -952,6 +998,7 @@ fn render_json_document(
     agent: &str,
     session_id: &str,
     tool_names: &[String],
+    tool_definitions: &[ToolDef],
     outcome: &RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
@@ -961,6 +1008,7 @@ fn render_json_document(
         agent,
         session_id,
         tool_names,
+        tool_definitions,
         outcome,
         session_usage,
         tool_results,
@@ -975,12 +1023,14 @@ fn render_session_line(
     agent: &str,
     session_id: &str,
     tool_names: &[String],
+    tool_definitions: &[ToolDef],
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(&SessionEvent {
         kind: "session",
         agent,
         session: session_id,
         tools: tool_names,
+        tool_definitions,
     })
 }
 
@@ -1117,7 +1167,7 @@ fn non_empty(value: &str) -> Option<String> {
 /// Build the compaction policy for the run from the resolved model's context window and per-turn
 /// output limit. The effective window can be overridden via `CORTEX_CONTEXT_LIMIT_TOKENS` (an
 /// operational tuning/testing knob); an unknown model falls back to the engine's default window.
-fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
+pub(crate) fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
     if let Some(context) = context_limit_override() {
         // An explicit override drives the budget purely from the requested window.
         return CompactionPolicy::for_context_window(context, 0);
@@ -1156,7 +1206,7 @@ fn parse_context_limit(raw: Option<&str>) -> Option<usize> {
 ///
 /// # Errors
 /// Returns an actionable, model-naming message when the id is not a `provider/model` pair.
-fn validate_model_id(model_id: &str) -> Result<(), String> {
+pub(crate) fn validate_model_id(model_id: &str) -> Result<(), String> {
     let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
     if provider.is_empty() || model.is_empty() {
         return Err(format!(
@@ -1817,6 +1867,7 @@ mod tests {
             "build",
             "ses_x",
             &[],
+            &[],
             &sample_outcome(),
             None,
             Vec::new(),
@@ -1842,6 +1893,7 @@ mod tests {
             "google/gemini-2.5-flash",
             "plan",
             "ses_abc123",
+            &[],
             &[],
             &sample_outcome(),
             None,
@@ -1892,6 +1944,7 @@ mod tests {
             "build",
             "ses_cumulative",
             &[],
+            &[],
             &sample_outcome(),
             Some(session_usage),
             Vec::new(),
@@ -1931,9 +1984,17 @@ mod tests {
     fn json_document_omits_usage_when_absent_but_stays_valid() {
         let mut outcome = sample_outcome();
         outcome.usage = None;
-        let rendered =
-            render_json_document("m", "general", "ses_y", &[], &outcome, None, Vec::new())
-                .expect("render");
+        let rendered = render_json_document(
+            "m",
+            "general",
+            "ses_y",
+            &[],
+            &[],
+            &outcome,
+            None,
+            Vec::new(),
+        )
+        .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
         assert_eq!(value["role"], "assistant");
         assert_eq!(value["content"], "Hello! How can I help you today?");
@@ -1951,7 +2012,7 @@ mod tests {
     #[test]
     fn jsonl_session_line_is_typed_and_carries_the_agent_and_session_id() {
         let tools = vec!["read".to_owned(), "apply_patch".to_owned()];
-        let line = render_session_line("plan", "ses_seed42", &tools).expect("render");
+        let line = render_session_line("plan", "ses_seed42", &tools, &[]).expect("render");
         let value: serde_json::Value = serde_json::from_str(&line).expect("json");
         assert_eq!(value["type"], "session");
         assert_eq!(value["agent"], "plan");
@@ -1969,11 +2030,22 @@ mod tests {
     #[test]
     fn json_document_advertises_the_per_turn_tool_set() {
         let gpt_tools = vec!["read".to_owned(), "apply_patch".to_owned()];
+        let defs = vec![ToolDef {
+            name: "task".to_owned(),
+            description: "Delegate".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": { "enum": ["explore"] }
+                }
+            }),
+        }];
         let rendered = render_json_document(
             "openai/gpt-4o-mini",
             "build",
             "ses_gpt",
             &gpt_tools,
+            &defs,
             &sample_outcome(),
             None,
             Vec::new(),
@@ -1985,6 +2057,11 @@ mod tests {
         assert!(names.contains(&"apply_patch"), "got: {names:?}");
         assert!(!names.contains(&"edit"), "got: {names:?}");
         assert!(!names.contains(&"write"), "got: {names:?}");
+        assert_eq!(value["tool_definitions"][0]["name"], "task");
+        assert_eq!(
+            value["tool_definitions"][0]["parameters"]["properties"]["agent"]["enum"],
+            serde_json::json!(["explore"])
+        );
     }
 
     // `session_selection` maps the mutually-exclusive flags: an explicit id wins, `--continue`

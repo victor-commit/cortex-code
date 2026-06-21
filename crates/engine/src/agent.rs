@@ -29,6 +29,10 @@ impl Agent {
     /// Every built-in agent, in the stable order used for availability hints.
     pub const ALL: [Agent; 4] = [Agent::Build, Agent::Plan, Agent::General, Agent::Explore];
 
+    /// Built-in agents that can be spawned through the `task` tool. `build` is the primary coding
+    /// agent, so it is intentionally omitted from the non-primary subagent catalogue.
+    pub const SUBAGENTS: [Agent; 3] = [Agent::Plan, Agent::General, Agent::Explore];
+
     /// The canonical, lowercase name of this agent (the value accepted by `--agent` and surfaced
     /// in machine output).
     #[must_use]
@@ -50,6 +54,18 @@ impl Agent {
             Agent::General => "General-purpose assistant for broad questions and guidance",
             Agent::Explore => "Read-only exploration agent for inspecting and reporting findings",
         }
+    }
+
+    /// Whether this built-in persona is the primary/default agent rather than a subagent target.
+    #[must_use]
+    pub const fn is_primary(self) -> bool {
+        matches!(self, Agent::Build)
+    }
+
+    /// Whether this built-in persona is eligible for `task` subagent spawning.
+    #[must_use]
+    pub const fn is_subagent(self) -> bool {
+        !self.is_primary()
     }
 
     /// Resolve an agent by case-insensitive name, trimming surrounding whitespace.
@@ -253,6 +269,17 @@ mod tests {
                 "{} should have a discovery description",
                 agent.name()
             );
+        }
+    }
+
+    #[test]
+    fn subagent_catalog_excludes_primary_build_agent() {
+        let names: Vec<&str> = Agent::SUBAGENTS.iter().map(|agent| agent.name()).collect();
+        assert_eq!(names, vec!["plan", "general", "explore"]);
+        assert!(Agent::Build.is_primary());
+        assert!(!Agent::Build.is_subagent());
+        for agent in Agent::SUBAGENTS {
+            assert!(agent.is_subagent(), "{} should be spawnable", agent.name());
         }
     }
 }

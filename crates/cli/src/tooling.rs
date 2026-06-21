@@ -14,7 +14,10 @@ use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
 use permissions::PermissionEngine;
-use tools::{BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry};
+use tools::{
+    BackgroundJobs, LspService, MutationHooks, TaskRunner, TaskTarget, TodoStore, ToolContext,
+    ToolRegistry,
+};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
 ///
@@ -100,9 +103,27 @@ impl RegistryDispatcher {
         self
     }
 
+    /// Attach the `task` tool and the surface-owned durable subagent runner.
+    ///
+    /// `targets` must already be filtered to exactly the subagent types this parent is allowed to
+    /// spawn. When the filtered set is empty the task tool is omitted entirely.
+    #[must_use]
+    pub fn with_task_runner(
+        mut self,
+        targets: Vec<TaskTarget>,
+        runner: Arc<dyn TaskRunner>,
+    ) -> Self {
+        if !targets.is_empty() {
+            self.registry.register_task(targets);
+            self.context = self.context.with_task_runner(runner);
+        }
+        self
+    }
+
     /// The names of the tools materialized for this turn, in advertised order: the built-in tools
     /// first, then the connected MCP servers' server-qualified tool ids. Surfaced in machine output
     /// so a consumer can observe the per-turn (model-aware) tool list.
+    #[cfg(test)]
     #[must_use]
     pub fn tool_names(&self) -> Vec<String> {
         self.definitions().into_iter().map(|def| def.name).collect()

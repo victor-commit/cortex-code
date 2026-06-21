@@ -15,6 +15,7 @@ mod permission;
 mod permission_store;
 mod run;
 mod session;
+mod subagent;
 mod todo_store;
 mod tooling;
 

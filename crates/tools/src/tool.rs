@@ -329,6 +329,56 @@ impl ToolOutput {
     }
 }
 
+/// One model-selectable subagent target the `task` tool may spawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTarget {
+    /// The canonical agent name the model passes as the `agent` argument.
+    pub name: String,
+    /// A short description shown in the `task` tool description so the model can choose a target.
+    pub description: String,
+}
+
+impl TaskTarget {
+    /// Build a task target from a name and description.
+    #[must_use]
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+}
+
+/// A subagent invocation requested by the `task` tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRequest {
+    /// The target subagent type to run.
+    pub agent: String,
+    /// The work delegated to the child session.
+    pub prompt: String,
+}
+
+impl TaskRequest {
+    /// Build a task request.
+    #[must_use]
+    pub fn new(agent: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            agent: agent.into(),
+            prompt: prompt.into(),
+        }
+    }
+}
+
+/// Surface-owned subagent runner used by the `task` tool.
+///
+/// The tool layer owns argument parsing and permission checks, but the surface owns durable
+/// sessions, provider credentials, and process cleanup. A surface attaches a runner to
+/// [`ToolContext`], and the `task` tool calls it to execute the child turn for real.
+pub trait TaskRunner: Send + Sync {
+    /// Run one subagent request and return the model-visible task result.
+    fn run_task<'a>(&'a self, request: TaskRequest) -> BoxFuture<'a, ToolOutput>;
+}
+
 /// The per-session execution context shared across every tool call in a turn.
 ///
 /// It resolves relative paths against the session working directory, tracks which files have been
@@ -344,6 +394,7 @@ pub struct ToolContext {
     checkpoints: Option<Arc<dyn CheckpointRecorder>>,
     session_id: Option<String>,
     todos: Option<Arc<dyn TodoStore>>,
+    task_runner: Option<Arc<dyn TaskRunner>>,
     background_jobs: Arc<BackgroundJobs>,
 }
 
@@ -361,6 +412,7 @@ impl ToolContext {
             checkpoints: None,
             session_id: None,
             todos: None,
+            task_runner: None,
             background_jobs: Arc::new(BackgroundJobs::new()),
         }
     }
@@ -388,6 +440,13 @@ impl ToolContext {
         self
     }
 
+    /// Attach the surface-owned subagent runner used by the `task` tool (builder style).
+    #[must_use]
+    pub fn with_task_runner(mut self, runner: Arc<dyn TaskRunner>) -> Self {
+        self.task_runner = Some(runner);
+        self
+    }
+
     /// The session id tool calls are scoped to, if one was set.
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
@@ -398,6 +457,12 @@ impl ToolContext {
     #[must_use]
     pub fn todo_store(&self) -> Option<&Arc<dyn TodoStore>> {
         self.todos.as_ref()
+    }
+
+    /// The attached subagent runner, if the surface supports the `task` tool.
+    #[must_use]
+    pub fn task_runner(&self) -> Option<&Arc<dyn TaskRunner>> {
+        self.task_runner.as_ref()
     }
 
     /// The background-job registry tracking long-running `bash` jobs spawned this session, so a

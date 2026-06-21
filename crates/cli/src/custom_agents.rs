@@ -29,6 +29,31 @@ use permissions::{Action, Rule};
 use settings::{ConfigInputs, EffectiveConfig};
 use toml::Value;
 
+/// Where a custom agent may be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentAvailability {
+    /// Selectable as the primary/top-level `--agent`, not advertised as a subagent target.
+    Primary,
+    /// Advertised only as a `task` subagent target.
+    Subagent,
+    /// Selectable as a primary agent and as a subagent target.
+    All,
+}
+
+impl AgentAvailability {
+    /// Whether this agent can be selected by `cortex run --agent`.
+    #[must_use]
+    pub const fn selectable(self) -> bool {
+        matches!(self, Self::Primary | Self::All)
+    }
+
+    /// Whether this agent can be spawned through the `task` tool.
+    #[must_use]
+    pub const fn spawnable(self) -> bool {
+        matches!(self, Self::Subagent | Self::All)
+    }
+}
+
 /// A valid custom markdown agent discovered from disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomAgent {
@@ -38,6 +63,8 @@ pub struct CustomAgent {
     pub description: String,
     /// Raw mode field from frontmatter.
     pub mode: String,
+    /// Whether the mode makes this agent primary-selectable, subagent-spawnable, or both.
+    pub availability: AgentAvailability,
     /// Built-in mode fragment this custom agent composes with.
     pub base_agent: Agent,
     /// Optional model id this agent selects when `--model` is absent.
@@ -208,7 +235,11 @@ pub fn resolve(name: Option<&str>, discovery: &Discovery) -> Result<ActiveAgent,
             if let Ok(agent) = Agent::from_name(name) {
                 return Ok(ActiveAgent::Builtin(agent));
             }
-            if let Some(agent) = discovery.agents.get(&normalized) {
+            if let Some(agent) = discovery
+                .agents
+                .get(&normalized)
+                .filter(|agent| agent.availability.selectable())
+            {
                 return Ok(ActiveAgent::Custom(agent.clone()));
             }
             Err(UnknownAgent::new(name, available_names(discovery)))
@@ -223,7 +254,13 @@ pub fn available_names(discovery: &Discovery) -> String {
         .iter()
         .map(|agent| agent.name().to_owned())
         .collect::<Vec<_>>();
-    names.extend(discovery.agents.values().map(|agent| agent.name.clone()));
+    names.extend(
+        discovery
+            .agents
+            .values()
+            .filter(|agent| agent.availability.selectable())
+            .map(|agent| agent.name.clone()),
+    );
     names.join(", ")
 }
 
@@ -303,6 +340,7 @@ pub fn parse_custom_agent(contents: &str, source: PathBuf) -> Result<CustomAgent
     let name = sanitize_name(name)?;
     let description = required_field(&parsed.fields, "description")?.to_owned();
     let mode = required_field(&parsed.fields, "mode")?.to_owned();
+    let parsed_mode = parse_mode(&mode)?;
     let prompt = body.trim();
     if prompt.is_empty() {
         return Err("body/system prompt is empty".to_owned());
@@ -326,7 +364,8 @@ pub fn parse_custom_agent(contents: &str, source: PathBuf) -> Result<CustomAgent
     Ok(CustomAgent {
         name,
         description,
-        base_agent: base_agent_for_mode(&mode)?,
+        availability: parsed_mode.availability,
+        base_agent: parsed_mode.base_agent,
         mode,
         model,
         temperature,
@@ -539,12 +578,42 @@ fn sanitize_name(raw: &str) -> Result<String, String> {
     Ok(name.to_ascii_lowercase())
 }
 
-fn base_agent_for_mode(mode: &str) -> Result<Agent, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedMode {
+    base_agent: Agent,
+    availability: AgentAvailability,
+}
+
+fn parse_mode(mode: &str) -> Result<ParsedMode, String> {
     match mode.trim().to_ascii_lowercase().as_str() {
-        "build" | "primary" | "all" | "subagent" => Ok(Agent::Build),
-        "plan" => Ok(Agent::Plan),
-        "general" => Ok(Agent::General),
-        "explore" => Ok(Agent::Explore),
+        "primary" => Ok(ParsedMode {
+            base_agent: Agent::Build,
+            availability: AgentAvailability::Primary,
+        }),
+        "subagent" => Ok(ParsedMode {
+            base_agent: Agent::Build,
+            availability: AgentAvailability::Subagent,
+        }),
+        "all" => Ok(ParsedMode {
+            base_agent: Agent::Build,
+            availability: AgentAvailability::All,
+        }),
+        "build" => Ok(ParsedMode {
+            base_agent: Agent::Build,
+            availability: AgentAvailability::Primary,
+        }),
+        "plan" => Ok(ParsedMode {
+            base_agent: Agent::Plan,
+            availability: AgentAvailability::Primary,
+        }),
+        "general" => Ok(ParsedMode {
+            base_agent: Agent::General,
+            availability: AgentAvailability::Primary,
+        }),
+        "explore" => Ok(ParsedMode {
+            base_agent: Agent::Explore,
+            availability: AgentAvailability::Primary,
+        }),
         other => Err(format!(
             "unsupported mode `{other}` (expected primary, all, subagent, build, plan, general, or explore)"
         )),
@@ -705,6 +774,7 @@ Answer like a pirate.
 
         assert_eq!(agent.name, "pirate");
         assert_eq!(agent.description, "Pirate responder");
+        assert_eq!(agent.availability, AgentAvailability::Primary);
         assert_eq!(agent.base_agent, Agent::Build);
         assert_eq!(agent.model.as_deref(), Some("anthropic/claude-sonnet-4"));
         assert_eq!(agent.temperature, Some(0.2));
@@ -735,8 +805,59 @@ Answer like a pirate.
         let parsed = parse_custom_agent(&markdown, PathBuf::from("unit-tester.md")).unwrap();
         assert_eq!(parsed.name, "unit-tester");
         assert_eq!(parsed.description, "Writes unit tests");
+        assert_eq!(parsed.availability, AgentAvailability::Primary);
         assert_eq!(parsed.model.as_deref(), Some("google/gemini-2.5-flash"));
         assert_eq!(parsed.prompt, "Focus on useful tests.");
+    }
+
+    #[test]
+    fn subagent_mode_is_spawnable_but_not_primary_selectable() {
+        let agent = parse_custom_agent(
+            r#"---
+name: scout
+description: Subagent scout
+mode: subagent
+---
+Investigate and report.
+"#,
+            PathBuf::from("scout.md"),
+        )
+        .expect("valid subagent");
+        assert_eq!(agent.availability, AgentAvailability::Subagent);
+        assert!(!agent.availability.selectable());
+        assert!(agent.availability.spawnable());
+
+        let discovery = Discovery {
+            agents: BTreeMap::from([("scout".to_owned(), agent)]),
+            warnings: Vec::new(),
+        };
+        assert!(
+            !available_names(&discovery).contains("scout"),
+            "subagent-only agents should not be suggested for --agent"
+        );
+        let err = resolve(Some("scout"), &discovery).expect_err("not primary-selectable");
+        assert!(
+            err.to_string().contains("unknown agent 'scout'"),
+            "the diagnostic still names the requested agent: {err}"
+        );
+    }
+
+    #[test]
+    fn all_mode_is_primary_selectable_and_spawnable() {
+        let agent = parse_custom_agent(
+            r#"---
+name: helper
+description: Helper
+mode: all
+---
+Help with delegated or primary work.
+"#,
+            PathBuf::from("helper.md"),
+        )
+        .expect("valid all-mode agent");
+        assert_eq!(agent.availability, AgentAvailability::All);
+        assert!(agent.availability.selectable());
+        assert!(agent.availability.spawnable());
     }
 
     #[test]
