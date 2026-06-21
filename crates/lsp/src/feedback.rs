@@ -218,10 +218,22 @@ impl FeedbackManager {
             return FeedbackOutcome::NoServer;
         };
         let uri = path_to_uri(&absolute);
-        if self.announce(&language_id, &uri, &text).is_err() {
-            self.mark_broken(&language_id);
+        let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
             return FeedbackOutcome::Unavailable;
-        }
+        };
+        // Drain stale publishes before this mutation establishes its didOpen/didChange boundary.
+        // Anything already buffered belongs to an older generation and must not satisfy the fresh
+        // post-mutation diagnostics wait below.
+        let _ = client.drain_pending_diagnostics();
+        let baseline_generation = client.diagnostic_generation();
+
+        let document_version = match self.announce(&language_id, &uri, &text) {
+            Ok(version) => version,
+            Err(()) => {
+                self.mark_broken(&language_id);
+                return FeedbackOutcome::Unavailable;
+            }
+        };
 
         let remaining = deadline
             .checked_duration_since(Instant::now())
@@ -229,23 +241,20 @@ impl FeedbackManager {
         let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
             return FeedbackOutcome::Unavailable;
         };
-        if client.poll_diagnostics(remaining).is_err() {
-            self.mark_broken(&language_id);
-            return FeedbackOutcome::Unavailable;
-        }
-        // Some servers publish the interesting diagnostic in a later buffered burst after an empty
-        // initial publish. Drain anything already available before reading the store.
-        let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
-            return FeedbackOutcome::Unavailable;
+        let fresh = match client.poll_fresh_diagnostics(
+            &uri,
+            document_version,
+            baseline_generation,
+            remaining,
+        ) {
+            Ok(fresh) => fresh,
+            Err(_) => {
+                self.mark_broken(&language_id);
+                return FeedbackOutcome::Unavailable;
+            }
         };
-        let _ = client.drain_pending_diagnostics();
-
-        let Some(ServerSlot::Running { client, .. }) = self.servers.get(&language_id) else {
-            return FeedbackOutcome::Unavailable;
-        };
-        let diagnostics = client
-            .diagnostics()
-            .for_file(&uri)
+        let diagnostics = fresh
+            .unwrap_or_default()
             .iter()
             .map(|diagnostic| FileDiagnostic {
                 severity: diagnostic
@@ -428,7 +437,7 @@ impl FeedbackManager {
         }
     }
 
-    fn announce(&mut self, language_id: &str, uri: &str, text: &str) -> Result<(), ()> {
+    fn announce(&mut self, language_id: &str, uri: &str, text: &str) -> Result<i64, ()> {
         let Some(ServerSlot::Running {
             client,
             open_versions,
@@ -436,18 +445,25 @@ impl FeedbackManager {
         else {
             return Err(());
         };
-        match open_versions.get(uri).copied() {
+        let version = match open_versions.get(uri).copied() {
             None => {
-                client.did_open(uri, language_id, 1, text).map_err(|_| ())?;
-                open_versions.insert(uri.to_owned(), 1);
+                let version = 1;
+                client.set_minimum_diagnostic_version(uri, version);
+                client
+                    .did_open(uri, language_id, version, text)
+                    .map_err(|_| ())?;
+                open_versions.insert(uri.to_owned(), version);
+                version
             }
             Some(version) => {
                 let next = version.saturating_add(1);
+                client.set_minimum_diagnostic_version(uri, next);
                 client.did_change_full(uri, next, text).map_err(|_| ())?;
                 open_versions.insert(uri.to_owned(), next);
+                next
             }
-        }
-        Ok(())
+        };
+        Ok(version)
     }
 
     fn mark_broken(&mut self, language_id: &str) {

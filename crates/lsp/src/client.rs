@@ -1,5 +1,6 @@
 //! Synchronous stdio JSON-RPC client for Language Server Protocol diagnostics.
 
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -10,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::LspError;
 use crate::diagnostics::{
-    DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, Position, PublishDiagnosticsParams,
+    Diagnostic, DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, Position, PublishDiagnosticsParams,
 };
 use crate::navigation::{self, DocumentSymbol, Hover, Location, SymbolInformation};
 use crate::protocol::{InitializeParams, InitializeResult, JSONRPC_VERSION};
@@ -116,6 +117,27 @@ enum ReaderEvent {
     Failed(LspError),
 }
 
+#[derive(Debug)]
+struct AppliedDiagnostics {
+    uri: String,
+    version: Option<i64>,
+    generation: u64,
+    diagnostics: Vec<Diagnostic>,
+}
+
+enum NotificationOutcome {
+    AppliedDiagnostics(AppliedDiagnostics),
+    IgnoredStaleDiagnostics,
+    Handled,
+    NotNotification,
+}
+
+impl NotificationOutcome {
+    const fn is_handled(&self) -> bool {
+        !matches!(self, Self::NotNotification)
+    }
+}
+
 /// Running language server over stdio.
 #[derive(Debug)]
 pub struct LspClient {
@@ -125,6 +147,8 @@ pub struct LspClient {
     reader: Option<JoinHandle<()>>,
     next_id: i64,
     diagnostics: DiagnosticStore,
+    diagnostic_generation: u64,
+    minimum_diagnostic_versions: BTreeMap<String, i64>,
     request_timeout: Duration,
     shutdown_timeout: Duration,
 }
@@ -171,6 +195,8 @@ impl LspClient {
             reader: Some(reader),
             next_id: 1,
             diagnostics: DiagnosticStore::new(),
+            diagnostic_generation: 0,
+            minimum_diagnostic_versions: BTreeMap::new(),
             request_timeout: config.request_timeout,
             shutdown_timeout: config.shutdown_timeout,
         })
@@ -247,7 +273,10 @@ impl LspClient {
         loop {
             match self.incoming.try_recv() {
                 Ok(ReaderEvent::Message(body)) => {
-                    if self.try_apply_notification(&body)? {
+                    if matches!(
+                        self.try_apply_notification(&body)?,
+                        NotificationOutcome::AppliedDiagnostics(_)
+                    ) {
                         applied += 1;
                     }
                 }
@@ -281,7 +310,10 @@ impl LspClient {
             }
             match self.incoming.recv_timeout(wait) {
                 Ok(ReaderEvent::Message(body)) => {
-                    if self.try_apply_notification(&body)? {
+                    if matches!(
+                        self.try_apply_notification(&body)?,
+                        NotificationOutcome::AppliedDiagnostics(_)
+                    ) {
                         applied += 1;
                     }
                 }
@@ -292,6 +324,67 @@ impl LspClient {
             }
         }
         Ok(applied)
+    }
+
+    /// Current monotonic generation for applied `publishDiagnostics` notifications.
+    #[must_use]
+    pub const fn diagnostic_generation(&self) -> u64 {
+        self.diagnostic_generation
+    }
+
+    /// Remember the minimum document version that may update diagnostics for `uri`.
+    ///
+    /// Versioned `publishDiagnostics` notifications older than this are stale relative to the
+    /// latest didOpen/didChange and are ignored instead of overwriting the current file's feedback.
+    pub fn set_minimum_diagnostic_version(&mut self, uri: &str, version: i64) {
+        self.minimum_diagnostic_versions
+            .insert(uri.to_owned(), version);
+    }
+
+    /// Wait for a fresh diagnostics publish for `uri` after a didOpen/didChange boundary.
+    ///
+    /// A versioned publish is fresh only when its version is at least `document_version`. A server
+    /// that omits `publishDiagnostics.version` is correlated by the post-change generation boundary:
+    /// only a target-URI publish applied after `baseline_generation` is returned. Timeout returns
+    /// `Ok(None)` so callers can avoid surfacing stale diagnostics from an older mutation.
+    pub fn poll_fresh_diagnostics(
+        &mut self,
+        uri: &str,
+        document_version: i64,
+        baseline_generation: u64,
+        timeout: Duration,
+    ) -> Result<Option<Vec<Diagnostic>>, LspError> {
+        let deadline = Instant::now() + timeout;
+        let mut latest_fresh: Option<Vec<Diagnostic>> = None;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                return Ok(latest_fresh);
+            }
+            let wait = if latest_fresh.is_some() {
+                DIAGNOSTICS_IDLE_INTERVAL.min(remaining)
+            } else {
+                remaining
+            };
+            match self.incoming.recv_timeout(wait) {
+                Ok(ReaderEvent::Message(body)) => {
+                    if let NotificationOutcome::AppliedDiagnostics(event) =
+                        self.try_apply_notification(&body)?
+                    {
+                        if fresh_diagnostics_for(&event, uri, document_version, baseline_generation)
+                        {
+                            latest_fresh = Some(event.diagnostics);
+                        }
+                    }
+                }
+                Ok(ReaderEvent::Closed) => return Err(LspError::Closed),
+                Ok(ReaderEvent::Failed(error)) => return Err(error),
+                Err(RecvTimeoutError::Timeout) => return Ok(latest_fresh),
+                Err(RecvTimeoutError::Disconnected) => return Err(LspError::Closed),
+            }
+        }
     }
 
     /// Diagnostics captured so far.
@@ -469,7 +562,7 @@ impl LspClient {
         body: &[u8],
     ) -> Result<Option<Result<Value, LspError>>, LspError> {
         let message: Value = serde_json::from_slice(body).map_err(|_| LspError::Protocol)?;
-        if self.try_apply_notification_value(&message)? {
+        if self.try_apply_notification_value(&message)?.is_handled() {
             return Ok(None);
         }
         if message.get("id").and_then(Value::as_i64) != Some(id) {
@@ -485,19 +578,21 @@ impl LspClient {
             .unwrap_or(Value::Null))))
     }
 
-    fn try_apply_notification(&mut self, body: &[u8]) -> Result<bool, LspError> {
+    fn try_apply_notification(&mut self, body: &[u8]) -> Result<NotificationOutcome, LspError> {
         let message: Value = serde_json::from_slice(body).map_err(|_| LspError::Protocol)?;
         self.try_apply_notification_value(&message)
     }
 
-    fn try_apply_notification_value(&mut self, message: &Value) -> Result<bool, LspError> {
+    fn try_apply_notification_value(
+        &mut self,
+        message: &Value,
+    ) -> Result<NotificationOutcome, LspError> {
         if message.get("method").and_then(Value::as_str) == Some(PUBLISH_DIAGNOSTICS_METHOD) {
             let params = message
                 .get("params")
                 .and_then(PublishDiagnosticsParams::from_value)
                 .ok_or(LspError::Protocol)?;
-            self.diagnostics.apply(params);
-            return Ok(true);
+            return Ok(self.apply_diagnostics(params));
         }
         // Some servers (notably rust-analyzer) send workspace/diagnostic refresh requests to the
         // client. Acknowledge them so the server keeps making progress, but diagnostics are still
@@ -507,9 +602,31 @@ impl LspClient {
                 let _ =
                     self.send(json!({"jsonrpc": JSONRPC_VERSION, "id": id, "result": Value::Null}));
             }
-            return Ok(true);
+            return Ok(NotificationOutcome::Handled);
         }
-        Ok(false)
+        Ok(NotificationOutcome::NotNotification)
+    }
+
+    fn apply_diagnostics(&mut self, params: PublishDiagnosticsParams) -> NotificationOutcome {
+        if let (Some(version), Some(minimum)) = (
+            params.version,
+            self.minimum_diagnostic_versions.get(&params.uri).copied(),
+        ) {
+            if version < minimum {
+                return NotificationOutcome::IgnoredStaleDiagnostics;
+            }
+        }
+
+        self.diagnostic_generation = self.diagnostic_generation.saturating_add(1);
+        let generation = self.diagnostic_generation;
+        let event = AppliedDiagnostics {
+            uri: params.uri.clone(),
+            version: params.version,
+            generation,
+            diagnostics: params.diagnostics.clone(),
+        };
+        self.diagnostics.apply(params);
+        NotificationOutcome::AppliedDiagnostics(event)
     }
 
     fn reap_child(&mut self) -> Result<ExitStatus, LspError> {
@@ -552,6 +669,21 @@ impl Drop for LspClient {
     }
 }
 
+fn fresh_diagnostics_for(
+    event: &AppliedDiagnostics,
+    uri: &str,
+    document_version: i64,
+    baseline_generation: u64,
+) -> bool {
+    if event.uri != uri || event.generation <= baseline_generation {
+        return false;
+    }
+    match event.version {
+        Some(version) => version >= document_version,
+        None => true,
+    }
+}
+
 fn reader_loop(stdout: std::process::ChildStdout, max_bytes: usize, sender: &Sender<ReaderEvent>) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -588,5 +720,41 @@ mod tests {
             LspClient::spawn(&LspServerCommand::new("")).expect_err("empty command should fail"),
             LspError::InvalidCommand
         );
+    }
+
+    #[test]
+    fn fresh_diagnostics_require_current_version_when_present() {
+        let event = AppliedDiagnostics {
+            uri: "file:///work/main.rs".to_owned(),
+            version: Some(2),
+            generation: 8,
+            diagnostics: Vec::new(),
+        };
+        assert!(!fresh_diagnostics_for(&event, "file:///work/main.rs", 3, 7));
+        assert!(fresh_diagnostics_for(&event, "file:///work/main.rs", 2, 7));
+        assert!(!fresh_diagnostics_for(&event, "file:///work/main.rs", 2, 8));
+    }
+
+    #[test]
+    fn unversioned_diagnostics_use_generation_boundary() {
+        let event = AppliedDiagnostics {
+            uri: "file:///work/main.rs".to_owned(),
+            version: None,
+            generation: 9,
+            diagnostics: Vec::new(),
+        };
+        assert!(fresh_diagnostics_for(&event, "file:///work/main.rs", 99, 8));
+        assert!(!fresh_diagnostics_for(
+            &event,
+            "file:///work/main.rs",
+            99,
+            9
+        ));
+        assert!(!fresh_diagnostics_for(
+            &event,
+            "file:///work/other.rs",
+            99,
+            8
+        ));
     }
 }

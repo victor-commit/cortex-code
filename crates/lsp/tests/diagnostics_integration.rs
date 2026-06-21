@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use lsp::{FeedbackManager, FeedbackOutcome, InstallPlan, LspConfigSet, LspServerConfig};
 
@@ -27,6 +28,148 @@ fn diagnostics_for(outcome: FeedbackOutcome) -> Vec<lsp::FileDiagnostic> {
         FeedbackOutcome::Diagnostics(diagnostics) => diagnostics,
         other => panic!("expected diagnostics outcome, got {other:?}"),
     }
+}
+
+fn fake_lsp_script() -> &'static str {
+    r#"#!/usr/bin/env python3
+import json
+import sys
+import threading
+import time
+
+mode = sys.argv[1]
+write_lock = threading.Lock()
+
+def read_message():
+    headers = {}
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+    while line not in (b"\r\n", b"\n", b""):
+        name, value = line.decode("ascii").split(":", 1)
+        headers[name.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+    length = int(headers.get("content-length", "0"))
+    if length <= 0:
+        return None
+    return json.loads(sys.stdin.buffer.read(length))
+
+def send(message):
+    body = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    with write_lock:
+        sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
+
+def diagnostic(message):
+    return [{
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 3},
+        },
+        "severity": 1,
+        "code": "E_FAKE",
+        "source": "fake-lsp",
+        "message": message,
+    }]
+
+def publish(uri, diagnostics, version=None):
+    params = {"uri": uri, "diagnostics": diagnostics}
+    if mode == "versioned" and version is not None:
+        params["version"] = version
+    send({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": params,
+    })
+
+def delayed_publish(delay, uri, diagnostics, version=None):
+    def worker():
+        time.sleep(delay)
+        publish(uri, diagnostics, version)
+    threading.Thread(target=worker, daemon=True).start()
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get("method")
+    if method == "initialize" and "id" in message:
+        send({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "capabilities": {"textDocumentSync": 1},
+                "serverInfo": {"name": "fake-lsp"},
+            },
+        })
+    elif method == "initialized":
+        pass
+    elif method in ("textDocument/didOpen", "textDocument/didChange"):
+        text_document = message["params"].get("textDocument", {})
+        uri = text_document["uri"]
+        version = text_document.get("version", 1)
+        if method == "textDocument/didOpen":
+            text = text_document.get("text", "")
+        else:
+            changes = message["params"].get("contentChanges", [])
+            text = changes[0].get("text", "") if changes else ""
+
+        if "BAD" in text:
+            publish(uri, diagnostic("fresh BAD diagnostic"), version)
+            if mode == "unversioned":
+                delayed_publish(1.4, uri, diagnostic("stale queued diagnostic"), version)
+        else:
+            if mode == "versioned":
+                publish(uri, diagnostic("stale old-version diagnostic"), version - 1)
+                delayed_publish(1.5, uri, [], version)
+            else:
+                delayed_publish(1.5, uri, [], version)
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+"#
+}
+
+fn fake_config(dir: &Path, mode: &str) -> LspConfigSet {
+    let script = dir.join("fake_lsp.py");
+    std::fs::write(&script, fake_lsp_script()).expect("write fake lsp script");
+    LspConfigSet::empty().with_server(
+        LspServerConfig::new("fake", "python3")
+            .with_args([script.to_string_lossy().to_string(), mode.to_owned()])
+            .with_extension("fake")
+            .with_request_timeout(Duration::from_secs(5)),
+    )
+}
+
+fn stale_publish_is_never_returned_for_clean_fix(mode: &str) {
+    if !has_command("python3") {
+        eprintln!("skipping fake LSP freshness test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir(mode);
+    let file = dir.join("main.fake");
+    std::fs::write(&file, "BAD\n").expect("write bad fixture");
+    let mut manager =
+        FeedbackManager::new(&dir, fake_config(&dir, mode)).with_budget(Duration::from_secs(4));
+
+    let bad = diagnostics_for(manager.collect(&file));
+    assert!(
+        bad.iter()
+            .any(|diagnostic| diagnostic.message == "fresh BAD diagnostic"),
+        "first mutation should report the fresh bad diagnostic, got {bad:?}"
+    );
+
+    // In unversioned mode the fake server deliberately publishes one stale diagnostic after the
+    // first collection has returned. The next collection must drain/ignore it and wait for the
+    // clean post-change publish instead.
+    std::thread::sleep(Duration::from_millis(1600));
+    std::fs::write(&file, "GOOD\n").expect("write clean fixture");
+    let clean = diagnostics_for(manager.collect(&file));
+    assert!(
+        clean.is_empty(),
+        "fresh clean publish must clear older diagnostics in {mode} mode, got {clean:?}"
+    );
 }
 
 #[test]
@@ -63,6 +206,16 @@ fn rust_analyzer_reports_real_rust_type_error() {
                 && diagnostic.end_character >= 23),
         "expected real rust-analyzer E0308 diagnostic, got {diagnostics:?}"
     );
+}
+
+#[test]
+fn versioned_publish_diagnostics_waits_for_current_clean_publish() {
+    stale_publish_is_never_returned_for_clean_fix("versioned");
+}
+
+#[test]
+fn unversioned_publish_diagnostics_uses_post_change_generation_boundary() {
+    stale_publish_is_never_returned_for_clean_fix("unversioned");
 }
 
 #[test]
