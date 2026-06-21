@@ -191,6 +191,10 @@ fn build_turn(
 
     let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
         .map_err(|err| format!("cannot determine the working directory: {err}"))?;
+    let project_memory = memory::discover(&inputs);
+    for warning in project_memory.warnings() {
+        eprintln!("cortex tui: {warning}");
+    }
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
@@ -210,6 +214,7 @@ fn build_turn(
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
     let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory.render())
         .with_agent(Agent::default())
         .render();
     let turn = Turn::new(&model_id, system, prompt)

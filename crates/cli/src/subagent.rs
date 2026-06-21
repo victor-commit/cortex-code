@@ -88,6 +88,7 @@ pub(crate) struct CliTaskRunnerConfig {
     pub parent_model_id: String,
     pub formatter_config: format::FormatterConfig,
     pub config_inputs: ConfigInputs,
+    pub project_memory: Option<String>,
     pub bus: Arc<EventBus>,
 }
 
@@ -146,7 +147,7 @@ impl CliTaskRunner {
         let resolved_model = providers::resolve_model(Some(&model_id));
         let mut turn = Turn::new(
             &model_id,
-            render_system_context(&model_id, &agent),
+            render_system_context(&model_id, &agent, self.config.project_memory.clone()),
             request.prompt,
         )
         .with_history(load_history(&db, &child_session.id).unwrap_or_default())
@@ -289,8 +290,13 @@ impl CliTaskRunner {
     }
 }
 
-fn render_system_context(model_id: &str, agent: &ActiveAgent) -> String {
+fn render_system_context(
+    model_id: &str,
+    agent: &ActiveAgent,
+    project_memory: Option<String>,
+) -> String {
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory)
         .with_agent(agent.base_agent())
         .render();
     if let Some(prompt) = agent.custom_prompt() {
@@ -457,6 +463,7 @@ mod tests {
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
             config_inputs: inputs,
+            project_memory: None,
             bus: Arc::new(EventBus::new()),
         });
 
@@ -537,6 +544,7 @@ mod tests {
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
             config_inputs: inputs,
+            project_memory: None,
             bus: Arc::new(EventBus::new()),
         });
 
@@ -598,6 +606,7 @@ mod tests {
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
             config_inputs: inputs,
+            project_memory: None,
             bus: Arc::new(EventBus::new()),
         });
 

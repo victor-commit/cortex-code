@@ -17,6 +17,7 @@ members = [
     "crates/mcp",
     "crates/lsp",
     "crates/skills",
+    "crates/memory",
     "crates/tools",
     "crates/tui-core",
     "crates/tui-buffer",
@@ -58,6 +59,7 @@ format = { path = "crates/format" }
 mcp = { path = "crates/mcp" }
 lsp = { path = "crates/lsp" }
 skills = { path = "crates/skills" }
+memory = { path = "crates/memory" }
 tools = { path = "crates/tools" }
 tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }
@@ -89,6 +91,7 @@ crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+glob = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 smallvec = { version = "1", features = ["union", "const_generics"] }

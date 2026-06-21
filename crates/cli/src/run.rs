@@ -94,6 +94,11 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         eprintln!("cortex run: {warning}");
     }
     let discovered_skill_list = discovered_skills.ordered_skills();
+    let project_memory = memory::discover(&config_inputs);
+    for warning in project_memory.warnings() {
+        eprintln!("cortex run: {warning}");
+    }
+    let project_memory_block = project_memory.render();
 
     // Resolve the agent persona before any network consideration so an unknown agent fails fast
     // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
@@ -299,7 +304,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
     let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
-    let system = render_system_context(&model_id, &agent, &discovered_skill_list);
+    let system = render_system_context(
+        &model_id,
+        &agent,
+        &discovered_skill_list,
+        project_memory_block.clone(),
+    );
     let mut turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
@@ -409,6 +419,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             parent_model_id: model_id.clone(),
             formatter_config: run_config.formatter_config.clone(),
             config_inputs: subagent_config_inputs,
+            project_memory: project_memory_block.clone(),
             bus: bus.clone(),
         });
         dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
@@ -490,8 +501,10 @@ fn render_system_context(
     model_id: &str,
     agent: &custom_agents::ActiveAgent,
     skills: &[skills::Skill],
+    project_memory: Option<String>,
 ) -> String {
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory)
         .with_agent(agent.base_agent())
         .render();
     if let Some(prompt) = agent.custom_prompt() {

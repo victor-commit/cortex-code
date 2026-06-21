@@ -1,24 +1,27 @@
-//! The system-context epoch: the base system prompt joined with the dynamic environment block and
-//! the selected agent persona.
+//! The system-context epoch: the base system prompt joined with the dynamic environment block,
+//! project memory, and the selected agent persona.
 //!
 //! Architecture §4 establishes a "system-context epoch" once per turn: resolve the agent, then the
 //! base system prompt for the model's family (see [`ModelFamily`]) followed by the dynamic
-//! environment block (see [`EnvironmentBlock`]) and the agent's persona fragment (§8 "mode
-//! fragments"). [`SystemContext::render`] produces the single system message string the runner
-//! places at the head of the conversation.
+//! environment block (see [`EnvironmentBlock`]), project memory/rules (§8 "Rules/instructions
+//! injection"), and the agent's persona fragment (§8 "mode fragments"). [`SystemContext::render`]
+//! produces the single system message string the runner places at the head of the conversation.
 
 use crate::agent::Agent;
 use crate::environment::EnvironmentBlock;
 use crate::family::ModelFamily;
 
-/// The assembled system context for a turn: a model-family base prompt, the environment block, and
-/// the selected agent persona fragment.
+/// The assembled system context for a turn: a model-family base prompt, the environment block,
+/// optional project memory, and the selected agent persona fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemContext {
     /// The model family whose base prompt opens the context.
     pub family: ModelFamily,
     /// The dynamic environment snapshot appended after the base prompt.
     pub environment: EnvironmentBlock,
+    /// Optional project memory/instruction block appended after the environment and before the
+    /// agent persona, so memory composes with every selected agent without replacing it.
+    pub project_memory: Option<String>,
     /// The agent persona whose fragment is appended after the environment block.
     pub agent: Agent,
 }
@@ -30,6 +33,7 @@ impl SystemContext {
         Self {
             family,
             environment,
+            project_memory: None,
             agent: Agent::DEFAULT,
         }
     }
@@ -47,8 +51,16 @@ impl SystemContext {
         self
     }
 
+    /// Add a rendered project-memory block to the system context (builder style).
+    #[must_use]
+    pub fn with_project_memory(mut self, memory: Option<String>) -> Self {
+        self.project_memory = memory.filter(|memory| !memory.trim().is_empty());
+        self
+    }
+
     /// Render the full system message: the family base prompt, a blank line, the environment block,
-    /// then the agent persona fragment when the selected agent contributes one.
+    /// then project memory when present, then the agent persona fragment when the selected agent
+    /// contributes one.
     ///
     /// The default agent (`build`) contributes no fragment, so a default context renders exactly
     /// the base prompt and environment block.
@@ -59,6 +71,10 @@ impl SystemContext {
             base = self.family.base_prompt(),
             environment = self.environment.render(),
         );
+        if let Some(memory) = &self.project_memory {
+            rendered.push_str("\n\n");
+            rendered.push_str(memory.trim());
+        }
         if let Some(persona) = self.agent.persona_prompt() {
             rendered.push_str("\n\n");
             rendered.push_str(persona);
@@ -143,6 +159,32 @@ mod tests {
             rendered.contains("general persona"),
             "the general persona fragment must be present"
         );
+    }
+
+    #[test]
+    fn project_memory_renders_between_environment_and_persona() {
+        let rendered = SystemContext::new(ModelFamily::Default, environment())
+            .with_project_memory(Some("Project memory token MEM-CONTEXT".to_owned()))
+            .with_agent(Agent::Plan)
+            .render();
+        let env_pos = rendered.find("<environment>").expect("env block");
+        let memory_pos = rendered.find("MEM-CONTEXT").expect("memory block");
+        let persona_pos = rendered
+            .find("plan persona")
+            .expect("plan persona fragment present");
+        assert!(
+            env_pos < memory_pos && memory_pos < persona_pos,
+            "memory must be between environment and persona"
+        );
+    }
+
+    #[test]
+    fn empty_project_memory_is_omitted() {
+        let without = SystemContext::new(ModelFamily::Default, environment()).render();
+        let with_empty = SystemContext::new(ModelFamily::Default, environment())
+            .with_project_memory(Some(" \n\t ".to_owned()))
+            .render();
+        assert_eq!(without, with_empty);
     }
 
     #[test]
