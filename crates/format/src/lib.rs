@@ -5,7 +5,7 @@
 //! language extension, the formatter binary on `PATH`, and, for project-scoped formatters, a config
 //! marker in the file's ancestor tree. Formatting is in-place and uses the real external binaries.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -79,6 +79,24 @@ pub enum FormatOutcome {
     Skipped(SkipReason),
     /// A real formatter was attempted but returned an error.
     Failed(FormatFailure),
+}
+
+/// Render a formatter failure as model-visible feedback, with stderr/status redacted.
+#[must_use]
+pub fn format_failure_note(failure: &FormatFailure) -> String {
+    let status = failure
+        .status
+        .map(|status| format!("exit {status}"))
+        .unwrap_or_else(|| "spawn failure".to_owned());
+    let stderr = if failure.stderr.is_empty() {
+        "no stderr".to_owned()
+    } else {
+        failure.stderr.clone()
+    };
+    redaction::redact(&format!(
+        "Formatter {} failed ({status}); left the written bytes intact. stderr: {stderr}",
+        failure.formatter.label()
+    ))
 }
 
 /// Resolved formatter command for a file.
@@ -311,13 +329,14 @@ impl FormatterRunner {
 /// Return whether `binary` is runnable from the current `PATH`.
 #[must_use]
 pub fn binary_available(binary: &str) -> bool {
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    configure_formatter_child(&mut command);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .stderr(Stdio::null());
+    command.status().is_ok_and(|status| status.success())
 }
 
 fn run_formatter(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
@@ -342,6 +361,7 @@ fn run_formatter(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
 
 fn run_builtin_formatter(path: &Path, kind: FormatterKind, current_dir: &Path) -> FormatOutcome {
     let mut command = Command::new(kind.binary());
+    configure_formatter_child(&mut command);
     command
         .current_dir(current_dir)
         .stdin(Stdio::null())
@@ -370,6 +390,7 @@ fn run_custom_formatter(
     current_dir: &Path,
 ) -> FormatOutcome {
     let mut command = Command::new(&custom.command[0]);
+    configure_formatter_child(&mut command);
     command
         .current_dir(current_dir)
         .stdin(Stdio::null())
@@ -594,6 +615,28 @@ fn absolutize_existing(path: PathBuf) -> PathBuf {
 
 fn same_path(left: &Path, right: &Path) -> bool {
     left == right || left.canonicalize().ok().as_deref() == right.canonicalize().ok().as_deref()
+}
+
+fn configure_formatter_child(command: &mut Command) {
+    command.env_clear().envs(formatter_child_env());
+}
+
+fn formatter_child_env() -> Vec<(OsString, OsString)> {
+    filter_secret_env(std::env::vars_os())
+}
+
+fn filter_secret_env<I>(vars: I) -> Vec<(OsString, OsString)>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    vars.into_iter()
+        .filter(|(name, value)| {
+            if redaction::is_secret_env_var(&name.to_string_lossy()) {
+                return false;
+            }
+            !redaction::value_is_secret(&value.to_string_lossy())
+        })
+        .collect()
 }
 
 #[cfg(test)]

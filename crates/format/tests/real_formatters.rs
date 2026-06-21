@@ -80,6 +80,11 @@ fn assert_unchanged(path: &Path, expected: &str) {
     );
 }
 
+fn synthetic_openrouter_key() -> String {
+    let body = "deadbeef".repeat(8);
+    format!("sk-{}-{}", "or-v1", body)
+}
+
 #[cfg(unix)]
 fn write_executable(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -289,5 +294,157 @@ fn formatter_failure_restores_the_raw_written_bytes() {
         fs::read_to_string(&path).expect("read restored file"),
         raw,
         "formatter failure must restore the raw post-write bytes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn formatter_failure_note_redacts_secret_stderr_and_preserves_bytes() {
+    let dir = temp_dir("custom-failure-redaction");
+    let secret = synthetic_openrouter_key();
+    let script = dir.join("corrupt_then_echo_secret.sh");
+    write_executable(
+        &script,
+        &format!(
+            "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'CORRUPTED\\n' > \"$file\"\nprintf 'formatter saw {}\\n' >&2\nexit 7\n",
+            secret
+        ),
+    );
+    let path = dir.join("demo.foo");
+    let raw = "raw bytes that must survive\n";
+    fs::write(&path, raw).expect("write custom input");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[formatter.custom]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+            script.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    let FormatOutcome::Failed(failure) = outcome else {
+        panic!("expected formatter failure, got {outcome:?}");
+    };
+    let note = format::format_failure_note(&failure);
+    assert!(
+        note.contains(redaction::PLACEHOLDER),
+        "formatter failure note must use canonical redaction: {note}"
+    );
+    assert!(
+        !note.contains(&secret),
+        "raw formatter stderr secret must not reach model-visible output: {note}"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read restored file"),
+        raw,
+        "formatter failure must restore the raw post-write bytes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_formatter_subprocess_receives_secret_stripped_env() {
+    run_secret_env_probe_child("custom_formatter_secret_env_probe_child", "custom", &[]);
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_formatter_secret_env_probe_child() {
+    if std::env::var("CORTEX_FORMAT_ENV_PROBE_CHILD").as_deref() != Ok("custom") {
+        return;
+    }
+
+    let dir = temp_dir("custom-env-child");
+    let script = dir.join("env_probe_formatter.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nif [ \"${OPENROUTER_API_KEY+x}\" = x ]; then printf 'OPENROUTER_API_KEY leaked\\n' >&2; exit 42; fi\nif [ \"${FORMATTER_VISIBLE_VALUE+x}\" = x ]; then printf 'key-shaped value leaked\\n' >&2; exit 43; fi\nfile=\"$1\"\nprintf 'custom formatted\\n' > \"$file\"\n",
+    );
+    let path = dir.join("demo.foo");
+    fs::write(&path, "custom raw\n").expect("write custom input");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[formatter.custom]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+            script.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Custom));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read custom formatted file"),
+        "custom formatted\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_formatter_subprocess_receives_secret_stripped_env() {
+    let dir = temp_dir("builtin-env-parent");
+    let shim = dir.join("rustfmt");
+    write_executable(
+        &shim,
+        "#!/usr/bin/env sh\nif [ \"${OPENROUTER_API_KEY+x}\" = x ]; then printf 'OPENROUTER_API_KEY leaked\\n' >&2; exit 42; fi\nif [ \"${FORMATTER_VISIBLE_VALUE+x}\" = x ]; then printf 'key-shaped value leaked\\n' >&2; exit 43; fi\nif [ \"$1\" = \"--version\" ]; then printf 'rustfmt 1.0\\n'; exit 0; fi\nfor arg do file=\"$arg\"; done\nprintf 'fn main() {}\\n' > \"$file\"\n",
+    );
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = format!("{}:{}", dir.display(), existing_path.to_string_lossy());
+    run_secret_env_probe_child(
+        "builtin_formatter_secret_env_probe_child",
+        "builtin",
+        &[
+            ("PATH", path),
+            ("CORTEX_FORMAT_SHIM_DIR", dir.display().to_string()),
+        ],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_formatter_secret_env_probe_child() {
+    if std::env::var("CORTEX_FORMAT_ENV_PROBE_CHILD").as_deref() != Ok("builtin") {
+        return;
+    }
+
+    let dir = PathBuf::from(std::env::var("CORTEX_FORMAT_SHIM_DIR").expect("shim dir env is set"));
+    let path = dir.join("main.rs");
+    fs::write(&path, "fn  main( ){}\n").expect("write rust input");
+
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read shim formatted file"),
+        "fn main() {}\n"
+    );
+}
+
+#[cfg(unix)]
+fn run_secret_env_probe_child(test_name: &str, marker: &str, extra_env: &[(&str, String)]) {
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env("CORTEX_FORMAT_ENV_PROBE_CHILD", marker)
+        .env("OPENROUTER_API_KEY", synthetic_openrouter_key())
+        .env("FORMATTER_VISIBLE_VALUE", synthetic_openrouter_key());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("spawn env probe child test");
+    assert!(
+        output.status.success(),
+        "env probe child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

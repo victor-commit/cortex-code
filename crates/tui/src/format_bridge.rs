@@ -34,7 +34,7 @@ impl MutationHooks for PostMutationHooks {
 
     fn format_feedback(&self, path: &Path) -> Option<String> {
         match self.formatter.format_path(path) {
-            format::FormatOutcome::Failed(failure) => Some(format_failure_note(&failure)),
+            format::FormatOutcome::Failed(failure) => Some(format::format_failure_note(&failure)),
             format::FormatOutcome::Formatted(_) | format::FormatOutcome::Skipped(_) => None,
         }
     }
@@ -42,20 +42,4 @@ impl MutationHooks for PostMutationHooks {
     fn diagnostic_feedback(&self, path: &Path) -> DiagnosticFeedback {
         self.diagnostics.diagnostic_feedback(path)
     }
-}
-
-fn format_failure_note(failure: &format::FormatFailure) -> String {
-    let status = failure
-        .status
-        .map(|status| format!("exit {status}"))
-        .unwrap_or_else(|| "spawn failure".to_owned());
-    let stderr = if failure.stderr.is_empty() {
-        "no stderr".to_owned()
-    } else {
-        failure.stderr.clone()
-    };
-    format!(
-        "Formatter {} failed ({status}); left the written bytes intact. stderr: {stderr}",
-        failure.formatter.label()
-    )
 }

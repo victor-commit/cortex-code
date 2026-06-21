@@ -41,7 +41,7 @@ impl MutationHooks for PostMutationHooks {
 
     fn format_feedback(&self, path: &Path) -> Option<String> {
         match self.formatter.format_path(path) {
-            format::FormatOutcome::Failed(failure) => Some(format_failure_note(&failure)),
+            format::FormatOutcome::Failed(failure) => Some(format::format_failure_note(&failure)),
             format::FormatOutcome::Formatted(_) | format::FormatOutcome::Skipped(_) => None,
         }
     }
@@ -49,22 +49,6 @@ impl MutationHooks for PostMutationHooks {
     fn diagnostic_feedback(&self, path: &Path) -> DiagnosticFeedback {
         self.diagnostics.diagnostic_feedback(path)
     }
-}
-
-fn format_failure_note(failure: &format::FormatFailure) -> String {
-    let status = failure
-        .status
-        .map(|status| format!("exit {status}"))
-        .unwrap_or_else(|| "spawn failure".to_owned());
-    let stderr = if failure.stderr.is_empty() {
-        "no stderr".to_owned()
-    } else {
-        failure.stderr.clone()
-    };
-    format!(
-        "Formatter {} failed ({status}); left the written bytes intact. stderr: {stderr}",
-        failure.formatter.label()
-    )
 }
 
 #[cfg(test)]
@@ -97,6 +81,21 @@ mod tests {
         dir
     }
 
+    fn synthetic_openrouter_key() -> String {
+        let body = "deadbeef".repeat(8);
+        format!("sk-{}-{}", "or-v1", body)
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, body).expect("write executable script");
+        let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod executable script");
+    }
+
     #[test]
     fn formats_rust_and_delegates_diagnostics() {
         if !format::binary_available("rustfmt") {
@@ -116,5 +115,52 @@ mod tests {
 
         let feedback = hooks.diagnostic_feedback(&path);
         assert_eq!(feedback.note.as_deref(), Some("diagnostics delegated"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_feedback_redacts_secret_stderr_and_preserves_bytes() {
+        let dir = temp_dir("failure-redaction");
+        let secret = synthetic_openrouter_key();
+        let script = dir.join("formatter.sh");
+        write_executable(
+            &script,
+            &format!(
+                "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'CORRUPTED\\n' > \"$file\"\nprintf 'formatter stderr {}\\n' >&2\nexit 7\n",
+                secret
+            ),
+        );
+        let path = dir.join("demo.foo");
+        let raw = "raw bytes that must survive\n";
+        fs::write(&path, raw).expect("write custom input");
+        let config = format::FormatterConfig::from_table(
+            toml::from_str::<toml::Value>(&format!(
+                "[formatter.custom]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+                script.display()
+            ))
+            .unwrap()
+            .as_table()
+            .unwrap(),
+        )
+        .expect("parse formatter config");
+        let hooks = PostMutationHooks::with_config(&dir, config, Arc::new(NoteDiagnostics));
+
+        let note = hooks
+            .format_feedback(&path)
+            .expect("formatter failure produces model-visible feedback");
+
+        assert!(
+            note.contains(redaction::PLACEHOLDER),
+            "formatter feedback must use canonical redaction: {note}"
+        );
+        assert!(
+            !note.contains(&secret),
+            "raw formatter stderr secret must not reach model-visible output: {note}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read restored file"),
+            raw,
+            "formatter failure must preserve the written bytes"
+        );
     }
 }
