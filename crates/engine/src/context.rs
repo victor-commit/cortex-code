@@ -144,4 +144,15 @@ mod tests {
             "the general persona fragment must be present"
         );
     }
+
+    #[test]
+    fn explore_agent_render_appends_its_persona() {
+        let rendered = SystemContext::new(ModelFamily::Default, environment())
+            .with_agent(Agent::Explore)
+            .render();
+        assert!(
+            rendered.contains("explore persona") && rendered.contains("read-only"),
+            "the explore persona fragment must be present"
+        );
+    }
 }

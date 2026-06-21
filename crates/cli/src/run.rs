@@ -144,6 +144,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // the top-level layered ruleset exactly as before. The flag's presence (not the resolved
     // default persona) decides this, so a default run keeps its unchanged top-level behavior.
     let active_agent = args.agent.is_some().then(|| agent.name());
+    let builtin_agent_rules = permission::builtin_agent_permission_rules(agent);
 
     // Resolve the project's trust level (the layered config's `trust` key) into the highest-
     // precedence permission layer: an untrusted project denies the mutating/exec tools, so the SAME
@@ -166,11 +167,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // is non-empty; with none of them the run stays ungated (the default the other M2 tool features
     // rely on). A malformed config-file rule (or an unreadable/invalid config layer) fails fast with
     // the stable config exit code.
-    let prepared_permissions = match permission::prepare_headless_permissions(
+    let prepared_permissions = match permission::prepare_headless_permissions_with_builtin_rules(
         &config_inputs,
         active_agent,
+        builtin_agent_rules.base_rules,
         cli_permission_rules,
         save_specs,
+        builtin_agent_rules.restriction_rules,
         trust_rules,
         loaded_decisions,
         bus.clone(),
@@ -1291,6 +1294,7 @@ mod tests {
         assert_eq!(resolve_agent(Some("plan")), Ok(Agent::Plan));
         assert_eq!(resolve_agent(Some("build")), Ok(Agent::Build));
         assert_eq!(resolve_agent(Some(" General ")), Ok(Agent::General));
+        assert_eq!(resolve_agent(Some("EXPLORE")), Ok(Agent::Explore));
     }
 
     // VAL-LLM-028 (resolution half): an unknown agent name is rejected with an error that names the
@@ -1304,7 +1308,7 @@ mod tests {
             "the error must name the unknown agent, got: {message}"
         );
         assert!(
-            message.contains("plan") && message.contains("build"),
+            message.contains("plan") && message.contains("build") && message.contains("explore"),
             "the error must hint the available agents, got: {message}"
         );
     }

@@ -1387,7 +1387,7 @@ impl App {
     fn open_agents_dialog(&mut self) {
         let items: Vec<String> = Agent::ALL
             .iter()
-            .map(|agent| format!("{}  —  {}", agent.name(), agent_description(agent.name())))
+            .map(|agent| format!("{}  —  {}", agent.name(), agent.description()))
             .collect();
         let selected = Agent::ALL
             .iter()
@@ -2795,16 +2795,6 @@ fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .filter(|value| !value.trim().is_empty())
-}
-
-/// A short, human-readable description for a built-in agent persona, shown in the agent picker.
-fn agent_description(name: &str) -> &'static str {
-    match name {
-        "build" => "Default coding agent",
-        "plan" => "Investigate and produce a plan",
-        "general" => "General-purpose assistant",
-        _ => "",
-    }
 }
 
 /// Map an undo/redo [`RestoreOutcome`] to the user-facing `(transcript notice, toast level, toast
@@ -4365,7 +4355,7 @@ mod tests {
         dispatch(&mut a, "agents");
         let dialog = a.dialog().expect("the agent picker opened");
         assert_eq!(dialog.kind, DialogKind::Agents);
-        for expected in ["build", "plan", "general"] {
+        for expected in ["build", "plan", "general", "explore"] {
             assert!(
                 dialog.items.iter().any(|item| item.contains(expected)),
                 "agent {expected} listed: {:?}",

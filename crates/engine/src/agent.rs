@@ -18,6 +18,8 @@ pub enum Agent {
     Plan,
     /// A general-purpose assistant persona.
     General,
+    /// A read-only exploration persona: inspects the project and reports findings without edits.
+    Explore,
 }
 
 impl Agent {
@@ -25,7 +27,7 @@ impl Agent {
     pub const DEFAULT: Agent = Agent::Build;
 
     /// Every built-in agent, in the stable order used for availability hints.
-    pub const ALL: [Agent; 3] = [Agent::Build, Agent::Plan, Agent::General];
+    pub const ALL: [Agent; 4] = [Agent::Build, Agent::Plan, Agent::General, Agent::Explore];
 
     /// The canonical, lowercase name of this agent (the value accepted by `--agent` and surfaced
     /// in machine output).
@@ -35,6 +37,18 @@ impl Agent {
             Agent::Build => "build",
             Agent::Plan => "plan",
             Agent::General => "general",
+            Agent::Explore => "explore",
+        }
+    }
+
+    /// A short human-readable description of this built-in agent, suitable for discovery UIs.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Agent::Build => "Default coding agent that implements requested changes",
+            Agent::Plan => "Planning agent that investigates and returns an implementation plan",
+            Agent::General => "General-purpose assistant for broad questions and guidance",
+            Agent::Explore => "Read-only exploration agent for inspecting and reporting findings",
         }
     }
 
@@ -60,6 +74,7 @@ impl Agent {
             Agent::Build => None,
             Agent::Plan => Some(PLAN_PERSONA),
             Agent::General => Some(GENERAL_PERSONA),
+            Agent::Explore => Some(EXPLORE_PERSONA),
         }
     }
 
@@ -137,6 +152,14 @@ general-purpose assistant. Answer the request directly and concisely, drawing on
 across software engineering and general topics, without assuming a specialized planning or \
 implementation workflow.";
 
+/// The explore persona fragment: read/search only, then report findings and next steps.
+const EXPLORE_PERSONA: &str = "You are operating in the explore persona. Your role is to inspect, \
+read, search, and explain the current project without changing it. You may use read-only tools such \
+as read, glob, grep, and LSP navigation to gather evidence. You MUST NOT create, edit, delete, \
+format, patch, or otherwise mutate files, and you MUST NOT run shell commands that change state. \
+Return a concise findings report with relevant paths, observations, and suggested next steps; do \
+not claim to have implemented changes.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +176,7 @@ mod tests {
         assert_eq!(Agent::from_name("build"), Ok(Agent::Build));
         assert_eq!(Agent::from_name("plan"), Ok(Agent::Plan));
         assert_eq!(Agent::from_name("general"), Ok(Agent::General));
+        assert_eq!(Agent::from_name("explore"), Ok(Agent::Explore));
     }
 
     #[test]
@@ -160,6 +184,7 @@ mod tests {
         assert_eq!(Agent::from_name("  PLAN "), Ok(Agent::Plan));
         assert_eq!(Agent::from_name("Build"), Ok(Agent::Build));
         assert_eq!(Agent::from_name("GENERAL"), Ok(Agent::General));
+        assert_eq!(Agent::from_name("explore"), Ok(Agent::Explore));
     }
 
     #[test]
@@ -172,7 +197,10 @@ mod tests {
             "the error must name the unknown agent, got: {message}"
         );
         assert!(
-            message.contains("plan") && message.contains("build") && message.contains("general"),
+            message.contains("plan")
+                && message.contains("build")
+                && message.contains("general")
+                && message.contains("explore"),
             "the error must hint the available agents, got: {message}"
         );
     }
@@ -208,5 +236,23 @@ mod tests {
                 .is_empty(),
             "the general persona has a non-empty fragment"
         );
+        let explore = Agent::Explore
+            .persona_prompt()
+            .expect("explore has a fragment");
+        assert!(
+            explore.to_lowercase().contains("read-only") && explore.contains("MUST NOT"),
+            "the explore persona must steer toward read-only investigation"
+        );
+    }
+
+    #[test]
+    fn every_agent_has_a_description() {
+        for agent in Agent::ALL {
+            assert!(
+                !agent.description().trim().is_empty(),
+                "{} should have a discovery description",
+                agent.name()
+            );
+        }
     }
 }

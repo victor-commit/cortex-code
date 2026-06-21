@@ -1,3 +1,4 @@
+mod agent_cmd;
 mod checkpoint;
 mod cli;
 mod config;
@@ -57,6 +58,7 @@ fn main() -> ExitCode {
         Some(Command::Run(args)) => run::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
+        Some(Command::Agent(args)) => agent_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
@@ -73,6 +75,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Run(_)) => Surface::Run,
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
+        Some(Command::Agent(_)) => Surface::Agent,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,

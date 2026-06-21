@@ -38,10 +38,12 @@
 
 use std::sync::Arc;
 
+use engine::Agent;
 use events::EventBus;
 use permissions::{
     ANY_TOOL, Action, Decision, PermissionEngine, PermissionRequest, Responder, Rule, RuleError,
-    SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets, load_layered, scope_of,
+    Ruleset, SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets, load_layered,
+    scope_of,
 };
 use settings::ConfigInputs;
 
@@ -97,6 +99,49 @@ pub struct HeadlessPermissions {
     pub persist: bool,
 }
 
+/// Low and high precedence built-in permission rules contributed by an agent mode.
+///
+/// `base_rules` are prepended before project/user configuration, so they provide read-only defaults
+/// for modes that need an engine while still letting a user's explicit deny narrow them further.
+/// `restriction_rules` are appended after config/CLI/save rules, so mode-level mutation blocks
+/// cannot be accidentally widened by a project allow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuiltinAgentPermissionRules {
+    pub base_rules: Vec<Rule>,
+    pub restriction_rules: Vec<Rule>,
+}
+
+/// The built-in permission layer for a selected agent persona.
+///
+/// `plan` and `explore` both need a permission engine attached even with no user config so
+/// mutation attempts are refused. Because headless asks fail closed, those modes also need low
+/// precedence allows for the read/search tools they are supposed to use. The allows are deliberately
+/// lower precedence than config/CLI rules, while the mutation denies are high precedence.
+#[must_use]
+pub fn builtin_agent_permission_rules(agent: Agent) -> BuiltinAgentPermissionRules {
+    match agent {
+        Agent::Plan | Agent::Explore => BuiltinAgentPermissionRules {
+            base_rules: read_only_allow_rules(),
+            restriction_rules: mutation_deny_rules(),
+        },
+        Agent::Build | Agent::General => BuiltinAgentPermissionRules::default(),
+    }
+}
+
+fn read_only_allow_rules() -> Vec<Rule> {
+    ["read", "glob", "grep", "lsp"]
+        .into_iter()
+        .map(|tool| Rule::new(tool, "*", Action::Allow))
+        .collect()
+}
+
+fn mutation_deny_rules() -> Vec<Rule> {
+    ["write", "edit", "apply_patch", "format", "bash"]
+        .into_iter()
+        .map(|tool| Rule::new(tool, "*", Action::Deny))
+        .collect()
+}
+
 /// Assemble the headless permission engine from every source a `cortex run` honors: the config-file
 /// `[[permission]]` layers (scoped to the active agent when one is selected), the CLI allow/deny
 /// flags, the previously saved cross-process decisions, and the `--permission-allow-save`
@@ -130,6 +175,7 @@ pub struct HeadlessPermissions {
 /// # Errors
 /// Returns [`RuleError`] when a config layer cannot be read/parsed or a config-file rule is
 /// malformed.
+#[allow(dead_code)]
 pub fn prepare_headless_permissions(
     inputs: &ConfigInputs,
     agent: Option<&str>,
@@ -139,13 +185,49 @@ pub fn prepare_headless_permissions(
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
 ) -> Result<HeadlessPermissions, RuleError> {
+    prepare_headless_permissions_with_builtin_rules(
+        inputs,
+        agent,
+        Vec::new(),
+        cli_rules,
+        save_specs,
+        Vec::new(),
+        trust_rules,
+        loaded,
+        bus,
+    )
+}
+
+/// Assemble headless permissions with additional built-in mode rules.
+///
+/// `builtin_base_rules` are prepended before config/user rules, while
+/// `builtin_restriction_rules` are appended after config/CLI/save rules and before trust rules.
+/// This lets read-only modes allow read/search by default without overriding a user's explicit
+/// read deny, while still making their mutation block a narrowing rule that user config cannot
+/// widen.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_headless_permissions_with_builtin_rules(
+    inputs: &ConfigInputs,
+    agent: Option<&str>,
+    builtin_base_rules: Vec<Rule>,
+    cli_rules: Vec<Rule>,
+    save_specs: Vec<Rule>,
+    builtin_restriction_rules: Vec<Rule>,
+    trust_rules: Vec<Rule>,
+    loaded: Vec<SavedDecision>,
+    bus: Arc<EventBus>,
+) -> Result<HeadlessPermissions, RuleError> {
     // When an agent is active its effective ruleset (base ++ that agent's overrides) is the base, so
     // a per-agent rule gates the turn (VAL-PERM-009); otherwise the top-level layered ruleset is the
     // base exactly as before.
-    let mut ruleset = match agent {
+    let config_ruleset = match agent {
         Some(name) => load_agent_rulesets(inputs)?.for_agent(name),
         None => load_layered(inputs)?,
     };
+    let mut ruleset = Ruleset::new(builtin_base_rules);
+    for rule in config_ruleset.rules() {
+        ruleset.push(rule.clone());
+    }
     for rule in cli_rules {
         ruleset.push(rule);
     }
@@ -157,6 +239,9 @@ pub fn prepare_headless_permissions(
             spec.pattern.clone(),
             Action::Ask,
         ));
+    }
+    for rule in builtin_restriction_rules {
+        ruleset.push(rule);
     }
     // The project trust layer is appended LAST so it has the highest precedence: an untrusted
     // project's `deny` for a mutating/exec tool overrides any allow/ask above it, blocking the same
@@ -365,6 +450,113 @@ mod tests {
     fn no_config_and_no_flags_yield_no_engine() {
         let scratch = Scratch::new("none");
         assert!(engine_for(&scratch.inputs(), Vec::new()).is_none());
+    }
+
+    #[test]
+    fn build_and_general_contribute_no_builtin_permission_rules() {
+        for agent in [Agent::Build, Agent::General] {
+            let rules = builtin_agent_permission_rules(agent);
+            assert!(
+                rules.base_rules.is_empty() && rules.restriction_rules.is_empty(),
+                "{agent:?} should not narrow the default ungated headless behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_and_explore_allow_read_search_but_deny_mutations() {
+        for agent in [Agent::Plan, Agent::Explore] {
+            let scratch = Scratch::new(agent.name());
+            let builtin = builtin_agent_permission_rules(agent);
+            let engine = prepare_headless_permissions_with_builtin_rules(
+                &scratch.inputs(),
+                Some(agent.name()),
+                builtin.base_rules,
+                Vec::new(),
+                Vec::new(),
+                builtin.restriction_rules,
+                Vec::new(),
+                Vec::new(),
+                Arc::new(EventBus::new()),
+            )
+            .expect("prepare")
+            .engine
+            .expect("built-in mode rules attach an engine");
+
+            for tool in ["read", "glob", "grep", "lsp"] {
+                assert_eq!(
+                    engine.classify(tool, "src/main.rs"),
+                    Action::Allow,
+                    "{agent:?} should allow read/search tool {tool}"
+                );
+            }
+            for tool in ["write", "edit", "apply_patch", "format", "bash"] {
+                assert_eq!(
+                    engine.classify(tool, "src/main.rs"),
+                    Action::Deny,
+                    "{agent:?} should deny mutating tool {tool}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_read_allows_do_not_override_user_denies() {
+        let scratch = Scratch::new("builtin-read-deny");
+        scratch.write_project(
+            "[[permission]]\ntool = \"read\"\npattern = \"secrets/**\"\naction = \"deny\"\n",
+        );
+        let builtin = builtin_agent_permission_rules(Agent::Explore);
+        let engine = prepare_headless_permissions_with_builtin_rules(
+            &scratch.inputs(),
+            Some("explore"),
+            builtin.base_rules,
+            Vec::new(),
+            Vec::new(),
+            builtin.restriction_rules,
+            Vec::new(),
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("built-in mode rules attach an engine");
+        assert_eq!(
+            engine.classify("read", "secrets/key.txt"),
+            Action::Deny,
+            "a user read deny must narrow the built-in read allow"
+        );
+        assert_eq!(
+            engine.classify("read", "src/lib.rs"),
+            Action::Allow,
+            "non-denied read paths stay available to explore"
+        );
+    }
+
+    #[test]
+    fn builtin_mutation_denies_override_cli_allows() {
+        let scratch = Scratch::new("builtin-write-deny");
+        let builtin = builtin_agent_permission_rules(Agent::Plan);
+        let cli_rules = rules_from_flags(&flags(&["write:**"]), &[]).expect("parse");
+        let engine = prepare_headless_permissions_with_builtin_rules(
+            &scratch.inputs(),
+            Some("plan"),
+            builtin.base_rules,
+            cli_rules,
+            Vec::new(),
+            builtin.restriction_rules,
+            Vec::new(),
+            Vec::new(),
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("built-in mode rules attach an engine");
+        assert_eq!(
+            engine.classify("write", "out.txt"),
+            Action::Deny,
+            "plan mode's mutation block should not be widened by a CLI allow"
+        );
     }
 
     // VAL-PERM-017: a project-layer rule deterministically overrides a conflicting global-layer one.

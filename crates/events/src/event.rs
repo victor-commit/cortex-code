@@ -16,6 +16,8 @@ pub enum Surface {
     Config,
     /// The persisted-session management path (`cortex session`).
     Session,
+    /// The agent discovery path (`cortex agent`).
+    Agent,
     /// The outbound-network diagnostics path (`cortex net`).
     Net,
     /// The checkpoint undo/redo path (`cortex undo`/`cortex redo`).
@@ -36,6 +38,7 @@ impl Surface {
             Surface::Serve => "serve",
             Surface::Config => "config",
             Surface::Session => "session",
+            Surface::Agent => "agent",
             Surface::Net => "net",
             Surface::Checkpoint => "checkpoint",
             Surface::Mcp => "mcp",
@@ -294,6 +297,7 @@ mod tests {
         assert_eq!(Surface::Tui.as_str(), "tui");
         assert_eq!(Surface::Serve.as_str(), "serve");
         assert_eq!(Surface::Config.as_str(), "config");
+        assert_eq!(Surface::Agent.as_str(), "agent");
     }
 
     #[test]

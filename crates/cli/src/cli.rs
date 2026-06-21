@@ -56,6 +56,9 @@ pub enum Command {
     /// the data directory; the default location is left untouched when an override is used.
     Session(SessionArgs),
 
+    /// List the built-in agent personas selectable with `cortex run --agent`.
+    Agent(AgentArgs),
+
     /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
     ///
     /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
@@ -105,6 +108,12 @@ pub enum LspCommand {
 
 #[derive(Debug, Args)]
 pub struct LspStatusArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentArgs {
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -455,8 +464,17 @@ mod tests {
     fn help_lists_core_subcommands() {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
-        for sub in ["run", "tui", "serve", "session"] {
+        for sub in ["run", "tui", "serve", "session", "agent"] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
+        }
+    }
+
+    #[test]
+    fn agent_command_parses_format() {
+        let cli = Cli::try_parse_from(["cortex", "agent", "--format", "json"]).expect("parse");
+        match cli.command {
+            Some(Command::Agent(args)) => assert_eq!(args.format.format, OutputFormat::Json),
+            other => panic!("expected agent, got {other:?}"),
         }
     }
 
