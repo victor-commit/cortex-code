@@ -4,7 +4,7 @@
 //! pattern against whatever subject string the caller supplies. This module is the scoping layer
 //! that decides *what that subject is* for each tool class (architecture §3.4):
 //!
-//! - **File tools** (`read`, `write`, `edit`, `apply_patch`, `glob`, `grep`) scope by their
+//! - **File tools** (`read`, `write`, `edit`, `apply_patch`, `glob`, `grep`, `format`) scope by their
 //!   **target path**, so a path glob like `src/**` or `secrets/**` governs the action by where it
 //!   reads or writes (VAL-PERM-006). The path is normalized to a canonical relative form first, so
 //!   `./src/a.txt` and `src/a.txt` scope identically.
@@ -31,7 +31,15 @@ pub enum ToolScope {
 }
 
 /// The file tools whose permission subject is their target path.
-const PATH_TOOLS: [&str; 6] = ["read", "write", "edit", "apply_patch", "glob", "grep"];
+const PATH_TOOLS: [&str; 7] = [
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "glob",
+    "grep",
+    "format",
+];
 
 /// The tool whose permission subject is the shell command it runs.
 const COMMAND_TOOL: &str = "bash";
@@ -219,7 +227,15 @@ mod tests {
 
     #[test]
     fn scope_of_classifies_file_and_command_tools() {
-        for tool in ["read", "write", "edit", "apply_patch", "glob", "grep"] {
+        for tool in [
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "glob",
+            "grep",
+            "format",
+        ] {
             assert_eq!(
                 scope_of(tool),
                 Some(ToolScope::Path),

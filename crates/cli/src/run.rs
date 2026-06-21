@@ -324,8 +324,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     };
 
     let lsp_hooks = std::sync::Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
-    let mutation_hooks = std::sync::Arc::new(crate::format_bridge::PostMutationHooks::new(
+    let mutation_hooks = std::sync::Arc::new(crate::format_bridge::PostMutationHooks::with_config(
         cwd.clone(),
+        run_config.formatter_config.clone(),
         lsp_hooks.clone(),
     ));
 
@@ -993,6 +994,7 @@ struct RunConfig {
     base_url: Option<String>,
     api_key: Option<String>,
     mcp_servers: std::collections::BTreeMap<String, mcp::McpServerConfig>,
+    formatter_config: format::FormatterConfig,
 }
 
 /// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
@@ -1004,11 +1006,20 @@ struct RunConfig {
 /// failed `{env:}`/`{file:}` substitution, or a type mismatch).
 fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
     let effective = settings::load(inputs)?;
+    let formatter_config =
+        format::FormatterConfig::from_table(effective.table()).map_err(|message| {
+            ConfigError::TypeMismatch {
+                key: "formatter".to_owned(),
+                expected: "a formatter config table",
+                found: message,
+            }
+        })?;
     Ok(RunConfig {
         model: providers::resolve_model(Some(effective.model())),
         base_url: openrouter_base_url_override(&effective),
         api_key: openrouter_api_key(&effective),
         mcp_servers: mcp_servers_from_config(&effective),
+        formatter_config,
     })
 }
 

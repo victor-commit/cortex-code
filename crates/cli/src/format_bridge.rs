@@ -14,9 +14,21 @@ pub(crate) struct PostMutationHooks {
 impl PostMutationHooks {
     /// Build hooks rooted at the current run working directory.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new(root: impl Into<PathBuf>, diagnostics: Arc<dyn MutationHooks>) -> Self {
+        Self::with_config(root, format::FormatterConfig::default(), diagnostics)
+    }
+
+    /// Build hooks rooted at the current run working directory with config-driven formatter
+    /// overrides.
+    #[must_use]
+    pub(crate) fn with_config(
+        root: impl Into<PathBuf>,
+        config: format::FormatterConfig,
+        diagnostics: Arc<dyn MutationHooks>,
+    ) -> Self {
         Self {
-            formatter: format::FormatterRunner::new(root),
+            formatter: format::FormatterRunner::with_config(root, config),
             diagnostics,
         }
     }
@@ -27,9 +39,32 @@ impl MutationHooks for PostMutationHooks {
         let _ = self.formatter.format_path(path);
     }
 
+    fn format_feedback(&self, path: &Path) -> Option<String> {
+        match self.formatter.format_path(path) {
+            format::FormatOutcome::Failed(failure) => Some(format_failure_note(&failure)),
+            format::FormatOutcome::Formatted(_) | format::FormatOutcome::Skipped(_) => None,
+        }
+    }
+
     fn diagnostic_feedback(&self, path: &Path) -> DiagnosticFeedback {
         self.diagnostics.diagnostic_feedback(path)
     }
+}
+
+fn format_failure_note(failure: &format::FormatFailure) -> String {
+    let status = failure
+        .status
+        .map(|status| format!("exit {status}"))
+        .unwrap_or_else(|| "spawn failure".to_owned());
+    let stderr = if failure.stderr.is_empty() {
+        "no stderr".to_owned()
+    } else {
+        failure.stderr.clone()
+    };
+    format!(
+        "Formatter {} failed ({status}); left the written bytes intact. stderr: {stderr}",
+        failure.formatter.label()
+    )
 }
 
 #[cfg(test)]

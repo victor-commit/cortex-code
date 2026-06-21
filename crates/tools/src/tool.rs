@@ -133,6 +133,22 @@ impl DiagnosticFeedback {
             note: None,
         }
     }
+
+    /// Append an informational note to this feedback, preserving any existing note.
+    pub fn push_note(&mut self, note: impl Into<String>) {
+        let note = note.into();
+        if note.is_empty() {
+            return;
+        }
+        match &mut self.note {
+            Some(existing) if !existing.is_empty() => {
+                existing.push('\n');
+                existing.push_str(&note);
+            }
+            Some(existing) => *existing = note,
+            None => self.note = Some(note),
+        }
+    }
 }
 
 /// The post-write/post-edit downstream seam: a formatter pass over the written file and the LSP
@@ -147,6 +163,14 @@ impl DiagnosticFeedback {
 pub trait MutationHooks: Send + Sync {
     /// Reformat the just-written `path` in place. The default leaves the file untouched.
     fn format(&self, _path: &Path) {}
+
+    /// Reformat the just-written `path` and optionally return a model-visible note, for example a
+    /// formatter failure that preserved the raw written bytes. The default adapts older
+    /// implementations that only override [`format`](MutationHooks::format).
+    fn format_feedback(&self, path: &Path) -> Option<String> {
+        self.format(path);
+        None
+    }
 
     /// Diagnostics and optional LSP availability note for the just-written `path` to re-inject into
     /// the tool result. The default returns none (no LSP available is not an error).
@@ -415,10 +439,15 @@ impl ToolContext {
 
     /// Run the post-write formatter over `path` (a resolved absolute path) through the attached
     /// hooks. A no-op when no hooks are attached, so the file is left exactly as written.
-    pub fn format_after_write(&self, path: &Path) {
-        if let Some(hooks) = &self.hooks {
-            hooks.format(path);
+    pub fn format_after_write(&self, path: &Path) -> Option<String> {
+        let target = self.permission_target_for_path(path);
+        if !self.permits("format", &target) {
+            return None;
         }
+        if let Some(hooks) = &self.hooks {
+            return hooks.format_feedback(path);
+        }
+        None
     }
 
     /// Collect LSP diagnostics and an optional availability note for `path` through the attached
@@ -524,6 +553,13 @@ impl ToolContext {
             Some(engine) => engine.evaluate(&request_for(tool, target)).is_allowed(),
             None => true,
         }
+    }
+
+    fn permission_target_for_path(&self, path: &Path) -> String {
+        path.strip_prefix(&self.cwd)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string()
     }
 }
 

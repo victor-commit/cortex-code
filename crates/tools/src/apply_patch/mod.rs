@@ -205,11 +205,14 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     let mut feedback = DiagnosticFeedback::default();
     for path in diagnostic_paths {
-        ctx.format_after_write(&path);
+        let format_note = ctx.format_after_write(&path);
         let next = ctx.diagnostic_feedback_after_write(&path);
         feedback.diagnostics.extend(next.diagnostics);
-        if feedback.note.is_none() {
-            feedback.note = next.note;
+        if let Some(note) = next.note {
+            feedback.push_note(note);
+        }
+        if let Some(note) = format_note {
+            feedback.push_note(note);
         }
     }
     render_with_feedback(summary, feedback)

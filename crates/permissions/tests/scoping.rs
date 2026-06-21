@@ -44,12 +44,21 @@ fn file_tool_glob_patterns_scope_by_path() {
     );
 }
 
-/// The path scope governs every file tool, not just write (read/edit/apply_patch/glob/grep).
+/// The path scope governs every file tool, not just write
+/// (read/edit/apply_patch/glob/grep/format).
 #[test]
 fn path_scope_governs_all_file_tools() {
     let ruleset = Ruleset::new(vec![Rule::new("*", "secrets/**", Action::Deny)]);
     let engine = PermissionEngine::new(ruleset);
-    for tool in ["read", "write", "edit", "apply_patch", "glob", "grep"] {
+    for tool in [
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+        "glob",
+        "grep",
+        "format",
+    ] {
         assert_eq!(
             engine.evaluate(&request_for(tool, "secrets/key.txt")),
             Outcome::Denied,

@@ -174,8 +174,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     // Post-edit downstream hooks. The formatter rewrites the file in place first, then diagnostics
     // are collected against the final on-disk content. Both are no-ops when no surface attached
     // those capabilities.
-    ctx.format_after_write(&resolved);
-    let feedback = ctx.diagnostic_feedback_after_write(&resolved);
+    let format_note = ctx.format_after_write(&resolved);
+    let mut feedback = ctx.diagnostic_feedback_after_write(&resolved);
+    if let Some(note) = format_note {
+        feedback.push_note(note);
+    }
 
     let occurrences = if applied.replacements == 1 {
         "1 occurrence".to_owned()
