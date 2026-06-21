@@ -10,6 +10,7 @@
 //! catalogue without a restart.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::time::Duration;
 
 use http::{HeaderMap, HeaderName, HeaderValue};
@@ -35,9 +36,6 @@ use crate::transport_sse::SseClientTransport;
 
 /// The default per-operation timeout (handshake and each request) when a server sets none.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Environment variables never forwarded into a spawned MCP child, so host secrets do not leak.
-const STRIPPED_ENV: &[&str] = &["OPENROUTER_API_KEY"];
 
 /// A connected MCP server session (stdio or remote).
 pub struct McpClient {
@@ -71,9 +69,8 @@ impl McpClient {
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
         }
-        for stripped in STRIPPED_ENV {
-            command.env_remove(stripped);
-        }
+        command.env_clear();
+        command.envs(child_env());
         for (key, value) in &config.environment {
             command.env(key, value);
         }
@@ -434,6 +431,30 @@ impl McpClient {
     }
 }
 
+/// The inherited environment passed to a stdio MCP child: ordinary host variables (notably PATH)
+/// are preserved for command resolution, while credential-bearing variables are removed before the
+/// configured per-server environment is layered on top.
+fn child_env() -> Vec<(OsString, OsString)> {
+    filter_secret_env(std::env::vars_os())
+}
+
+/// Strip host secrets from an environment by name and by API-key-shaped value. This only filters
+/// inherited parent variables; entries explicitly configured under `mcp.<name>.environment` are
+/// applied after this filter so users can intentionally pass server-specific configuration.
+fn filter_secret_env<I>(vars: I) -> Vec<(OsString, OsString)>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    vars.into_iter()
+        .filter(|(name, value)| {
+            if redaction::is_secret_env_var(&name.to_string_lossy()) {
+                return false;
+            }
+            !redaction::value_is_secret(&value.to_string_lossy())
+        })
+        .collect()
+}
+
 /// Kill a stdio child and every currently visible descendant after a failed initialize path, where
 /// no [`McpClient`] exists yet to run the normal shutdown path.
 async fn kill_spawned_tree(pid: Option<u32>) {
@@ -524,4 +545,60 @@ fn build_header_map(
         map.insert(http::header::AUTHORIZATION, value);
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_openrouter_key() -> String {
+        format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8))
+    }
+
+    #[test]
+    fn filters_inherited_parent_secrets_but_keeps_ordinary_env() {
+        let key = fake_openrouter_key();
+        let vars = vec![
+            ("OPENROUTER_API_KEY".into(), key.clone().into()),
+            ("ANTHROPIC_API_KEY".into(), "plain-parent-secret".into()),
+            (
+                "CORTEX_MCP_PARENT_SECRET".into(),
+                "plain-parent-secret".into(),
+            ),
+            ("LEAKED_COPY".into(), key.clone().into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("HOME".into(), "/tmp/home".into()),
+            ("CORTEX_MCP_ECHO_LOG".into(), "/tmp/echo.log".into()),
+        ];
+
+        let filtered = filter_secret_env(vars);
+        let names = filtered
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        for stripped in [
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "CORTEX_MCP_PARENT_SECRET",
+            "LEAKED_COPY",
+        ] {
+            assert!(
+                !names.contains(&stripped.to_owned()),
+                "{stripped} must not be inherited by an MCP child"
+            );
+        }
+        for kept in ["PATH", "HOME", "CORTEX_MCP_ECHO_LOG"] {
+            assert!(
+                names.contains(&kept.to_owned()),
+                "{kept} should survive inherited env filtering"
+            );
+        }
+        for (_, value) in &filtered {
+            assert!(
+                !value.to_string_lossy().contains("deadbeef"),
+                "no key-shaped secret value survives"
+            );
+        }
+    }
 }

@@ -46,6 +46,10 @@ fn temp_path(tag: &str) -> PathBuf {
     ))
 }
 
+fn fake_openrouter_key() -> String {
+    format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8))
+}
+
 struct Scratch {
     root: PathBuf,
 }
@@ -183,6 +187,20 @@ fn mcp_list_json(scratch: &Scratch) -> Value {
     serde_json::from_slice(&output.stdout).expect("mcp list JSON")
 }
 
+fn pid_alive(pid: u64) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+fn assert_pid_reaped(pid: u64) {
+    for _ in 0..50 {
+        if !pid_alive(pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!pid_alive(pid), "MCP child pid {pid} should be reaped");
+}
+
 fn read_first_json_line(reader: &mut impl Read) -> Value {
     let mut line = Vec::new();
     let start = Instant::now();
@@ -271,6 +289,180 @@ fn http_get(url: &str) -> HttpResponse {
         headers,
         body: body.to_owned(),
     }
+}
+
+#[test]
+fn mcp_list_applies_configured_cwd_env_and_strips_parent_secrets() {
+    let Some(bin) = echo_server_bin() else {
+        eprintln!("skipping: cortex-mcp-echo-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("stdio-env");
+    let server_cwd = scratch.root.join("server-cwd");
+    fs::create_dir_all(&server_cwd).expect("server cwd");
+    let log = scratch.root.join("echo.log");
+    scratch.write_project_config(&format!(
+        r#"
+[mcp.demo]
+type = "local"
+command = ["{}"]
+cwd = "{}"
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+CORTEX_MCP_ECHO_CONFIGURED_FLAG = "configured-ok"
+CORTEX_MCP_ECHO_STARTUP_ENV_NAME = "CORTEX_MCP_PARENT_SECRET"
+"#,
+        toml_string(&bin),
+        toml_string(&server_cwd),
+        toml_string(&log)
+    ));
+
+    let mut command = cortex_command(&scratch, &["mcp", "list", "--format", "json"]);
+    command
+        .env("CORTEX_MCP_PARENT_SECRET", "plain-parent-secret")
+        .env("ANTHROPIC_API_KEY", "plain-anthropic-secret")
+        .env("LEAKED_COPY", fake_openrouter_key());
+    let output = run_command(command);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "mcp list failed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let list: Value = serde_json::from_slice(&output.stdout).expect("mcp list JSON");
+    let server = &list["servers"][0];
+    assert_eq!(server["status"], "connected", "server connected: {list}");
+    let pid = server["pid"].as_u64().expect("stdio pid is reported");
+
+    let log_body = fs::read_to_string(&log).expect("configured env log is written");
+    assert!(
+        log_body.contains(&format!("cwd={}", server_cwd.display())),
+        "configured cwd should reach the child startup log: {log_body}"
+    );
+    assert!(
+        log_body.contains("CORTEX_MCP_ECHO_CONFIGURED_FLAG=configured-ok"),
+        "configured environment entries should reach the child: {log_body}"
+    );
+    assert!(
+        log_body.contains("CORTEX_MCP_PARENT_SECRET=(unset)"),
+        "synthetic parent secret should be stripped: {log_body}"
+    );
+    assert!(
+        !log_body.contains("plain-parent-secret")
+            && !log_body.contains("plain-anthropic-secret")
+            && !log_body.contains("deadbeef"),
+        "parent secret values must not reach the MCP fixture log: {log_body}"
+    );
+    assert_pid_reaped(pid);
+}
+
+#[test]
+fn mcp_list_leaves_disabled_stdio_entries_unspawned() {
+    let Some(bin) = echo_server_bin() else {
+        eprintln!("skipping: cortex-mcp-echo-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("disabled");
+    let log = scratch.root.join("disabled.log");
+    scratch.write_project_config(&format!(
+        r#"
+[mcp.off]
+type = "local"
+command = ["{}"]
+enabled = false
+[mcp.off.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+"#,
+        toml_string(&bin),
+        toml_string(&log)
+    ));
+
+    let list = mcp_list_json(&scratch);
+    let server = &list["servers"][0];
+    assert_eq!(server["name"], "off");
+    assert_eq!(server["status"], "disabled");
+    assert!(
+        server["pid"].is_null(),
+        "disabled server has no PID: {list}"
+    );
+    assert!(
+        server["tools"].as_array().unwrap().is_empty(),
+        "disabled server exposes no tools: {list}"
+    );
+    assert!(!log.exists(), "disabled server must never be spawned");
+}
+
+#[test]
+fn mcp_add_persists_hyphen_prefixed_command_vector_and_options() {
+    let scratch = Scratch::new("add-hyphen");
+    let output = run_command(cortex_command(
+        &scratch,
+        &[
+            "mcp",
+            "add",
+            "demo",
+            "--cwd",
+            "/tmp/server-work",
+            "--env",
+            "FOO=bar",
+            "--disabled",
+            "--force",
+            "--format",
+            "json",
+            "--command",
+            "npx",
+            "-y",
+            "@scope/server",
+            "--stdio",
+        ],
+    ));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "mcp add failed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).expect("mcp add JSON");
+    assert_eq!(document["status"], "added");
+
+    let config_path = scratch.home().join(".config/cortex/config.toml");
+    let body = fs::read_to_string(&config_path).expect("global config written");
+    let parsed: toml::Value = toml::from_str(&body).expect("valid TOML");
+    let demo = parsed
+        .get("mcp")
+        .and_then(|mcp| mcp.get("demo"))
+        .expect("demo server persisted");
+    let command = demo
+        .get("command")
+        .and_then(toml::Value::as_array)
+        .expect("command array")
+        .iter()
+        .map(|value| value.as_str().expect("string arg").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        command,
+        vec![
+            "npx".to_owned(),
+            "-y".to_owned(),
+            "@scope/server".to_owned(),
+            "--stdio".to_owned()
+        ],
+        "full command vector should be persisted exactly: {body}"
+    );
+    assert_eq!(
+        demo.get("cwd").and_then(toml::Value::as_str),
+        Some("/tmp/server-work")
+    );
+    assert_eq!(
+        demo.get("environment")
+            .and_then(|env| env.get("FOO"))
+            .and_then(toml::Value::as_str),
+        Some("bar")
+    );
+    assert_eq!(
+        demo.get("enabled").and_then(toml::Value::as_bool),
+        Some(false)
+    );
 }
 
 #[test]

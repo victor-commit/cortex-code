@@ -33,17 +33,49 @@ pub const SECRET_ENV_VARS: &[&str] = &[
     "TOGETHER_API_KEY",
     "FIREWORKS_API_KEY",
     "CEREBRAS_API_KEY",
+    "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITLAB_TOKEN",
+    "NPM_TOKEN",
+    "CARGO_REGISTRY_TOKEN",
+    "HF_TOKEN",
+];
+
+/// Name fragments that indicate a credential-bearing variable even when the exact provider name
+/// is not in [`SECRET_ENV_VARS`]. This catches synthetic validator secrets and copied credentials
+/// under ad-hoc names while preserving ordinary runtime variables like `PATH` and `HOME`.
+const SECRET_ENV_NAME_MARKERS: &[&str] = &[
+    "API_KEY",
+    "ACCESS_KEY",
+    "ACCESS_TOKEN",
+    "AUTH_TOKEN",
+    "PRIVATE_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "CREDENTIALS",
 ];
 
 /// Whether `name` is a known credential environment variable that must be stripped from a child
 /// process (case-insensitive match against [`SECRET_ENV_VARS`]).
 #[must_use]
 pub fn is_secret_env_var(name: &str) -> bool {
-    SECRET_ENV_VARS
+    let known = SECRET_ENV_VARS
         .iter()
-        .any(|known| known.eq_ignore_ascii_case(name))
+        .any(|known| known.eq_ignore_ascii_case(name));
+    known || name_contains_secret_marker(name)
+}
+
+fn name_contains_secret_marker(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_ENV_NAME_MARKERS
+        .iter()
+        .any(|marker| upper.contains(marker))
 }
 
 /// Whether `value` contains an API-key-shaped secret (i.e. [`redact`](crate::redact) would change
@@ -76,6 +108,20 @@ mod tests {
     fn ordinary_variables_are_not_secret_by_name() {
         for name in ["PATH", "HOME", "PWD", "TERM", "LANG", "CORTEX_NO_NET"] {
             assert!(!is_secret_env_var(name), "{name} must not be secret");
+        }
+    }
+
+    #[test]
+    fn synthetic_and_common_secret_names_are_secret_by_name() {
+        for name in [
+            "CORTEX_MCP_PARENT_SECRET",
+            "GITHUB_TOKEN",
+            "DATABASE_PASSWORD",
+            "AWS_ACCESS_KEY_ID",
+            "SOME_API_KEY",
+            "custom_private_key",
+        ] {
+            assert!(is_secret_env_var(name), "{name} must be secret");
         }
     }
 

@@ -382,7 +382,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let startup = format!("cortex-mcp-echo-server started pid={}", std::process::id());
+    let startup_cwd = std::env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let configured_flag =
+        std::env::var("CORTEX_MCP_ECHO_CONFIGURED_FLAG").unwrap_or_else(|_| "(unset)".to_owned());
+    let startup_probe = std::env::var("CORTEX_MCP_ECHO_STARTUP_ENV_NAME")
+        .ok()
+        .map(|name| {
+            let value = std::env::var(&name).unwrap_or_else(|_| "(unset)".to_owned());
+            format!(" {name}={value}")
+        })
+        .unwrap_or_default();
+    let startup = format!(
+        "cortex-mcp-echo-server started pid={} cwd={startup_cwd} \
+         CORTEX_MCP_ECHO_CONFIGURED_FLAG={configured_flag}{startup_probe}",
+        std::process::id()
+    );
     eprintln!("{startup}");
     if let Ok(path) = std::env::var("CORTEX_MCP_ECHO_LOG") {
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {

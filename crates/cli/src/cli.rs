@@ -179,7 +179,17 @@ pub struct McpAddArgs {
     pub name: String,
 
     /// The command to launch a local stdio server: the program followed by its arguments.
-    #[arg(long = "command", num_args = 1.., conflicts_with = "url", value_name = "CMD")]
+    ///
+    /// Put Cortex-side options such as `--cwd`, `--env`, `--disabled`, and `--force` before this
+    /// flag. The command vector is trailing and preserves hyphen-prefixed server arguments, e.g.
+    /// `--command npx -y @scope/server --stdio`.
+    #[arg(
+        long = "command",
+        num_args = 1..,
+        allow_hyphen_values = true,
+        conflicts_with = "url",
+        value_name = "CMD"
+    )]
     pub command: Vec<String>,
 
     /// The URL of a remote HTTP/SSE MCP server.
@@ -760,6 +770,52 @@ mod tests {
                 assert_eq!(args.url.as_deref(), Some("http://127.0.0.1:3210/mcp"));
                 assert_eq!(args.headers, vec!["Authorization=Bearer static-token"]);
                 assert_eq!(args.timeout_secs, Some(5));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected mcp add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_preserves_trailing_hyphen_prefixed_command_args() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "mcp",
+            "add",
+            "demo",
+            "--cwd",
+            "/tmp/server-work",
+            "--env",
+            "FOO=bar",
+            "--disabled",
+            "--force",
+            "--format",
+            "json",
+            "--command",
+            "npx",
+            "-y",
+            "@scope/server",
+            "--stdio",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Add(args),
+            })) => {
+                assert_eq!(args.name, "demo");
+                assert_eq!(
+                    args.command,
+                    vec![
+                        "npx".to_owned(),
+                        "-y".to_owned(),
+                        "@scope/server".to_owned(),
+                        "--stdio".to_owned()
+                    ]
+                );
+                assert_eq!(args.cwd.as_deref(), Some("/tmp/server-work"));
+                assert_eq!(args.env, vec!["FOO=bar"]);
+                assert!(args.disabled);
+                assert!(args.force);
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected mcp add, got {other:?}"),
