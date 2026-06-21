@@ -10,6 +10,7 @@ mod config;
 mod diagnostics;
 mod error;
 mod feedback;
+mod navigation;
 mod protocol;
 mod transport;
 
@@ -20,7 +21,11 @@ pub use diagnostics::{
 };
 pub use error::LspError;
 pub use feedback::{
-    FeedbackManager, FeedbackOutcome, FileDiagnostic, ServerRunState, ServerStatus,
-    render_feedback_block,
+    FeedbackManager, FeedbackOutcome, FileDiagnostic, NavigationOutcome, NavigationRequest,
+    ServerRunState, ServerStatus, render_feedback_block,
+};
+pub use navigation::{
+    DocumentSymbol, Hover, Location, SymbolInformation, SymbolKind, document_symbols_context_block,
+    hover_context_block, locations_context_block, workspace_symbols_context_block,
 };
 pub use protocol::{InitializeParams, InitializeResult, ServerCapabilities, ServerInfo};

@@ -343,6 +343,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // Attach the real LSP diagnostics hook so write/edit results carry diagnostics from the
     // matching language server after the on-disk mutation persists.
     let dispatcher = dispatcher.with_hooks(lsp_hooks.clone());
+    // Attach the same real LSP manager to the read-only `lsp` navigation tool, so hover,
+    // definition, references, and symbols use the live server and share its lifecycle.
+    let dispatcher = dispatcher.with_lsp_service(lsp_hooks.clone());
     // Attach the connected MCP manager so its server-qualified tools are advertised and callable
     // alongside the built-in tools this turn.
     let dispatcher = match &mcp_manager {

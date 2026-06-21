@@ -55,7 +55,7 @@ pub struct Position {
 }
 
 impl Position {
-    fn from_value(value: &Value) -> Option<Self> {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             line: u32::try_from(value.get("line")?.as_u64()?).ok()?,
             character: u32::try_from(value.get("character")?.as_u64()?).ok()?,
@@ -73,7 +73,7 @@ pub struct Range {
 }
 
 impl Range {
-    fn from_value(value: &Value) -> Option<Self> {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             start: Position::from_value(value.get("start")?)?,
             end: Position::from_value(value.get("end")?)?,

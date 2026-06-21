@@ -10,7 +10,8 @@ use url::Url;
 
 use crate::client::LspClient;
 use crate::config::{InstallPlan, LspConfigSet, LspServerConfig};
-use crate::diagnostics::DiagnosticSeverity;
+use crate::diagnostics::{DiagnosticSeverity, Position};
+use crate::navigation::{DocumentSymbol, Hover, Location, SymbolInformation};
 use crate::protocol::InitializeParams;
 
 /// Total wall-clock budget for one post-mutation LSP diagnostic collection.
@@ -19,6 +20,7 @@ pub const FEEDBACK_BUDGET: Duration = Duration::from_millis(4500);
 pub const MAX_RENDERED_DIAGNOSTICS: usize = 20;
 /// Maximum characters from one diagnostic message.
 pub const MAX_MESSAGE_CHARS: usize = 500;
+const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
 
 /// One diagnostic projected to tool-result shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +52,56 @@ pub enum FeedbackOutcome {
     Unavailable,
     /// Diagnostics currently known for the file. Empty means the file is clean.
     Diagnostics(Vec<FileDiagnostic>),
+}
+
+/// A read-only LSP navigation request. Line and character inputs are 1-based because they are
+/// model/user-facing; they are converted to zero-based LSP positions on the wire.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NavigationRequest {
+    /// Hover at a symbol position.
+    Hover {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Go to definition from a symbol use site.
+    Definition {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Find references to a symbol.
+    References {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+        include_declaration: bool,
+    },
+    /// List document symbols for a file.
+    DocumentSymbols { file_path: PathBuf },
+    /// Resolve workspace symbols. Supplying `file_path` selects the language server by extension;
+    /// omitting it uses the first available configured server.
+    WorkspaceSymbols {
+        query: String,
+        file_path: Option<PathBuf>,
+    },
+}
+
+/// Result of a read-only LSP navigation request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NavigationOutcome {
+    /// No server applies or no configured server can be launched.
+    NoServer,
+    /// A running server stopped responding, crashed, or returned a transport error.
+    Unavailable,
+    /// Hover result.
+    Hover(Option<Hover>),
+    /// Definition/reference locations.
+    Locations(Vec<Location>),
+    /// Document symbols.
+    DocumentSymbols(Vec<DocumentSymbol>),
+    /// Workspace symbols.
+    WorkspaceSymbols(Vec<SymbolInformation>),
 }
 
 /// A point-in-time view of one configured server.
@@ -205,6 +257,80 @@ impl FeedbackManager {
         FeedbackOutcome::Diagnostics(diagnostics)
     }
 
+    /// Execute a read-only navigation request against the real language server. A missing or dead
+    /// server is surfaced as a typed outcome rather than a panic or hang.
+    pub fn navigate(&mut self, request: NavigationRequest) -> NavigationOutcome {
+        let deadline = Instant::now() + self.budget;
+        match request {
+            NavigationRequest::Hover {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(deadline, || client.hover(uri, position), Option::is_some)
+            }),
+            NavigationRequest::Definition {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.goto_definition(uri, position),
+                    |locations| !locations.is_empty(),
+                )
+                .map(NavigationOutcome::Locations)
+            }),
+            NavigationRequest::References {
+                file_path,
+                line,
+                character,
+                include_declaration,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.references(uri, position, include_declaration),
+                    |locations| !locations.is_empty(),
+                )
+                .map(NavigationOutcome::Locations)
+            }),
+            NavigationRequest::DocumentSymbols { file_path } => {
+                self.with_document(&file_path, deadline, |client, uri| {
+                    retry_navigation(
+                        deadline,
+                        || client.document_symbols(uri),
+                        |symbols| !symbols.is_empty(),
+                    )
+                    .map(NavigationOutcome::DocumentSymbols)
+                })
+            }
+            NavigationRequest::WorkspaceSymbols { query, file_path } => {
+                if let Some(file_path) = file_path {
+                    self.with_document(&file_path, deadline, |client, _uri| {
+                        retry_navigation(
+                            deadline,
+                            || client.workspace_symbols(&query),
+                            |symbols| !symbols.is_empty(),
+                        )
+                        .map(NavigationOutcome::WorkspaceSymbols)
+                    })
+                } else {
+                    self.with_any_server(deadline, |client| {
+                        retry_navigation(
+                            deadline,
+                            || client.workspace_symbols(&query),
+                            |symbols| !symbols.is_empty(),
+                        )
+                        .map(NavigationOutcome::WorkspaceSymbols)
+                    })
+                }
+            }
+        }
+    }
+
     /// Point-in-time status for every configured server.
     #[must_use]
     pub fn statuses(&mut self) -> Vec<ServerStatus> {
@@ -322,6 +448,111 @@ impl FeedbackManager {
         self.servers
             .insert(language_id.to_owned(), ServerSlot::Broken);
     }
+
+    fn with_document<T, F>(&mut self, path: &Path, deadline: Instant, op: F) -> NavigationOutcome
+    where
+        T: Into<NavigationOutcome>,
+        F: FnOnce(&mut LspClient, &str) -> Result<T, crate::LspError>,
+    {
+        let Ok((language_id, uri)) = self.ensure_document(path, deadline) else {
+            return match self.config.resolve_for_path(self.absolute_path(path)) {
+                Some(server) => match self.servers.get(server.language_id()) {
+                    Some(ServerSlot::Broken | ServerSlot::Failed) => NavigationOutcome::Unavailable,
+                    _ => NavigationOutcome::NoServer,
+                },
+                None => NavigationOutcome::NoServer,
+            };
+        };
+        let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
+            return NavigationOutcome::Unavailable;
+        };
+        match op(client, &uri) {
+            Ok(outcome) => outcome.into(),
+            Err(_) => {
+                self.mark_broken(&language_id);
+                NavigationOutcome::Unavailable
+            }
+        }
+    }
+
+    fn with_any_server<T, F>(&mut self, deadline: Instant, op: F) -> NavigationOutcome
+    where
+        T: Into<NavigationOutcome>,
+        F: FnOnce(&mut LspClient) -> Result<T, crate::LspError>,
+    {
+        let Some(language_id) = self.ensure_any_server(deadline) else {
+            return NavigationOutcome::NoServer;
+        };
+        let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
+            return NavigationOutcome::Unavailable;
+        };
+        match op(client) {
+            Ok(outcome) => outcome.into(),
+            Err(_) => {
+                self.mark_broken(&language_id);
+                NavigationOutcome::Unavailable
+            }
+        }
+    }
+
+    fn ensure_document(&mut self, path: &Path, deadline: Instant) -> Result<(String, String), ()> {
+        let absolute = self.absolute_path(path);
+        let Some(server) = self.config.resolve_for_path(&absolute).cloned() else {
+            return Err(());
+        };
+        let language_id = server.language_id().to_owned();
+        match self.servers.get(&language_id) {
+            Some(ServerSlot::Missing | ServerSlot::Failed | ServerSlot::Broken) => return Err(()),
+            Some(ServerSlot::Running { .. }) | None => {}
+        }
+        if !self.servers.contains_key(&language_id) && !self.start_server(&server, deadline) {
+            return Err(());
+        }
+        let text = std::fs::read_to_string(&absolute).map_err(|_| ())?;
+        let uri = path_to_uri(&absolute);
+        if self.announce(&language_id, &uri, &text).is_err() {
+            self.mark_broken(&language_id);
+            return Err(());
+        }
+        Ok((language_id, uri))
+    }
+
+    fn ensure_any_server(&mut self, deadline: Instant) -> Option<String> {
+        if let Some((language_id, client)) =
+            self.servers
+                .iter_mut()
+                .find_map(|(language_id, slot)| match slot {
+                    ServerSlot::Running { client, .. } => Some((language_id.clone(), client)),
+                    ServerSlot::Missing | ServerSlot::Failed | ServerSlot::Broken => None,
+                })
+        {
+            if client.is_running() {
+                return Some(language_id);
+            }
+        }
+        let server = self
+            .config
+            .servers()
+            .iter()
+            .find(|server| command_exists(server.program()))
+            .cloned()?;
+        let language_id = server.language_id().to_owned();
+        self.start_server(&server, deadline).then_some(language_id)
+    }
+
+    fn absolute_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        }
+    }
+}
+
+impl From<Option<Hover>> for NavigationOutcome {
+    fn from(hover: Option<Hover>) -> Self {
+        Self::Hover(hover)
+    }
 }
 
 impl Drop for FeedbackManager {
@@ -390,6 +621,37 @@ fn render_diagnostic_line(diagnostic: &FileDiagnostic) -> String {
         "- {}{code}{source} at line {}, character {}-{}: {message}",
         diagnostic.severity, diagnostic.line, diagnostic.character, diagnostic.end_character
     )
+}
+
+fn one_based_to_lsp(line: u32, character: u32) -> Position {
+    Position {
+        line: line.saturating_sub(1),
+        character: character.saturating_sub(1),
+    }
+}
+
+fn retry_navigation<T, F, P>(
+    deadline: Instant,
+    mut request: F,
+    is_ready: P,
+) -> Result<T, crate::LspError>
+where
+    F: FnMut() -> Result<T, crate::LspError>,
+    P: Fn(&T) -> bool,
+{
+    loop {
+        let result = request()?;
+        if is_ready(&result) {
+            return Ok(result);
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_default();
+        if remaining <= NAVIGATION_RETRY_INTERVAL {
+            return Ok(result);
+        }
+        std::thread::sleep(NAVIGATION_RETRY_INTERVAL.min(remaining));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

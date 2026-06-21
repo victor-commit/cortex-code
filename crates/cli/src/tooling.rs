@@ -14,7 +14,7 @@ use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
 use permissions::PermissionEngine;
-use tools::{BackgroundJobs, MutationHooks, TodoStore, ToolContext, ToolRegistry};
+use tools::{BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
 ///
@@ -90,6 +90,13 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
         self.context = self.context.with_hooks(hooks);
+        self
+    }
+
+    /// Attach read-only LSP navigation/status query support to the `lsp` tool.
+    #[must_use]
+    pub fn with_lsp_service(mut self, service: Arc<dyn LspService>) -> Self {
+        self.context = self.context.with_lsp_service(service);
         self
     }
 

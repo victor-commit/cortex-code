@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use crate::LspError;
-use crate::diagnostics::{DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, PublishDiagnosticsParams};
+use crate::diagnostics::{
+    DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, Position, PublishDiagnosticsParams,
+};
+use crate::navigation::{self, DocumentSymbol, Hover, Location, SymbolInformation};
 use crate::protocol::{InitializeParams, InitializeResult, JSONRPC_VERSION};
 use crate::transport::{self, DEFAULT_MAX_MESSAGE_BYTES};
 
@@ -301,6 +304,81 @@ impl LspClient {
     #[must_use]
     pub fn child_id(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Request hover information for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request times out, the server closes, or the response is
+    /// malformed.
+    pub fn hover(&mut self, uri: &str, position: Position) -> Result<Option<Hover>, LspError> {
+        let id = self.send_request(
+            navigation::HOVER_METHOD,
+            navigation::text_document_position_params(uri, position),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::hover_from_value(&result))
+    }
+
+    /// Request definition locations for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn goto_definition(
+        &mut self,
+        uri: &str,
+        position: Position,
+    ) -> Result<Vec<Location>, LspError> {
+        let id = self.send_request(
+            navigation::DEFINITION_METHOD,
+            navigation::text_document_position_params(uri, position),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::locations_from_value(&result))
+    }
+
+    /// Request reference locations for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn references(
+        &mut self,
+        uri: &str,
+        position: Position,
+        include_declaration: bool,
+    ) -> Result<Vec<Location>, LspError> {
+        let id = self.send_request(
+            navigation::REFERENCES_METHOD,
+            navigation::references_params(uri, position, include_declaration),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::locations_from_value(&result))
+    }
+
+    /// Request document symbols for `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn document_symbols(&mut self, uri: &str) -> Result<Vec<DocumentSymbol>, LspError> {
+        let id = self.send_request(
+            navigation::DOCUMENT_SYMBOL_METHOD,
+            navigation::document_symbol_params(uri),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::document_symbols_from_value(&result))
+    }
+
+    /// Request workspace symbols matching `query`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn workspace_symbols(&mut self, query: &str) -> Result<Vec<SymbolInformation>, LspError> {
+        let id = self.send_request(
+            navigation::WORKSPACE_SYMBOL_METHOD,
+            navigation::workspace_symbol_params(query),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::workspace_symbols_from_value(&result))
     }
 
     /// Whether the child is still running.

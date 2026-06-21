@@ -16,6 +16,7 @@ mod bash;
 mod edit;
 mod glob;
 mod grep;
+mod lsp;
 mod output;
 mod read;
 mod registry;
@@ -29,12 +30,13 @@ pub use bash::{BackgroundJob, BackgroundJobs, BashTool, JobHandle};
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+pub use lsp::LspTool;
 pub use output::{BoundedOutput, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, OutputLimits, bound_output};
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
 pub use todo::TodoTool;
 pub use tool::{
-    CheckpointRecorder, Diagnostic, DiagnosticFeedback, MutationHooks, TodoStore, Tool,
-    ToolContext, ToolOutput,
+    CheckpointRecorder, Diagnostic, DiagnosticFeedback, LspOperation, LspRequest, LspService,
+    MutationHooks, TodoStore, Tool, ToolContext, ToolOutput,
 };
 pub use write::WriteTool;

@@ -162,6 +162,49 @@ pub trait MutationHooks: Send + Sync {
     }
 }
 
+/// Read-only LSP operation requested by the `lsp` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspOperation {
+    /// Return hover text for a symbol position.
+    Hover,
+    /// Resolve definition locations for a symbol position.
+    Definition,
+    /// Resolve reference locations for a symbol position.
+    References,
+    /// List document symbols for a file.
+    DocumentSymbols,
+    /// Search workspace symbols by query.
+    WorkspaceSymbols,
+}
+
+/// Parsed request passed from the model-facing `lsp` tool to the surface-provided LSP service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspRequest {
+    /// Operation to run.
+    pub operation: LspOperation,
+    /// Optional file path. Required for hover/definition/references/document symbols, optional for
+    /// workspace symbols as a server-selection hint.
+    pub file_path: Option<String>,
+    /// 1-based line for position-based operations.
+    pub line: Option<u32>,
+    /// 1-based character for position-based operations.
+    pub character: Option<u32>,
+    /// Workspace-symbol query.
+    pub query: Option<String>,
+    /// Whether references should include the declaration (default true).
+    pub include_declaration: bool,
+}
+
+/// Surface-owned LSP query seam used by the read-only `lsp` tool.
+///
+/// The tool layer owns argument parsing and tool materialization; the CLI/TUI/server surface owns
+/// the real language-server process pool and cleanup, so it implements this trait and attaches it to
+/// the [`ToolContext`].
+pub trait LspService: Send + Sync {
+    /// Execute one LSP request and return the exact tool output to show the model.
+    fn query(&self, request: LspRequest) -> ToolOutput;
+}
+
 /// The pre-mutation checkpoint seam the mutating file tools call before they touch the working
 /// tree.
 ///
@@ -273,6 +316,7 @@ pub struct ToolContext {
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
     hooks: Option<Arc<dyn MutationHooks>>,
+    lsp: Option<Arc<dyn LspService>>,
     checkpoints: Option<Arc<dyn CheckpointRecorder>>,
     session_id: Option<String>,
     todos: Option<Arc<dyn TodoStore>>,
@@ -289,6 +333,7 @@ impl ToolContext {
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             hooks: None,
+            lsp: None,
             checkpoints: None,
             session_id: None,
             todos: None,
@@ -344,6 +389,19 @@ impl ToolContext {
     pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
         self.hooks = Some(hooks);
         self
+    }
+
+    /// Attach a read-only LSP service for the `lsp` navigation tool.
+    #[must_use]
+    pub fn with_lsp_service(mut self, service: Arc<dyn LspService>) -> Self {
+        self.lsp = Some(service);
+        self
+    }
+
+    /// The attached read-only LSP service, if any.
+    #[must_use]
+    pub fn lsp_service(&self) -> Option<&Arc<dyn LspService>> {
+        self.lsp.as_ref()
     }
 
     /// Attach the pre-mutation checkpoint recorder the mutating tools call before they touch a file
