@@ -59,6 +59,9 @@ pub enum Command {
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
+    /// Generate a custom markdown agent definition with a real model turn.
+    Generate(GenerateArgs),
+
     /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
     ///
     /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
@@ -114,6 +117,31 @@ pub struct LspStatusArgs {
 
 #[derive(Debug, Args)]
 pub struct AgentArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct GenerateArgs {
+    /// Description of the custom agent to author.
+    #[arg(value_name = "DESCRIPTION")]
+    pub description: String,
+
+    /// Override the generated identifier.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Directory to write the generated markdown agent into.
+    ///
+    /// Defaults to `.cortex/agents` under the current project, which is searched automatically by
+    /// `cortex agent` and `cortex run --agent`.
+    #[arg(long = "agents-dir", value_name = "DIR")]
+    pub agents_dir: Option<String>,
+
+    /// Model to use for the generator turn (overrides config and defaults).
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -464,7 +492,7 @@ mod tests {
     fn help_lists_core_subcommands() {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
-        for sub in ["run", "tui", "serve", "session", "agent"] {
+        for sub in ["run", "tui", "serve", "session", "agent", "generate"] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
     }
@@ -475,6 +503,34 @@ mod tests {
         match cli.command {
             Some(Command::Agent(args)) => assert_eq!(args.format.format, OutputFormat::Json),
             other => panic!("expected agent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generate_command_parses_description_and_options() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "generate",
+            "an agent that writes tests",
+            "--name",
+            "unit-tester",
+            "--agents-dir",
+            ".cortex/agents",
+            "--model",
+            "google/gemini-2.5-flash",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Generate(args)) => {
+                assert_eq!(args.description, "an agent that writes tests");
+                assert_eq!(args.name.as_deref(), Some("unit-tester"));
+                assert_eq!(args.agents_dir.as_deref(), Some(".cortex/agents"));
+                assert_eq!(args.model.as_deref(), Some("google/gemini-2.5-flash"));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected generate, got {other:?}"),
         }
     }
 

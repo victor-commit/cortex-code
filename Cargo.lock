@@ -282,6 +282,7 @@ dependencies = [
  "serde_json",
  "settings",
  "tokio",
+ "toml",
  "tools",
  "tracing",
  "tracing-subscriber",

@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
-    Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent,
-    SessionRunner, SystemContext, ToolDispatcher, Turn, project_history,
+    CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner,
+    SystemContext, ToolDispatcher, Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
 use events::EventBus;
@@ -48,6 +48,7 @@ use serde::Serialize;
 use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
+use crate::custom_agents;
 use crate::permission;
 use crate::permission_store;
 use crate::tooling::RegistryDispatcher;
@@ -73,10 +74,25 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
 
     let format = effective_format(args.jsonl, args.format);
 
+    // Resolve the local config inputs early: custom agent discovery uses the same working directory
+    // and config layers as the eventual run, but it stays local and happens before any network work.
+    let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
+        Ok(config_inputs) => config_inputs,
+        Err(err) => {
+            eprintln!("cortex run: cannot determine the working directory: {err}");
+            return Exit::Failure;
+        }
+    };
+
+    let discovered_agents = custom_agents::discover(&config_inputs);
+    for warning in &discovered_agents.warnings {
+        eprintln!("cortex run: {warning}");
+    }
+
     // Resolve the agent persona before any network consideration so an unknown agent fails fast
     // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
     // durable store and never writing an assistant answer to stdout.
-    let agent = match resolve_agent(args.agent.as_deref()) {
+    let agent = match custom_agents::resolve(args.agent.as_deref(), &discovered_agents) {
         Ok(agent) => agent,
         Err(err) => {
             eprintln!(
@@ -117,18 +133,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         return diag.exit();
     }
 
-    // Resolve the model, credential indirection, and any endpoint override through the full
-    // configuration precedence chain so a config-file `model` is honored while an explicit
-    // `--model` flag still wins. A config error (bad TOML, failed `{env:}`/`{file:}` substitution,
-    // type mismatch) fails fast with the stable config exit code.
-    let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
-        Ok(config_inputs) => config_inputs,
-        Err(err) => {
-            eprintln!("cortex run: cannot determine the working directory: {err}");
-            return Exit::Failure;
-        }
-    };
-
     // The per-project working directory the saved-permission store is keyed by (identical to the
     // checkpoint store's key), captured before `config_inputs` is consumed by config resolution.
     let permission_cwd = config_inputs.cwd.clone();
@@ -144,7 +148,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // the top-level layered ruleset exactly as before. The flag's presence (not the resolved
     // default persona) decides this, so a default run keeps its unchanged top-level behavior.
     let active_agent = args.agent.is_some().then(|| agent.name());
-    let builtin_agent_rules = permission::builtin_agent_permission_rules(agent);
+    let builtin_agent_rules = permission::builtin_agent_permission_rules(agent.base_agent());
+    let mut agent_restriction_rules = agent.permissions().to_vec();
+    agent_restriction_rules.extend(builtin_agent_rules.restriction_rules);
 
     // Resolve the project's trust level (the layered config's `trust` key) into the highest-
     // precedence permission layer: an untrusted project denies the mutating/exec tools, so the SAME
@@ -173,7 +179,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         builtin_agent_rules.base_rules,
         cli_permission_rules,
         save_specs,
-        builtin_agent_rules.restriction_rules,
+        agent_restriction_rules,
         trust_rules,
         loaded_decisions,
         bus.clone(),
@@ -197,6 +203,17 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             eprintln!("cortex run: {err}");
             return Exit::Config;
         }
+    };
+
+    let agent_model_selected = if !explicit_model {
+        if let Some(model) = agent.model() {
+            run_config.model = providers::resolve_model(Some(model));
+            true
+        } else {
+            false
+        }
+    } else {
+        false
     };
 
     // Reject a malformed model id locally, before any credential or socket, with an actionable
@@ -245,7 +262,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         .ok()
         .flatten()
         .and_then(|session| session.model);
-    if let Some(model) = session_model_override(explicit_model, stored_model.as_deref()) {
+    if let Some(model) = session_model_override(
+        explicit_model || agent_model_selected,
+        stored_model.as_deref(),
+    ) {
         if let Err(message) = validate_model_id(&model) {
             eprintln!("cortex run: {message}");
             return Exit::Failure;
@@ -271,12 +291,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
     let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
-    let system = SystemContext::for_model(&model_id, EnvironmentBlock::from_process())
-        .with_agent(agent)
-        .render();
-    let turn = Turn::new(&model_id, system, prompt)
+    let system = render_system_context(&model_id, &agent);
+    let mut turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
+    if let Some(temperature) = agent.temperature() {
+        turn = turn.with_temperature(temperature);
+    }
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -425,17 +446,15 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     exit
 }
 
-/// Resolve the agent persona for the run from the optional `--agent` flag, defaulting to the
-/// built-in default agent when the flag is absent.
-///
-/// # Errors
-/// Returns [`engine::UnknownAgent`] (naming the offending input and the available agents) when the
-/// supplied name matches no built-in persona.
-fn resolve_agent(name: Option<&str>) -> Result<Agent, engine::UnknownAgent> {
-    match name {
-        Some(name) => Agent::from_name(name),
-        None => Ok(Agent::default()),
+fn render_system_context(model_id: &str, agent: &custom_agents::ActiveAgent) -> String {
+    let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
+        .with_agent(agent.base_agent())
+        .render();
+    if let Some(prompt) = agent.custom_prompt() {
+        system.push_str("\n\nCustom agent instructions:\n");
+        system.push_str(prompt);
     }
+    system
 }
 
 /// How this run selects the session it belongs to.
@@ -1224,6 +1243,7 @@ fn strip_one_trailing_newline(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::Agent;
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1290,18 +1310,36 @@ mod tests {
     // that persona (case-insensitively).
     #[test]
     fn resolve_agent_defaults_and_honors_explicit_names() {
-        assert_eq!(resolve_agent(None), Ok(Agent::default()));
-        assert_eq!(resolve_agent(Some("plan")), Ok(Agent::Plan));
-        assert_eq!(resolve_agent(Some("build")), Ok(Agent::Build));
-        assert_eq!(resolve_agent(Some(" General ")), Ok(Agent::General));
-        assert_eq!(resolve_agent(Some("EXPLORE")), Ok(Agent::Explore));
+        let discovery = custom_agents::Discovery::default();
+        assert_eq!(
+            custom_agents::resolve(None, &discovery),
+            Ok(custom_agents::ActiveAgent::Builtin(Agent::default()))
+        );
+        assert_eq!(
+            custom_agents::resolve(Some("plan"), &discovery),
+            Ok(custom_agents::ActiveAgent::Builtin(Agent::Plan))
+        );
+        assert_eq!(
+            custom_agents::resolve(Some("build"), &discovery),
+            Ok(custom_agents::ActiveAgent::Builtin(Agent::Build))
+        );
+        assert_eq!(
+            custom_agents::resolve(Some(" General "), &discovery),
+            Ok(custom_agents::ActiveAgent::Builtin(Agent::General))
+        );
+        assert_eq!(
+            custom_agents::resolve(Some("EXPLORE"), &discovery),
+            Ok(custom_agents::ActiveAgent::Builtin(Agent::Explore))
+        );
     }
 
     // VAL-LLM-028 (resolution half): an unknown agent name is rejected with an error that names the
     // offending agent and hints the available agents, so the CLI can fail fast before any network.
     #[test]
     fn resolve_agent_rejects_unknown_names_with_an_actionable_error() {
-        let err = resolve_agent(Some("no-such-agent")).expect_err("unknown agent must be rejected");
+        let discovery = custom_agents::Discovery::default();
+        let err = custom_agents::resolve(Some("no-such-agent"), &discovery)
+            .expect_err("unknown agent must be rejected");
         let message = err.to_string();
         assert!(
             message.contains("no-such-agent"),
