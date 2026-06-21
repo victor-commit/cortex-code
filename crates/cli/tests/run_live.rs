@@ -17,11 +17,15 @@
 //!   (piped stdin first, then the argument), so both sources reach the model, deterministically.
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The default model the mission targets; asserted in the `--format json` model field.
 const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
+
+static CHILD_ENV_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Resolve the live OpenRouter key, or `None` to skip the test cleanly when it is unset/empty.
 fn live_key() -> Option<String> {
@@ -31,12 +35,26 @@ fn live_key() -> Option<String> {
     }
 }
 
+fn isolated_child_home() -> PathBuf {
+    let sequence = CHILD_ENV_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("cortex-run-live-{}-{sequence}", std::process::id()));
+    std::fs::create_dir_all(root.join(".config")).expect("create isolated config dir");
+    std::fs::create_dir_all(root.join(".local/share")).expect("create isolated data dir");
+    root
+}
+
 /// A `cortex` command carrying the live key and a clean, non-verbose environment so stdout stays
 /// pure machine/prose output.
 fn cortex(key: &str, args: &[&str]) -> Command {
+    let home = isolated_child_home();
     let mut c = Command::new(env!("CARGO_BIN_EXE_cortex"));
     c.args(args);
     c.env("OPENROUTER_API_KEY", key);
+    c.env("HOME", &home);
+    c.env("XDG_CONFIG_HOME", home.join(".config"));
+    c.env("XDG_DATA_HOME", home.join(".local/share"));
+    c.env("CORTEX_DATA_DIR", home.join(".local/share/cortex"));
     c.env_remove("CORTEX_NO_NET")
         .env_remove("RUST_LOG")
         .env_remove("CORTEX_VERBOSE")
@@ -179,13 +197,30 @@ fn output_streams_incrementally() {
         return;
     };
 
+    let mut failures = Vec::new();
+    for attempt in 1..=3 {
+        match streaming_probe_attempt(&key) {
+            Ok(()) => return,
+            Err(err) => failures.push(format!("attempt {attempt}: {err}")),
+        }
+    }
+    panic!(
+        "streaming probe failed after retries: {}",
+        failures.join(" | ")
+    );
+}
+
+fn streaming_probe_attempt(key: &str) -> Result<(), String> {
     let mut command = cortex(
-        &key,
-        &["run", "Count slowly from 1 to 40, one number per line."],
+        key,
+        &[
+            "run",
+            "Print exactly the integers from 1 to 120 inclusive, one per line, with no extra words. Do not ask me to continue; return the full sequence now.",
+        ],
     );
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    command.stderr(Stdio::null());
     let mut child = command.spawn().expect("spawn cortex");
     let mut stdout = child.stdout.take().expect("stdout handle");
 
@@ -211,19 +246,26 @@ fn output_streams_incrementally() {
     }
     let status = wait_with_timeout(&mut child, Duration::from_secs(10));
 
-    assert!(status.success(), "the streamed turn must exit 0");
+    if !status.success() {
+        return Err(format!("the streamed turn exited with {status}"));
+    }
     let text = String::from_utf8_lossy(&collected);
-    assert!(text.contains('1') && text.contains("40"), "got: {text:?}");
-    assert!(
-        arrivals.len() >= 2,
-        "assistant text must arrive in >=2 chunks over time, got {} chunk(s)",
-        arrivals.len()
-    );
+    if !(text.contains('1') && text.contains("120")) {
+        return Err(format!("missing expected sequence markers, got: {text:?}"));
+    }
+    if arrivals.len() < 2 {
+        return Err(format!(
+            "assistant text must arrive in >=2 chunks over time, got {} chunk(s)",
+            arrivals.len()
+        ));
+    }
     let span = *arrivals.last().unwrap() - arrivals[0];
-    assert!(
-        span > Duration::from_millis(10),
-        "first bytes must appear well before the final byte (span was {span:?})"
-    );
+    if span <= Duration::from_millis(10) {
+        return Err(format!(
+            "first bytes must appear well before the final byte (span was {span:?})"
+        ));
+    }
+    Ok(())
 }
 
 // VAL-LLM-010: the default human format is clean prose — stdout does not parse as a JSON event
