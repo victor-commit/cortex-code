@@ -26,6 +26,10 @@ pub enum Surface {
     Mcp,
     /// The language-server management path (`cortex lsp`).
     Lsp,
+    /// The auth-method listing path (`cortex auth`).
+    Auth,
+    /// The model-catalogue listing path (`cortex models`).
+    Models,
 }
 
 impl Surface {
@@ -43,6 +47,8 @@ impl Surface {
             Surface::Checkpoint => "checkpoint",
             Surface::Mcp => "mcp",
             Surface::Lsp => "lsp",
+            Surface::Auth => "auth",
+            Surface::Models => "models",
         }
     }
 }
@@ -159,6 +165,28 @@ pub struct McpPromptsChanged {
     pub prompts: Vec<String>,
 }
 
+/// A model requested a tool call during a turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ToolCallEvent {
+    /// Provider-assigned call id.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// JSON argument string supplied by the model.
+    pub arguments: String,
+}
+
+/// A tool call completed and produced a model-visible result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ToolResultEvent {
+    /// Provider-assigned call id.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// Whether the tool result is an error.
+    pub is_error: bool,
+}
+
 /// A typed event delivered on the [`EventBus`](crate::EventBus).
 ///
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
@@ -184,6 +212,12 @@ pub enum Event {
     /// A connected MCP server's advertised prompt set changed at runtime.
     #[serde(rename = "mcp.prompts.changed")]
     McpPromptsChanged(McpPromptsChanged),
+    /// A model requested a tool call during a turn.
+    #[serde(rename = "tool.call")]
+    ToolCall(ToolCallEvent),
+    /// A tool call completed and produced a model-visible result.
+    #[serde(rename = "tool.result")]
+    ToolResult(ToolResultEvent),
 }
 
 impl Event {
@@ -197,6 +231,8 @@ impl Event {
             Event::McpToolsChanged(_) => "mcp.tools.changed",
             Event::McpResourcesChanged(_) => "mcp.resources.changed",
             Event::McpPromptsChanged(_) => "mcp.prompts.changed",
+            Event::ToolCall(_) => "tool.call",
+            Event::ToolResult(_) => "tool.result",
         }
     }
 
@@ -265,6 +301,30 @@ impl Event {
         Event::McpPromptsChanged(McpPromptsChanged {
             server: server.into(),
             prompts,
+        })
+    }
+
+    /// Construct a `tool.call` event naming the requested tool and call id.
+    #[must_use]
+    pub fn tool_call(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Event::ToolCall(ToolCallEvent {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        })
+    }
+
+    /// Construct a `tool.result` event naming the completed tool call.
+    #[must_use]
+    pub fn tool_result(id: impl Into<String>, name: impl Into<String>, is_error: bool) -> Self {
+        Event::ToolResult(ToolResultEvent {
+            id: id.into(),
+            name: name.into(),
+            is_error,
         })
     }
 }
@@ -362,5 +422,21 @@ mod tests {
         let value = serde_json::to_value(&prompts).expect("serialize");
         assert_eq!(value["kind"], "mcp.prompts.changed");
         assert_eq!(value["prompts"][0], "greet");
+    }
+
+    #[test]
+    fn tool_events_serialize_with_named_typed_fields() {
+        let call = Event::tool_call("call_1", "cortex_echo", "{\"text\":\"hi\"}");
+        assert_eq!(call.kind(), "tool.call");
+        let value = serde_json::to_value(&call).expect("serialize");
+        assert_eq!(value["kind"], "tool.call");
+        assert_eq!(value["id"], "call_1");
+        assert_eq!(value["name"], "cortex_echo");
+
+        let result = Event::tool_result("call_1", "cortex_echo", false);
+        assert_eq!(result.kind(), "tool.result");
+        let value = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(value["kind"], "tool.result");
+        assert_eq!(value["is_error"], false);
     }
 }

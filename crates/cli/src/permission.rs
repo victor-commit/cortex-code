@@ -23,8 +23,8 @@
 //! ## CLI rule spec form
 //! Each flag value is `TOOL:GLOB`, split on the first `:`:
 //! - `TOOL` selects the gated tool
-//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`/`task`) or
-//!   `*` for any tool. An unknown tool is rejected so a mistyped rule never silently fails open.
+//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`/`task`), a dynamically
+//!   registered plugin/MCP tool id, or `*` for any tool.
 //! - `GLOB` is matched against the action's subject — a normalized file path for the file tools, or
 //!   the parsed command for `bash` (see [`permissions::request_for`]).
 //!
@@ -54,8 +54,8 @@ use settings::ConfigInputs;
 /// Returns an empty vector when neither flag is supplied.
 ///
 /// # Errors
-/// Returns a human-readable message when a spec is not `TOOL:GLOB`, names an unknown tool, or has
-/// an empty glob.
+/// Returns a human-readable message when a spec is not `TOOL:GLOB`, names an invalid tool id, or
+/// has an empty glob.
 pub fn rules_from_flags(allow: &[String], deny: &[String]) -> Result<Vec<Rule>, String> {
     let mut rules = Vec::with_capacity(allow.len() + deny.len());
     for spec in allow {
@@ -76,8 +76,8 @@ pub fn rules_from_flags(allow: &[String], deny: &[String]) -> Result<Vec<Rule>, 
 /// neutral placeholder.
 ///
 /// # Errors
-/// Returns a human-readable message when a spec is not `TOOL:GLOB`, names an unknown tool, or has
-/// an empty glob.
+/// Returns a human-readable message when a spec is not `TOOL:GLOB`, names an invalid tool id, or
+/// has an empty glob.
 pub fn rules_from_save_flags(specs: &[String]) -> Result<Vec<Rule>, String> {
     specs
         .iter()
@@ -335,13 +335,23 @@ fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
     }
     let tool = tool.trim();
     let tool = if tool.is_empty() { ANY_TOOL } else { tool };
-    if tool != ANY_TOOL && scope_of(tool).is_none() {
+    if tool != ANY_TOOL && scope_of(tool).is_none() && !is_dynamic_tool_id(tool) {
         return Err(format!(
-            "invalid permission rule `{spec}`: unknown tool `{tool}` \
-             (expected read, write, edit, apply_patch, glob, grep, format, bash, task, or *)"
+            "invalid permission rule `{spec}`: invalid tool id `{tool}` \
+             (expected read, write, edit, apply_patch, glob, grep, format, bash, task, \
+              a plugin/MCP tool id, or *)"
         ));
     }
     Ok(Rule::new(tool, glob, action))
+}
+
+fn is_dynamic_tool_id(tool: &str) -> bool {
+    let mut chars = tool.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 #[cfg(test)]
@@ -963,9 +973,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_unknown_tool() {
-        let err = parse_spec("wrte:src/**", Action::Allow).unwrap_err();
-        assert!(err.contains("unknown tool"), "{err}");
+    fn accepts_dynamic_plugin_tool_ids() {
+        assert_eq!(
+            parse_spec("cortex_write_marker:*", Action::Deny).expect("rule"),
+            Rule::new("cortex_write_marker", "*", Action::Deny)
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_tool_id() {
+        let err = parse_spec("bad/tool:src/**", Action::Allow).unwrap_err();
+        assert!(err.contains("invalid tool id"), "{err}");
     }
 
     #[test]

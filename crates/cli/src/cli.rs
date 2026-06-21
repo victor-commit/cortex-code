@@ -59,6 +59,12 @@ pub enum Command {
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
+    /// List authentication methods, including methods registered by plugins.
+    Auth(AuthArgs),
+
+    /// List selectable models, including models registered by plugins.
+    Models(ModelsArgs),
+
     /// Generate a custom markdown agent definition with a real model turn.
     Generate(GenerateArgs),
 
@@ -134,6 +140,30 @@ pub struct LspStatusArgs {
 
 #[derive(Debug, Args)]
 pub struct AgentArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AuthArgs {
+    #[command(subcommand)]
+    pub command: AuthCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuthCommand {
+    /// List built-in and plugin-registered authentication methods.
+    List(AuthListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AuthListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ModelsArgs {
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -422,8 +452,9 @@ pub struct RunArgs {
     /// `TOOL` selects the gated tool
     /// (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`bash`/`task`) or `*` for any tool;
     /// `GLOB` is matched against the action's subject (a file path for file tools, the parsed
-    /// command for `bash`, or the subagent name for `task`). Example: `--permission-allow '*:**'`
-    /// allows everything, `--permission-allow 'write:src/**'` allows writes under `src/`, and
+    /// command for `bash`, the subagent name for `task`, or the JSON argument object for dynamic
+    /// plugin/MCP tools). Example: `--permission-allow '*:**'` allows everything,
+    /// `--permission-allow 'write:src/**'` allows writes under `src/`, and
     /// `--permission-allow 'task:explore'` allows spawning the explore subagent. Allow rules are
     /// applied before deny rules, so an explicit `--permission-deny` always overrides a broader
     /// allow. With no permission flags the run is ungated (every tool action proceeds).
@@ -521,7 +552,9 @@ mod tests {
     fn help_lists_core_subcommands() {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
-        for sub in ["run", "tui", "serve", "session", "agent", "generate"] {
+        for sub in [
+            "run", "tui", "serve", "session", "agent", "auth", "models", "generate",
+        ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
     }
@@ -532,6 +565,29 @@ mod tests {
         match cli.command {
             Some(Command::Agent(args)) => assert_eq!(args.format.format, OutputFormat::Json),
             other => panic!("expected agent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_list_parses_format() {
+        let cli =
+            Cli::try_parse_from(["cortex", "auth", "list", "--format", "json"]).expect("parse");
+        match cli.command {
+            Some(Command::Auth(AuthArgs {
+                command: AuthCommand::List(args),
+            })) => {
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected auth list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_parses_format() {
+        let cli = Cli::try_parse_from(["cortex", "models", "--format", "json"]).expect("parse");
+        match cli.command {
+            Some(Command::Models(args)) => assert_eq!(args.format.format, OutputFormat::Json),
+            other => panic!("expected models, got {other:?}"),
         }
     }
 

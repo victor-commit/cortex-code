@@ -40,7 +40,7 @@ use engine::{
     SystemContext, ToolDispatcher, Turn, project_history,
 };
 use errors::{Diagnostic, Exit};
-use events::EventBus;
+use events::{Event, EventBus};
 use llm::ToolDef;
 use protocol::ToolResultPart;
 use providers::ResolvedModel;
@@ -52,6 +52,7 @@ use crate::cli::{OutputFormat, RunArgs};
 use crate::custom_agents;
 use crate::permission;
 use crate::permission_store;
+use crate::plugin_bridge::PluginState;
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
@@ -137,11 +138,35 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         }
     };
 
+    let subagent_config_inputs = config_inputs.clone();
+    let mut run_config = match resolve_run_config(config_inputs.clone()) {
+        Ok(run_config) => run_config,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Config;
+        }
+    };
+
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
     // so a refusal never touches the network even when a key is present.
     if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
         eprintln!("cortex run: {diag}");
         return diag.exit();
+    }
+
+    // Load configured local plugins through the external JavaScript runtime contract before any
+    // provider credentials are resolved or any session state is opened. A configured plugin is
+    // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
+    // an attributed error rather than silently continuing without hooks.
+    let plugin_state = match PluginState::load(&run_config.plugins) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Failure;
+        }
+    };
+    if let Some(subscriber) = plugin_state.event_subscriber() {
+        bus.subscribe(subscriber);
     }
 
     // The per-project working directory the saved-permission store is keyed by (identical to the
@@ -182,11 +207,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // `--permission-allow-save` specs. Built-in read-only mode restrictions are also attached as
     // hard denies, so a saved allow cannot bypass plan/explore mutation blocks. The engine is
     // attached whenever any source is non-empty; with none of them the run stays ungated.
+    let mut effective_cli_permission_rules = plugin_state.permission_rules();
+    effective_cli_permission_rules.extend(cli_permission_rules);
     let prepared_permissions = match permission::prepare_headless_permissions_with_builtin_rules(
         &config_inputs,
         active_agent,
         builtin_agent_rules.base_rules,
-        cli_permission_rules,
+        effective_cli_permission_rules,
         save_specs,
         post_save_permission_rules,
         builtin_hard_denies,
@@ -207,15 +234,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // governs the resume (VAL-CROSS-006).
     let explicit_model = args.model.is_some();
 
-    let subagent_config_inputs = config_inputs.clone();
-    let mut run_config = match resolve_run_config(config_inputs) {
-        Ok(run_config) => run_config,
-        Err(err) => {
-            eprintln!("cortex run: {err}");
-            return Exit::Config;
-        }
-    };
-
     let agent_model_selected = if !explicit_model {
         if let Some(model) = agent.model() {
             run_config.model = providers::resolve_model(Some(model));
@@ -235,31 +253,32 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         return Exit::Failure;
     }
 
-    // Load configured local plugins through the external JavaScript runtime contract before any
-    // provider credentials are resolved or any session state is opened. A configured plugin is
-    // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
-    // an attributed error rather than silently continuing without hooks.
-    let _plugin_reports = match plugins::RuntimeHost::new().load_config(&run_config.plugins) {
-        Ok(reports) => reports,
-        Err(err) => {
-            eprintln!("cortex run: {err}");
-            return Exit::Failure;
-        }
-    };
-
     // The credential resolves through env > 0600 file > config indirection; an endpoint override
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
-    let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
-    let provider = match providers::resolve_openrouter_with_options(
-        &inputs,
-        run_config.base_url.as_deref(),
-        stream_idle_timeout(),
-    ) {
-        Ok(provider) => provider,
-        Err(diag) => return report_setup_diagnostic(&diag),
+    let provider: Arc<dyn llm::Provider> = match plugin_state
+        .provider_for_model(&run_config.model.model_id)
+    {
+        Some(provider) => {
+            eprintln!(
+                "cortex run: using plugin provider {} for model {}",
+                provider.provider_id(),
+                provider.model_id()
+            );
+            Arc::new(provider)
+        }
+        None => {
+            let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
+            match providers::resolve_openrouter_with_options(
+                &inputs,
+                run_config.base_url.as_deref(),
+                stream_idle_timeout(),
+            ) {
+                Ok(provider) => Arc::new(provider),
+                Err(diag) => return report_setup_diagnostic(&diag),
+            }
+        }
     };
-    let provider: Arc<dyn llm::Provider> = Arc::new(provider);
 
     // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
     // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
@@ -391,7 +410,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
 
     let dispatcher =
         RegistryDispatcher::for_model(cwd.clone(), &model_id, session_id.clone(), todo_store);
-    let dispatcher = dispatcher.with_skills(discovered_skill_list.clone());
+    let dispatcher = dispatcher
+        .with_skills(discovered_skill_list.clone())
+        .with_extra_tools(plugin_state.tools());
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
     // by the same engine the tools already call via `ctx.permits`.
     let dispatcher = match permission_engine {
@@ -441,7 +462,15 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     let exit = runtime.block_on(async {
         let exit = match format {
             OutputFormat::Text => {
-                stream_text(provider.as_ref(), &session_id, &db, turn, &dispatcher).await
+                stream_text(
+                    provider.as_ref(),
+                    &session_id,
+                    &db,
+                    turn,
+                    &dispatcher,
+                    bus.clone(),
+                )
+                .await
             }
             OutputFormat::Jsonl => {
                 stream_jsonl(
@@ -453,6 +482,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &db,
                     turn,
                     &dispatcher,
+                    bus.clone(),
                 )
                 .await
             }
@@ -465,6 +495,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &db,
                     turn,
                     &dispatcher,
+                    bus.clone(),
                 )
                 .await
             }
@@ -736,12 +767,14 @@ async fn stream_text(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let mut wrote_any = false;
 
     let result = run_turn(provider, turn, dispatcher, |event| {
+        publish_runner_event(&bus, &event);
         if let RunnerEvent::TextDelta { text } = event {
             if !text.is_empty() {
                 let _ = handle.write_all(text.as_bytes());
@@ -801,6 +834,7 @@ async fn stream_jsonl(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -812,6 +846,7 @@ async fn stream_jsonl(
     }
 
     let result = run_turn(provider, turn, dispatcher, |event| {
+        publish_runner_event(&bus, &event);
         if let Ok(line) = render_event_line(&event) {
             let _ = handle.write_all(line.as_bytes());
             let _ = handle.write_all(b"\n");
@@ -915,11 +950,13 @@ async fn emit_json(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    bus: Arc<EventBus>,
 ) -> Exit {
     // Collect each tool result as it streams so the completed document can carry the structured
     // tool output (text plus any media attachments) alongside the assistant answer.
     let mut tool_results: Vec<ToolResultDoc> = Vec::new();
     let result = run_turn(provider, turn, dispatcher, |event| {
+        publish_runner_event(&bus, &event);
         if let RunnerEvent::ToolResult {
             id,
             name,
@@ -1079,6 +1116,26 @@ fn tool_names_from(tool_definitions: &[ToolDef]) -> Vec<String> {
 /// event serializes to an object carrying a stable `type` discriminator.
 fn render_event_line(event: &RunnerEvent) -> Result<String, serde_json::Error> {
     serde_json::to_string(event)
+}
+
+/// Publish runner tool events onto the typed event bus so plugin `event` hooks and future audit
+/// sinks observe the same concrete lifecycle as machine-output consumers.
+fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
+    match event {
+        RunnerEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => bus.publish(&Event::tool_call(
+            id.clone(),
+            name.clone(),
+            arguments.clone(),
+        )),
+        RunnerEvent::ToolResult {
+            id, name, is_error, ..
+        } => bus.publish(&Event::tool_result(id.clone(), name.clone(), *is_error)),
+        _ => {}
+    }
 }
 
 /// Collapse the two output-selection inputs into a single effective format. The `--jsonl`

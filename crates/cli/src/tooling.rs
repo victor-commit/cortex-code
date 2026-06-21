@@ -15,8 +15,8 @@ use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
 use permissions::PermissionEngine;
 use tools::{
-    BackgroundJobs, LspService, MutationHooks, TaskRunner, TaskTarget, TodoStore, ToolContext,
-    ToolRegistry,
+    BackgroundJobs, LspService, MutationHooks, TaskRunner, TaskTarget, TodoStore, Tool,
+    ToolContext, ToolRegistry,
 };
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
@@ -126,6 +126,15 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_skills(mut self, skills: Vec<skills::Skill>) -> Self {
         self.registry.register_skills(skills);
+        self
+    }
+
+    /// Attach extra model-callable tools supplied by plugins.
+    #[must_use]
+    pub fn with_extra_tools(mut self, tools: Vec<Box<dyn Tool>>) -> Self {
+        for tool in tools {
+            self.registry.register(tool);
+        }
         self
     }
 

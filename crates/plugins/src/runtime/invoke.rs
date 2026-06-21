@@ -54,7 +54,7 @@ impl RuntimeHost {
         self
     }
 
-    /// Load every configured plugin in order. If no plugins are configured, no runtime is required.
+    /// Load every configured plugin in order and return only their observable reports.
     ///
     /// A configured plugin fails closed: missing runtime, missing file, a runtime spawn failure, a
     /// timeout, or a plugin load throw all return [`PluginRuntimeError`] and stop further loading.
@@ -62,6 +62,19 @@ impl RuntimeHost {
         &self,
         config: &PluginConfig,
     ) -> Result<Vec<PluginLoadReport>, PluginRuntimeError> {
+        Ok(self
+            .load_plugins(config)?
+            .into_iter()
+            .map(|loaded| loaded.report)
+            .collect())
+    }
+
+    /// Load every configured plugin in order, preserving the original spec next to the report so
+    /// callers can invoke later hooks or execute plugin-contributed tools.
+    pub fn load_plugins(
+        &self,
+        config: &PluginConfig,
+    ) -> Result<Vec<LoadedPlugin>, PluginRuntimeError> {
         if config.is_empty() {
             return Ok(Vec::new());
         }
@@ -72,6 +85,97 @@ impl RuntimeHost {
             .iter()
             .map(|plugin| self.load_plugin(plugin, &runtime))
             .collect()
+    }
+
+    /// Invoke a loaded plugin's `event` hook with a real event payload.
+    pub fn invoke_event(
+        &self,
+        plugin: &PluginSpec,
+        event: JsonValue,
+    ) -> Result<PluginHookReport, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, output) =
+            self.invoke_plugin(plugin, &runtime, BridgeOperation::Event { event })?;
+        if result.ok {
+            Ok(PluginHookReport {
+                plugin_path: plugin.path().to_path_buf(),
+                runtime: runtime.runtime,
+                runtime_pid: result.pid,
+                invoked_hooks: result.invoked_hooks,
+                stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
+                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
+            })
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "event",
+            ))
+        }
+    }
+
+    /// Execute one plugin-contributed tool by re-loading the real plugin module in the detected JS
+    /// runtime and calling that tool's real JavaScript body.
+    pub fn execute_tool(
+        &self,
+        plugin: &PluginSpec,
+        name: &str,
+        arguments: JsonValue,
+    ) -> Result<PluginToolExecution, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, _output) = self.invoke_plugin(
+            plugin,
+            &runtime,
+            BridgeOperation::ToolExecute {
+                name: name.to_owned(),
+                arguments,
+            },
+        )?;
+        if result.ok {
+            let raw = result.output.unwrap_or(JsonValue::Null);
+            Ok(PluginToolExecution {
+                content: output_content(&raw),
+                raw,
+            })
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "tool",
+            ))
+        }
+    }
+
+    /// Complete a turn through a plugin-declared provider/model. The provider's JavaScript
+    /// `complete`/`generate` function produces the real assistant text for this run.
+    pub fn complete_with_provider(
+        &self,
+        plugin: &PluginSpec,
+        model: &str,
+        messages: JsonValue,
+    ) -> Result<String, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, _output) = self.invoke_plugin(
+            plugin,
+            &runtime,
+            BridgeOperation::ProviderComplete {
+                model: model.to_owned(),
+                messages,
+            },
+        )?;
+        if result.ok {
+            let raw = result.output.unwrap_or(JsonValue::Null);
+            Ok(output_content(&raw))
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "provider",
+            ))
+        }
     }
 
     fn detect_runtime(&self) -> Option<RuntimeSelection> {
@@ -87,7 +191,52 @@ impl RuntimeHost {
         &self,
         plugin: &PluginSpec,
         runtime: &RuntimeSelection,
-    ) -> Result<PluginLoadReport, PluginRuntimeError> {
+    ) -> Result<LoadedPlugin, PluginRuntimeError> {
+        let (result, output) = self.invoke_plugin(
+            plugin,
+            runtime,
+            BridgeOperation::Load {
+                config: JsonValue::Object(Default::default()),
+            },
+        )?;
+
+        if result.ok {
+            let report = PluginLoadReport {
+                plugin_path: plugin.path().to_path_buf(),
+                runtime: runtime.runtime,
+                runtime_executable: runtime.executable.clone(),
+                runtime_pid: result.pid,
+                runtime_name: result.runtime.name,
+                runtime_version: result.runtime.version,
+                hooks: result.hooks,
+                invoked_hooks: result.invoked_hooks,
+                config_rules: result.registrations.config_rules,
+                tools: result.registrations.tools,
+                auth_methods: result.registrations.auth_methods,
+                providers: result.registrations.providers,
+                stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
+                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
+            };
+            Ok(LoadedPlugin {
+                spec: plugin.clone(),
+                report,
+            })
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                runtime,
+                result,
+                "load",
+            ))
+        }
+    }
+
+    fn invoke_plugin(
+        &self,
+        plugin: &PluginSpec,
+        runtime: &RuntimeSelection,
+        operation: BridgeOperation,
+    ) -> Result<(BridgeResult, ChildOutput), PluginRuntimeError> {
         if !plugin.path().is_file() {
             return Err(PluginRuntimeError::PluginFileMissing {
                 path: plugin.path().to_path_buf(),
@@ -109,6 +258,7 @@ impl RuntimeHost {
                 plugin_path: plugin.path().to_string_lossy().into_owned(),
                 directory: plugin.directory().to_string_lossy().into_owned(),
                 options: plugin.options().clone(),
+                operation,
             })?,
         )
         .map_err(|source| PluginRuntimeError::Io {
@@ -127,34 +277,17 @@ impl RuntimeHost {
         )?;
         let result = read_bridge_result(plugin.path(), runtime, &result_path, &output)?;
         let _ = std::fs::remove_dir_all(&temp.path);
-
-        if result.ok {
-            Ok(PluginLoadReport {
-                plugin_path: plugin.path().to_path_buf(),
-                runtime: runtime.runtime,
-                runtime_executable: runtime.executable.clone(),
-                runtime_pid: result.pid,
-                runtime_name: result.runtime.name,
-                runtime_version: result.runtime.version,
-                hooks: result.hooks,
-                invoked_hooks: result.invoked_hooks,
-                stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
-                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
-            })
-        } else {
-            let error = result.error.unwrap_or_else(|| BridgeError {
-                name: "Error".to_owned(),
-                message: "plugin failed without an error message".to_owned(),
-                stack: None,
-            });
-            Err(PluginRuntimeError::PluginThrew {
-                path: plugin.path().to_path_buf(),
-                runtime: runtime.runtime,
-                message: redaction::redact(&error.message),
-                stack: error.stack.map(|stack| redaction::redact(&stack)),
-            })
-        }
+        Ok((result, output))
     }
+}
+
+/// A configured plugin together with the facts observed when it loaded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadedPlugin {
+    /// The local plugin spec that can be re-invoked for later hooks/tool calls.
+    pub spec: PluginSpec,
+    /// Observable facts and registrations from loading the plugin.
+    pub report: PluginLoadReport,
 }
 
 /// Observable facts from a successful plugin load.
@@ -176,10 +309,119 @@ pub struct PluginLoadReport {
     pub hooks: Vec<String>,
     /// Hook names the bridge invoked for this load.
     pub invoked_hooks: Vec<String>,
+    /// Permission rules contributed by the `config` hook.
+    pub config_rules: Vec<PluginConfigRule>,
+    /// Tools contributed by the `tool` hook.
+    pub tools: Vec<PluginToolRegistration>,
+    /// Authentication methods contributed by the `auth` hook.
+    pub auth_methods: Vec<PluginAuthRegistration>,
+    /// Model providers contributed by the `provider` hook.
+    pub providers: Vec<PluginProviderRegistration>,
     /// Redacted runtime stdout.
     pub stdout: String,
     /// Redacted runtime stderr.
     pub stderr: String,
+}
+
+/// Observable facts from a later hook invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginHookReport {
+    /// Plugin file whose hook was invoked.
+    pub plugin_path: PathBuf,
+    /// Runtime used for this invocation.
+    pub runtime: JsRuntime,
+    /// Direct runtime PID observed inside JavaScript.
+    pub runtime_pid: Option<u32>,
+    /// Hook names actually invoked by the bridge.
+    pub invoked_hooks: Vec<String>,
+    /// Redacted runtime stdout.
+    pub stdout: String,
+    /// Redacted runtime stderr.
+    pub stderr: String,
+}
+
+/// A permission rule returned by a plugin `config` hook.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginConfigRule {
+    /// Tool name or `*`.
+    pub tool: String,
+    /// Glob matched against the tool's permission subject.
+    pub pattern: String,
+    /// `allow`, `ask`, or `deny`.
+    pub action: String,
+}
+
+/// A model-callable tool returned by a plugin `tool` hook.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginToolRegistration {
+    /// Tool name used in the LLM tool catalogue.
+    pub name: String,
+    /// Model-facing description.
+    #[serde(default)]
+    pub description: String,
+    /// JSON Schema parameter object.
+    #[serde(default = "default_parameters")]
+    pub parameters: JsonValue,
+}
+
+/// A plugin-contributed auth method returned by an `auth` hook.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAuthRegistration {
+    /// Stable auth method/provider id.
+    pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: String,
+    /// Optional description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Environment variables this method can read.
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+/// A plugin-contributed model provider returned by a `provider` hook.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginProviderRegistration {
+    /// Stable provider id.
+    pub id: String,
+    /// Human-readable provider name.
+    #[serde(default)]
+    pub name: String,
+    /// Models served by this provider.
+    #[serde(default)]
+    pub models: Vec<PluginModelRegistration>,
+}
+
+/// A plugin-contributed model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginModelRegistration {
+    /// Fully-qualified model id (for example `plugin/example-model`).
+    pub id: String,
+    /// Human-readable model name.
+    #[serde(default)]
+    pub name: String,
+    /// Whether this model supports tool calls.
+    #[serde(default)]
+    pub tool_call: bool,
+    /// Whether this model emits reasoning.
+    #[serde(default)]
+    pub reasoning: bool,
+    /// Context-window size, if known.
+    #[serde(default)]
+    pub context: u64,
+    /// Output-token limit, if known.
+    #[serde(default)]
+    pub output: u64,
+}
+
+/// Output of a plugin tool body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginToolExecution {
+    /// Text injected as the model-visible tool result.
+    pub content: String,
+    /// Raw JSON returned by the JavaScript bridge.
+    pub raw: JsonValue,
 }
 
 /// Fail-closed plugin runtime errors.
@@ -262,6 +504,20 @@ pub enum PluginRuntimeError {
         /// Redacted stack, if the runtime reported one.
         stack: Option<String>,
     },
+    /// A plugin hook threw after the module loaded successfully.
+    #[error("plugin {} hook `{hook}` failed in {runtime}: {message}", path.display())]
+    HookThrew {
+        /// Plugin path.
+        path: PathBuf,
+        /// Selected runtime.
+        runtime: JsRuntime,
+        /// Hook name.
+        hook: String,
+        /// Runtime error message.
+        message: String,
+        /// Redacted stack, if the runtime reported one.
+        stack: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -269,6 +525,16 @@ struct BridgeInput {
     plugin_path: String,
     directory: String,
     options: JsonValue,
+    operation: BridgeOperation,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BridgeOperation {
+    Load { config: JsonValue },
+    Event { event: JsonValue },
+    ToolExecute { name: String, arguments: JsonValue },
+    ProviderComplete { model: String, messages: JsonValue },
 }
 
 #[derive(Deserialize)]
@@ -276,9 +542,14 @@ struct BridgeResult {
     ok: bool,
     runtime: BridgeRuntime,
     pid: Option<u32>,
+    #[serde(default)]
     hooks: Vec<String>,
     #[serde(default)]
     invoked_hooks: Vec<String>,
+    #[serde(default)]
+    registrations: BridgeRegistrations,
+    #[serde(default)]
+    output: Option<JsonValue>,
     error: Option<BridgeError>,
 }
 
@@ -294,6 +565,19 @@ struct BridgeError {
     name: String,
     message: String,
     stack: Option<String>,
+    hook: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct BridgeRegistrations {
+    #[serde(default)]
+    config_rules: Vec<PluginConfigRule>,
+    #[serde(default)]
+    tools: Vec<PluginToolRegistration>,
+    #[serde(default)]
+    auth_methods: Vec<PluginAuthRegistration>,
+    #[serde(default)]
+    providers: Vec<PluginProviderRegistration>,
 }
 
 struct InvocationTemp {
@@ -491,15 +775,68 @@ fn secret_stripped_env() -> Vec<(OsString, OsString)> {
         .collect()
 }
 
+fn error_from_bridge_result(
+    plugin_path: &Path,
+    runtime: &RuntimeSelection,
+    result: BridgeResult,
+    fallback_hook: &str,
+) -> PluginRuntimeError {
+    let error = result.error.unwrap_or_else(|| BridgeError {
+        name: "Error".to_owned(),
+        message: "plugin failed without an error message".to_owned(),
+        stack: None,
+        hook: Some(fallback_hook.to_owned()),
+    });
+    let message = redaction::redact(&error.message);
+    let stack = error.stack.map(|stack| redaction::redact(&stack));
+    match error.hook.as_deref() {
+        None | Some("load") => PluginRuntimeError::PluginThrew {
+            path: plugin_path.to_path_buf(),
+            runtime: runtime.runtime,
+            message,
+            stack,
+        },
+        Some(hook) => PluginRuntimeError::HookThrew {
+            path: plugin_path.to_path_buf(),
+            runtime: runtime.runtime,
+            hook: hook.to_owned(),
+            message,
+            stack,
+        },
+    }
+}
+
+fn default_parameters() -> JsonValue {
+    serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+    })
+}
+
+fn output_content(value: &JsonValue) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    for key in ["content", "text", "result", "output"] {
+        if let Some(text) = value.get(key).and_then(JsonValue::as_str) {
+            return text.to_owned();
+        }
+    }
+    serde_json::to_string(value).unwrap_or_else(|_| String::new())
+}
+
 const BRIDGE_SCRIPT: &str = r#"
 import processModule from "node:process";
 import { pathToFileURL } from "node:url";
-import { writeFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 
 const proc = globalThis.process ?? processModule;
 const inputPath = proc.argv[2];
 const resultPath = proc.argv[3];
+
+let activeHook = "load";
 
 function runtimeInfo() {
   if (globalThis.Bun) {
@@ -522,7 +859,8 @@ function errorToJson(error) {
   return {
     name: String(error?.name ?? "Error"),
     message: String(error?.message ?? error),
-    stack: error?.stack ? String(error.stack) : undefined
+    stack: error?.stack ? String(error.stack) : undefined,
+    hook: activeHook
   };
 }
 
@@ -588,42 +926,273 @@ function resolvePluginFunction(module) {
   return candidate;
 }
 
-try {
-  const raw = JSON.parse(await (await import("node:fs/promises")).readFile(inputPath, "utf8"));
-  const directory = String(raw.directory);
+function createInput(raw, directory) {
   const shell = makeShell(directory);
-  const input = {
-    project: { directory, root: directory },
-    directory,
-    worktree: directory,
-    serverUrl: "local://cortex",
-    server: { kind: "local", url: "local://cortex" },
-    client: { kind: "local", available: true },
-    shell: shell.run,
-    $: shell,
-    experimental_workspace: {
-      register() {
-        return { registered: true };
-      }
-    }
+  const registeredTools = [];
+  const registeredAuth = [];
+  const registeredProviders = [];
+  const registerTool = (tool) => {
+    registeredTools.push(tool);
+    return tool;
   };
+  const registerAuth = (auth) => {
+    registeredAuth.push(auth);
+    return auth;
+  };
+  const registerProvider = (provider) => {
+    registeredProviders.push(provider);
+    return provider;
+  };
+  return {
+    input: {
+      project: { directory, root: directory },
+      directory,
+      worktree: directory,
+      serverUrl: "local://cortex",
+      server: { kind: "local", url: "local://cortex" },
+      client: { kind: "local", available: true },
+      shell: shell.run,
+      $: shell,
+      experimental_workspace: {
+        register(tool) {
+          return registerTool(tool);
+        },
+        registerTool,
+        registerAuth,
+        registerProvider
+      }
+    },
+    registeredTools,
+    registeredAuth,
+    registeredProviders
+  };
+}
 
+function entriesFrom(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (value instanceof Map) return Array.from(value.values());
+  if (typeof value === "object") {
+    if (value.name || value.id || value.provider || value.model) return [value];
+    if (Array.isArray(value.tools)) return value.tools;
+    if (Array.isArray(value.auth)) return value.auth;
+    if (Array.isArray(value.providers)) return value.providers;
+    if (Array.isArray(value.models)) return [value];
+    return Object.entries(value).map(([key, item]) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        return { id: key, name: key, ...item };
+      }
+      return item;
+    });
+  }
+  return [];
+}
+
+function normalizeParameters(parameters) {
+  if (parameters && typeof parameters === "object") return parameters;
+  return { type: "object", properties: {}, additionalProperties: true };
+}
+
+function normalizeTool(tool) {
+  if (!tool || typeof tool !== "object") return null;
+  const name = String(tool.name ?? tool.id ?? "").trim();
+  if (!name) return null;
+  return {
+    name,
+    description: String(tool.description ?? ""),
+    parameters: normalizeParameters(tool.parameters ?? tool.schema ?? tool.input_schema ?? tool.inputSchema)
+  };
+}
+
+function normalizeAuth(method) {
+  if (!method || typeof method !== "object") return null;
+  const id = String(method.id ?? method.provider ?? method.name ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(method.name ?? id),
+    description: method.description == null ? undefined : String(method.description),
+    env: Array.isArray(method.env) ? method.env.map(String) : []
+  };
+}
+
+function normalizeModel(model) {
+  if (!model || typeof model !== "object") return null;
+  const id = String(model.id ?? model.model ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(model.name ?? id),
+    tool_call: Boolean(model.tool_call ?? model.toolCall ?? model.tools),
+    reasoning: Boolean(model.reasoning),
+    context: Number(model.context ?? model.limit?.context ?? 0) || 0,
+    output: Number(model.output ?? model.limit?.output ?? 0) || 0
+  };
+}
+
+function normalizeProvider(provider) {
+  if (!provider || typeof provider !== "object") return null;
+  const id = String(provider.id ?? provider.provider ?? provider.name ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(provider.name ?? id),
+    models: entriesFrom(provider.models).map(normalizeModel).filter(Boolean)
+  };
+}
+
+function normalizeConfigRules(value) {
+  const source = value && typeof value === "object" && Array.isArray(value.permission)
+    ? value.permission
+    : Array.isArray(value)
+      ? value
+      : [];
+  return source.map((rule) => {
+    if (!rule || typeof rule !== "object") return null;
+    const tool = String(rule.tool ?? "*").trim() || "*";
+    const pattern = String(rule.pattern ?? rule.glob ?? "*").trim() || "*";
+    const action = String(rule.action ?? rule.decision ?? "ask").trim().toLowerCase();
+    if (!["allow", "ask", "deny"].includes(action)) return null;
+    return { tool, pattern, action };
+  }).filter(Boolean);
+}
+
+function normalizeToolResult(result) {
+  if (typeof result === "string") return { content: result };
+  if (result == null) return { content: "" };
+  if (typeof result === "object") {
+    if (typeof result.content === "string" || typeof result.text === "string") return result;
+    return { content: JSON.stringify(result), raw: result };
+  }
+  return { content: String(result) };
+}
+
+function findTool(hooks, name, registeredTools, returnedTools) {
+  const candidates = [...registeredTools, ...entriesFrom(returnedTools)];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const candidateName = String(candidate.name ?? candidate.id ?? "").trim();
+    if (candidateName === name) return candidate;
+  }
+  throw new Error(`plugin tool ${name} was not registered by the tool hook`);
+}
+
+function findProviderForModel(providers, model) {
+  for (const provider of providers) {
+    if (!provider || typeof provider !== "object") continue;
+    const models = entriesFrom(provider.models);
+    if (models.some((candidate) => String(candidate?.id ?? candidate?.model ?? "") === model)) {
+      return provider;
+    }
+  }
+  throw new Error(`plugin model ${model} was not registered by the provider hook`);
+}
+
+async function loadHooks(raw, directory) {
+  const context = createInput(raw, directory);
   const module = await import(pathToFileURL(raw.plugin_path).href);
   const plugin = resolvePluginFunction(module);
-  const hooks = await plugin(input, raw.options ?? {});
+  const hooks = await plugin(context.input, raw.options ?? {});
   const hookEntries = hooks && typeof hooks === "object"
     ? Object.keys(hooks).filter((key) => typeof hooks[key] === "function")
     : [];
+  return { hooks: hooks ?? {}, hookEntries, context };
+}
+
+try {
+  const raw = JSON.parse(await readFile(inputPath, "utf8"));
+  const directory = String(raw.directory);
+  const operation = raw.operation ?? { type: "load" };
+  activeHook = "load";
+  const { hooks, hookEntries, context } = await loadHooks(raw, directory);
   const invokedHooks = [];
-  if (hooks && typeof hooks.event === "function") {
-    await hooks.event({
-      kind: "lifecycle",
-      type: "lifecycle",
-      phase: "startup",
-      surface: "run",
-      directory
+  const registrations = { config_rules: [], tools: [], auth_methods: [], providers: [] };
+  let output = undefined;
+
+  if (operation.type === "load") {
+    if (typeof hooks.event === "function") {
+      activeHook = "event";
+      await hooks.event({
+        kind: "lifecycle",
+        type: "lifecycle",
+        phase: "startup",
+        surface: "run",
+        directory
+      });
+      invokedHooks.push("event");
+    }
+    if (typeof hooks.config === "function") {
+      activeHook = "config";
+      registrations.config_rules = normalizeConfigRules(await hooks.config(operation.config ?? {}));
+      invokedHooks.push("config");
+    }
+    if (typeof hooks.tool === "function") {
+      activeHook = "tool";
+      const returned = await hooks.tool({
+        register: context.input.experimental_workspace.registerTool,
+        registerTool: context.input.experimental_workspace.registerTool
+      });
+      registrations.tools = [...context.registeredTools, ...entriesFrom(returned)].map(normalizeTool).filter(Boolean);
+      invokedHooks.push("tool");
+    }
+    if (typeof hooks.auth === "function") {
+      activeHook = "auth";
+      const returned = await hooks.auth({ register: context.input.experimental_workspace.registerAuth });
+      registrations.auth_methods = [...context.registeredAuth, ...entriesFrom(returned)].map(normalizeAuth).filter(Boolean);
+      invokedHooks.push("auth");
+    }
+    if (typeof hooks.provider === "function") {
+      activeHook = "provider";
+      const returned = await hooks.provider({ register: context.input.experimental_workspace.registerProvider });
+      registrations.providers = [...context.registeredProviders, ...entriesFrom(returned)].map(normalizeProvider).filter(Boolean);
+      invokedHooks.push("provider");
+    }
+  } else if (operation.type === "event") {
+    if (typeof hooks.event === "function") {
+      activeHook = "event";
+      await hooks.event(operation.event ?? {});
+      invokedHooks.push("event");
+    }
+  } else if (operation.type === "tool_execute") {
+    if (typeof hooks.tool !== "function") {
+      throw new Error("plugin did not define a tool hook");
+    }
+    activeHook = "tool";
+    const returned = await hooks.tool({
+      register: context.input.experimental_workspace.registerTool,
+      registerTool: context.input.experimental_workspace.registerTool
     });
-    invokedHooks.push("event");
+    const tool = findTool(hooks, String(operation.name ?? ""), context.registeredTools, returned);
+    const execute = tool.execute ?? tool.run ?? tool.call;
+    if (typeof execute !== "function") {
+      throw new Error(`plugin tool ${operation.name} does not define execute(args)`);
+    }
+    output = normalizeToolResult(await execute(operation.arguments ?? {}, {
+      directory,
+      cwd: directory,
+      tool: String(operation.name ?? "")
+    }));
+    invokedHooks.push("tool");
+  } else if (operation.type === "provider_complete") {
+    if (typeof hooks.provider !== "function") {
+      throw new Error("plugin did not define a provider hook");
+    }
+    activeHook = "provider";
+    const returned = await hooks.provider({ register: context.input.experimental_workspace.registerProvider });
+    const providers = [...context.registeredProviders, ...entriesFrom(returned)];
+    const provider = findProviderForModel(providers, String(operation.model ?? ""));
+    const complete = provider.complete ?? provider.generate ?? provider.stream;
+    if (typeof complete !== "function") {
+      throw new Error(`plugin provider ${provider.id ?? provider.name ?? "unknown"} does not define complete(request)`);
+    }
+    output = normalizeToolResult(await complete({
+      model: String(operation.model ?? ""),
+      messages: operation.messages ?? [],
+      directory
+    }));
+    invokedHooks.push("provider");
+  } else {
+    throw new Error(`unknown plugin bridge operation: ${operation.type}`);
   }
 
   await writeResult({
@@ -631,7 +1200,9 @@ try {
     runtime: runtimeInfo(),
     pid: typeof proc.pid === "number" ? proc.pid : null,
     hooks: hookEntries,
-    invoked_hooks: invokedHooks
+    invoked_hooks: invokedHooks,
+    registrations,
+    output
   });
 } catch (error) {
   await writeResult({
@@ -640,6 +1211,7 @@ try {
     pid: typeof proc.pid === "number" ? proc.pid : null,
     hooks: [],
     invoked_hooks: [],
+    registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
     error: errorToJson(error)
   });
   proc.exitCode = 1;

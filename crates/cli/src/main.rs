@@ -1,4 +1,5 @@
 mod agent_cmd;
+mod auth_cmd;
 mod checkpoint;
 mod cli;
 mod config;
@@ -9,10 +10,12 @@ mod lsp_bridge;
 mod lsp_cmd;
 mod mcp_cmd;
 mod mcp_store;
+mod models_cmd;
 mod net;
 mod observe;
 mod permission;
 mod permission_store;
+mod plugin_bridge;
 mod run;
 mod session;
 mod subagent;
@@ -62,6 +65,8 @@ fn main() -> ExitCode {
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
+        Some(Command::Auth(args)) => auth_cmd::run(args).into(),
+        Some(Command::Models(args)) => models_cmd::run(args).into(),
         Some(Command::Generate(args)) => generate_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
@@ -80,6 +85,8 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
         Some(Command::Agent(_)) | Some(Command::Generate(_)) => Surface::Agent,
+        Some(Command::Auth(_)) => Surface::Auth,
+        Some(Command::Models(_)) => Surface::Models,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,
