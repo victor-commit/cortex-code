@@ -23,6 +23,10 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const DIAGNOSTICS_IDLE_INTERVAL: Duration = Duration::from_millis(1200);
+// A warmed/open document can receive an immediate clean publish for a didChange while the server
+// is still computing semantic diagnostics for the same generation. Keep empty didChange results
+// alive slightly longer so post-mutation feedback does not miss the delayed real error.
+const EMPTY_DID_CHANGE_DIAGNOSTICS_IDLE_INTERVAL: Duration = Duration::from_millis(2500);
 
 /// Configuration describing how to launch one server child process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -363,8 +367,8 @@ impl LspClient {
             if remaining.is_zero() {
                 return Ok(latest_fresh);
             }
-            let wait = if latest_fresh.is_some() {
-                DIAGNOSTICS_IDLE_INTERVAL.min(remaining)
+            let wait = if let Some(latest) = latest_fresh.as_ref() {
+                diagnostics_idle_interval(document_version, latest).min(remaining)
             } else {
                 remaining
             };
@@ -666,6 +670,14 @@ impl LspClient {
 impl Drop for LspClient {
     fn drop(&mut self) {
         let _ = self.exit();
+    }
+}
+
+fn diagnostics_idle_interval(document_version: i64, diagnostics: &[Diagnostic]) -> Duration {
+    if document_version > 1 && diagnostics.is_empty() {
+        EMPTY_DID_CHANGE_DIAGNOSTICS_IDLE_INTERVAL
+    } else {
+        DIAGNOSTICS_IDLE_INTERVAL
     }
 }
 

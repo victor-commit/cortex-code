@@ -115,12 +115,17 @@ while True:
             changes = message["params"].get("contentChanges", [])
             text = changes[0].get("text", "") if changes else ""
 
-        if "BAD" in text:
+        if "BAD" in text and mode == "early_empty_then_delayed_bad":
+            publish(uri, [], version)
+            delayed_publish(1.5, uri, diagnostic("delayed BAD diagnostic"), version)
+        elif "BAD" in text:
             publish(uri, diagnostic("fresh BAD diagnostic"), version)
             if mode == "unversioned":
                 delayed_publish(1.4, uri, diagnostic("stale queued diagnostic"), version)
         else:
-            if mode == "versioned":
+            if mode == "early_empty_then_delayed_bad":
+                publish(uri, [], version)
+            elif mode == "versioned":
                 publish(uri, diagnostic("stale old-version diagnostic"), version - 1)
                 delayed_publish(1.5, uri, [], version)
             else:
@@ -216,6 +221,35 @@ fn versioned_publish_diagnostics_waits_for_current_clean_publish() {
 #[test]
 fn unversioned_publish_diagnostics_uses_post_change_generation_boundary() {
     stale_publish_is_never_returned_for_clean_fix("unversioned");
+}
+
+#[test]
+fn warmed_open_document_waits_past_early_empty_publish_for_delayed_diagnostics() {
+    if !has_command("python3") {
+        eprintln!("skipping fake LSP warmed diagnostic test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("early-empty");
+    let file = dir.join("main.fake");
+    std::fs::write(&file, "GOOD\n").expect("write clean fixture");
+    let mut manager = FeedbackManager::new(&dir, fake_config(&dir, "early_empty_then_delayed_bad"))
+        .with_budget(Duration::from_secs(4));
+
+    let warm = diagnostics_for(manager.collect(&file));
+    assert!(
+        warm.is_empty(),
+        "initial clean publish should warm/open the document without diagnostics: {warm:?}"
+    );
+
+    std::fs::write(&file, "BAD\n").expect("write bad fixture");
+    let diagnostics = diagnostics_for(manager.collect(&file));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "delayed BAD diagnostic"),
+        "didChange must not treat the early empty target-URI publish as final; got {diagnostics:?}"
+    );
 }
 
 #[test]
