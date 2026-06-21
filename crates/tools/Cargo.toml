@@ -24,4 +24,5 @@ tree-sitter-bash = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 engine = { workspace = true }
+format = { workspace = true }
 futures-util = { workspace = true }

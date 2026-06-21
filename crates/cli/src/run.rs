@@ -324,6 +324,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     };
 
     let lsp_hooks = std::sync::Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
+    let mutation_hooks = std::sync::Arc::new(crate::format_bridge::PostMutationHooks::new(
+        cwd.clone(),
+        lsp_hooks.clone(),
+    ));
 
     let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
@@ -340,9 +344,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         )),
         None => dispatcher,
     };
-    // Attach the real LSP diagnostics hook so write/edit results carry diagnostics from the
-    // matching language server after the on-disk mutation persists.
-    let dispatcher = dispatcher.with_hooks(lsp_hooks.clone());
+    // Attach the real formatter + LSP diagnostics hook so write/edit/apply_patch first canonicalize
+    // the on-disk file and then report diagnostics from the matching language server.
+    let dispatcher = dispatcher.with_hooks(mutation_hooks);
     // Attach the same real LSP manager to the read-only `lsp` navigation tool, so hover,
     // definition, references, and symbols use the live server and share its lifecycle.
     let dispatcher = dispatcher.with_lsp_service(lsp_hooks.clone());

@@ -1,6 +1,7 @@
 mod checkpoint;
 mod cli;
 mod config;
+mod format_bridge;
 mod lsp_bridge;
 mod lsp_cmd;
 mod mcp_cmd;

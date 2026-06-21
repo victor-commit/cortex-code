@@ -13,6 +13,7 @@ members = [
     "crates/permissions",
     "crates/policy",
     "crates/checkpoints",
+    "crates/format",
     "crates/mcp",
     "crates/lsp",
     "crates/tools",
@@ -52,6 +53,7 @@ engine = { path = "crates/engine" }
 permissions = { path = "crates/permissions" }
 policy = { path = "crates/policy" }
 checkpoints = { path = "crates/checkpoints" }
+format = { path = "crates/format" }
 mcp = { path = "crates/mcp" }
 lsp = { path = "crates/lsp" }
 tools = { path = "crates/tools" }
