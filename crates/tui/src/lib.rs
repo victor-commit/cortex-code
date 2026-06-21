@@ -9,7 +9,10 @@
 mod app;
 mod checkpoint;
 mod diff;
+mod format_bridge;
 mod keybind;
+mod lsp_bridge;
+mod mcp_runtime;
 mod mention;
 mod permission;
 mod shell;
@@ -75,6 +78,16 @@ fn run() -> io::Result<()> {
     // Bind durable session persistence to the shared store so interactive turns are recorded and
     // become resumable from headless `cortex run` and the session picker (cross-surface continuity).
     app.set_session_store(db::DbPathInputs::from_process().resolve());
+    // Connect configured MCP servers once for the attached TUI so `/mcp` and tool materialization
+    // share a live catalogue. Runtime `mcp.tools.changed` notifications flow into the app state and
+    // update the visible MCP view without a restart.
+    if let Some(runtime) = mcp_runtime::connect_from_config() {
+        app.set_mcp_runtime(
+            Some(runtime.manager),
+            Some(runtime.runtime),
+            Some(runtime.events),
+        );
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -90,6 +103,10 @@ fn run() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let loop_result = event_loop(&mut terminal, &mut app);
+
+    if let Some((manager, runtime)) = app.take_mcp_runtime() {
+        mcp_runtime::shutdown(manager, runtime);
+    }
 
     let restore_result = restore(&mut terminal);
 
@@ -157,6 +174,7 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
                 prompt.clone(),
                 app.history_snapshot(),
                 app.active_model(),
+                app.mcp_manager(),
                 cancel.clone(),
             );
             app.begin_turn(prompt, rx, cancel);
@@ -200,6 +218,10 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
 
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
+
+        // Apply MCP live catalogue events (notably `mcp.tools.changed`) so an open `/mcp` view is
+        // refreshed from the manager's current tool set without relaunching the TUI.
+        app.poll_mcp();
 
         // Expire any toasts whose display window has elapsed so they auto-dismiss on a timer.
         app.tick_toasts();

@@ -64,13 +64,14 @@ pub fn spawn(
     prompt: String,
     history: Vec<Message>,
     model: String,
+    mcp_manager: Option<Arc<mcp::McpManager>>,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<TurnMessage> {
     let (tx, rx) = mpsc::channel();
     let tx_events = tx.clone();
     thread::spawn(move || {
         match build_turn(&prompt, history, &model) {
-            Ok((provider, turn, model_id)) => {
+            Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -83,6 +84,14 @@ pub fn spawn(
                             let cwd = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
                             let session_id = ephemeral_session_id();
+                            let lsp_hooks =
+                                Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
+                            let mutation_hooks =
+                                Arc::new(crate::format_bridge::PostMutationHooks::with_config(
+                                    cwd.clone(),
+                                    setup.formatter_config,
+                                    lsp_hooks.clone(),
+                                ));
                             // Open the shared shadow store and begin a turn recorder so each file
                             // this turn changes is snapshotted BEFORE it is written, powering on-disk
                             // `/undo` and `/redo`. Checkpointing degrades silently when the store
@@ -101,22 +110,27 @@ pub fn spawn(
                                 build_permission_engine(tx_events.clone(), &cwd);
                             let mut dispatcher = TurnDispatcher::new(
                                 cwd.clone(),
-                                &model_id,
+                                &setup.model_id,
                                 session_id,
                                 tx_events.clone(),
                             )
-                            .with_permissions(engine);
+                            .with_permissions(engine)
+                            .with_hooks(mutation_hooks)
+                            .with_lsp_service(lsp_hooks.clone());
                             if let Some(recorder) = &recorder {
                                 dispatcher = dispatcher.with_checkpoints(Arc::new(
                                     crate::checkpoint::RecorderBridge::new(recorder.clone()),
                                 ));
+                            }
+                            if let Some(manager) = &mcp_manager {
+                                dispatcher = dispatcher.with_mcp(manager.clone());
                             }
                             let runner = SessionRunner::default();
                             // Race the streaming turn against the interrupt signal: if the UI asks
                             // to cancel, the runner future is dropped here (closing the upstream
                             // stream) and the turn stops streaming at a safe boundary.
                             tokio::select! {
-                                _ = runner.run_with_tools(&provider, turn, &dispatcher, |event| {
+                                _ = runner.run_with_tools(&setup.provider, setup.turn, &dispatcher, |event| {
                                     let _ = tx_events.send(TurnMessage::Event(event));
                                 }) => {}
                                 () = wait_for_cancel(cancel.clone()) => {}
@@ -124,6 +138,9 @@ pub fn spawn(
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
                             // orphan process outlives the turn (even after an interrupt).
                             dispatcher.background_jobs().shutdown().await;
+                            // Likewise tear down any language server child the formatter/LSP hooks
+                            // spawned for this turn.
+                            lsp_hooks.shutdown();
                             // Finalize the checkpoint AFTER the turn: record each touched file's
                             // post-mutation state and append the snapshot. A read-only turn records
                             // nothing, so it creates no checkpoint churn; a failure degrades undo for
@@ -181,11 +198,18 @@ fn ephemeral_session_id() -> String {
 /// # Errors
 /// Returns a human-readable, secret-scrubbed message when the kill-switch refuses the turn, a
 /// configuration layer cannot be loaded, the model id is malformed, or no credential is available.
+struct TurnSetup {
+    provider: llm::OpenAiCompatible,
+    turn: Turn,
+    model_id: String,
+    formatter_config: format::FormatterConfig,
+}
+
 fn build_turn(
     prompt: &str,
     history: Vec<Message>,
     active_model: &str,
-) -> Result<(llm::OpenAiCompatible, Turn, String), String> {
+) -> Result<TurnSetup, String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
     guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
 
@@ -196,6 +220,8 @@ fn build_turn(
         eprintln!("cortex tui: {warning}");
     }
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
+    let formatter_config = format::FormatterConfig::from_table(effective.table())
+        .map_err(|message| format!("invalid formatter config: {message}"))?;
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
     // so a per-session model choice governs the turn directly rather than via a config round-trip.
@@ -221,7 +247,12 @@ fn build_turn(
         .with_history(history)
         .with_compaction(compaction);
 
-    Ok((provider, turn, model_id))
+    Ok(TurnSetup {
+        provider,
+        turn,
+        model_id,
+        formatter_config,
+    })
 }
 
 /// Build the per-turn permission engine that gates the TUI's tools with an interactive prompt,

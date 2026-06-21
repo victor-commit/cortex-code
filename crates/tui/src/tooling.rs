@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
+use mcp::McpManager;
 use protocol::TodoItem;
-use tools::{BackgroundJobs, TodoStore, ToolContext, ToolRegistry};
+use tools::{BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry};
 
 use crate::diff::compute_file_diff;
 use crate::turn::TurnMessage;
@@ -27,6 +28,7 @@ pub struct TurnDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
     events: Sender<TurnMessage>,
+    mcp: Option<Arc<McpManager>>,
 }
 
 impl TurnDispatcher {
@@ -54,7 +56,17 @@ impl TurnDispatcher {
             registry,
             context,
             events,
+            mcp: None,
         }
+    }
+
+    /// Attach a connected [`McpManager`] so its server-qualified MCP tools are advertised and
+    /// callable from this TUI turn (builder style). Without it the dispatcher exposes only built-in
+    /// tools.
+    #[must_use]
+    pub fn with_mcp(mut self, manager: Arc<McpManager>) -> Self {
+        self.mcp = Some(manager);
+        self
     }
 
     /// Gate every tool effect through `engine` (builder style). The TUI attaches an engine whose
@@ -73,6 +85,95 @@ impl TurnDispatcher {
     pub fn with_checkpoints(mut self, recorder: Arc<dyn tools::CheckpointRecorder>) -> Self {
         self.context = self.context.with_checkpoints(recorder);
         self
+    }
+
+    /// Attach post-mutation hooks (formatter + LSP diagnostics) to the tool context.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
+        self.context = self.context.with_hooks(hooks);
+        self
+    }
+
+    /// Attach read-only LSP navigation/status query support to the `lsp` tool.
+    #[must_use]
+    pub fn with_lsp_service(mut self, service: Arc<dyn LspService>) -> Self {
+        self.context = self.context.with_lsp_service(service);
+        self
+    }
+
+    /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
+    /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
+    fn mcp_definitions(&self) -> Vec<ToolDef> {
+        self.mcp
+            .as_ref()
+            .map(|manager| {
+                let mut definitions = manager
+                    .tools()
+                    .iter()
+                    .map(|tool| ToolDef {
+                        name: tool.id.clone(),
+                        description: tool.description.clone().unwrap_or_default(),
+                        parameters: tool.input_schema.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                definitions.extend(manager.resources().iter().map(|resource| ToolDef {
+                    name: resource.id.clone(),
+                    description: resource.description.clone().unwrap_or_else(|| {
+                        format!(
+                            "Read MCP resource `{}` from server `{}`.",
+                            resource.uri, resource.server
+                        )
+                    }),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                }));
+                definitions.extend(manager.prompts().iter().map(|prompt| {
+                    let properties = prompt
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            let mut schema = serde_json::Map::new();
+                            schema.insert(
+                                "type".to_owned(),
+                                serde_json::Value::String("string".to_owned()),
+                            );
+                            if let Some(description) = &argument.description {
+                                schema.insert(
+                                    "description".to_owned(),
+                                    serde_json::Value::String(description.clone()),
+                                );
+                            }
+                            (argument.name.clone(), serde_json::Value::Object(schema))
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    let required = prompt
+                        .arguments
+                        .iter()
+                        .filter(|argument| argument.required)
+                        .map(|argument| serde_json::Value::String(argument.name.clone()))
+                        .collect::<Vec<_>>();
+                    ToolDef {
+                        name: prompt.id.clone(),
+                        description: prompt.description.clone().unwrap_or_else(|| {
+                            format!(
+                                "Fetch MCP prompt `{}` from server `{}`.",
+                                prompt.name, prompt.server
+                            )
+                        }),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": properties,
+                            "required": required,
+                            "additionalProperties": false
+                        }),
+                    }
+                }));
+                definitions
+            })
+            .unwrap_or_default()
     }
 
     /// The background-job registry tracking long-running `bash` jobs spawned during the turn, so the
@@ -100,11 +201,30 @@ impl TurnDispatcher {
 
 impl ToolDispatcher for TurnDispatcher {
     fn definitions(&self) -> Vec<ToolDef> {
-        self.registry.definitions()
+        let mut defs = self.registry.definitions();
+        defs.extend(self.mcp_definitions());
+        defs
     }
 
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
         Box::pin(async move {
+            if let Some(manager) = &self.mcp {
+                if manager.has_tool(&call.name)
+                    || manager.has_resource(&call.name)
+                    || manager.has_prompt(&call.name)
+                {
+                    if !self.context.permits(&call.name, &call.name) {
+                        let message = format!("{}: permission denied", call.name);
+                        return ToolDispatchResult {
+                            content: message.clone(),
+                            parts: vec![protocol::ToolResultPart::text(message)],
+                            is_error: true,
+                        };
+                    }
+                    return dispatch_mcp(manager, call).await;
+                }
+            }
+
             // Snapshot each target file's prior content BEFORE the tool mutates it, so the diff
             // reflects exactly this call's change (a missing file reads as `None` -> a new-file diff).
             let before: Vec<(String, PathBuf, Option<String>)> = mutated_targets(call)
@@ -131,6 +251,53 @@ impl ToolDispatcher for TurnDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+}
+
+/// Execute one MCP tool call through the manager and convert the relayed result into the runner's
+/// [`ToolDispatchResult`]. A non-object/unparseable arguments string or a transport error resolves
+/// to an error result so the turn continues and the model can recover.
+async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResult {
+    let arguments = if call.arguments.trim().is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        match serde_json::from_str(&call.arguments) {
+            Ok(value) => value,
+            Err(err) => {
+                return ToolDispatchResult {
+                    content: format!("{}: invalid arguments JSON: {err}", call.name),
+                    parts: vec![protocol::ToolResultPart::text(format!(
+                        "{}: invalid arguments JSON: {err}",
+                        call.name
+                    ))],
+                    is_error: true,
+                };
+            }
+        }
+    };
+
+    let result = if manager.has_resource(&call.name) {
+        manager.read_resource(&call.name).await
+    } else if manager.has_prompt(&call.name) {
+        manager.get_prompt(&call.name, arguments).await
+    } else {
+        manager.call(&call.name, arguments).await
+    };
+
+    match result {
+        Ok(relayed) => ToolDispatchResult {
+            content: relayed.content,
+            parts: relayed.parts,
+            is_error: relayed.is_error,
+        },
+        Err(err) => {
+            let message = err.to_string();
+            ToolDispatchResult {
+                content: message.clone(),
+                parts: vec![protocol::ToolResultPart::text(message)],
+                is_error: true,
+            }
+        }
     }
 }
 
@@ -340,5 +507,45 @@ mod tests {
         )));
         assert!(result.is_error);
         assert!(drain_diffs(&rx).is_empty());
+    }
+
+    struct FormatAndDiagnose;
+
+    impl MutationHooks for FormatAndDiagnose {
+        fn format(&self, path: &std::path::Path) {
+            let _ = std::fs::write(path, "fn main() {\n    let value: i32 = \"bad\";\n}\n");
+        }
+
+        fn diagnostics(&self, _path: &std::path::Path) -> Vec<tools::Diagnostic> {
+            vec![tools::Diagnostic::new("error", 2, "mismatched types")]
+        }
+    }
+
+    #[test]
+    fn tui_dispatcher_runs_mutation_hooks_and_surfaces_diagnostics() {
+        let dir = scratch_dir("hooks");
+        let (tx, rx) = channel();
+        let dispatcher =
+            TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx)
+                .with_hooks(Arc::new(FormatAndDiagnose));
+
+        let result = block_on(dispatcher.dispatch(&call(
+            "write",
+            r#"{"path":"bad.rs","content":"fn  main( ){let value:i32=\"bad\";}"}"#,
+        )));
+
+        assert!(!result.is_error, "write should succeed: {}", result.content);
+        let written = std::fs::read_to_string(dir.join("bad.rs")).expect("formatted file");
+        assert_eq!(
+            written, "fn main() {\n    let value: i32 = \"bad\";\n}\n",
+            "formatter hook governs the persisted bytes"
+        );
+        assert!(
+            result.content.contains("Diagnostics:") && result.content.contains("mismatched types"),
+            "diagnostics are re-injected into the tool result: {}",
+            result.content
+        );
+        let diffs = drain_diffs(&rx);
+        assert_eq!(diffs.len(), 1, "the formatted write still emits one diff");
     }
 }

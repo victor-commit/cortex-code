@@ -367,6 +367,14 @@ pub struct App {
     /// rather than failing). The undo/redo handlers re-read its on-disk journal each invocation, so
     /// it observes snapshots finalized by the background turn worker.
     checkpoints: Option<ShadowStore>,
+    /// The live MCP manager connected at TUI launch. It owns server children and a live catalogue
+    /// updated by MCP list-change notifications, shared with turn dispatch and the `/mcp` view.
+    mcp_manager: Option<Arc<mcp::McpManager>>,
+    /// The Tokio runtime that owns MCP background tasks (remote notifications, transports). Kept
+    /// alive for the whole TUI process so live tool-list changes continue to arrive.
+    mcp_runtime: Option<tokio::runtime::Runtime>,
+    /// UI-thread receiver for typed MCP catalogue events published by the manager's event bus.
+    mcp_events: Option<Receiver<events::Event>>,
     /// Chat messages submitted while a turn was streaming, in submission order. Each is promoted
     /// into its own turn once the active turn settles, so a mid-stream message is queued rather than
     /// dropped. Cleared when the active turn is interrupted.
@@ -429,6 +437,9 @@ impl App {
             copy_request: None,
             toasts: Vec::new(),
             checkpoints: None,
+            mcp_manager: None,
+            mcp_runtime: None,
+            mcp_events: None,
             queued_prompts: VecDeque::new(),
             cancel_flag: None,
             pending_permission: None,
@@ -457,6 +468,30 @@ impl App {
     /// store opened for the working directory. `None` leaves undo/redo as graceful no-ops.
     pub fn set_checkpoint_store(&mut self, store: Option<ShadowStore>) {
         self.checkpoints = store;
+    }
+
+    /// Attach the connected MCP runtime used by `/mcp` and future TUI turns. `None` leaves MCP as a
+    /// configured-only view and keeps the built-in tool set unchanged.
+    pub fn set_mcp_runtime(
+        &mut self,
+        manager: Option<Arc<mcp::McpManager>>,
+        runtime: Option<tokio::runtime::Runtime>,
+        events: Option<Receiver<events::Event>>,
+    ) {
+        self.mcp_manager = manager;
+        self.mcp_runtime = runtime;
+        self.mcp_events = events;
+    }
+
+    /// Clone the live MCP manager for a turn worker or shutdown path.
+    #[must_use]
+    pub fn mcp_manager(&self) -> Option<Arc<mcp::McpManager>> {
+        self.mcp_manager.clone()
+    }
+
+    /// Take the live MCP manager and runtime for shutdown after the event loop exits.
+    pub fn take_mcp_runtime(&mut self) -> Option<(Arc<mcp::McpManager>, tokio::runtime::Runtime)> {
+        Some((self.mcp_manager.take()?, self.mcp_runtime.take()?))
     }
 
     /// Bind durable session persistence to the resolved database path, used at launch so the TUI's
@@ -666,6 +701,42 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Drain live MCP catalogue events and refresh the `/mcp` view if it is open. Returns whether
+    /// any event was applied, so the event loop knows a redraw may reveal a changed tool set.
+    pub fn poll_mcp(&mut self) -> bool {
+        let mut changed_servers = Vec::new();
+        if let Some(rx) = self.mcp_events.as_ref() {
+            loop {
+                match rx.try_recv() {
+                    Ok(events::Event::McpToolsChanged(payload)) => {
+                        changed_servers.push(payload.server);
+                    }
+                    Ok(events::Event::McpResourcesChanged(payload)) => {
+                        changed_servers.push(payload.server);
+                    }
+                    Ok(events::Event::McpPromptsChanged(payload)) => {
+                        changed_servers.push(payload.server);
+                    }
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+
+        if changed_servers.is_empty() {
+            return false;
+        }
+
+        changed_servers.sort();
+        changed_servers.dedup();
+        self.refresh_mcp_dialog();
+        for server in changed_servers {
+            self.push_toast(ToastLevel::Info, format!("MCP catalogue updated: {server}"));
+        }
+        true
     }
 
     /// Apply a single turn message to the application state.
@@ -1427,7 +1498,7 @@ impl App {
     /// Open the MCP status/list view (`/mcp`): the configured MCP servers and their status. With no
     /// servers configured the view opens to a clear empty state rather than failing.
     fn open_mcp_dialog(&mut self) {
-        let items = configured_mcp_servers();
+        let items = self.mcp_rows();
         self.open_dialog(Dialog {
             kind: DialogKind::Mcp,
             title: "MCP servers".to_owned(),
@@ -1435,6 +1506,31 @@ impl App {
             selected: 0,
             empty: Some("No MCP servers configured.".to_owned()),
         });
+    }
+
+    /// Refresh an already-open MCP view from the live manager after a catalogue change event.
+    fn refresh_mcp_dialog(&mut self) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        if dialog.kind != DialogKind::Mcp {
+            return;
+        }
+        let selected = dialog.selected();
+        let items = self.mcp_rows();
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.items = items;
+            dialog.selected = selected.min(dialog.items.len().saturating_sub(1));
+        }
+    }
+
+    /// Current MCP view rows. A connected manager wins because it carries live status and tool ids;
+    /// otherwise the view falls back to the configured names so `/mcp` remains useful before connect.
+    fn mcp_rows(&self) -> Vec<String> {
+        if let Some(manager) = &self.mcp_manager {
+            return mcp_status_rows(manager.statuses(), manager.tools());
+        }
+        configured_mcp_servers()
     }
 
     /// Produce a local (loopback) share reference for the current session (`/share`): mint a stable
@@ -2855,8 +2951,7 @@ pub(crate) fn active_theme_name() -> String {
 }
 
 /// The configured MCP servers as display rows (`name — status`), read from the effective
-/// configuration's `[mcp]` table. Empty when no servers are configured (M4 wires the live client;
-/// here the view lists configured names with a configured/connection-pending status).
+/// configuration's `[mcp]` table. Empty when no servers are configured.
 fn configured_mcp_servers() -> Vec<String> {
     let Some(config) = effective_config() else {
         return Vec::new();
@@ -2867,6 +2962,37 @@ fn configured_mcp_servers() -> Vec<String> {
     table
         .keys()
         .map(|name| format!("{name}  —  configured"))
+        .collect()
+}
+
+/// Render live MCP manager state into `/mcp` rows, using the live tool catalogue rather than the
+/// initial status snapshot so `mcp.tools.changed` additions/removals become visible immediately.
+fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> Vec<String> {
+    statuses
+        .iter()
+        .map(|status| {
+            let tool_ids = tools
+                .iter()
+                .filter(|tool| tool.server == status.name)
+                .map(|tool| tool.id.as_str())
+                .collect::<Vec<_>>();
+            let suffix = if tool_ids.is_empty() {
+                "tools: (none)".to_owned()
+            } else {
+                format!("tools: {}", tool_ids.join(", "))
+            };
+            let detail = status
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+                .map(|error| format!("  —  {error}"))
+                .unwrap_or_default();
+            format!(
+                "{}  —  {}  —  {suffix}{detail}",
+                status.name,
+                status.state.as_str()
+            )
+        })
         .collect()
 }
 
@@ -4455,6 +4581,43 @@ mod tests {
             dialog.empty.as_deref() == Some("No MCP servers configured.")
                 || !dialog.items.is_empty(),
             "an empty state or configured servers are shown"
+        );
+    }
+
+    #[test]
+    fn mcp_status_rows_use_the_live_tool_catalogue() {
+        let statuses = vec![mcp::ServerStatus {
+            name: "api".to_owned(),
+            state: mcp::ConnectionState::Connected,
+            pid: Some(1234),
+            error: None,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }];
+        let rows = mcp_status_rows(
+            &statuses,
+            vec![mcp::McpTool {
+                id: "api_extra".to_owned(),
+                server: "api".to_owned(),
+                tool: "extra".to_owned(),
+                description: None,
+                input_schema: serde_json::json!({"type":"object"}),
+            }],
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].contains("connected") && rows[0].contains("api_extra"),
+            "live tool id is visible in the MCP row: {:?}",
+            rows
+        );
+
+        let rows = mcp_status_rows(&statuses, Vec::new());
+        assert!(
+            rows[0].contains("tools: (none)") && !rows[0].contains("api_extra"),
+            "removed tools disappear from the rendered row: {:?}",
+            rows
         );
     }
 

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 errors = { workspace = true }
+events = { workspace = true }
 settings = { workspace = true }
 providers = { workspace = true }
 db = { workspace = true }
@@ -22,6 +23,9 @@ tools = { workspace = true }
 permissions = { workspace = true }
 policy = { workspace = true }
 checkpoints = { workspace = true }
+format = { workspace = true }
+lsp = { workspace = true }
+mcp = { workspace = true }
 tui-widgets = { workspace = true }
 tui-components = { workspace = true }
 frame = { workspace = true }
