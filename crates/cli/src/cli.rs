@@ -105,8 +105,25 @@ pub struct LspArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum LspCommand {
+    /// Run local diagnostics for one file through the matching language server.
+    ///
+    /// This is a local, user-facing LSP proof path that does not start a model turn. With
+    /// `CORTEX_NO_NET=1`, Cortex never attempts language-server auto-install; a missing server is
+    /// reported as `no_server`, while a pre-installed server can still return real diagnostics
+    /// offline.
+    Diagnostics(LspDiagnosticsArgs),
     /// List configured language servers and whether they are idle, running, missing, or failed.
     Status(LspStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LspDiagnosticsArgs {
+    /// File to open in the matching language server and collect diagnostics for.
+    #[arg(value_name = "FILE")]
+    pub file: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]
@@ -515,6 +532,48 @@ mod tests {
         match cli.command {
             Some(Command::Agent(args)) => assert_eq!(args.format.format, OutputFormat::Json),
             other => panic!("expected agent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lsp_diagnostics_parses_file_and_format() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "lsp",
+            "diagnostics",
+            "src/main.rs",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Lsp(LspArgs {
+                command: LspCommand::Diagnostics(args),
+            })) => {
+                assert_eq!(args.file, "src/main.rs");
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected lsp diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lsp_help_documents_no_net_local_diagnostics_surface() {
+        let mut cmd = Cli::command();
+        let lsp = cmd
+            .get_subcommands_mut()
+            .find(|sub| sub.get_name() == "lsp")
+            .expect("the `lsp` subcommand exists");
+        let diagnostics = lsp
+            .get_subcommands_mut()
+            .find(|sub| sub.get_name() == "diagnostics")
+            .expect("the `lsp diagnostics` subcommand exists");
+        let help = diagnostics.render_long_help().to_string();
+        for phrase in ["CORTEX_NO_NET=1", "no_server", "pre-installed"] {
+            assert!(
+                help.contains(phrase),
+                "`lsp diagnostics --help` should document `{phrase}`:\n{help}"
+            );
         }
     }
 
