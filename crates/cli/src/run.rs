@@ -160,8 +160,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // default persona) decides this, so a default run keeps its unchanged top-level behavior.
     let active_agent = args.agent.is_some().then(|| agent.name());
     let builtin_agent_rules = permission::builtin_agent_permission_rules(agent.base_agent());
-    let mut agent_restriction_rules = agent.permissions().to_vec();
-    agent_restriction_rules.extend(builtin_agent_rules.restriction_rules);
+    let builtin_hard_denies = builtin_agent_rules.restriction_rules.clone();
+    let mut post_save_permission_rules = agent.permissions().to_vec();
+    post_save_permission_rules.extend(builtin_agent_rules.restriction_rules);
 
     // Resolve the project's trust level (the layered config's `trust` key) into the highest-
     // precedence permission layer: an untrusted project denies the mutating/exec tools, so the SAME
@@ -175,22 +176,20 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         }
     };
 
-    // Build the headless permission engine from every source `cortex run` honors: the config-file
-    // `[[permission]]` layers (global → project → nested), agent-scoped when an `--agent` is active,
-    // as the BASE ruleset, the CLI allow/deny rules appended ON TOP (last-matching-rule-wins), the
-    // previously saved cross-process decisions (consulted before the ruleset, so a saved decision is
-    // honored with no new ask), and the `--permission-allow-save` specs (each surfaced as an ask
-    // answered "always allow" and recorded for reuse). The engine is attached whenever any of these
-    // is non-empty; with none of them the run stays ungated (the default the other M2 tool features
-    // rely on). A malformed config-file rule (or an unreadable/invalid config layer) fails fast with
-    // the stable config exit code.
+    // Build the headless permission engine from every source `cortex run` honors: config-file
+    // `[[permission]]` layers (agent-scoped when an `--agent` is active) as the BASE ruleset, CLI
+    // allow/deny rules appended ON TOP, previously saved cross-process decisions, and
+    // `--permission-allow-save` specs. Built-in read-only mode restrictions are also attached as
+    // hard denies, so a saved allow cannot bypass plan/explore mutation blocks. The engine is
+    // attached whenever any source is non-empty; with none of them the run stays ungated.
     let prepared_permissions = match permission::prepare_headless_permissions_with_builtin_rules(
         &config_inputs,
         active_agent,
         builtin_agent_rules.base_rules,
         cli_permission_rules,
         save_specs,
-        agent_restriction_rules,
+        post_save_permission_rules,
+        builtin_hard_denies,
         trust_rules,
         loaded_decisions,
         bus.clone(),

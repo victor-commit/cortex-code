@@ -3,8 +3,9 @@
 //! When an `ask` is answered with "always", the choice is recorded as a [`SavedDecision`] so later
 //! matching actions in the same session reuse it without re-asking (architecture §3.4). A
 //! [`SavedDecisions`] store is shared (via `Arc`) across the turns of a session and consulted by
-//! [`crate::PermissionEngine`] **before** the configured ruleset: a matching saved allow/deny
+//! [`crate::PermissionEngine`] before the ordinary configured ruleset: a matching saved allow/deny
 //! resolves the action directly and emits **no** new `permission.asked` event (VAL-PERM-011).
+//! Explicit hard-deny constraints are checked first, so a saved allow cannot widen them.
 //!
 //! The store snapshots to and rebuilds from a plain list of decisions so a session can persist
 //! saved decisions across process restarts (the durable cross-process reuse is a separate feature).
@@ -50,7 +51,8 @@ impl SavedDecision {
     }
 }
 
-/// A session's store of saved "always" decisions, consulted before the configured ruleset.
+/// A session's store of saved "always" decisions, consulted before the ordinary configured
+/// ruleset.
 ///
 /// The store is append-only within a session and uses interior mutability so it can be shared
 /// (via `Arc`) across the engines built for successive turns and recorded from the engine's

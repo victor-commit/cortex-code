@@ -104,7 +104,8 @@ pub struct HeadlessPermissions {
 /// `base_rules` are prepended before project/user configuration, so they provide read-only defaults
 /// for modes that need an engine while still letting a user's explicit deny narrow them further.
 /// `restriction_rules` are appended after config/CLI/save rules, so mode-level mutation blocks
-/// cannot be accidentally widened by a project allow.
+/// cannot be accidentally widened by a project allow. They are also installed as hard denies so a
+/// previously saved allow-always decision cannot bypass a read-only built-in mode.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuiltinAgentPermissionRules {
     pub base_rules: Vec<Rule>,
@@ -155,15 +156,14 @@ fn mutation_deny_rules() -> Vec<Rule> {
 /// overrides falls back to the top-level base. With `None` the base is the top-level layered ruleset
 /// ([`load_layered`]) exactly as before.
 ///
-/// The combined ruleset is, in last-matching-rule-wins order: the (agent-scoped) config base, then
-/// the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an `ask` rule (so
-/// a matching action is surfaced as an ask — recording a `permission.asked` event — and the
-/// [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern), then the
-/// `trust_rules` (the project trust layer; an untrusted project denies the mutating/exec tools), so
-/// a trust `deny` is the highest-precedence rule and wins over any allow/ask above it (VAL-CROSS-030).
-/// The engine also carries:
-/// - the `saved` store (consulted BEFORE the ruleset, so a previously saved decision is honored
-///   with no new ask — VAL-CROSS-027), seeded from `loaded`;
+/// The combined ordinary ruleset is, in last-matching-rule-wins order: the (agent-scoped) config
+/// base, then the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an
+/// `ask` rule (so a matching action is surfaced as an ask — recording a `permission.asked` event —
+/// and the [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern), then the
+/// `trust_rules` project layer. The engine also carries:
+/// - any hard-deny layer supplied by the built-in mode wrapper, checked BEFORE saved decisions;
+/// - the `saved` store (consulted before the ordinary ruleset, so a previously saved decision is
+///   honored with no new ask — VAL-CROSS-027), seeded from `loaded`;
 /// - the event `bus`, so `permission.asked`/`permission.replied` are observable;
 /// - the [`SaveResponder`] (only when `save_specs` is non-empty) that turns a matching ask into a
 ///   saved "always allow".
@@ -192,6 +192,7 @@ pub fn prepare_headless_permissions(
         cli_rules,
         save_specs,
         Vec::new(),
+        Vec::new(),
         trust_rules,
         loaded,
         bus,
@@ -200,11 +201,10 @@ pub fn prepare_headless_permissions(
 
 /// Assemble headless permissions with additional built-in mode rules.
 ///
-/// `builtin_base_rules` are prepended before config/user rules, while
-/// `builtin_restriction_rules` are appended after config/CLI/save rules and before trust rules.
-/// This lets read-only modes allow read/search by default without overriding a user's explicit
-/// read deny, while still making their mutation block a narrowing rule that user config cannot
-/// widen.
+/// `builtin_base_rules` are prepended before config/user rules. `post_save_rules` are appended
+/// after config/CLI/save rules and before trust rules. `hard_deny_rules` are also installed in the
+/// engine's hard-deny layer, so read-only built-in modes can block mutations before saved decisions
+/// are considered while preserving the ordinary ruleset for subagent parent caps.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_headless_permissions_with_builtin_rules(
     inputs: &ConfigInputs,
@@ -212,7 +212,8 @@ pub fn prepare_headless_permissions_with_builtin_rules(
     builtin_base_rules: Vec<Rule>,
     cli_rules: Vec<Rule>,
     save_specs: Vec<Rule>,
-    builtin_restriction_rules: Vec<Rule>,
+    post_save_rules: Vec<Rule>,
+    hard_deny_rules: Vec<Rule>,
     trust_rules: Vec<Rule>,
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
@@ -240,7 +241,7 @@ pub fn prepare_headless_permissions_with_builtin_rules(
             Action::Ask,
         ));
     }
-    for rule in builtin_restriction_rules {
+    for rule in post_save_rules {
         ruleset.push(rule);
     }
     // The project trust layer is appended LAST so it has the highest precedence: an untrusted
@@ -251,12 +252,13 @@ pub fn prepare_headless_permissions_with_builtin_rules(
         ruleset.push(rule);
     }
 
+    let has_hard_denies = !hard_deny_rules.is_empty();
     let saved = Arc::new(SavedDecisions::from_decisions(loaded));
     let persist = !save_specs.is_empty();
 
     // Attach an engine when anything would gate or honor an action: a configured/CLI rule, a
-    // previously saved decision to honor, or a save spec to record this run.
-    if ruleset.is_empty() && saved.is_empty() {
+    // hard-deny constraint, a previously saved decision to honor, or a save spec to record this run.
+    if ruleset.is_empty() && !has_hard_denies && saved.is_empty() {
         return Ok(HeadlessPermissions {
             engine: None,
             saved,
@@ -265,6 +267,7 @@ pub fn prepare_headless_permissions_with_builtin_rules(
     }
 
     let mut engine = PermissionEngine::new(ruleset)
+        .with_hard_denies(Ruleset::new(hard_deny_rules))
         .with_saved_decisions(saved.clone())
         .with_bus(bus);
     if !save_specs.is_empty() {
@@ -468,6 +471,7 @@ mod tests {
         for agent in [Agent::Plan, Agent::Explore] {
             let scratch = Scratch::new(agent.name());
             let builtin = builtin_agent_permission_rules(agent);
+            let hard_denies = builtin.restriction_rules.clone();
             let engine = prepare_headless_permissions_with_builtin_rules(
                 &scratch.inputs(),
                 Some(agent.name()),
@@ -475,6 +479,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 builtin.restriction_rules,
+                hard_denies,
                 Vec::new(),
                 Vec::new(),
                 Arc::new(EventBus::new()),
@@ -507,6 +512,7 @@ mod tests {
             "[[permission]]\ntool = \"read\"\npattern = \"secrets/**\"\naction = \"deny\"\n",
         );
         let builtin = builtin_agent_permission_rules(Agent::Explore);
+        let hard_denies = builtin.restriction_rules.clone();
         let engine = prepare_headless_permissions_with_builtin_rules(
             &scratch.inputs(),
             Some("explore"),
@@ -514,6 +520,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             builtin.restriction_rules,
+            hard_denies,
             Vec::new(),
             Vec::new(),
             Arc::new(EventBus::new()),
@@ -537,6 +544,7 @@ mod tests {
     fn builtin_mutation_denies_override_cli_allows() {
         let scratch = Scratch::new("builtin-write-deny");
         let builtin = builtin_agent_permission_rules(Agent::Plan);
+        let hard_denies = builtin.restriction_rules.clone();
         let cli_rules = rules_from_flags(&flags(&["write:**"]), &[]).expect("parse");
         let engine = prepare_headless_permissions_with_builtin_rules(
             &scratch.inputs(),
@@ -545,6 +553,7 @@ mod tests {
             cli_rules,
             Vec::new(),
             builtin.restriction_rules,
+            hard_denies,
             Vec::new(),
             Vec::new(),
             Arc::new(EventBus::new()),
@@ -557,6 +566,95 @@ mod tests {
             Action::Deny,
             "plan mode's mutation block should not be widened by a CLI allow"
         );
+    }
+
+    #[test]
+    fn builtin_mutation_denies_override_loaded_saved_allows() {
+        let loaded = vec![
+            SavedDecision::new("write", "**", Decision::Allow),
+            SavedDecision::new("edit", "**", Decision::Allow),
+            SavedDecision::new("apply_patch", "**", Decision::Allow),
+            SavedDecision::new("bash", "echo *", Decision::Allow),
+        ];
+
+        for agent in [Agent::Plan, Agent::Explore] {
+            let scratch = Scratch::new(agent.name());
+            let builtin = builtin_agent_permission_rules(agent);
+            let hard_denies = builtin.restriction_rules.clone();
+            let engine = prepare_headless_permissions_with_builtin_rules(
+                &scratch.inputs(),
+                Some(agent.name()),
+                builtin.base_rules,
+                Vec::new(),
+                Vec::new(),
+                builtin.restriction_rules,
+                hard_denies,
+                Vec::new(),
+                loaded.clone(),
+                Arc::new(EventBus::new()),
+            )
+            .expect("prepare")
+            .engine
+            .expect("built-in mode rules attach an engine");
+
+            for (tool, subject) in [
+                ("write", "out.txt"),
+                ("edit", "out.txt"),
+                ("apply_patch", "out.txt"),
+                ("bash", "echo saved-allow > out.txt"),
+            ] {
+                assert_eq!(
+                    engine.classify(tool, subject),
+                    Action::Deny,
+                    "{agent:?} mode's hard deny should outrank a saved allow for {tool}"
+                );
+                assert_eq!(
+                    engine.evaluate(&permissions::request_for(tool, subject)),
+                    permissions::Outcome::Denied,
+                    "{agent:?} mode must deny {tool} even when the same action was saved allowed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_and_general_still_honor_loaded_saved_allows() {
+        let loaded = vec![
+            SavedDecision::new("write", "**", Decision::Allow),
+            SavedDecision::new("bash", "echo *", Decision::Allow),
+        ];
+
+        for agent in [Agent::Build, Agent::General] {
+            let scratch = Scratch::new(agent.name());
+            let builtin = builtin_agent_permission_rules(agent);
+            let hard_denies = builtin.restriction_rules.clone();
+            let engine = prepare_headless_permissions_with_builtin_rules(
+                &scratch.inputs(),
+                Some(agent.name()),
+                builtin.base_rules,
+                Vec::new(),
+                Vec::new(),
+                builtin.restriction_rules,
+                hard_denies,
+                Vec::new(),
+                loaded.clone(),
+                Arc::new(EventBus::new()),
+            )
+            .expect("prepare")
+            .engine
+            .expect("loaded saved decisions attach an engine");
+
+            assert_eq!(
+                engine.classify("write", "out.txt"),
+                Action::Allow,
+                "{agent:?} should honor the saved write allow"
+            );
+            assert_eq!(
+                engine.evaluate(&permissions::request_for("bash", "echo ok")),
+                permissions::Outcome::Allowed,
+                "{agent:?} should honor the saved bash allow"
+            );
+        }
     }
 
     // VAL-PERM-017: a project-layer rule deterministically overrides a conflicting global-layer one.

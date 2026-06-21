@@ -151,6 +151,7 @@ pub trait Responder: Send + Sync {
 ///   it resolves to [`Outcome::Denied`] in bounded time (no hang, no silent allow; VAL-PERM-005).
 pub struct PermissionEngine {
     ruleset: Ruleset,
+    hard_denies: Ruleset,
     parent_cap: Option<Ruleset>,
     saved: Option<Arc<SavedDecisions>>,
     responder: Option<Arc<dyn Responder>>,
@@ -163,11 +164,24 @@ impl PermissionEngine {
     pub fn new(ruleset: Ruleset) -> Self {
         Self {
             ruleset,
+            hard_denies: Ruleset::empty(),
             parent_cap: None,
             saved: None,
             responder: None,
             bus: None,
         }
+    }
+
+    /// Attach a highest-precedence hard-deny layer (builder style).
+    ///
+    /// Matching `deny` rules in this layer are safety/mode constraints, not ordinary permission
+    /// rules: they are checked before saved "always allow" decisions, so a remembered approval can
+    /// never bypass them. Non-deny rules in this layer are ignored; callers should pass only deny
+    /// rules to make the intent explicit.
+    #[must_use]
+    pub fn with_hard_denies(mut self, hard_denies: Ruleset) -> Self {
+        self.hard_denies = hard_denies;
+        self
     }
 
     /// Cap this engine's decisions with a parent agent's ruleset (builder style).
@@ -183,9 +197,10 @@ impl PermissionEngine {
 
     /// Attach a shared store of saved "always" decisions (builder style).
     ///
-    /// A saved decision matching the action is honored before the configured ruleset, so a matching
-    /// later action resolves directly and emits no new `permission.asked` event (VAL-PERM-011). The
-    /// store is shared across a session's turns, and an `Always` reply is recorded into it.
+    /// A saved decision matching the action is honored before the ordinary configured ruleset, so a
+    /// matching later action resolves directly and emits no new `permission.asked` event
+    /// (VAL-PERM-011). Hard-deny constraints still run first. The store is shared across a
+    /// session's turns, and an `Always` reply is recorded into it.
     #[must_use]
     pub fn with_saved_decisions(mut self, saved: Arc<SavedDecisions>) -> Self {
         self.saved = Some(saved);
@@ -268,11 +283,18 @@ impl PermissionEngine {
         }
     }
 
-    /// The effective action and the pattern that classified it, combining saved decisions (highest
-    /// precedence) and the configured ruleset, then narrowing by the parent cap.
+    /// The effective action and the pattern that classified it, combining hard-deny constraints,
+    /// saved decisions, and the configured ruleset, then narrowing by the parent cap.
     fn effective(&self, tool: &str, subject: &str) -> (Action, String) {
-        // A saved "always" decision takes precedence over the configured ruleset; otherwise the
-        // ruleset decides. Either way we keep the pattern that classified the action for the event.
+        // Hard denies are absolute safety/mode constraints. They are checked before saved
+        // decisions so a saved "always allow" cannot widen a read-only mode or similar hard block.
+        if let Some(pattern) = self.hard_deny_pattern(tool, subject) {
+            return (Action::Deny, pattern);
+        }
+
+        // A saved "always" decision takes precedence over the ordinary configured ruleset;
+        // otherwise the ruleset decides. Either way we keep the pattern that classified the action
+        // for the event.
         let (own_action, own_pattern) = self
             .saved
             .as_ref()
@@ -295,6 +317,11 @@ impl PermissionEngine {
             }
         }
         (own_action, own_pattern)
+    }
+
+    fn hard_deny_pattern(&self, tool: &str, subject: &str) -> Option<String> {
+        let (action, rule) = self.hard_denies.resolve(tool, subject);
+        (action == Action::Deny).then(|| rule.map_or_else(|| "*".to_owned(), |r| r.pattern.clone()))
     }
 
     fn publish(&self, event: events::Event) {
@@ -365,5 +392,23 @@ mod tests {
             }));
         let outcome = engine.evaluate(&PermissionRequest::new("write", "src/a.txt"));
         assert_eq!(outcome, Outcome::Denied);
+    }
+
+    #[test]
+    fn hard_denies_outrank_saved_allows() {
+        let saved = Arc::new(SavedDecisions::from_decisions(vec![SavedDecision::new(
+            "bash",
+            "echo *",
+            Decision::Allow,
+        )]));
+        let engine = PermissionEngine::new(Ruleset::empty())
+            .with_saved_decisions(saved)
+            .with_hard_denies(Ruleset::new(vec![Rule::new("bash", "*", Action::Deny)]));
+
+        assert_eq!(engine.classify("bash", "echo hi"), Action::Deny);
+        assert_eq!(
+            engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
+            Outcome::Denied
+        );
     }
 }

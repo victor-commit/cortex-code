@@ -14,7 +14,8 @@
 //!   subagent's effective permission is the most restrictive of its own and its parent's, so it can
 //!   never exceed the parent (VAL-PERM-010).
 //! - **Saved decisions** ([`SavedDecisions`]): an "always allow/deny this pattern" choice is reused
-//!   for later matching actions in the session with no new ask (VAL-PERM-011).
+//!   for later matching actions in the session with no new ask (VAL-PERM-011), except that
+//!   explicit hard-deny constraints still win.
 //!
 //! ## Model (blueprint: the durable runner's permission layer, architecture §4)
 //!
