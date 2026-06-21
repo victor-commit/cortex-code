@@ -21,6 +21,12 @@ pub const MAX_RENDERED_DIAGNOSTICS: usize = 20;
 /// Maximum characters from one diagnostic message.
 pub const MAX_MESSAGE_CHARS: usize = 500;
 const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
+// LSP cancellation/readiness errors that rust-analyzer may return while a just-opened workspace is
+// still loading or while it invalidates an in-flight query after didOpen/didChange. Treat these as
+// retryable for navigation only, without weakening fatal transport/process handling.
+const LSP_REQUEST_CANCELLED: i64 = -32800;
+const LSP_CONTENT_MODIFIED: i64 = -32801;
+const LSP_SERVER_CANCELLED: i64 = -32802;
 
 /// One diagnostic projected to tool-result shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -640,18 +646,45 @@ where
     P: Fn(&T) -> bool,
 {
     loop {
-        let result = request()?;
-        if is_ready(&result) {
-            return Ok(result);
+        match request() {
+            Ok(result) => {
+                if is_ready(&result) {
+                    return Ok(result);
+                }
+                if !sleep_before_navigation_retry(deadline) {
+                    return Ok(result);
+                }
+            }
+            Err(error) if is_retryable_navigation_error(&error) => {
+                if !sleep_before_navigation_retry(deadline) {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
         }
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .unwrap_or_default();
-        if remaining <= NAVIGATION_RETRY_INTERVAL {
-            return Ok(result);
-        }
-        std::thread::sleep(NAVIGATION_RETRY_INTERVAL.min(remaining));
     }
+}
+
+fn sleep_before_navigation_retry(deadline: Instant) -> bool {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_default();
+    if remaining <= NAVIGATION_RETRY_INTERVAL {
+        return false;
+    }
+    std::thread::sleep(NAVIGATION_RETRY_INTERVAL.min(remaining));
+    deadline
+        .checked_duration_since(Instant::now())
+        .is_some_and(|remaining| remaining > NAVIGATION_RETRY_INTERVAL)
+}
+
+fn is_retryable_navigation_error(error: &crate::LspError) -> bool {
+    matches!(
+        error,
+        crate::LspError::ServerError {
+            code: LSP_REQUEST_CANCELLED | LSP_CONTENT_MODIFIED | LSP_SERVER_CANCELLED
+        }
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -775,5 +808,59 @@ mod tests {
             manager.collect(Path::new("/tmp/file.unknownext")),
             FeedbackOutcome::NoServer
         );
+    }
+
+    #[test]
+    fn retry_navigation_retries_transient_lsp_server_errors() {
+        let mut attempts = 0;
+        let result = retry_navigation(
+            Instant::now() + Duration::from_secs(1),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(crate::LspError::ServerError { code: -32802 })
+                } else {
+                    Ok(vec!["ready"])
+                }
+            },
+            |items| !items.is_empty(),
+        )
+        .expect("transient server cancellations should be retried");
+
+        assert_eq!(result, vec!["ready"]);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retryable_navigation_errors_are_lsp_cancellation_codes() {
+        for code in [
+            LSP_REQUEST_CANCELLED,
+            LSP_CONTENT_MODIFIED,
+            LSP_SERVER_CANCELLED,
+        ] {
+            assert!(is_retryable_navigation_error(
+                &crate::LspError::ServerError { code }
+            ));
+        }
+        assert!(!is_retryable_navigation_error(
+            &crate::LspError::ServerError { code: -32601 }
+        ));
+        assert!(!is_retryable_navigation_error(&crate::LspError::Closed));
+    }
+
+    #[test]
+    fn retry_navigation_does_not_retry_fatal_lsp_errors() {
+        let mut attempts = 0;
+        let result: Result<Vec<&str>, crate::LspError> = retry_navigation(
+            Instant::now() + Duration::from_secs(1),
+            || {
+                attempts += 1;
+                Err(crate::LspError::ServerError { code: -32601 })
+            },
+            |items: &Vec<&str>| !items.is_empty(),
+        );
+
+        assert_eq!(result, Err(crate::LspError::ServerError { code: -32601 }));
+        assert_eq!(attempts, 1);
     }
 }
