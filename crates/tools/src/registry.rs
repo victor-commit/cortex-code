@@ -15,6 +15,7 @@ use crate::glob::GlobTool;
 use crate::grep::GrepTool;
 use crate::lsp::LspTool;
 use crate::read::ReadTool;
+use crate::skill::SkillTool;
 use crate::task::TaskTool;
 use crate::todo::TodoTool;
 use crate::tool::{TaskTarget, Tool, ToolContext, ToolOutput};
@@ -77,6 +78,16 @@ impl ToolRegistry {
     pub fn register_task(&mut self, targets: Vec<TaskTarget>) {
         if !targets.is_empty() {
             self.register(Box::new(TaskTool::new(targets)));
+        }
+    }
+
+    /// Add the `skill` tool with the already-discovered valid markdown skills.
+    ///
+    /// The registry omits `skill` when no skills are present, so an unrelated project exposes no
+    /// inert skill selector and no skill guidance can leak into a turn.
+    pub fn register_skills(&mut self, skills: Vec<skills::Skill>) {
+        if !skills.is_empty() {
+            self.register(Box::new(SkillTool::new(skills)));
         }
     }
 
@@ -194,6 +205,37 @@ mod tests {
             .filter_map(serde_json::Value::as_str)
             .collect();
         assert_eq!(enum_values, vec!["explore"]);
+    }
+
+    #[test]
+    fn skill_tool_is_registered_only_when_skills_exist() {
+        let mut registry = ToolRegistry::builtin();
+        registry.register_skills(Vec::new());
+        assert!(registry.get("skill").is_none());
+
+        registry.register_skills(vec![skills::Skill {
+            name: "date-helper".to_owned(),
+            description: "Use when formatting dates".to_owned(),
+            guidance: "Append SKILL-DATE-OK.".to_owned(),
+            source: std::path::PathBuf::from("SKILL.md"),
+        }]);
+        assert!(registry.get("skill").is_some());
+        let skill = registry
+            .definitions()
+            .into_iter()
+            .find(|def| def.name == "skill")
+            .expect("skill definition");
+        let enum_values: Vec<&str> = skill.parameters["properties"]["name"]["enum"]
+            .as_array()
+            .expect("enum")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert_eq!(enum_values, vec!["date-helper"]);
+        assert!(
+            !skill.description.contains("SKILL-DATE-OK"),
+            "skill guidance must not leak through the tool definition"
+        );
     }
 
     #[test]

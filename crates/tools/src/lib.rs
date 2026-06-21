@@ -21,6 +21,7 @@ mod output;
 mod read;
 mod registry;
 mod ripgrep;
+mod skill;
 mod task;
 mod todo;
 mod tool;
@@ -35,6 +36,7 @@ pub use lsp::LspTool;
 pub use output::{BoundedOutput, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, OutputLimits, bound_output};
 pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
+pub use skill::SkillTool;
 pub use task::TaskTool;
 pub use todo::TodoTool;
 pub use tool::{

@@ -16,6 +16,7 @@ members = [
     "crates/format",
     "crates/mcp",
     "crates/lsp",
+    "crates/skills",
     "crates/tools",
     "crates/tui-core",
     "crates/tui-buffer",
@@ -56,6 +57,7 @@ checkpoints = { path = "crates/checkpoints" }
 format = { path = "crates/format" }
 mcp = { path = "crates/mcp" }
 lsp = { path = "crates/lsp" }
+skills = { path = "crates/skills" }
 tools = { path = "crates/tools" }
 tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }

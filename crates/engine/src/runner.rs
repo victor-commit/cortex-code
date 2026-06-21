@@ -342,6 +342,9 @@ impl SessionRunner {
                         } else {
                             content
                         };
+                        if call.name == "skill" && !is_error {
+                            append_skill_guidance_to_system(&mut messages, &tool_content);
+                        }
                         messages.push(Message::tool_result(call.id.clone(), tool_content));
                     }
                 }
@@ -379,6 +382,25 @@ impl SessionRunner {
         request.max_tokens = turn.max_tokens;
         request.temperature = turn.temperature;
         request
+    }
+}
+
+/// Inject the guidance returned by a successful `skill` tool call into the active system context
+/// for the continuation round, without changing the pre-engagement system prompt.
+fn append_skill_guidance_to_system(messages: &mut Vec<Message>, guidance: &str) {
+    let guidance = guidance.trim();
+    if guidance.is_empty() {
+        return;
+    }
+    let block = format!("<engaged_skill_guidance>\n{guidance}\n</engaged_skill_guidance>");
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|message| message.role == Role::System)
+    {
+        system.content.push_str("\n\n");
+        system.content.push_str(&block);
+    } else {
+        messages.insert(0, Message::system(block));
     }
 }
 

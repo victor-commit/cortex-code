@@ -1,0 +1,13 @@
+[package]
+name = "skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+settings = { workspace = true }
+toml = { workspace = true }

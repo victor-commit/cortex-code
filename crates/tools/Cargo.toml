@@ -14,6 +14,7 @@ errors = { workspace = true }
 llm = { workspace = true }
 permissions = { workspace = true }
 redaction = { workspace = true }
+skills = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }

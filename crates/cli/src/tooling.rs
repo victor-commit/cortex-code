@@ -120,6 +120,15 @@ impl RegistryDispatcher {
         self
     }
 
+    /// Attach discovered skills to the per-turn registry so the model can engage one through the
+    /// `skill` tool. Skill guidance itself remains outside the system context until that tool is
+    /// called.
+    #[must_use]
+    pub fn with_skills(mut self, skills: Vec<skills::Skill>) -> Self {
+        self.registry.register_skills(skills);
+        self
+    }
+
     /// The names of the tools materialized for this turn, in advertised order: the built-in tools
     /// first, then the connected MCP servers' server-qualified tool ids. Surfaced in machine output
     /// so a consumer can observe the per-turn (model-aware) tool list.

@@ -334,6 +334,109 @@ async fn errored_tool_results_are_reinjected_with_error_context() {
 }
 
 #[tokio::test]
+async fn successful_skill_tool_result_is_appended_to_system_context() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push(request.messages.clone());
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_skill".to_owned(),
+                            name: "skill".to_owned(),
+                            arguments: r#"{"name":"skill-ok"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "SKILL-OK".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct SkillDispatcher;
+
+    impl ToolDispatcher for SkillDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "skill".to_owned(),
+                description: "Engage a skill".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            Box::pin(async {
+                ToolDispatchResult {
+                    content: "Skill `skill-ok` engaged.\n\nAlways append SKILL-OK.".to_owned(),
+                    parts: vec![protocol::ToolResultPart::text(
+                        "Skill `skill-ok` engaged.\n\nAlways append SKILL-OK.",
+                    )],
+                    is_error: false,
+                }
+            })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = SkillDispatcher;
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new(
+                "google/gemini-2.5-flash",
+                "Base system prompt",
+                "engage the skill",
+            ),
+            &dispatcher,
+            |_| {},
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    let requests = provider.requests.lock().unwrap();
+    let first_system = requests[0]
+        .iter()
+        .find(|message| message.role == llm::Role::System)
+        .expect("first system message");
+    assert!(
+        !first_system.content.contains("SKILL-OK"),
+        "skill guidance must be absent before engagement"
+    );
+    let second_system = requests[1]
+        .iter()
+        .find(|message| message.role == llm::Role::System)
+        .expect("second system message");
+    assert!(
+        second_system.content.contains("<engaged_skill_guidance>")
+            && second_system.content.contains("SKILL-OK"),
+        "skill guidance should be appended to the continuation system context: {}",
+        second_system.content
+    );
+}
+
+#[tokio::test]
 async fn final_message_is_assistant_role() {
     let provider = ScriptedProvider::new(vec![vec![
         text("answer"),

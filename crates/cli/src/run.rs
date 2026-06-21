@@ -89,6 +89,11 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     for warning in &discovered_agents.warnings {
         eprintln!("cortex run: {warning}");
     }
+    let discovered_skills = skills::discover(&config_inputs);
+    for warning in &discovered_skills.warnings {
+        eprintln!("cortex run: {warning}");
+    }
+    let discovered_skill_list = discovered_skills.ordered_skills();
 
     // Resolve the agent persona before any network consideration so an unknown agent fails fast
     // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
@@ -294,7 +299,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
     let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
-    let system = render_system_context(&model_id, &agent);
+    let system = render_system_context(&model_id, &agent, &discovered_skill_list);
     let mut turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
@@ -365,6 +370,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
 
     let dispatcher =
         RegistryDispatcher::for_model(cwd.clone(), &model_id, session_id.clone(), todo_store);
+    let dispatcher = dispatcher.with_skills(discovered_skill_list.clone());
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
     // by the same engine the tools already call via `ctx.permits`.
     let dispatcher = match permission_engine {
@@ -480,13 +486,21 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     exit
 }
 
-fn render_system_context(model_id: &str, agent: &custom_agents::ActiveAgent) -> String {
+fn render_system_context(
+    model_id: &str,
+    agent: &custom_agents::ActiveAgent,
+    skills: &[skills::Skill],
+) -> String {
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
         .with_agent(agent.base_agent())
         .render();
     if let Some(prompt) = agent.custom_prompt() {
         system.push_str("\n\nCustom agent instructions:\n");
         system.push_str(prompt);
+    }
+    if let Some(hint) = skills::render_system_hint(skills) {
+        system.push_str("\n\n");
+        system.push_str(&hint);
     }
     system
 }
