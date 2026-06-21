@@ -14,6 +14,7 @@ members = [
     "crates/policy",
     "crates/checkpoints",
     "crates/mcp",
+    "crates/lsp",
     "crates/tools",
     "crates/tui-core",
     "crates/tui-buffer",
@@ -52,6 +53,7 @@ permissions = { path = "crates/permissions" }
 policy = { path = "crates/policy" }
 checkpoints = { path = "crates/checkpoints" }
 mcp = { path = "crates/mcp" }
+lsp = { path = "crates/lsp" }
 tools = { path = "crates/tools" }
 tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }

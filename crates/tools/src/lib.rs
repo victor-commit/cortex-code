@@ -34,6 +34,7 @@ pub use read::{DEFAULT_READ_LIMIT, ReadTool};
 pub use registry::ToolRegistry;
 pub use todo::TodoTool;
 pub use tool::{
-    CheckpointRecorder, Diagnostic, MutationHooks, TodoStore, Tool, ToolContext, ToolOutput,
+    CheckpointRecorder, Diagnostic, DiagnosticFeedback, MutationHooks, TodoStore, Tool,
+    ToolContext, ToolOutput,
 };
 pub use write::WriteTool;

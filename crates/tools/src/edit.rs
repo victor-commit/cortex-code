@@ -15,9 +15,8 @@
 //!   minor indentation/spacing drift in `oldString` still updates the right lines.
 //! - After a successful edit the post-edit hooks run: the formatter pass reformats the on-disk file
 //!   when a formatter is available, and any LSP diagnostics are re-injected into the tool result.
-//!   Both are no-ops until `format`/`lsp` land in M4, so today an edit with no formatter/LSP
-//!   available succeeds unchanged with no error; the seam carries formatter output and diagnostics
-//!   when those become available.
+//!   With no formatter/LSP attached, an edit succeeds unchanged with no error; when a surface
+//!   provides hooks, the seam carries formatter output and diagnostics.
 
 use std::fs;
 
@@ -25,7 +24,7 @@ use futures_util::future::BoxFuture;
 use protocol::ToolResultPart;
 use serde_json::{Value, json};
 
-use crate::tool::{Tool, ToolContext, ToolOutput};
+use crate::tool::{DiagnosticFeedback, Tool, ToolContext, ToolOutput};
 
 const DESCRIPTION: &str = "Edit a file by replacing an exact occurrence of `oldString` with \
 `newString`. By default `oldString` must match exactly once (include enough surrounding context to \
@@ -173,9 +172,10 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     ctx.record_read(&resolved);
 
     // Post-edit downstream hooks. The formatter rewrites the file in place first, then diagnostics
-    // are collected against the final on-disk content. Both are no-ops until format/lsp land.
+    // are collected against the final on-disk content. Both are no-ops when no surface attached
+    // those capabilities.
     ctx.format_after_write(&resolved);
-    let diagnostics = ctx.diagnostics_after_write(&resolved);
+    let feedback = ctx.diagnostic_feedback_after_write(&resolved);
 
     let occurrences = if applied.replacements == 1 {
         "1 occurrence".to_owned()
@@ -184,19 +184,27 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     };
     let summary = format!("edit: replaced {occurrences} in {path}");
 
-    if diagnostics.is_empty() {
+    render_with_feedback(summary, feedback)
+}
+
+fn render_with_feedback(summary: String, feedback: DiagnosticFeedback) -> ToolOutput {
+    if feedback.diagnostics.is_empty() && feedback.note.is_none() {
         return ToolOutput::text(summary);
     }
 
-    let mut rendered = String::from("Diagnostics:");
-    for diagnostic in &diagnostics {
-        rendered.push('\n');
-        rendered.push_str(&diagnostic.render());
+    let mut parts = vec![ToolResultPart::text(summary)];
+    if !feedback.diagnostics.is_empty() {
+        let mut rendered = String::from("Diagnostics:");
+        for diagnostic in &feedback.diagnostics {
+            rendered.push('\n');
+            rendered.push_str(&diagnostic.render());
+        }
+        parts.push(ToolResultPart::text(rendered));
     }
-    ToolOutput::parts(vec![
-        ToolResultPart::text(summary),
-        ToolResultPart::text(rendered),
-    ])
+    if let Some(note) = feedback.note {
+        parts.push(ToolResultPart::text(note));
+    }
+    ToolOutput::parts(parts)
 }
 
 /// The reason an edit could not be applied to the buffer.

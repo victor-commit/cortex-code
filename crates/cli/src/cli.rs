@@ -86,6 +86,27 @@ pub enum Command {
     /// its status (connected/disabled/failed/needs_auth), live PID, and advertised tools under
     /// their server-qualified ids.
     Mcp(McpArgs),
+
+    /// Inspect Language Server Protocol (LSP) server availability.
+    Lsp(LspArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LspArgs {
+    #[command(subcommand)]
+    pub command: LspCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LspCommand {
+    /// List configured language servers and whether they are idle, running, missing, or failed.
+    Status(LspStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LspStatusArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

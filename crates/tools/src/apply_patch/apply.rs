@@ -213,8 +213,11 @@ mod tests {
         // The context anchor does not exist in the file, but the removed line does: the change still
         // applies by anchoring on the old line rather than hard-failing on the context.
         let original = "alpha\nbeta\ngamma\n";
-        let patched =
-            apply_chunks(original, &[chunk(Some("missing context"), &["beta"], &["BETA"])]).unwrap();
+        let patched = apply_chunks(
+            original,
+            &[chunk(Some("missing context"), &["beta"], &["BETA"])],
+        )
+        .unwrap();
         assert_eq!(patched, "alpha\nBETA\ngamma\n");
     }
 

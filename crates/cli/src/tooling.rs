@@ -14,7 +14,7 @@ use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
 use permissions::PermissionEngine;
-use tools::{BackgroundJobs, TodoStore, ToolContext, ToolRegistry};
+use tools::{BackgroundJobs, MutationHooks, TodoStore, ToolContext, ToolRegistry};
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
 ///
@@ -83,6 +83,13 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_checkpoints(mut self, recorder: Arc<dyn tools::CheckpointRecorder>) -> Self {
         self.context = self.context.with_checkpoints(recorder);
+        self
+    }
+
+    /// Attach post-mutation hooks (formatter + LSP diagnostics) to the tool context.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
+        self.context = self.context.with_hooks(hooks);
         self
     }
 

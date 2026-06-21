@@ -323,6 +323,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         }
     };
 
+    let lsp_hooks = std::sync::Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
+
     let dispatcher = RegistryDispatcher::for_model(cwd, &model_id, session_id.clone(), todo_store);
     // Attach the permission engine (when rules were supplied) so the headless tool context is gated
     // by the same engine the tools already call via `ctx.permits`.
@@ -338,6 +340,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         )),
         None => dispatcher,
     };
+    // Attach the real LSP diagnostics hook so write/edit results carry diagnostics from the
+    // matching language server after the on-disk mutation persists.
+    let dispatcher = dispatcher.with_hooks(lsp_hooks.clone());
     // Attach the connected MCP manager so its server-qualified tools are advertised and callable
     // alongside the built-in tools this turn.
     let dispatcher = match &mcp_manager {
@@ -378,6 +383,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         // Reap any background `bash` jobs spawned this turn by exact PID, so no orphan process
         // outlives the run.
         dispatcher.background_jobs().shutdown().await;
+        // Terminate every spawned LSP server by its child PID before the process exits.
+        lsp_hooks.shutdown();
         // Terminate every spawned MCP server (cancel its session, killing the stdio child by PID),
         // so no MCP server process outlives the run.
         if let Some(manager) = &mcp_manager {

@@ -399,8 +399,7 @@ mod tests {
         // Some models emit a `@ -1,1 +1,1` (or `@@ -1,1 +1,1 @@`) header instead of `@@ context`.
         // The positional range is not a usable anchor, so the chunk parses with no context and the
         // change lines are read normally.
-        let patch =
-            "*** Begin Patch\n*** Update File: f.py\n @ -1,1 +1,1\n-line two\n+CHANGED\n*** End Patch";
+        let patch = "*** Begin Patch\n*** Update File: f.py\n @ -1,1 +1,1\n-line two\n+CHANGED\n*** End Patch";
         let hunks = parse_envelope(patch).unwrap();
         assert_eq!(
             hunks,

@@ -1,6 +1,8 @@
 mod checkpoint;
 mod cli;
 mod config;
+mod lsp_bridge;
+mod lsp_cmd;
 mod mcp_cmd;
 mod mcp_store;
 mod net;
@@ -58,6 +60,7 @@ fn main() -> ExitCode {
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
+        Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
         Some(Command::Serve(args)) => serve_placeholder(args).into(),
     }
 }
@@ -72,6 +75,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,
+        Some(Command::Lsp(_)) => Surface::Lsp,
         Some(Command::Serve(_)) => Surface::Serve,
     }
 }

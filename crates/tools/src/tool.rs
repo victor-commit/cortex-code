@@ -22,13 +22,24 @@ use crate::bash::BackgroundJobs;
 /// A diagnostic an LSP server reports for a file a mutating tool just wrote or edited.
 ///
 /// The mutating tools re-inject these into their result so the model sees an error it introduced.
-/// `line` is 1-based; `severity` is a short label (e.g. `error`/`warning`).
+/// Positions are 1-based for model readability; `severity` is a short label (for example
+/// `error`/`warning`/`information`/`hint`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     /// The severity label (e.g. `error`, `warning`).
     pub severity: String,
-    /// The 1-based line the diagnostic points at.
+    /// The 1-based line the diagnostic range starts on.
     pub line: usize,
+    /// The 1-based character the diagnostic range starts at.
+    pub character: usize,
+    /// The 1-based line the diagnostic range ends on.
+    pub end_line: usize,
+    /// The 1-based character the diagnostic range ends at.
+    pub end_character: usize,
+    /// Optional server/source label (e.g. `rustc`, `Ruff`).
+    pub source: Option<String>,
+    /// Optional diagnostic code.
+    pub code: Option<String>,
     /// The human-readable diagnostic message.
     pub message: String,
 }
@@ -37,17 +48,90 @@ impl Diagnostic {
     /// Build a diagnostic at `line` with `severity` and `message`.
     #[must_use]
     pub fn new(severity: impl Into<String>, line: usize, message: impl Into<String>) -> Self {
+        Self::with_range(severity, line, 1, line, 1, message)
+    }
+
+    /// Build a diagnostic with a precise 1-based range.
+    #[must_use]
+    pub fn with_range(
+        severity: impl Into<String>,
+        line: usize,
+        character: usize,
+        end_line: usize,
+        end_character: usize,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             severity: severity.into(),
             line,
+            character,
+            end_line,
+            end_character,
+            source: None,
+            code: None,
             message: message.into(),
         }
     }
 
-    /// Render the diagnostic as one stable, model-readable line (`severity at line N: message`).
+    /// Add source/code metadata from a language server.
+    #[must_use]
+    pub fn with_metadata(mut self, source: Option<String>, code: Option<String>) -> Self {
+        self.source = source;
+        self.code = code;
+        self
+    }
+
+    /// Render the diagnostic as one stable, model-readable line including severity and precise range.
     #[must_use]
     pub fn render(&self) -> String {
-        format!("{} at line {}: {}", self.severity, self.line, self.message)
+        let code = self
+            .code
+            .as_deref()
+            .map(|code| format!(" [{code}]"))
+            .unwrap_or_default();
+        let source = self
+            .source
+            .as_deref()
+            .map(|source| format!(" ({source})"))
+            .unwrap_or_default();
+        if self.line == self.end_line {
+            format!(
+                "{}{code}{source} at line {}, character {}-{}: {}",
+                self.severity, self.line, self.character, self.end_character, self.message
+            )
+        } else {
+            format!(
+                "{}{code}{source} at line {}, character {} to line {}, character {}: {}",
+                self.severity,
+                self.line,
+                self.character,
+                self.end_line,
+                self.end_character,
+                self.message
+            )
+        }
+    }
+}
+
+/// Post-mutation diagnostics plus an optional non-diagnostic note (for example, a missing or
+/// network-disabled language server). A note is surfaced to the model without pretending it is a
+/// file diagnostic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticFeedback {
+    /// Real file diagnostics reported by the language server.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Optional informational note about LSP availability.
+    pub note: Option<String>,
+}
+
+impl DiagnosticFeedback {
+    /// Feedback with only diagnostics and no note.
+    #[must_use]
+    pub fn diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            diagnostics,
+            note: None,
+        }
     }
 }
 
@@ -55,17 +139,24 @@ impl Diagnostic {
 /// diagnostics re-injected into the tool result.
 ///
 /// The mutating tools (`write`, later `edit`) call these after a successful mutation. The
-/// implementation is owned outside `tools`: the `format` and `lsp` capability crates land in M4 and
-/// are bridged in then. Until then no hooks are attached, so [`format`](MutationHooks::format) is a
-/// no-op (the file is written verbatim) and [`diagnostics`](MutationHooks::diagnostics) returns
-/// none (a write with no LSP available succeeds unchanged with no error). The default method bodies
-/// make a partial implementation (formatter-only, or LSP-only) trivial.
+/// implementation is owned outside `tools`: surfaces attach formatter and/or LSP implementations
+/// when those capabilities are available. With no hooks attached, [`format`](MutationHooks::format)
+/// is a no-op (the file is written verbatim) and [`diagnostics`](MutationHooks::diagnostics)
+/// returns none (a write with no LSP available succeeds unchanged with no error). The default method
+/// bodies make a partial implementation (formatter-only, or LSP-only) trivial.
 pub trait MutationHooks: Send + Sync {
     /// Reformat the just-written `path` in place. The default leaves the file untouched.
     fn format(&self, _path: &Path) {}
 
-    /// Diagnostics for the just-written `path` to re-inject into the tool result. The default
-    /// returns none (no LSP available is not an error).
+    /// Diagnostics and optional LSP availability note for the just-written `path` to re-inject into
+    /// the tool result. The default returns none (no LSP available is not an error).
+    fn diagnostic_feedback(&self, path: &Path) -> DiagnosticFeedback {
+        DiagnosticFeedback::diagnostics(self.diagnostics(path))
+    }
+
+    /// Diagnostics for older hook implementations. New implementations should override
+    /// [`diagnostic_feedback`](MutationHooks::diagnostic_feedback) so they can also surface a clean
+    /// no-LSP note when appropriate.
     fn diagnostics(&self, _path: &Path) -> Vec<Diagnostic> {
         Vec::new()
     }
@@ -272,14 +363,21 @@ impl ToolContext {
         }
     }
 
-    /// Collect LSP diagnostics for `path` (a resolved absolute path) through the attached hooks.
+    /// Collect LSP diagnostics and an optional availability note for `path` through the attached
+    /// hooks. Returns empty feedback when no hooks are attached.
+    #[must_use]
+    pub fn diagnostic_feedback_after_write(&self, path: &Path) -> DiagnosticFeedback {
+        self.hooks
+            .as_ref()
+            .map(|hooks| hooks.diagnostic_feedback(path))
+            .unwrap_or_default()
+    }
+
+    /// Collect LSP diagnostics for `path` through the attached hooks.
     /// Returns none when no hooks are attached (no LSP available is not an error).
     #[must_use]
     pub fn diagnostics_after_write(&self, path: &Path) -> Vec<Diagnostic> {
-        self.hooks
-            .as_ref()
-            .map(|hooks| hooks.diagnostics(path))
-            .unwrap_or_default()
+        self.diagnostic_feedback_after_write(path).diagnostics
     }
 
     /// Record the pre-mutation snapshot of `path` (a resolved absolute path) through the attached

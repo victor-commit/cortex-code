@@ -21,13 +21,15 @@
 mod apply;
 mod parser;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
 use futures_util::future::BoxFuture;
+use protocol::ToolResultPart;
 use serde_json::{Value, json};
 
-use crate::tool::{Tool, ToolContext, ToolOutput};
+use crate::tool::{DiagnosticFeedback, Tool, ToolContext, ToolOutput};
 use apply::apply_chunks;
 use parser::{Hunk, parse_envelope};
 
@@ -96,6 +98,15 @@ fn action_paths(action: &Action) -> Vec<&PathBuf> {
             vec![path]
         }
         Action::Rename { from, to, .. } => vec![from, to],
+    }
+}
+
+/// The path that contains freshly-written bytes after a committed action, if any.
+fn written_path(action: &Action) -> Option<&PathBuf> {
+    match action {
+        Action::Create { path, .. } | Action::Overwrite { path, .. } => Some(path),
+        Action::Rename { to, .. } => Some(to),
+        Action::Delete { .. } => None,
     }
 }
 
@@ -174,19 +185,54 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     // Commit phase: every action validated, so logical failures cannot leave a partial mix.
     let mut summaries = Vec::new();
+    let mut diagnostic_paths = BTreeSet::new();
     for (action, display) in &plan {
         if let Err(message) = commit(ctx, action) {
             return ToolOutput::error(message);
         }
         summaries.push(action_summary(action, display));
+        if let Some(path) = written_path(action) {
+            diagnostic_paths.insert(path.clone());
+        }
     }
 
     let count = summaries.len();
     let noun = if count == 1 { "change" } else { "changes" };
-    ToolOutput::text(format!(
+    let summary = format!(
         "apply_patch: applied {count} {noun}: {}",
         summaries.join(", ")
-    ))
+    );
+
+    let mut feedback = DiagnosticFeedback::default();
+    for path in diagnostic_paths {
+        ctx.format_after_write(&path);
+        let next = ctx.diagnostic_feedback_after_write(&path);
+        feedback.diagnostics.extend(next.diagnostics);
+        if feedback.note.is_none() {
+            feedback.note = next.note;
+        }
+    }
+    render_with_feedback(summary, feedback)
+}
+
+fn render_with_feedback(summary: String, feedback: DiagnosticFeedback) -> ToolOutput {
+    if feedback.diagnostics.is_empty() && feedback.note.is_none() {
+        return ToolOutput::text(summary);
+    }
+
+    let mut parts = vec![ToolResultPart::text(summary)];
+    if !feedback.diagnostics.is_empty() {
+        let mut rendered = String::from("Diagnostics:");
+        for diagnostic in &feedback.diagnostics {
+            rendered.push('\n');
+            rendered.push_str(&diagnostic.render());
+        }
+        parts.push(ToolResultPart::text(rendered));
+    }
+    if let Some(note) = feedback.note {
+        parts.push(ToolResultPart::text(note));
+    }
+    ToolOutput::parts(parts)
 }
 
 /// Plan an Add section: the target must not already exist.

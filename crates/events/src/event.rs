@@ -22,6 +22,8 @@ pub enum Surface {
     Checkpoint,
     /// The MCP server management path (`cortex mcp`).
     Mcp,
+    /// The language-server management path (`cortex lsp`).
+    Lsp,
 }
 
 impl Surface {
@@ -37,6 +39,7 @@ impl Surface {
             Surface::Net => "net",
             Surface::Checkpoint => "checkpoint",
             Surface::Mcp => "mcp",
+            Surface::Lsp => "lsp",
         }
     }
 }
