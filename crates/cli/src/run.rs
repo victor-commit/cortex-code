@@ -235,6 +235,18 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         return Exit::Failure;
     }
 
+    // Load configured local plugins through the external JavaScript runtime contract before any
+    // provider credentials are resolved or any session state is opened. A configured plugin is
+    // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
+    // an attributed error rather than silently continuing without hooks.
+    let _plugin_reports = match plugins::RuntimeHost::new().load_config(&run_config.plugins) {
+        Ok(reports) => reports,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Failure;
+        }
+    };
+
     // The credential resolves through env > 0600 file > config indirection; an endpoint override
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
@@ -1096,6 +1108,7 @@ struct RunConfig {
     api_key: Option<String>,
     mcp_servers: std::collections::BTreeMap<String, mcp::McpServerConfig>,
     formatter_config: format::FormatterConfig,
+    plugins: plugins::PluginConfig,
 }
 
 /// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
@@ -1106,6 +1119,7 @@ struct RunConfig {
 /// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded (bad TOML,
 /// failed `{env:}`/`{file:}` substitution, or a type mismatch).
 fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
+    let cwd = inputs.cwd.clone();
     let effective = settings::load(inputs)?;
     let formatter_config =
         format::FormatterConfig::from_table(effective.table()).map_err(|message| {
@@ -1115,12 +1129,20 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
                 found: message,
             }
         })?;
+    let plugins = plugins::PluginConfig::from_toml_value(effective.get("plugin"), &cwd).map_err(
+        |message| ConfigError::TypeMismatch {
+            key: "plugin".to_owned(),
+            expected: "an array of local plugin paths or [path, options] pairs",
+            found: message,
+        },
+    )?;
     Ok(RunConfig {
         model: providers::resolve_model(Some(effective.model())),
         base_url: openrouter_base_url_override(&effective),
         api_key: openrouter_api_key(&effective),
         mcp_servers: mcp_servers_from_config(&effective),
         formatter_config,
+        plugins,
     })
 }
 

@@ -29,6 +29,7 @@ checkpoints = { workspace = true }
 format = { workspace = true }
 mcp = { workspace = true }
 lsp = { workspace = true }
+plugins = { workspace = true }
 skills = { workspace = true }
 memory = { workspace = true }
 tui = { workspace = true }
