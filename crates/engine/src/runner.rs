@@ -184,11 +184,6 @@ impl SessionRunner {
     where
         F: FnMut(RunnerEvent),
     {
-        // Materialize the advertised tool catalogue once for the turn (empty when no dispatcher).
-        let tool_defs: Vec<ToolDef> = dispatcher
-            .map(ToolDispatcher::definitions)
-            .unwrap_or_default();
-
         let mut messages = Vec::new();
         if !turn.system.is_empty() {
             messages.push(Message::system(turn.system.clone()));
@@ -200,6 +195,7 @@ impl SessionRunner {
         let mut total_usage = None;
         let mut steps = 0usize;
         let mut error = None;
+        let mut last_advertised_tool_defs: Option<Vec<ToolDef>> = None;
 
         // Compaction state: the per-request input budget and the number of recent messages kept
         // verbatim. An overflow recovery shrinks both and rebuilds the turn (architecture §4).
@@ -231,6 +227,23 @@ impl SessionRunner {
             if policy.auto {
                 compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
             }
+
+            // Refresh the advertised tool catalogue immediately before every provider request.
+            // MCP servers can send `notifications/tools/list_changed` while a run is already in
+            // progress; polling the dispatcher here lets the next continuation request see added
+            // and removed tools without restarting cortex.
+            let tool_defs: Vec<ToolDef> = dispatcher
+                .map(ToolDispatcher::definitions)
+                .unwrap_or_default();
+            if let Some(previous) = &last_advertised_tool_defs
+                && previous != &tool_defs
+            {
+                sink(RunnerEvent::ToolSetChanged {
+                    tools: tool_defs.iter().map(|def| def.name.clone()).collect(),
+                    tool_definitions: tool_defs.clone(),
+                });
+            }
+            last_advertised_tool_defs = Some(tool_defs.clone());
 
             let request = self.build_request(&turn, &messages, &tool_defs);
             let mut stream = match provider.stream(request).await {

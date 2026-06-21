@@ -334,6 +334,118 @@ async fn errored_tool_results_are_reinjected_with_error_context() {
 }
 
 #[tokio::test]
+async fn tool_definitions_are_refreshed_before_each_provider_request() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let mut requests = self.requests.lock().unwrap();
+            let round = requests.len();
+            requests.push(request.tools.iter().map(|tool| tool.name.clone()).collect());
+            drop(requests);
+
+            Box::pin(async move {
+                let events = match round {
+                    0 => vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_1".to_owned(),
+                            name: "stable".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ],
+                    1 => vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_2".to_owned(),
+                            name: "stable".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ],
+                    _ => vec![
+                        LlmEvent::TextDelta {
+                            text: "done".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ],
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct ChangingDispatcher {
+        definition_calls: Mutex<usize>,
+    }
+
+    impl ToolDispatcher for ChangingDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            let mut calls = self.definition_calls.lock().unwrap();
+            let round = *calls;
+            *calls += 1;
+
+            let mut definitions = vec![ToolDef {
+                name: "stable".to_owned(),
+                description: "Stable tool".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }];
+            if round == 1 {
+                definitions.push(ToolDef {
+                    name: "runtime_extra".to_owned(),
+                    description: "Runtime-added tool".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                });
+            }
+            definitions
+        }
+
+        fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            let name = call.name.clone();
+            Box::pin(async move { ToolDispatchResult::text(format!("{name} ok")) })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = ChangingDispatcher {
+        definition_calls: Mutex::new(0),
+    };
+
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "exercise tools"),
+            &dispatcher,
+            |_| {},
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(
+        *requests,
+        vec![
+            vec!["stable".to_owned()],
+            vec!["stable".to_owned(), "runtime_extra".to_owned()],
+            vec!["stable".to_owned()],
+        ],
+        "each continuation request must advertise the latest dispatcher definitions"
+    );
+}
+
+#[tokio::test]
 async fn successful_skill_tool_result_is_appended_to_system_context() {
     struct CapturingProvider {
         requests: Mutex<Vec<Vec<llm::Message>>>,

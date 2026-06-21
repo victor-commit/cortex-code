@@ -10,7 +10,7 @@
 //!   terminal [`RunnerEvent::Done`] arrive after the text, with no duplicate terminal event.
 
 use errors::{Diagnostic, Exit};
-use llm::{FinishReason, Message, Usage};
+use llm::{FinishReason, Message, ToolDef, Usage};
 use serde::{Deserialize, Serialize};
 
 /// One normalized event emitted by the runner for a turn.
@@ -48,6 +48,16 @@ pub enum RunnerEvent {
         parts: Vec<protocol::ToolResultPart>,
         /// Whether the tool reported an error (the turn still continues).
         is_error: bool,
+    },
+    /// The advertised tool set changed between provider round-trips.
+    ///
+    /// Surfaces such as `cortex run --jsonl` use this event to expose live MCP
+    /// `notifications/tools/list_changed` add/remove updates without waiting for a restart.
+    ToolSetChanged {
+        /// The current tool names in advertised order.
+        tools: Vec<String>,
+        /// The full current tool definitions, including descriptions and JSON schemas.
+        tool_definitions: Vec<ToolDef>,
     },
     /// The per-turn token usage, summed across every provider round-trip in the turn.
     Usage(Usage),
@@ -196,6 +206,19 @@ mod tests {
         assert_eq!(done["type"], "done");
         assert_eq!(done["reason"], "stop");
         assert_eq!(done["steps"], 1);
+
+        let tools = serde_json::to_value(RunnerEvent::ToolSetChanged {
+            tools: vec!["read".to_owned(), "api_extra".to_owned()],
+            tool_definitions: vec![ToolDef {
+                name: "api_extra".to_owned(),
+                description: "Runtime MCP tool".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }],
+        })
+        .expect("serialize");
+        assert_eq!(tools["type"], "tool_set_changed");
+        assert_eq!(tools["tools"], serde_json::json!(["read", "api_extra"]));
+        assert_eq!(tools["tool_definitions"][0]["name"], "api_extra");
     }
 
     #[test]

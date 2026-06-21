@@ -425,10 +425,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
     };
     let tool_definitions = dispatcher.definitions();
-    let tool_names: Vec<String> = tool_definitions
-        .iter()
-        .map(|def| def.name.clone())
-        .collect();
+    let tool_names = tool_names_from(&tool_definitions);
 
     let exit = runtime.block_on(async {
         let exit = match format {
@@ -454,8 +451,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &model_id,
                     agent.name(),
                     &session_id,
-                    &tool_names,
-                    &tool_definitions,
                     &db,
                     turn,
                     &dispatcher,
@@ -906,8 +901,6 @@ async fn emit_json(
     model_id: &str,
     agent: &str,
     session_id: &str,
-    tool_names: &[String],
-    tool_definitions: &[ToolDef],
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -956,13 +949,15 @@ async fn emit_json(
     } else {
         None
     };
+    let final_tool_definitions = dispatcher.definitions();
+    let final_tool_names = tool_names_from(&final_tool_definitions);
 
     let line = match render_json_document(
         model_id,
         agent,
         session_id,
-        tool_names,
-        tool_definitions,
+        &final_tool_names,
+        &final_tool_definitions,
         &outcome,
         session_usage,
         tool_results,
@@ -1059,6 +1054,14 @@ fn render_session_line(
         tools: tool_names,
         tool_definitions,
     })
+}
+
+/// Project a full tool-definition snapshot to its advertised names, preserving order.
+fn tool_names_from(tool_definitions: &[ToolDef]) -> Vec<String> {
+    tool_definitions
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect()
 }
 
 /// Render one normalized runner event as a single JSONL line (without the trailing newline). Every

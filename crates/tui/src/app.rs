@@ -781,6 +781,7 @@ impl App {
                 is_error,
                 ..
             } => self.complete_tool_call(&id, &parts, is_error),
+            RunnerEvent::ToolSetChanged { .. } => {}
             // The terminal Done is not surfaced by this view; the worker's Finished marker drives
             // turn finalization.
             RunnerEvent::Done { .. } => {}
