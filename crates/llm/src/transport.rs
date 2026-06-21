@@ -17,6 +17,7 @@ use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use redaction::guard_outbound;
 use reqwest::StatusCode;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::error::LlmError;
 
@@ -89,21 +90,12 @@ impl HttpTransport {
     ) -> Result<ByteStream, LlmError> {
         guard_outbound(OUTBOUND_OPERATION).map_err(LlmError::from_diagnostic)?;
 
-        let mut builder = self
+        let headers = request_headers(bearer_token, extra_headers)?;
+        let response = self
             .client
             .post(url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .header(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {bearer_token}"),
-            )
-            .body(body);
-        for (name, value) in extra_headers {
-            builder = builder.header(name, value);
-        }
-
-        let response = builder
+            .headers(headers)
+            .body(body)
             .send()
             .await
             .map_err(|err| LlmError::transport(err.to_string()))?;
@@ -119,6 +111,35 @@ impl HttpTransport {
             .map_err(|err| LlmError::transport(err.to_string()));
         Ok(Box::pin(bytes))
     }
+}
+
+fn request_headers(
+    bearer_token: &str,
+    extra_headers: &[(String, String)],
+) -> Result<HeaderMap, LlmError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        reqwest::header::ACCEPT,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {bearer_token}"))
+            .map_err(|err| LlmError::transport(format!("invalid authorization header: {err}")))?,
+    );
+    for (name, value) in extra_headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|err| LlmError::transport(format!("invalid request header name: {err}")))?;
+        let value = HeaderValue::from_str(value).map_err(|err| {
+            LlmError::transport(format!("invalid request header value for {name}: {err}"))
+        })?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
 }
 
 /// Normalize a non-success HTTP status (with its drained body) into an [`LlmError`].
@@ -234,5 +255,23 @@ mod tests {
     fn building_a_transport_succeeds_with_rustls() {
         let transport = HttpTransport::new(TransportConfig::default()).expect("rustls client");
         assert_eq!(transport.config().idle_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn extra_headers_override_prior_header_values() {
+        let headers = request_headers(
+            "k",
+            &[
+                ("X-Cortex-Plugin".to_owned(), "old".to_owned()),
+                ("x-cortex-plugin".to_owned(), "new".to_owned()),
+            ],
+        )
+        .expect("headers");
+        assert_eq!(
+            headers
+                .get("x-cortex-plugin")
+                .and_then(|value| value.to_str().ok()),
+            Some("new")
+        );
     }
 }

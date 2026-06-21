@@ -5,6 +5,7 @@
 //! format; the runner builds it without knowing which protocol will carry it.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::event::ToolCall;
 
@@ -105,6 +106,15 @@ pub struct LlmRequest {
     /// Optional sampling temperature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// Provider-specific Chat Completions parameters applied after the canonical fields are
+    /// serialized. This lets surfaces add request-scoped options such as `top_p` without changing
+    /// the provider-agnostic runner API for every adapter.
+    #[serde(skip_serializing_if = "JsonMap::is_empty", default)]
+    pub extra_params: JsonMap<String, JsonValue>,
+    /// Request-scoped HTTP headers merged after provider-level headers so callers can inject or
+    /// override headers on a single outbound request.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl LlmRequest {
@@ -117,6 +127,8 @@ impl LlmRequest {
             tools: Vec::new(),
             max_tokens: None,
             temperature: None,
+            extra_params: JsonMap::new(),
+            extra_headers: Vec::new(),
         }
     }
 
@@ -157,6 +169,20 @@ impl LlmRequest {
     #[must_use]
     pub fn temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set an adapter-specific request parameter (builder style).
+    #[must_use]
+    pub fn extra_param(mut self, name: impl Into<String>, value: JsonValue) -> Self {
+        self.extra_params.insert(name.into(), value);
+        self
+    }
+
+    /// Add a request-scoped HTTP header (builder style).
+    #[must_use]
+    pub fn extra_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
         self
     }
 }

@@ -24,8 +24,24 @@ pub fn build_chat_request(request: &LlmRequest, include_usage: bool) -> Result<S
             include_usage: true,
         }),
     };
-    serde_json::to_string(&body)
+    let mut value = serde_json::to_value(&body)
+        .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))?;
+    if let serde_json::Value::Object(map) = &mut value {
+        for (name, param) in &request.extra_params {
+            if !is_reserved_chat_param(name) {
+                map.insert(name.clone(), param.clone());
+            }
+        }
+    }
+    serde_json::to_string(&value)
         .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))
+}
+
+fn is_reserved_chat_param(name: &str) -> bool {
+    matches!(
+        name,
+        "model" | "messages" | "tools" | "stream" | "stream_options"
+    )
 }
 
 #[derive(Serialize)]
@@ -261,6 +277,28 @@ mod tests {
         assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(value["tools"][0]["function"]["name"], "get_weather");
         assert!(value.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn extra_params_merge_into_the_chat_request() {
+        let request = LlmRequest::new("m")
+            .user("hi")
+            .extra_param("temperature", serde_json::json!(0.123));
+        let body = build_chat_request(&request, false).expect("encode");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(value["temperature"], 0.123);
+    }
+
+    #[test]
+    fn extra_params_do_not_override_structural_fields() {
+        let request = LlmRequest::new("m")
+            .user("hi")
+            .extra_param("messages", serde_json::json!("bad"))
+            .extra_param("tools", serde_json::json!("bad"));
+        let body = build_chat_request(&request, false).expect("encode");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert!(value["messages"].is_array());
+        assert!(value.get("tools").is_none());
     }
 
     #[test]

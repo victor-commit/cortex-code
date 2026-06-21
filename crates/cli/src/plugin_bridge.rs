@@ -3,11 +3,13 @@
 use std::io;
 use std::sync::Arc;
 
+use engine::ToolDispatcher;
 use events::{Event, Subscriber};
 use futures_util::future::BoxFuture;
-#[cfg(test)]
-use llm::ToolDef;
-use llm::{FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Provider};
+use llm::{
+    FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Message, Provider, Role, ToolCall,
+    ToolDef,
+};
 use permissions::{Action, Rule};
 use plugins::{
     LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginModelRegistration,
@@ -118,6 +120,187 @@ impl PluginState {
                 })
             })
         })
+    }
+
+    /// Wrap the selected provider so request-shaping hooks run immediately before each outbound
+    /// provider request. Plugins compose in the order they were configured.
+    #[must_use]
+    pub(crate) fn wrap_provider(&self, inner: Arc<dyn Provider>) -> Arc<dyn Provider> {
+        if self.has_request_shaping_hooks() {
+            Arc::new(PluginShapingProvider {
+                inner,
+                state: self.clone(),
+            })
+        } else {
+            inner
+        }
+    }
+
+    /// Wrap a dispatcher so `tool.definition` hooks can reshape the advertised schema snapshot.
+    #[must_use]
+    pub(crate) fn tool_definition_dispatcher<'a>(
+        &'a self,
+        inner: &'a dyn ToolDispatcher,
+    ) -> PluginToolDefinitionDispatcher<'a> {
+        PluginToolDefinitionDispatcher { inner, state: self }
+    }
+
+    fn has_request_shaping_hooks(&self) -> bool {
+        self.has_hook("chat.message")
+            || self.has_hook("chat.params")
+            || self.has_hook("chat.headers")
+            || self.has_any_hook(&["experimental.chat.messages.transform", "chat.messages"])
+            || self.has_any_hook(&["experimental.chat.system.transform", "chat.system"])
+    }
+
+    fn has_hook(&self, hook: &str) -> bool {
+        self.loaded
+            .iter()
+            .any(|loaded| plugin_has_hook(loaded, hook))
+    }
+
+    fn has_any_hook(&self, hooks: &[&str]) -> bool {
+        hooks.iter().any(|hook| self.has_hook(hook))
+    }
+
+    fn shape_request(&self, mut request: LlmRequest) -> Result<LlmRequest, PluginRuntimeError> {
+        self.shape_chat_messages(&mut request.messages)?;
+        self.shape_chat_params(&mut request)?;
+        self.shape_chat_headers(&mut request)?;
+        Ok(request)
+    }
+
+    fn shape_chat_messages(&self, messages: &mut Vec<Message>) -> Result<(), PluginRuntimeError> {
+        // Per-message hooks run before whole-array/system transforms. Within each hook family,
+        // plugins run in configuration order, so repeated runs observe the same composition order.
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "chat.message") {
+                continue;
+            }
+            for message in messages.iter_mut() {
+                let input = serde_json::to_value(&*message)?;
+                let Some(output) = self.host.invoke_chat_message(&loaded.spec, input)?.output
+                else {
+                    continue;
+                };
+                *message = serde_json::from_value(output)?;
+            }
+        }
+
+        for loaded in &self.loaded {
+            if !plugin_has_any_hook(
+                loaded,
+                &["experimental.chat.messages.transform", "chat.messages"],
+            ) {
+                continue;
+            }
+            let input = serde_json::to_value(&*messages)?;
+            let Some(output) = self
+                .host
+                .invoke_chat_messages_transform(&loaded.spec, input)?
+                .output
+            else {
+                continue;
+            };
+            *messages = serde_json::from_value(output)?;
+        }
+
+        for loaded in &self.loaded {
+            if !plugin_has_any_hook(
+                loaded,
+                &["experimental.chat.system.transform", "chat.system"],
+            ) {
+                continue;
+            }
+            let system = messages
+                .iter()
+                .find(|message| message.role == Role::System)
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let output = self
+                .host
+                .invoke_chat_system_transform(&loaded.spec, system.clone())?
+                .output
+                .unwrap_or(serde_json::Value::String(system));
+            let transformed = system_output_to_string(output);
+            if let Some(message) = messages
+                .iter_mut()
+                .find(|message| message.role == Role::System)
+            {
+                message.content = transformed;
+            } else if !transformed.is_empty() {
+                messages.insert(0, Message::system(transformed));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn shape_chat_params(&self, request: &mut LlmRequest) -> Result<(), PluginRuntimeError> {
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "chat.params") {
+                continue;
+            }
+            let Some(output) = self
+                .host
+                .invoke_chat_params(&loaded.spec, params_to_json(request))?
+                .output
+            else {
+                continue;
+            };
+            request.extra_params = json_object(output);
+        }
+        Ok(())
+    }
+
+    fn shape_chat_headers(&self, request: &mut LlmRequest) -> Result<(), PluginRuntimeError> {
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "chat.headers") {
+                continue;
+            }
+            let Some(output) = self
+                .host
+                .invoke_chat_headers(&loaded.spec, headers_to_json(&request.extra_headers))?
+                .output
+            else {
+                continue;
+            };
+            request.extra_headers = json_headers(output);
+        }
+        Ok(())
+    }
+
+    fn shape_tool_definitions_result(
+        &self,
+        mut definitions: Vec<ToolDef>,
+    ) -> Result<Vec<ToolDef>, PluginRuntimeError> {
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "tool.definition") {
+                continue;
+            }
+            for definition in &mut definitions {
+                let input = serde_json::to_value(&*definition)?;
+                let Some(output) = self
+                    .host
+                    .invoke_tool_definition(&loaded.spec, input)?
+                    .output
+                else {
+                    continue;
+                };
+                *definition = serde_json::from_value(output)?;
+            }
+        }
+        Ok(definitions)
+    }
+
+    fn shape_tool_definitions(&self, definitions: Vec<ToolDef>) -> Vec<ToolDef> {
+        match self.shape_tool_definitions_result(definitions.clone()) {
+            Ok(shaped) => shaped,
+            Err(err) => {
+                eprintln!("cortex plugin tool.definition: {err}");
+                definitions
+            }
+        }
     }
 
     /// Build an event-bus subscriber that dispatches real bus events to plugin `event` hooks.
@@ -238,6 +421,108 @@ impl ModelDoc {
 fn non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn plugin_has_hook(loaded: &LoadedPlugin, hook: &str) -> bool {
+    loaded
+        .report
+        .hooks
+        .iter()
+        .any(|candidate| candidate == hook)
+}
+
+fn plugin_has_any_hook(loaded: &LoadedPlugin, hooks: &[&str]) -> bool {
+    hooks.iter().any(|hook| plugin_has_hook(loaded, hook))
+}
+
+fn params_to_json(request: &LlmRequest) -> JsonValue {
+    let mut params = serde_json::Map::new();
+    if let Some(max_tokens) = request.max_tokens {
+        params.insert("max_tokens".to_owned(), JsonValue::from(max_tokens));
+    }
+    if let Some(temperature) = request.temperature {
+        if let Some(number) = serde_json::Number::from_f64(f64::from(temperature)) {
+            params.insert("temperature".to_owned(), JsonValue::Number(number));
+        }
+    }
+    params.extend(request.extra_params.clone());
+    JsonValue::Object(params)
+}
+
+fn headers_to_json(headers: &[(String, String)]) -> JsonValue {
+    JsonValue::Object(
+        headers
+            .iter()
+            .map(|(name, value)| (name.clone(), JsonValue::String(value.clone())))
+            .collect(),
+    )
+}
+
+fn json_object(value: JsonValue) -> serde_json::Map<String, JsonValue> {
+    match value {
+        JsonValue::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+fn json_headers(value: JsonValue) -> Vec<(String, String)> {
+    let JsonValue::Object(map) = value else {
+        return Vec::new();
+    };
+    map.into_iter()
+        .filter_map(|(name, value)| {
+            let value = match value {
+                JsonValue::Null => return None,
+                JsonValue::String(value) => value,
+                other => other.to_string(),
+            };
+            Some((name, value))
+        })
+        .collect()
+}
+
+fn system_output_to_string(value: JsonValue) -> String {
+    match value {
+        JsonValue::String(text) => text,
+        JsonValue::Object(map) => map
+            .get("content")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| JsonValue::Object(map).to_string()),
+        other => other.to_string(),
+    }
+}
+
+struct PluginShapingProvider {
+    inner: Arc<dyn Provider>,
+    state: PluginState,
+}
+
+impl Provider for PluginShapingProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let request = self
+                .state
+                .shape_request(request)
+                .map_err(|err| LlmError::upstream(err.to_string()))?;
+            self.inner.stream(request).await
+        })
+    }
+}
+
+pub(crate) struct PluginToolDefinitionDispatcher<'a> {
+    inner: &'a dyn ToolDispatcher,
+    state: &'a PluginState,
+}
+
+impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
+    fn definitions(&self) -> Vec<ToolDef> {
+        self.state.shape_tool_definitions(self.inner.definitions())
+    }
+
+    fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, engine::ToolDispatchResult> {
+        self.inner.dispatch(call)
+    }
 }
 
 struct PluginTool {

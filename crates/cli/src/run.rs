@@ -279,6 +279,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             }
         }
     };
+    let provider = plugin_state.wrap_provider(provider);
 
     // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
     // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
@@ -456,7 +457,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         });
         dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
     };
-    let tool_definitions = dispatcher.definitions();
+    let shaped_dispatcher = plugin_state.tool_definition_dispatcher(&dispatcher);
+    let tool_definitions = shaped_dispatcher.definitions();
     let tool_names = tool_names_from(&tool_definitions);
 
     let exit = runtime.block_on(async {
@@ -467,7 +469,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &session_id,
                     &db,
                     turn,
-                    &dispatcher,
+                    &shaped_dispatcher,
                     bus.clone(),
                 )
                 .await
@@ -481,7 +483,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &tool_definitions,
                     &db,
                     turn,
-                    &dispatcher,
+                    &shaped_dispatcher,
                     bus.clone(),
                 )
                 .await
@@ -494,7 +496,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
                     &session_id,
                     &db,
                     turn,
-                    &dispatcher,
+                    &shaped_dispatcher,
                     bus.clone(),
                 )
                 .await

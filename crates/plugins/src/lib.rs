@@ -10,8 +10,8 @@ mod runtime;
 
 pub use config::{PluginConfig, PluginSpec};
 pub use runtime::{
-    JsRuntime, LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginHookReport,
-    PluginLoadReport, PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError,
-    PluginToolExecution, PluginToolRegistration, RuntimeHost, RuntimeSelection, detect_runtime,
-    detect_runtime_in_path,
+    JsRuntime, LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginHookOutput,
+    PluginHookReport, PluginLoadReport, PluginModelRegistration, PluginProviderRegistration,
+    PluginRuntimeError, PluginToolExecution, PluginToolRegistration, RuntimeHost, RuntimeSelection,
+    detect_runtime, detect_runtime_in_path,
 };

@@ -150,10 +150,12 @@ impl Provider for OpenAiCompatible {
             let body = wire::build_chat_request(&request, self.include_usage)?;
             let url = self.chat_url();
             let idle_timeout = self.transport.config().idle_timeout;
+            let mut headers = self.extra_headers.clone();
+            headers.extend(request.extra_headers.iter().cloned());
 
             let bytes = self
                 .transport
-                .open_post_sse(&url, &self.api_key, &self.extra_headers, body)
+                .open_post_sse(&url, &self.api_key, &headers, body)
                 .await?;
 
             let frames: FrameStream = Box::pin(sse_data_frames(bytes, idle_timeout));

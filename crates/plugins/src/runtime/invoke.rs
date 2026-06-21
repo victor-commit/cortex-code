@@ -115,6 +115,84 @@ impl RuntimeHost {
         }
     }
 
+    /// Invoke a plugin's `chat.message` hook with one outgoing message.
+    pub fn invoke_chat_message(
+        &self,
+        plugin: &PluginSpec,
+        message: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ChatMessage { message },
+            "chat.message",
+        )
+    }
+
+    /// Invoke a plugin's `chat.params` hook with the request parameter map.
+    pub fn invoke_chat_params(
+        &self,
+        plugin: &PluginSpec,
+        params: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ChatParams { params },
+            "chat.params",
+        )
+    }
+
+    /// Invoke a plugin's `chat.headers` hook with the outbound request header map.
+    pub fn invoke_chat_headers(
+        &self,
+        plugin: &PluginSpec,
+        headers: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ChatHeaders { headers },
+            "chat.headers",
+        )
+    }
+
+    /// Invoke a plugin's `tool.definition` hook with one advertised tool definition.
+    pub fn invoke_tool_definition(
+        &self,
+        plugin: &PluginSpec,
+        definition: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ToolDefinition { definition },
+            "tool.definition",
+        )
+    }
+
+    /// Invoke a plugin's messages-array transform hook.
+    pub fn invoke_chat_messages_transform(
+        &self,
+        plugin: &PluginSpec,
+        messages: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ChatMessagesTransform { messages },
+            "experimental.chat.messages.transform",
+        )
+    }
+
+    /// Invoke a plugin's system-prompt transform hook.
+    pub fn invoke_chat_system_transform(
+        &self,
+        plugin: &PluginSpec,
+        system: String,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ChatSystemTransform { system },
+            "experimental.chat.system.transform",
+        )
+    }
+
     /// Execute one plugin-contributed tool by re-loading the real plugin module in the detected JS
     /// runtime and calling that tool's real JavaScript body.
     pub fn execute_tool(
@@ -174,6 +252,34 @@ impl RuntimeHost {
                 &runtime,
                 result,
                 "provider",
+            ))
+        }
+    }
+
+    fn invoke_value_hook(
+        &self,
+        plugin: &PluginSpec,
+        operation: BridgeOperation,
+        hook_name: &str,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, output) = self.invoke_plugin(plugin, &runtime, operation)?;
+        if result.ok {
+            Ok(PluginHookOutput {
+                plugin_path: plugin.path().to_path_buf(),
+                runtime: runtime.runtime,
+                runtime_pid: result.pid,
+                invoked_hooks: result.invoked_hooks,
+                output: result.output,
+                stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
+                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
+            })
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                hook_name,
             ))
         }
     }
@@ -334,6 +440,25 @@ pub struct PluginHookReport {
     pub runtime_pid: Option<u32>,
     /// Hook names actually invoked by the bridge.
     pub invoked_hooks: Vec<String>,
+    /// Redacted runtime stdout.
+    pub stdout: String,
+    /// Redacted runtime stderr.
+    pub stderr: String,
+}
+
+/// Output from a later hook invocation that transforms a JSON value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginHookOutput {
+    /// Plugin file whose hook was invoked.
+    pub plugin_path: PathBuf,
+    /// Runtime used for this invocation.
+    pub runtime: JsRuntime,
+    /// Direct runtime PID observed inside JavaScript.
+    pub runtime_pid: Option<u32>,
+    /// Hook names actually invoked by the bridge.
+    pub invoked_hooks: Vec<String>,
+    /// Hook return value after bridge normalization.
+    pub output: Option<JsonValue>,
     /// Redacted runtime stdout.
     pub stdout: String,
     /// Redacted runtime stderr.
@@ -533,6 +658,12 @@ struct BridgeInput {
 enum BridgeOperation {
     Load { config: JsonValue },
     Event { event: JsonValue },
+    ChatMessage { message: JsonValue },
+    ChatParams { params: JsonValue },
+    ChatHeaders { headers: JsonValue },
+    ToolDefinition { definition: JsonValue },
+    ChatMessagesTransform { messages: JsonValue },
+    ChatSystemTransform { system: String },
     ToolExecute { name: String, arguments: JsonValue },
     ProviderComplete { model: String, messages: JsonValue },
 }
@@ -1088,14 +1219,85 @@ function findProviderForModel(providers, model) {
   throw new Error(`plugin model ${model} was not registered by the provider hook`);
 }
 
+function getHook(hooks, path) {
+  if (!hooks || typeof hooks !== "object") return undefined;
+  if (typeof hooks[path] === "function") return hooks[path];
+  const segments = String(path).split(".");
+  let current = hooks;
+  for (let i = 0; i < segments.length; i += 1) {
+    if (!current || typeof current !== "object") return undefined;
+    const remaining = segments.slice(i).join(".");
+    if (typeof current[remaining] === "function") return current[remaining];
+    current = current[segments[i]];
+  }
+  return typeof current === "function" ? current : undefined;
+}
+
+function listHookEntries(value, prefix = "") {
+  if (!value || typeof value !== "object") return [];
+  const entries = [];
+  for (const [key, item] of Object.entries(value)) {
+    const name = prefix ? `${prefix}.${key}` : key;
+    if (typeof item === "function") {
+      entries.push(name);
+    } else if (item && typeof item === "object" && !Array.isArray(item)) {
+      entries.push(...listHookEntries(item, name));
+    }
+  }
+  return entries;
+}
+
+async function callHook(hooks, path, args, invokedHooks) {
+  const hook = getHook(hooks, path);
+  if (typeof hook !== "function") return undefined;
+  activeHook = path;
+  const output = await hook(...args);
+  invokedHooks.push(path);
+  return output;
+}
+
+function normalizeObjectResult(returned, mutated) {
+  const source = returned === undefined || returned === null ? mutated : returned;
+  if (source && typeof source === "object" && !Array.isArray(source)) return source;
+  return {};
+}
+
+function normalizeArrayResult(returned, mutated) {
+  const source = returned === undefined || returned === null ? mutated : returned;
+  return Array.isArray(source) ? source : mutated;
+}
+
+function normalizeMessageResult(returned, mutated) {
+  const source = returned === undefined || returned === null ? mutated : returned;
+  if (typeof source === "string") return { ...mutated, content: source };
+  if (source && typeof source === "object" && !Array.isArray(source)) {
+    return { ...mutated, ...source };
+  }
+  return mutated;
+}
+
+function normalizeDefinitionResult(returned, mutated) {
+  const source = returned === undefined || returned === null ? mutated : returned;
+  if (source && typeof source === "object" && !Array.isArray(source)) {
+    return { ...mutated, ...source };
+  }
+  return mutated;
+}
+
+function normalizeSystemResult(returned, mutated) {
+  if (typeof returned === "string") return returned;
+  if (returned && typeof returned === "object" && typeof returned.content === "string") {
+    return returned.content;
+  }
+  return mutated;
+}
+
 async function loadHooks(raw, directory) {
   const context = createInput(raw, directory);
   const module = await import(pathToFileURL(raw.plugin_path).href);
   const plugin = resolvePluginFunction(module);
   const hooks = await plugin(context.input, raw.options ?? {});
-  const hookEntries = hooks && typeof hooks === "object"
-    ? Object.keys(hooks).filter((key) => typeof hooks[key] === "function")
-    : [];
+  const hookEntries = listHookEntries(hooks);
   return { hooks: hooks ?? {}, hookEntries, context };
 }
 
@@ -1110,9 +1312,10 @@ try {
   let output = undefined;
 
   if (operation.type === "load") {
-    if (typeof hooks.event === "function") {
+    const eventHook = getHook(hooks, "event");
+    if (typeof eventHook === "function") {
       activeHook = "event";
-      await hooks.event({
+      await eventHook({
         kind: "lifecycle",
         type: "lifecycle",
         phase: "startup",
@@ -1121,44 +1324,114 @@ try {
       });
       invokedHooks.push("event");
     }
-    if (typeof hooks.config === "function") {
+    const configHook = getHook(hooks, "config");
+    if (typeof configHook === "function") {
       activeHook = "config";
-      registrations.config_rules = normalizeConfigRules(await hooks.config(operation.config ?? {}));
+      registrations.config_rules = normalizeConfigRules(await configHook(operation.config ?? {}));
       invokedHooks.push("config");
     }
-    if (typeof hooks.tool === "function") {
+    const toolHook = getHook(hooks, "tool");
+    if (typeof toolHook === "function") {
       activeHook = "tool";
-      const returned = await hooks.tool({
+      const returned = await toolHook({
         register: context.input.experimental_workspace.registerTool,
         registerTool: context.input.experimental_workspace.registerTool
       });
       registrations.tools = [...context.registeredTools, ...entriesFrom(returned)].map(normalizeTool).filter(Boolean);
       invokedHooks.push("tool");
     }
-    if (typeof hooks.auth === "function") {
+    const authHook = getHook(hooks, "auth");
+    if (typeof authHook === "function") {
       activeHook = "auth";
-      const returned = await hooks.auth({ register: context.input.experimental_workspace.registerAuth });
+      const returned = await authHook({ register: context.input.experimental_workspace.registerAuth });
       registrations.auth_methods = [...context.registeredAuth, ...entriesFrom(returned)].map(normalizeAuth).filter(Boolean);
       invokedHooks.push("auth");
     }
-    if (typeof hooks.provider === "function") {
+    const providerHook = getHook(hooks, "provider");
+    if (typeof providerHook === "function") {
       activeHook = "provider";
-      const returned = await hooks.provider({ register: context.input.experimental_workspace.registerProvider });
+      const returned = await providerHook({ register: context.input.experimental_workspace.registerProvider });
       registrations.providers = [...context.registeredProviders, ...entriesFrom(returned)].map(normalizeProvider).filter(Boolean);
       invokedHooks.push("provider");
     }
   } else if (operation.type === "event") {
-    if (typeof hooks.event === "function") {
+    const eventHook = getHook(hooks, "event");
+    if (typeof eventHook === "function") {
       activeHook = "event";
-      await hooks.event(operation.event ?? {});
+      await eventHook(operation.event ?? {});
       invokedHooks.push("event");
     }
+  } else if (operation.type === "chat_message") {
+    const message = operation.message && typeof operation.message === "object"
+      ? { ...operation.message }
+      : { role: "user", content: String(operation.message ?? "") };
+    const returned = await callHook(hooks, "chat.message", [message, {
+      directory,
+      hook: "chat.message"
+    }], invokedHooks);
+    output = normalizeMessageResult(returned, message);
+  } else if (operation.type === "chat_params") {
+    const params = operation.params && typeof operation.params === "object" && !Array.isArray(operation.params)
+      ? { ...operation.params }
+      : {};
+    const returned = await callHook(hooks, "chat.params", [params, {
+      directory,
+      hook: "chat.params"
+    }], invokedHooks);
+    output = normalizeObjectResult(returned, params);
+  } else if (operation.type === "chat_headers") {
+    const headers = operation.headers && typeof operation.headers === "object" && !Array.isArray(operation.headers)
+      ? { ...operation.headers }
+      : {};
+    const returned = await callHook(hooks, "chat.headers", [headers, {
+      directory,
+      hook: "chat.headers"
+    }], invokedHooks);
+    output = normalizeObjectResult(returned, headers);
+  } else if (operation.type === "tool_definition") {
+    const definition = operation.definition && typeof operation.definition === "object" && !Array.isArray(operation.definition)
+      ? { ...operation.definition }
+      : {};
+    const returned = await callHook(hooks, "tool.definition", [definition, {
+      directory,
+      hook: "tool.definition"
+    }], invokedHooks);
+    output = normalizeDefinitionResult(returned, definition);
+  } else if (operation.type === "chat_messages_transform") {
+    const messages = Array.isArray(operation.messages)
+      ? operation.messages.map((message) => message && typeof message === "object" ? { ...message } : message)
+      : [];
+    let returned = await callHook(hooks, "experimental.chat.messages.transform", [messages, {
+      directory,
+      hook: "experimental.chat.messages.transform"
+    }], invokedHooks);
+    if (returned === undefined && getHook(hooks, "chat.messages")) {
+      returned = await callHook(hooks, "chat.messages", [messages, {
+        directory,
+        hook: "chat.messages"
+      }], invokedHooks);
+    }
+    output = normalizeArrayResult(returned, messages);
+  } else if (operation.type === "chat_system_transform") {
+    const system = String(operation.system ?? "");
+    let returned = await callHook(hooks, "experimental.chat.system.transform", [system, {
+      directory,
+      hook: "experimental.chat.system.transform"
+    }], invokedHooks);
+    if (returned === undefined && getHook(hooks, "chat.system")) {
+      returned = await callHook(hooks, "chat.system", [system, {
+        directory,
+        hook: "chat.system"
+      }], invokedHooks);
+    }
+    output = normalizeSystemResult(returned, system);
   } else if (operation.type === "tool_execute") {
-    if (typeof hooks.tool !== "function") {
+    const toolHook = getHook(hooks, "tool");
+    if (typeof toolHook !== "function") {
       throw new Error("plugin did not define a tool hook");
     }
     activeHook = "tool";
-    const returned = await hooks.tool({
+    const returned = await toolHook({
       register: context.input.experimental_workspace.registerTool,
       registerTool: context.input.experimental_workspace.registerTool
     });
@@ -1174,11 +1447,12 @@ try {
     }));
     invokedHooks.push("tool");
   } else if (operation.type === "provider_complete") {
-    if (typeof hooks.provider !== "function") {
+    const providerHook = getHook(hooks, "provider");
+    if (typeof providerHook !== "function") {
       throw new Error("plugin did not define a provider hook");
     }
     activeHook = "provider";
-    const returned = await hooks.provider({ register: context.input.experimental_workspace.registerProvider });
+    const returned = await providerHook({ register: context.input.experimental_workspace.registerProvider });
     const providers = [...context.registeredProviders, ...entriesFrom(returned)];
     const provider = findProviderForModel(providers, String(operation.model ?? ""));
     const complete = provider.complete ?? provider.generate ?? provider.stream;
