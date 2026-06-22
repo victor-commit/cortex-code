@@ -25,6 +25,7 @@ mod skill;
 mod task;
 mod todo;
 mod tool;
+mod webfetch;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
@@ -43,4 +44,5 @@ pub use tool::{
     CheckpointRecorder, Diagnostic, DiagnosticFeedback, LspOperation, LspRequest, LspService,
     MutationHooks, TaskRequest, TaskRunner, TaskTarget, TodoStore, Tool, ToolContext, ToolOutput,
 };
+pub use webfetch::WebFetchTool;
 pub use write::WriteTool;

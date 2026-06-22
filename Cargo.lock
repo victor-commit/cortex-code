@@ -2492,12 +2492,14 @@ dependencies = [
  "permissions",
  "protocol",
  "redaction",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "skills",
  "tokio",
  "tree-sitter",
  "tree-sitter-bash",
+ "url",
 ]
 
 [[package]]

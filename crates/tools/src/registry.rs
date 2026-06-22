@@ -19,6 +19,7 @@ use crate::skill::SkillTool;
 use crate::task::TaskTool;
 use crate::todo::TodoTool;
 use crate::tool::{TaskTarget, Tool, ToolContext, ToolOutput};
+use crate::webfetch::WebFetchTool;
 use crate::write::WriteTool;
 
 /// An ordered set of callable tools.
@@ -36,7 +37,7 @@ impl ToolRegistry {
 
     /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
     /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the utility tools
-    /// `bash`/`glob`/`grep`/`lsp`/`todo`. This set has no `apply_patch`.
+    /// `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. This set has no `apply_patch`.
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::new();
@@ -48,9 +49,9 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
-    /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`. GPT-family models
-    /// edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately swapped
-    /// out (architecture §3.4, model-aware tool materialization); the shell/search/LSP/todo
+    /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. GPT-family
+    /// models edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately
+    /// swapped out (architecture §3.4, model-aware tool materialization); the shell/search/LSP/todo
     /// utilities are model-agnostic and present for every family.
     #[must_use]
     pub fn gpt() -> Self {
@@ -62,13 +63,14 @@ impl ToolRegistry {
     }
 
     /// Register the utility tools shared by every model family (`bash`, `glob`, `grep`, `lsp`,
-    /// `todo`).
+    /// `todo`, `webfetch`).
     fn register_utility_tools(&mut self) {
         self.register(Box::new(BashTool));
         self.register(Box::new(GlobTool));
         self.register(Box::new(GrepTool));
         self.register(Box::new(LspTool));
         self.register(Box::new(TodoTool));
+        self.register(Box::new(WebFetchTool));
     }
 
     /// Add the `task` tool with the already-filtered subagent targets.
@@ -172,7 +174,7 @@ mod tests {
     #[test]
     fn both_registries_advertise_the_utility_tools() {
         for registry in [ToolRegistry::builtin(), ToolRegistry::gpt()] {
-            for name in ["bash", "glob", "grep", "lsp", "todo"] {
+            for name in ["bash", "glob", "grep", "lsp", "todo", "webfetch"] {
                 assert!(
                     registry.get(name).is_some(),
                     "expected the `{name}` utility tool to be registered"
