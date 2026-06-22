@@ -34,6 +34,7 @@ audit = { workspace = true }
 skills = { workspace = true }
 memory = { workspace = true }
 tui = { workspace = true }
+server = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

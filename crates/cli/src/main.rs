@@ -17,6 +17,7 @@ mod permission;
 mod permission_store;
 mod plugin_bridge;
 mod run;
+mod serve_cmd;
 mod session;
 mod subagent;
 mod todo_store;
@@ -30,7 +31,7 @@ use clap::error::ErrorKind;
 use errors::Exit;
 use events::{Event, EventBus, LifecyclePhase, Surface};
 
-use crate::cli::{Cli, Command, ServeArgs};
+use crate::cli::{Cli, Command};
 use crate::observe::{CounterSink, LogSink};
 
 fn main() -> ExitCode {
@@ -74,7 +75,7 @@ fn main() -> ExitCode {
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
-        Some(Command::Serve(args)) => serve_placeholder(args).into(),
+        Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone()).into(),
     }
 }
 
@@ -109,9 +110,4 @@ fn report_parse_error(err: clap::Error) -> ExitCode {
         | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => Exit::Success.into(),
         _ => Exit::Usage.into(),
     }
-}
-
-fn serve_placeholder(_args: ServeArgs) -> Exit {
-    eprintln!("cortex serve: the local server is not wired up in this build yet.");
-    Exit::Failure
 }
