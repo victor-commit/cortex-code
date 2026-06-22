@@ -9,7 +9,10 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use axum::{
@@ -50,6 +53,7 @@ pub const MAX_PORT: u16 = 3299;
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// The outbound operation named when the network kill-switch refuses a server prompt turn.
 const OUTBOUND_OPERATION: &str = "LLM turn";
+static REMOTE_COMMAND_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Small machine-readable health response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -69,6 +73,7 @@ pub struct ServerState {
     provider: ProviderSource,
     active_turns: ActiveTurns,
     event_bus: Arc<EventBus>,
+    prompt_buffers: PromptBuffers,
 }
 
 impl ServerState {
@@ -80,6 +85,7 @@ impl ServerState {
             provider: ProviderSource::OpenRouter,
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
+            prompt_buffers: PromptBuffers::default(),
         }
     }
 
@@ -94,6 +100,7 @@ impl ServerState {
             },
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
+            prompt_buffers: PromptBuffers::default(),
         }
     }
 
@@ -128,6 +135,7 @@ impl std::fmt::Debug for ServerState {
         f.debug_struct("ServerState")
             .field("db_path", &self.db_path)
             .field("event_subscribers", &self.event_bus.subscriber_count())
+            .field("prompt_buffers", &self.prompt_buffers.len())
             .finish_non_exhaustive()
     }
 }
@@ -144,6 +152,11 @@ enum ProviderSource {
 #[derive(Clone, Default)]
 struct ActiveTurns {
     inner: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+}
+
+#[derive(Clone, Default)]
+struct PromptBuffers {
+    inner: Arc<Mutex<HashMap<String, String>>>,
 }
 
 /// Errors produced while preparing or running the local server.
@@ -250,6 +263,11 @@ pub fn app_with_state(state: ServerState) -> Router {
             "/session/{id}/message",
             get(list_messages).post(post_message),
         )
+        .route("/session/{id}/prompt", get(get_prompt_draft))
+        .route("/session/{id}/prompt/append", post(append_prompt))
+        .route("/session/{id}/prompt/submit", post(submit_prompt))
+        .route("/session/{id}/prompt/clear", post(clear_prompt))
+        .route("/session/{id}/command", post(execute_command))
         .route("/session/{id}/abort", post(abort_session))
         .with_state(state)
 }
@@ -421,9 +439,28 @@ struct PromptResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PromptDraftResponse {
+    status: &'static str,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
 struct AbortResponse {
     status: &'static str,
     active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommandRequest {
+    command: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CommandResponse {
+    status: &'static str,
+    command: String,
+    output: String,
+    is_error: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -571,6 +608,110 @@ async fn post_message(
     run_message_turn(state, id, prompt).await.map(Json)
 }
 
+async fn get_prompt_draft(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PromptDraftResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let text = state.prompt_buffers.get(&id)?;
+    Ok(Json(PromptDraftResponse {
+        status: "draft",
+        text,
+    }))
+}
+
+async fn append_prompt(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<MessageRequest>,
+) -> Result<Json<PromptDraftResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let text = payload
+        .into_prompt()
+        .ok_or_else(|| ApiError::bad_request("prompt append body must include non-empty text"))?;
+    let text = state.prompt_buffers.append(&id, &text)?;
+    Ok(Json(PromptDraftResponse {
+        status: "updated",
+        text,
+    }))
+}
+
+async fn submit_prompt(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PromptResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let prompt = state.prompt_buffers.take(&id)?;
+    let prompt = non_empty(&prompt).ok_or_else(|| {
+        ApiError::bad_request("prompt buffer is empty; append text before submit")
+    })?;
+    run_message_turn(state, id, prompt).await.map(Json)
+}
+
+async fn clear_prompt(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PromptDraftResponse>, ApiError> {
+    require_session(&state, &id)?;
+    state.prompt_buffers.clear(&id)?;
+    Ok(Json(PromptDraftResponse {
+        status: "cleared",
+        text: String::new(),
+    }))
+}
+
+async fn execute_command(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<CommandRequest>,
+) -> Result<Json<CommandResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let command = non_empty(&payload.command)
+        .ok_or_else(|| ApiError::bad_request("command body must include a non-empty command"))?;
+    let call_id = format!(
+        "remote-command-{}-{}",
+        std::process::id(),
+        REMOTE_COMMAND_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let arguments = serde_json::json!({ "command": &command }).to_string();
+    state.event_bus.publish(&Event::tool_call_for_turn(
+        id.clone(),
+        call_id.clone(),
+        call_id.clone(),
+        "bash",
+        arguments.clone(),
+    ));
+
+    let permission_engine = permission_engine_for_turn(state.event_bus.clone(), &id, &call_id)?;
+    let mut context =
+        ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .with_session(id.clone())
+            .with_todo_store(Arc::new(ServerTodoStore {
+                db_path: state.db_path.clone(),
+            }));
+    if let Some(permission_engine) = permission_engine {
+        context = context.with_permissions(permission_engine);
+    }
+    let output = ToolRegistry::builtin()
+        .execute("bash", &arguments, &context)
+        .await;
+    context.background_jobs().shutdown().await;
+    state.event_bus.publish(&Event::tool_result_for_turn(
+        id,
+        call_id.clone(),
+        call_id,
+        "bash",
+        output.is_error,
+    ));
+    let is_error = output.is_error;
+    Ok(Json(CommandResponse {
+        status: if is_error { "error" } else { "completed" },
+        command,
+        output: output.model_content(),
+        is_error,
+    }))
+}
+
 async fn abort_session(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
@@ -586,6 +727,11 @@ async fn abort_session(
 
 fn open_database(state: &ServerState) -> Result<Database, ApiError> {
     Database::open(state.db_path()).map_err(ApiError::from_db)
+}
+
+fn require_session(state: &ServerState, id: &str) -> Result<Session, ApiError> {
+    let db = open_database(state)?;
+    db.sessions().require(id).map_err(ApiError::from_db)
 }
 
 async fn run_message_turn(
@@ -1034,6 +1180,66 @@ impl ActiveTurns {
         if let Ok(mut active) = self.inner.lock() {
             active.remove(session_id);
         }
+    }
+}
+
+impl PromptBuffers {
+    fn len(&self) -> usize {
+        self.inner.lock().map(|buffers| buffers.len()).unwrap_or(0)
+    }
+
+    fn get(&self, session_id: &str) -> Result<String, ApiError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "prompt buffer registry is unavailable",
+                )
+            })?
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn append(&self, session_id: &str, text: &str) -> Result<String, ApiError> {
+        let mut buffers = self.inner.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "prompt buffer registry is unavailable",
+            )
+        })?;
+        let buffer = buffers.entry(session_id.to_owned()).or_default();
+        buffer.push_str(text);
+        Ok(buffer.clone())
+    }
+
+    fn clear(&self, session_id: &str) -> Result<(), ApiError> {
+        self.inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "prompt buffer registry is unavailable",
+                )
+            })?
+            .remove(session_id);
+        Ok(())
+    }
+
+    fn take(&self, session_id: &str) -> Result<String, ApiError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "prompt buffer registry is unavailable",
+                )
+            })?
+            .remove(session_id)
+            .unwrap_or_default())
     }
 }
 

@@ -76,6 +76,224 @@ async fn message_route_runs_turn_persists_assistant_and_usage() {
 }
 
 #[tokio::test]
+async fn prompt_append_updates_draft_without_starting_turn() {
+    let scratch = Scratch::new("server-prompt-append");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/prompt/append", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"hello-from-remote"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("append response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "updated");
+    assert_eq!(body["text"], "hello-from-remote");
+    assert_eq!(provider.calls(), 0, "append must not submit a turn");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/prompt", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("draft response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["text"], "hello-from-remote");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["messages"].as_array().expect("messages").is_empty(),
+        "draft append must not persist user or assistant messages: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn prompt_submit_runs_current_draft_and_clears_buffer() {
+    let scratch = Scratch::new("server-prompt-submit");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let append = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/prompt/append", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"Reply with exactly: REMOTE-OK"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("append response");
+    assert_eq!(append.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/prompt/submit", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("submit response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert!(
+        body["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("REMOTE-OK")),
+        "assistant should answer from the appended draft: {body:?}"
+    );
+    assert_eq!(provider.calls(), 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/prompt", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("draft response");
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["text"], "", "submit should clear the pending draft");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    let body: serde_json::Value = json_body(response).await;
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 2, "submit should persist user + assistant");
+    assert_eq!(messages[0]["role"], "user");
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("REMOTE-OK")),
+        "user message should be the submitted draft: {body:?}"
+    );
+    assert_eq!(messages[1]["role"], "assistant");
+}
+
+#[tokio::test]
+async fn prompt_clear_discards_pending_draft_without_turn() {
+    let scratch = Scratch::new("server-prompt-clear");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/prompt/append", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"discard-me"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("append response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/prompt/clear", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("clear response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "cleared");
+    assert_eq!(body["text"], "");
+    assert_eq!(provider.calls(), 0, "clear must not submit a turn");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/prompt", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("draft response");
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["text"], "", "cleared draft must read back empty");
+}
+
+#[tokio::test]
+async fn command_route_runs_shell_command_and_returns_output() {
+    let scratch = Scratch::new("server-command");
+    let app = server::app_with_db_path(scratch.db_path());
+    let session = create_session(&app).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/command", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"command":"echo cortex-exec-marker"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("command response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["is_error"], false);
+    assert!(
+        body["output"]
+            .as_str()
+            .is_some_and(|output| output.contains("cortex-exec-marker")),
+        "command output should contain the marker: {body:?}"
+    );
+}
+
+#[tokio::test]
 async fn prompt_to_unknown_session_returns_404_without_starting_turn() {
     let scratch = Scratch::new("server-message-unknown");
     let provider = Arc::new(EchoProvider::default());

@@ -156,6 +156,81 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/session/{id}/prompt": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "getSessionPromptDraft",
+                    "summary": "Read the pending remote prompt buffer without submitting it.",
+                    "responses": {
+                        "200": json_response("Pending prompt draft.", "PromptDraftResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/prompt/append": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "appendSessionPromptDraft",
+                    "summary": "Append text to the pending remote prompt buffer without starting a turn.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/MessageRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Updated prompt draft.", "PromptDraftResponse"),
+                        "400": json_response("Prompt append body was empty or invalid.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/prompt/submit": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "submitSessionPromptDraft",
+                    "summary": "Submit the pending remote prompt buffer as a real assistant turn.",
+                    "responses": {
+                        "200": json_response("Assistant turn result.", "PromptResponse"),
+                        "400": json_response("Prompt buffer was empty.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "503": json_response("Network is disabled or service is unavailable.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/prompt/clear": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "clearSessionPromptDraft",
+                    "summary": "Discard the pending remote prompt buffer without starting a turn.",
+                    "responses": {
+                        "200": json_response("Prompt draft cleared.", "PromptDraftResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/command": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "executeSessionCommand",
+                    "summary": "Run a verifiable shell command against the session context.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CommandRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Command result.", "CommandResponse"),
+                        "400": json_response("Command body was empty or invalid.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
             "/session/{id}/abort": {
                 "parameters": [session_id_parameter()],
                 "post": {
@@ -184,6 +259,30 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "title": { "type": ["string", "null"] }
                     },
                     "additionalProperties": false
+                },
+                "CommandRequest": {
+                    "type": "object",
+                    "required": ["command"],
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to execute in the server's session working directory."
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "CommandResponse": {
+                    "type": "object",
+                    "required": ["status", "command", "output", "is_error"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["completed", "error"]
+                        },
+                        "command": { "type": "string" },
+                        "output": { "type": "string" },
+                        "is_error": { "type": "boolean" }
+                    }
                 },
                 "ErrorResponse": {
                     "type": "object",
@@ -257,6 +356,17 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "message": { "$ref": "#/components/schemas/Message" },
                         "usage": { "$ref": "#/components/schemas/Usage" },
                         "finish_reason": { "type": "string" }
+                    }
+                },
+                "PromptDraftResponse": {
+                    "type": "object",
+                    "required": ["status", "text"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["draft", "updated", "cleared"]
+                        },
+                        "text": { "type": "string" }
                     }
                 },
                 "Session": {

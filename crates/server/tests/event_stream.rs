@@ -149,6 +149,54 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
     );
 }
 
+#[tokio::test]
+async fn command_route_surfaces_correlated_tool_lifecycle_events() {
+    let scratch = Scratch::new("server-event-command");
+    let bus = Arc::new(EventBus::new());
+    let state = server::ServerState::new(scratch.db_path()).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/command", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"command":"echo cortex-event-command-marker"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("command response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["output"]
+            .as_str()
+            .is_some_and(|output| output.contains("cortex-event-command-marker")),
+        "command response should include stdout marker: {body:?}"
+    );
+
+    let events = collect_data_events(&mut stream, 2, Duration::from_secs(3)).await;
+    assert!(
+        events.iter().any(|event| event["kind"] == "tool.call"
+            && event["name"] == "bash"
+            && event["session_id"] == session.id),
+        "SSE should include a correlated bash tool-call event: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "tool.result"
+            && event["name"] == "bash"
+            && event["session_id"] == session.id
+            && event["is_error"] == false),
+        "SSE should include a correlated bash tool-result event: {events:?}"
+    );
+}
+
 fn assert_sse_content_type(response: &axum::response::Response) {
     let content_type = response
         .headers()
