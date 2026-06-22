@@ -1,14 +1,19 @@
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use server::{ServeError, app, bind_addr, bind_listener, serve_with_shutdown};
+use server::{ServeError, app_with_db_path, bind_addr, bind_listener, serve_with_shutdown};
 use tower::ServiceExt;
+
+static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::test]
 async fn health_route_returns_ok_json() {
-    let response = app()
+    let scratch = Scratch::new("server-health");
+    let response = app_with_db_path(scratch.db_path())
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -77,10 +82,15 @@ async fn graceful_shutdown_releases_listener_port() {
     let addr = std_listener.local_addr().expect("local addr");
     let listener = tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let scratch = Scratch::new("server-shutdown");
 
-    let task = tokio::spawn(serve_with_shutdown(listener, app(), async move {
-        let _ = shutdown_rx.await;
-    }));
+    let task = tokio::spawn(serve_with_shutdown(
+        listener,
+        app_with_db_path(scratch.db_path()),
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    ));
 
     assert!(
         StdTcpListener::bind(addr).is_err(),
@@ -111,4 +121,27 @@ fn bind_free_loopback_listener() -> StdTcpListener {
         }
     }
     panic!("no free loopback port in 3200-3299");
+}
+
+struct Scratch {
+    dir: PathBuf,
+}
+
+impl Scratch {
+    fn new(label: &str) -> Self {
+        let id = SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("cortex-{label}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        Self { dir }
+    }
+
+    fn db_path(&self) -> PathBuf {
+        self.dir.join("cortex.db")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }

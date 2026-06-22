@@ -1,15 +1,24 @@
 //! Axum HTTP surface for `cortex serve`.
 //!
-//! This crate owns the local loopback listener and lightweight HTTP routes. Later M6 features can
-//! add session, message, SSE, and OpenAPI handlers here while reusing the same lifecycle shell.
+//! This crate owns the local loopback listener and lightweight HTTP routes. Session CRUD is backed
+//! by the shared SQLite repositories; later M6 features can add message, SSE, and OpenAPI handlers
+//! here while reusing the same lifecycle shell.
 
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Path as AxumPath, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use db::{Database, DbError, Session};
 use events::{Event, EventBus, LifecyclePhase, Surface};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::TcpListener;
 
@@ -25,6 +34,44 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 pub struct HealthResponse {
     /// Affirmative status marker for clients and validators.
     pub status: &'static str,
+}
+
+/// Shared immutable state for HTTP handlers.
+///
+/// The server stores a database path, not an in-memory session map. Each route opens the shared
+/// SQLite database and uses the `db` crate repositories, so sessions are durable across process
+/// restarts and visible to other surfaces that use the same path.
+#[derive(Clone, Debug)]
+pub struct ServerState {
+    db_path: PathBuf,
+}
+
+impl ServerState {
+    /// Build server state for an explicit SQLite database file.
+    #[must_use]
+    pub fn new(db_path: impl Into<PathBuf>) -> Self {
+        Self {
+            db_path: db_path.into(),
+        }
+    }
+
+    /// Resolve the process database path and verify the database can be opened.
+    ///
+    /// This is the startup path used by `cortex serve`, so a broken database location fails before
+    /// the listener starts advertising health.
+    pub fn from_process() -> Result<Self, ServeError> {
+        let db_path = db::DbPathInputs::from_process()
+            .resolve()
+            .ok_or(ServeError::DatabasePath)?;
+        Database::open(&db_path).map_err(|source| ServeError::Database { source })?;
+        Ok(Self::new(db_path))
+    }
+
+    /// The database path shared by every route.
+    #[must_use]
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
 }
 
 /// Errors produced while preparing or running the local server.
@@ -76,6 +123,18 @@ pub enum ServeError {
         #[source]
         source: std::io::Error,
     },
+    /// The process environment does not provide enough information to resolve a DB path.
+    #[error(
+        "cannot resolve database path; set CORTEX_DB_PATH or HOME before starting cortex serve"
+    )]
+    DatabasePath,
+    /// Opening the shared session database failed during server startup.
+    #[error("cannot open session database: {source}")]
+    Database {
+        /// Underlying DB error.
+        #[source]
+        source: DbError,
+    },
 }
 
 impl ServeError {
@@ -90,8 +149,22 @@ impl ServeError {
 }
 
 /// Construct the axum application for the currently implemented server routes.
-pub fn app() -> Router {
-    Router::new().route("/health", get(health))
+pub fn app(db_path: impl Into<PathBuf>) -> Router {
+    app_with_state(ServerState::new(db_path))
+}
+
+/// Construct the axum application for an explicit database file.
+pub fn app_with_db_path(db_path: impl Into<PathBuf>) -> Router {
+    app(db_path)
+}
+
+/// Construct the axum application from pre-resolved server state.
+pub fn app_with_state(state: ServerState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/session", get(list_sessions).post(create_session))
+        .route("/session/{id}", get(get_session).delete(delete_session))
+        .with_state(state)
 }
 
 /// Resolve and validate the requested bind address.
@@ -146,13 +219,114 @@ pub async fn serve_with_signals(
     listener: TcpListener,
     bus: Arc<EventBus>,
     version: impl Into<String>,
+    state: ServerState,
 ) -> Result<(), ServeError> {
     let version = version.into();
-    serve_with_shutdown(listener, app(), shutdown_signal(bus, version)).await
+    serve_with_shutdown(
+        listener,
+        app_with_state(state),
+        shutdown_signal(bus, version),
+    )
+    .await
 }
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSessionRequest {
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Debug)]
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+
+    fn not_found(id: &str) -> Self {
+        Self::new(StatusCode::NOT_FOUND, format!("no such session: {id}"))
+    }
+
+    fn from_db(source: DbError) -> Self {
+        let status = match &source {
+            DbError::NotFound { .. } => StatusCode::NOT_FOUND,
+            DbError::Busy { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self::new(status, source.to_string())
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
+}
+
+async fn create_session(
+    State(state): State<ServerState>,
+    Json(payload): Json<CreateSessionRequest>,
+) -> Result<(StatusCode, Json<Session>), ApiError> {
+    let db = open_database(&state)?;
+    let session = db
+        .sessions()
+        .create(payload.title.as_deref())
+        .map_err(ApiError::from_db)?;
+    Ok((StatusCode::CREATED, Json(session)))
+}
+
+async fn list_sessions(State(state): State<ServerState>) -> Result<Json<Vec<Session>>, ApiError> {
+    let db = open_database(&state)?;
+    let sessions = db.sessions().list().map_err(ApiError::from_db)?;
+    Ok(Json(sessions))
+}
+
+async fn get_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Session>, ApiError> {
+    let db = open_database(&state)?;
+    let session = db.sessions().require(&id).map_err(ApiError::from_db)?;
+    Ok(Json(session))
+}
+
+async fn delete_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let db = open_database(&state)?;
+    if db.sessions().delete(&id).map_err(ApiError::from_db)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(&id))
+    }
+}
+
+fn open_database(state: &ServerState) -> Result<Database, ApiError> {
+    Database::open(state.db_path()).map_err(ApiError::from_db)
 }
 
 async fn shutdown_signal(bus: Arc<EventBus>, version: String) {

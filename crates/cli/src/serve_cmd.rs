@@ -18,6 +18,14 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
     };
 
     runtime.block_on(async move {
+        let state = match server::ServerState::from_process() {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("cortex serve: {err}");
+                return Exit::Failure;
+            }
+        };
+
         let listener = match server::bind_listener(&args.hostname, args.port).await {
             Ok(listener) => listener,
             Err(err) => {
@@ -38,7 +46,7 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
             }
         }
 
-        match server::serve_with_signals(listener, bus, env!("CARGO_PKG_VERSION")).await {
+        match server::serve_with_signals(listener, bus, env!("CARGO_PKG_VERSION"), state).await {
             Ok(()) => Exit::Success,
             Err(err) => {
                 eprintln!("cortex serve: {err}");

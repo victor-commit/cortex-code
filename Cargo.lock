@@ -2216,6 +2216,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "db",
  "events",
  "serde",
  "serde_json",
