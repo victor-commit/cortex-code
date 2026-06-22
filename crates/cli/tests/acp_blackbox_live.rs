@@ -174,6 +174,226 @@ fn acp_stdio_live_handshake_prompt_stream_and_cancel() {
     println!("acp_stopped_exact_pid={pid} gone=true");
 }
 
+#[test]
+#[ignore = "live OpenRouter black-box proof for ACP protocol robustness and multi-session semantics"]
+fn acp_stdio_live_protocol_robustness_and_multisession() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live ACP robustness proof: OPENROUTER_API_KEY is not set");
+        return;
+    };
+
+    let workspace = workspace_root();
+    let scratch = Scratch::new("cortex-acp-live-robust");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .arg("acp")
+        .current_dir(&workspace)
+        .env("OPENROUTER_API_KEY", key)
+        .env("CORTEX_DB_PATH", scratch.path().join("cortex.db"))
+        .env_remove("CORTEX_NO_NET")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex acp");
+    let pid = child.id();
+    println!("ACP_PID={pid}");
+    assert_no_tcp_listener(pid);
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel::<Value>();
+    let _reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let line = line.expect("read stdout line");
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: Value = serde_json::from_str(&line)
+                .unwrap_or_else(|err| json!({ "_parse_error": err.to_string(), "_raw": line }));
+            tx.send(value).ok();
+        }
+    });
+
+    let mut messages = Vec::new();
+
+    send_raw(&mut child, "{ this is not json\n");
+    let malformed = wait_for(
+        &mut child,
+        &rx,
+        &mut messages,
+        |messages| {
+            messages
+                .iter()
+                .any(|message| message.pointer("/error/code") == Some(&json!(-32700)))
+        },
+        15,
+    );
+    assert_eq!(malformed["id"], Value::Null);
+    assert_eq!(malformed["error"]["code"], -32700);
+    println!("malformed_request_error_ok code=-32700 process_alive=true");
+
+    let pre_init_start = messages.len();
+    send(
+        &mut child,
+        10,
+        "session/prompt",
+        json!({
+            "sessionId": "ses_missing",
+            "prompt": [{ "type": "text", "text": "This must not start a turn." }]
+        }),
+    );
+    let pre_init = wait_for(&mut child, &rx, &mut messages, response_id(10), 15);
+    assert_eq!(pre_init["error"]["code"], -32002);
+    assert!(update_texts(&messages[pre_init_start..]).is_empty());
+    println!("pre_initialize_prompt_rejected_ok code=-32002 no_updates=true");
+
+    send(
+        &mut child,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": { "name": "factory-validator", "version": "0" }
+        }),
+    );
+    let initialize = wait_for(&mut child, &rx, &mut messages, response_id(1), 15);
+    assert!(initialize.get("error").is_none(), "{initialize}");
+    assert_eq!(initialize["result"]["protocolVersion"], 1);
+    println!("initialize_after_error_ok protocolVersion=1");
+
+    send(&mut child, 9, "no/such/method", json!({}));
+    let unknown = wait_for(&mut child, &rx, &mut messages, response_id(9), 15);
+    assert_eq!(unknown["id"], 9);
+    assert_eq!(unknown["error"]["code"], -32601);
+    println!("unknown_method_error_ok id=9 code=-32601");
+
+    send(
+        &mut child,
+        2,
+        "session/new",
+        json!({ "cwd": workspace, "mcpServers": [] }),
+    );
+    let new_a = wait_for(&mut child, &rx, &mut messages, response_id(2), 15);
+    let session_a = new_a["result"]["sessionId"]
+        .as_str()
+        .expect("session A id")
+        .to_owned();
+    send(
+        &mut child,
+        3,
+        "session/new",
+        json!({ "cwd": workspace, "mcpServers": [] }),
+    );
+    let new_b = wait_for(&mut child, &rx, &mut messages, response_id(3), 15);
+    let session_b = new_b["result"]["sessionId"]
+        .as_str()
+        .expect("session B id")
+        .to_owned();
+    assert_ne!(session_a, session_b);
+    println!("two_sessions_created_ok sessionA={session_a} sessionB={session_b}");
+
+    send(
+        &mut child,
+        4,
+        "session/prompt",
+        json!({
+            "sessionId": session_a,
+            "prompt": [{ "type": "text", "text": "Remember the word: marmalade. Acknowledge with exactly: marmalade" }]
+        }),
+    );
+    let remember_start = messages.len();
+    let remember = wait_for(&mut child, &rx, &mut messages, response_id(4), 120);
+    assert_eq!(remember["result"]["stopReason"], "end_turn");
+    assert!(
+        update_texts(&messages[remember_start..])
+            .concat()
+            .contains("marmalade")
+    );
+
+    let recall_start = messages.len();
+    send(
+        &mut child,
+        5,
+        "session/prompt",
+        json!({
+            "sessionId": session_a,
+            "prompt": [{ "type": "text", "text": "What single word did I ask you to remember? Reply with only that word." }]
+        }),
+    );
+    let recall = wait_for(&mut child, &rx, &mut messages, response_id(5), 120);
+    let recall_text = update_texts(&messages[recall_start..]).concat();
+    assert_eq!(recall["result"]["stopReason"], "end_turn");
+    assert!(
+        recall_text.to_lowercase().contains("marmalade"),
+        "same-session recall text: {recall_text:?}"
+    );
+    println!("same_session_context_ok recalled=marmalade");
+
+    let codeword = format!("falcon-{}", fresh_uuid_like_nonce());
+    send(
+        &mut child,
+        6,
+        "session/prompt",
+        json!({
+            "sessionId": session_a,
+            "prompt": [{ "type": "text", "text": format!("My codeword is {codeword}. Acknowledge with exactly: {codeword}") }]
+        }),
+    );
+    let set_codeword = wait_for(&mut child, &rx, &mut messages, response_id(6), 120);
+    assert_eq!(set_codeword["result"]["stopReason"], "end_turn");
+
+    let session_b_start = messages.len();
+    send(
+        &mut child,
+        7,
+        "session/prompt",
+        json!({
+            "sessionId": session_b,
+            "prompt": [{ "type": "text", "text": "What is my codeword? If no codeword has been given in this session, reply exactly NO-CODEWORD. Do not guess." }]
+        }),
+    );
+    let b_recall = wait_for(&mut child, &rx, &mut messages, response_id(7), 120);
+    let b_text = update_texts(&messages[session_b_start..]).concat();
+    assert_eq!(b_recall["result"]["stopReason"], "end_turn");
+    assert!(
+        !b_text.contains(&codeword),
+        "session B leaked session A codeword {codeword}: {b_text:?}"
+    );
+    assert!(
+        b_text.contains("NO-CODEWORD") || b_text.to_lowercase().contains("no codeword"),
+        "session B should report no codeword: {b_text:?}"
+    );
+
+    let session_a_follow_up_start = messages.len();
+    send(
+        &mut child,
+        8,
+        "session/prompt",
+        json!({
+            "sessionId": session_a,
+            "prompt": [{ "type": "text", "text": "What is my codeword? Reply with only the codeword." }]
+        }),
+    );
+    let a_recall = wait_for(&mut child, &rx, &mut messages, response_id(8), 120);
+    let a_text = update_texts(&messages[session_a_follow_up_start..]).concat();
+    assert_eq!(a_recall["result"]["stopReason"], "end_turn");
+    assert!(
+        a_text.contains(&codeword),
+        "session A follow-up did not recall {codeword}: {a_text:?}"
+    );
+    println!("multi_session_isolation_ok b_no_leak=true a_recalled=true codeword={codeword}");
+
+    let children = child_pids(pid);
+    println!("children_before_stop={children:?}");
+    stop_exact_pid(&mut child);
+    assert_process_gone(pid);
+    for child_pid in children {
+        assert_process_gone(child_pid);
+        println!("child_pid={child_pid} gone=true");
+    }
+    println!("acp_stopped_exact_pid={pid} gone=true");
+}
+
 fn live_key() -> Option<String> {
     std::env::var("OPENROUTER_API_KEY")
         .ok()
@@ -219,6 +439,12 @@ fn send_notification(child: &mut Child, method: &str, params: Value) {
     )
     .expect("write notification");
     stdin.flush().expect("flush notification");
+}
+
+fn send_raw(child: &mut Child, raw: &str) {
+    let stdin = child.stdin.as_mut().expect("stdin");
+    stdin.write_all(raw.as_bytes()).expect("write raw request");
+    stdin.flush().expect("flush raw request");
 }
 
 fn response_id(id: u64) -> impl FnMut(&[Value]) -> bool {

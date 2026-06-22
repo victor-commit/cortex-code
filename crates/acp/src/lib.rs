@@ -140,7 +140,16 @@ impl AcpService {
         W: Write + Send + 'static,
     {
         let mut reader = BufReader::new(reader);
-        while let Some(frame) = read_frame(&mut reader).await? {
+        loop {
+            let frame = match read_frame(&mut reader).await {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return Ok(()),
+                Err(err) if err.kind() == io::ErrorKind::InvalidData => {
+                    writer.send_error(Value::Null, -32700, format!("parse error: {err}"))?;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             let value = match serde_json::from_str::<Value>(&frame) {
                 Ok(value) => value,
                 Err(err) => {
@@ -150,7 +159,6 @@ impl AcpService {
             };
             self.handle_value(value, writer.clone())?;
         }
-        Ok(())
     }
 
     fn handle_value<W>(&self, value: Value, writer: JsonRpcWriter<W>) -> io::Result<()>
@@ -160,15 +168,49 @@ impl AcpService {
         let Some(object) = value.as_object() else {
             return writer.send_error(Value::Null, -32600, "invalid JSON-RPC request");
         };
-        let Some(method) = object.get("method").and_then(Value::as_str) else {
-            if object.contains_key("result") || object.contains_key("error") {
-                return Ok(());
+        if !object.contains_key("method")
+            && (object.contains_key("result") || object.contains_key("error"))
+        {
+            return Ok(());
+        }
+        let id = match object.get("id") {
+            Some(id) if is_valid_json_rpc_id(id) => Some(id.clone()),
+            Some(_) => {
+                return writer.send_error(
+                    Value::Null,
+                    -32600,
+                    "invalid JSON-RPC request: id must be a string, number, or null",
+                );
             }
-            let id = object.get("id").cloned().unwrap_or(Value::Null);
-            return writer.send_error(id, -32600, "invalid JSON-RPC request: missing method");
+            None => None,
+        };
+        let response_id = id.clone().unwrap_or(Value::Null);
+        if object.get("jsonrpc") != Some(&json!("2.0")) {
+            return writer.send_error(
+                response_id,
+                -32600,
+                "invalid JSON-RPC request: jsonrpc must be \"2.0\"",
+            );
+        }
+        let method = match object.get("method") {
+            Some(Value::String(method)) => method.as_str(),
+            Some(_) => {
+                return writer.send_error(
+                    response_id,
+                    -32600,
+                    "invalid JSON-RPC request: method must be a string",
+                );
+            }
+            None => {
+                return writer.send_error(
+                    response_id,
+                    -32600,
+                    "invalid JSON-RPC request: missing method",
+                );
+            }
         };
         let params = object.get("params").cloned().unwrap_or(Value::Null);
-        if let Some(id) = object.get("id").cloned() {
+        if let Some(id) = id {
             self.handle_request(id, method, params, writer)
         } else {
             self.handle_notification(method, params, writer)
@@ -236,9 +278,13 @@ impl AcpService {
     where
         W: Write,
     {
-        let requested = serde_json::from_value::<InitializeRequest>(params)
-            .map(|request| request.protocol_version)
-            .unwrap_or(ProtocolVersion::LATEST);
+        let request = match serde_json::from_value::<InitializeRequest>(params) {
+            Ok(request) => request,
+            Err(err) => {
+                return writer.send_error(id, -32602, format!("invalid initialize params: {err}"));
+            }
+        };
+        let requested = request.protocol_version;
         let protocol_version =
             if requested.as_u16() == 0 || requested.as_u16() > ProtocolVersion::LATEST.as_u16() {
                 ProtocolVersion::LATEST
@@ -265,16 +311,15 @@ impl AcpService {
     where
         W: Write,
     {
-        let title = params
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let _request = parse_new_session_params(params);
+        let _request = match parse_new_session_params(params) {
+            Ok(request) => request,
+            Err(message) => return writer.send_error(id, -32602, message),
+        };
         let db = match Database::open(&self.state.db_path) {
             Ok(db) => db,
             Err(err) => return writer.send_error(id, -32000, err.to_string()),
         };
-        let session = match db.sessions().create(title.as_deref()) {
+        let session = match db.sessions().create(None) {
             Ok(session) => session,
             Err(err) => return writer.send_error(id, -32000, err.to_string()),
         };
@@ -650,8 +695,12 @@ struct ParsedPrompt {
     text: String,
 }
 
-fn parse_new_session_params(params: Value) -> Option<NewSessionRequest> {
-    serde_json::from_value(params).ok()
+fn is_valid_json_rpc_id(value: &Value) -> bool {
+    value.is_null() || value.is_string() || value.is_number()
+}
+
+fn parse_new_session_params(params: Value) -> Result<NewSessionRequest, String> {
+    serde_json::from_value(params).map_err(|err| format!("invalid session/new params: {err}"))
 }
 
 fn parse_prompt_params(params: Value) -> Result<ParsedPrompt, String> {
@@ -1128,6 +1177,87 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct ContextProvider {
+        requests: Arc<StdMutex<Vec<LlmRequest>>>,
+    }
+
+    impl ContextProvider {
+        fn requests(&self) -> Vec<LlmRequest> {
+            self.requests.lock().expect("requests mutex").clone()
+        }
+    }
+
+    impl Provider for ContextProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let requests = self.requests.clone();
+            async move {
+                let answer = context_answer(&request);
+                requests.lock().expect("requests mutex").push(request);
+                let events = vec![
+                    LlmEvent::TextDelta { text: answer },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 2,
+                        output_tokens: 2,
+                        total_tokens: 4,
+                        cost: Some(0.000002),
+                    }),
+                    LlmEvent::Done {
+                        reason: llm::FinishReason::Stop,
+                    },
+                ];
+                Ok(Box::pin(stream::iter(events)) as LlmStream)
+            }
+            .boxed()
+        }
+    }
+
+    fn context_answer(request: &LlmRequest) -> String {
+        let user_input = request
+            .messages
+            .last()
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        if user_input.contains("Remember the word: marmalade") {
+            return "acknowledged marmalade".to_owned();
+        }
+        if user_input.contains("What single word did I ask you to remember?") {
+            return if request
+                .messages
+                .iter()
+                .any(|message| message.content.contains("marmalade"))
+            {
+                "marmalade".to_owned()
+            } else {
+                "I do not know.".to_owned()
+            };
+        }
+        if let Some(codeword) = user_input
+            .strip_prefix("My codeword is ")
+            .and_then(|rest| rest.split('.').next())
+            .map(str::to_owned)
+        {
+            return format!("acknowledged {codeword}");
+        }
+        if user_input.contains("What is my codeword?") {
+            return request
+                .messages
+                .iter()
+                .find_map(|message| {
+                    message
+                        .content
+                        .split_once("My codeword is ")
+                        .and_then(|(_, rest)| rest.split('.').next())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "I do not know any codeword.".to_owned());
+        }
+        "ok".to_owned()
+    }
+
     impl Provider for FakeProvider {
         fn stream<'a>(
             &'a self,
@@ -1187,6 +1317,23 @@ mod tests {
         })
     }
 
+    fn response_with_id(values: &[Value], id: i64) -> &Value {
+        values
+            .iter()
+            .find(|value| value.get("id") == Some(&json!(id)))
+            .expect("response id")
+    }
+
+    fn update_texts(values: &[Value]) -> Vec<String> {
+        values
+            .iter()
+            .filter(|value| value.get("method") == Some(&json!("session/update")))
+            .filter_map(|value| value.pointer("/params/update/content/text"))
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn initialize(service: &AcpService, writer: &JsonRpcWriter<SharedBuffer>) {
         service
             .handle_value(
@@ -1205,10 +1352,18 @@ mod tests {
     }
 
     fn new_session(service: &AcpService, writer: &JsonRpcWriter<SharedBuffer>) -> String {
+        new_session_with_id(service, writer, 2)
+    }
+
+    fn new_session_with_id(
+        service: &AcpService,
+        writer: &JsonRpcWriter<SharedBuffer>,
+        id: i64,
+    ) -> String {
         service
             .handle_value(
                 request(
-                    2,
+                    id,
                     "session/new",
                     json!({
                         "cwd": std::env::current_dir().expect("cwd"),
@@ -1224,7 +1379,7 @@ mod tests {
             .expect("writer mutex")
             .values()
             .iter()
-            .find(|value| value.get("id") == Some(&json!(2)))
+            .find(|value| value.get("id") == Some(&json!(id)))
             .and_then(|value| value.pointer("/result/sessionId"))
             .and_then(Value::as_str)
             .expect("session id")
@@ -1265,6 +1420,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_json_error_keeps_loop_responsive() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        let initialize = serde_json::to_string(&request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": { "name": "test", "version": "0" }
+            }),
+        ))
+        .expect("serialize initialize");
+        let input = format!("{{ this is not json\n{initialize}\n");
+
+        service
+            .run_loop(input.as_bytes(), writer)
+            .await
+            .expect("run loop");
+
+        let values = buffer.values();
+        assert_eq!(values[0]["jsonrpc"], "2.0");
+        assert_eq!(values[0]["id"], Value::Null);
+        assert_eq!(values[0]["error"]["code"], -32700);
+        let initialize = response_with_id(&values, 1);
+        assert!(initialize.get("error").is_none(), "{initialize}");
+        assert_eq!(initialize["result"]["protocolVersion"], 1);
+    }
+
+    #[tokio::test]
+    async fn structurally_invalid_request_returns_invalid_request_error() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+
+        service
+            .handle_value(
+                json!({ "jsonrpc": "1.0", "id": 99, "method": "initialize", "params": {} }),
+                writer,
+            )
+            .expect("invalid request");
+
+        let values = buffer.values();
+        assert_eq!(values[0]["jsonrpc"], "2.0");
+        assert_eq!(values[0]["id"], 99);
+        assert_eq!(values[0]["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn unknown_method_returns_method_not_found_with_matching_id() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+
+        service
+            .handle_value(request(9, "no/such/method", json!({})), writer)
+            .expect("unknown method");
+
+        let values = buffer.values();
+        let response = response_with_id(&values, 9);
+        assert_eq!(response["error"]["code"], -32601);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("method not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_initialize_params_do_not_initialize_connection() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+
+        service
+            .handle_value(request(1, "initialize", json!({})), writer.clone())
+            .expect("invalid initialize");
+        service
+            .handle_value(
+                request(
+                    2,
+                    "session/new",
+                    json!({
+                        "cwd": std::env::current_dir().expect("cwd"),
+                        "mcpServers": []
+                    }),
+                ),
+                writer,
+            )
+            .expect("session new before valid initialize");
+
+        let values = buffer.values();
+        assert_eq!(response_with_id(&values, 1)["error"]["code"], -32602);
+        assert_eq!(response_with_id(&values, 2)["error"]["code"], -32002);
+        assert!(!service.is_initialized());
+    }
+
+    #[tokio::test]
+    async fn session_methods_before_initialize_are_rejected_without_updates() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+
+        service
+            .handle_value(
+                request(
+                    2,
+                    "session/new",
+                    json!({
+                        "cwd": std::env::current_dir().expect("cwd"),
+                        "mcpServers": []
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("session new before initialize");
+        service
+            .handle_value(
+                request(
+                    3,
+                    "session/prompt",
+                    json!({ "sessionId": "ses_missing", "prompt": [{ "type": "text", "text": "hi" }] }),
+                ),
+                writer,
+            )
+            .expect("prompt before initialize");
+
+        let values = buffer.values();
+        assert_eq!(response_with_id(&values, 2)["error"]["code"], -32002);
+        assert_eq!(response_with_id(&values, 3)["error"]["code"], -32002);
+        assert!(update_texts(&values).is_empty());
+    }
+
+    #[tokio::test]
     async fn session_new_returns_non_empty_session_id() {
         let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
         let writer = JsonRpcWriter::new(buffer.clone());
@@ -1273,6 +1560,20 @@ mod tests {
         let session_id = new_session(&service, &writer);
 
         assert!(session_id.starts_with("ses_"));
+    }
+
+    #[tokio::test]
+    async fn session_new_invalid_params_are_rejected() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+
+        service
+            .handle_value(request(2, "session/new", json!({})), writer)
+            .expect("invalid session new");
+
+        let values = buffer.values();
+        assert_eq!(response_with_id(&values, 2)["error"]["code"], -32602);
     }
 
     #[tokio::test]
@@ -1316,6 +1617,178 @@ mod tests {
             .find(|value| value.get("id") == Some(&json!(3)))
             .expect("final result");
         assert_eq!(final_result["result"]["stopReason"], "end_turn");
+    }
+
+    #[tokio::test]
+    async fn prompts_in_one_session_retain_prior_context() {
+        let provider = ContextProvider::default();
+        let (service, buffer) = service_with_provider(Arc::new(provider.clone()));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+
+        service
+            .handle_value(
+                request(
+                    3,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "Remember the word: marmalade. Acknowledge." }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("first prompt");
+        wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(3)))
+        })
+        .await;
+
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    4,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "What single word did I ask you to remember?" }]
+                    }),
+                ),
+                writer,
+            )
+            .expect("follow-up prompt");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(4)))
+        })
+        .await;
+        let follow_up_text = update_texts(&values[start..]).concat();
+        assert!(
+            follow_up_text.contains("marmalade"),
+            "follow-up text: {follow_up_text:?}"
+        );
+
+        let requests = provider.requests();
+        assert!(requests.len() >= 2);
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .any(|message| message.content.contains("marmalade")),
+            "second provider request lacked prior session context: {:?}",
+            requests[1].messages
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_sessions_are_isolated_on_one_process() {
+        let provider = ContextProvider::default();
+        let (service, buffer) = service_with_provider(Arc::new(provider.clone()));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_a = new_session_with_id(&service, &writer, 2);
+        let session_b = new_session_with_id(&service, &writer, 22);
+        let codeword = "falcon-acp-isolated";
+
+        service
+            .handle_value(
+                request(
+                    3,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_a,
+                        "prompt": [{ "type": "text", "text": format!("My codeword is {codeword}. Acknowledge.") }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("session A prompt");
+        wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(3)))
+        })
+        .await;
+
+        let start_b = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    4,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_b,
+                        "prompt": [{ "type": "text", "text": "What is my codeword?" }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("session B prompt");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(4)))
+        })
+        .await;
+        let session_b_text = update_texts(&values[start_b..]).concat();
+        assert!(
+            !session_b_text.contains(codeword),
+            "session B leaked session A codeword: {session_b_text:?}"
+        );
+        assert!(
+            session_b_text.contains("do not know"),
+            "session B should report no context: {session_b_text:?}"
+        );
+
+        let start_a_follow_up = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    5,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_a,
+                        "prompt": [{ "type": "text", "text": "What is my codeword?" }]
+                    }),
+                ),
+                writer,
+            )
+            .expect("session A follow-up");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(5)))
+        })
+        .await;
+        let session_a_text = update_texts(&values[start_a_follow_up..]).concat();
+        assert!(
+            session_a_text.contains(codeword),
+            "session A did not retain codeword: {session_a_text:?}"
+        );
+
+        let requests = provider.requests();
+        assert!(requests.len() >= 3);
+        assert!(
+            !requests[1]
+                .messages
+                .iter()
+                .any(|message| message.content.contains(codeword)),
+            "session B provider request included session A history: {:?}",
+            requests[1].messages
+        );
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|message| message.content.contains(codeword)),
+            "session A follow-up request lacked session A history: {:?}",
+            requests[2].messages
+        );
     }
 
     #[tokio::test]
