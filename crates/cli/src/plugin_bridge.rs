@@ -23,6 +23,8 @@ use serde_json::Value as JsonValue;
 use settings::{ConfigError, ConfigInputs};
 use tools::{Tool, ToolContext, ToolOutput};
 
+const PURE_ENV: &str = "CORTEX_PURE";
+
 /// Loaded plugin runtime state for one surface invocation.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PluginState {
@@ -32,6 +34,12 @@ pub(crate) struct PluginState {
 }
 
 impl PluginState {
+    /// A disabled plugin state used by `--pure` and `CORTEX_PURE=1`.
+    #[must_use]
+    pub(crate) fn disabled() -> Self {
+        Self::default()
+    }
+
     /// Load configured plugins using the real external JS runtime.
     pub(crate) fn load(config: &plugins::PluginConfig) -> Result<Self, PluginRuntimeError> {
         let host = RuntimeHost::new();
@@ -43,8 +51,23 @@ impl PluginState {
         })
     }
 
+    /// Load configured plugins unless pure mode disabled all plugin behavior.
+    pub(crate) fn load_or_disabled(
+        config: &plugins::PluginConfig,
+        pure: bool,
+    ) -> Result<Self, PluginRuntimeError> {
+        if pure {
+            Ok(Self::disabled())
+        } else {
+            Self::load(config)
+        }
+    }
+
     /// Resolve the current process config and load configured plugins for a non-run surface.
-    pub(crate) fn from_process_config() -> Result<Self, ConfigOrRuntimeError> {
+    pub(crate) fn from_process_config(pure: bool) -> Result<Self, ConfigOrRuntimeError> {
+        if pure {
+            return Ok(Self::disabled());
+        }
         let inputs =
             ConfigInputs::from_process(Default::default()).map_err(ConfigOrRuntimeError::Io)?;
         let cwd = inputs.cwd.clone();
@@ -53,7 +76,7 @@ impl PluginState {
             .map_err(|message| {
                 ConfigOrRuntimeError::Config(ConfigError::TypeMismatch {
                     key: "plugin".to_owned(),
-                    expected: "an array of local plugin paths or [path, options] pairs",
+                    expected: "an array of plugin specs or [spec, options] pairs",
                     found: message,
                 })
             })?;
@@ -490,6 +513,12 @@ impl PluginState {
                 }) as Arc<dyn Subscriber>
             })
     }
+}
+
+/// Whether plugin pure mode is enabled through its environment equivalent.
+#[must_use]
+pub(crate) fn env_pure_enabled() -> bool {
+    std::env::var_os(PURE_ENV).is_some_and(|value| value.to_string_lossy() == "1")
 }
 
 impl Drop for PluginState {

@@ -6,6 +6,7 @@
 //! returns an actionable error before the run proceeds.
 
 mod config;
+mod distribution;
 mod runtime;
 
 pub use config::{PluginConfig, PluginSpec};

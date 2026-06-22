@@ -6,14 +6,14 @@ use serde::Serialize;
 use crate::cli::{AuthArgs, AuthCommand, AuthListArgs, OutputFormat};
 use crate::plugin_bridge::{AuthMethodDoc, PluginState};
 
-pub fn run(args: AuthArgs) -> Exit {
+pub fn run(args: AuthArgs, pure_plugins: bool) -> Exit {
     match args.command {
-        AuthCommand::List(args) => list(args),
+        AuthCommand::List(args) => list(args, pure_plugins),
     }
 }
 
-fn list(args: AuthListArgs) -> Exit {
-    let state = match PluginState::from_process_config() {
+fn list(args: AuthListArgs, pure_plugins: bool) -> Exit {
+    let state = match PluginState::from_process_config(pure_plugins) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex auth: {err}");

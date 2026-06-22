@@ -59,9 +59,9 @@ use crate::tooling::RegistryDispatcher;
 const OUTBOUND_OPERATION: &str = "LLM turn";
 
 /// Execute a single headless `cortex run` turn.
-pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
+pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     if args.command.is_some() {
-        return run_command_path(args, bus);
+        return run_command_path(args, bus, pure_plugins);
     }
 
     let stdin = io::stdin();
@@ -162,7 +162,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // provider credentials are resolved or any session state is opened. A configured plugin is
     // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
     // an attributed error rather than silently continuing without hooks.
-    let plugin_state = match PluginState::load(&run_config.plugins) {
+    let plugin_state = match PluginState::load_or_disabled(&run_config.plugins, pure_plugins) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex run: {err}");
@@ -545,7 +545,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     exit
 }
 
-fn run_command_path(args: RunArgs, bus: Arc<EventBus>) -> Exit {
+fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
         Ok(config_inputs) => config_inputs,
         Err(err) => {
@@ -560,7 +560,7 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>) -> Exit {
             return Exit::Config;
         }
     };
-    let plugin_state = match PluginState::load(&run_config.plugins) {
+    let plugin_state = match PluginState::load_or_disabled(&run_config.plugins, pure_plugins) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex run: {err}");
@@ -1317,7 +1317,7 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
     let plugins = plugins::PluginConfig::from_toml_value(effective.get("plugin"), &cwd).map_err(
         |message| ConfigError::TypeMismatch {
             key: "plugin".to_owned(),
-            expected: "an array of local plugin paths or [path, options] pairs",
+            expected: "an array of plugin specs or [spec, options] pairs",
             found: message,
         },
     )?;

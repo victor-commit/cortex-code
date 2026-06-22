@@ -29,6 +29,24 @@ fn write_plugin(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write plugin");
 }
 
+fn write_package_plugin(root: &Path, name: &str, version: &str, body: &str) {
+    std::fs::create_dir_all(root).expect("create package root");
+    std::fs::write(
+        root.join("package.json"),
+        format!(
+            r#"{{
+  "name": "{name}",
+  "version": "{version}",
+  "type": "module",
+  "main": "index.mjs"
+}}
+"#
+        ),
+    )
+    .expect("write package json");
+    std::fs::write(root.join("index.mjs"), body).expect("write package entry");
+}
+
 fn cortex(sandbox: &Sandbox, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(&sandbox.project);
@@ -242,5 +260,223 @@ export default function plugin() {}
     assert!(
         !marker.exists(),
         "a throwing plugin must not leave its would-be hook side effect"
+    );
+}
+
+#[test]
+fn cortex_run_resolves_package_plugin_and_records_lockfile() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("package");
+    let package = sandbox.project.join("package-plugin");
+    let marker = sandbox.project.join("package-marker.txt");
+    write_package_plugin(
+        &package,
+        "cortex-cli-package-plugin-proof",
+        "2.3.4",
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(input, options) {
+  return {
+    async event() {
+      await writeFile(options.marker, `label=${options.label};dir=${input.directory}`);
+    }
+  };
+}
+"#,
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        format!(
+            "plugin = [[\"file:{}\", {{ marker = \"{}\", label = \"PKG\" }}]]\n",
+            package.display(),
+            marker.display()
+        ),
+    )
+    .expect("write config");
+
+    let output = run(
+        cortex(
+            &sandbox,
+            &["run", "--command", "echo", "--command-arg", "ok"],
+        ),
+        Duration::from_secs(45),
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "package plugin command path succeeds: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("label=PKG;dir={}", sandbox.project.display())
+    );
+    let lock = std::fs::read_to_string(sandbox.project.join(".cortex/plugin-lock.json"))
+        .expect("package lockfile");
+    assert!(
+        lock.contains("cortex-cli-package-plugin-proof") && lock.contains("2.3.4"),
+        "lockfile pins package version: {lock}"
+    );
+
+    let mut offline = cortex(
+        &sandbox,
+        &["run", "--command", "echo", "--command-arg", "again"],
+    );
+    offline.env("CORTEX_NO_NET", "1");
+    let output = run(offline, Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "locked package should load without re-resolving/fetching under no-net: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "again");
+}
+
+#[test]
+fn cortex_run_package_resolution_honors_no_net_for_missing_package() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("package-no-net");
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"definitely-missing-cortex-plugin-proof-xyz\"]\n",
+    )
+    .expect("write config");
+
+    let mut command = cortex(
+        &sandbox,
+        &["run", "--command", "echo", "--command-arg", "nope"],
+    );
+    command.env("CORTEX_NO_NET", "1");
+    let output = run(command, Duration::from_secs(30));
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("definitely-missing-cortex-plugin-proof-xyz")
+            && stderr.contains("CORTEX_NO_NET=1"),
+        "missing package fails closed with clear no-net diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn cortex_run_pure_skips_plugins_hooks_and_runtime_detection() {
+    let sandbox = Sandbox::new("pure");
+    let empty_path = sandbox.home.join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("empty path");
+    let marker = sandbox.project.join("should-not-exist");
+    let touched = sandbox.project.join("pure-touched");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        &format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+export default async function plugin() {{
+  await writeFile("{}", "plugin-ran");
+  return {{
+    "command.execute.before": async () => {{
+      await writeFile("{}", "hook-ran");
+    }}
+  }};
+}}
+"#,
+            marker.display(),
+            marker.display()
+        ),
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
+    )
+    .expect("write config");
+
+    let mut command = cortex(&sandbox, &["run", "--pure", "--command", "touch"]);
+    command.arg("--command-arg").arg(touched.as_os_str());
+    command.env("PATH", &empty_path);
+    let output = run(command, Duration::from_secs(10));
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--pure should not require a JS runtime: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        touched.exists(),
+        "built-in command path still runs under pure"
+    );
+    assert!(
+        !marker.exists(),
+        "pure mode suppresses plugin load and command hooks"
+    );
+}
+
+#[test]
+fn cortex_pure_env_skips_plugin_registered_auth_and_models() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("pure-env");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    async auth() {
+      return { id: "plugin-auth", name: "Plugin Auth" };
+    },
+    async provider() {
+      return {
+        id: "plugin-provider",
+        name: "Plugin Provider",
+        models: [{ id: "plugin/model", name: "Plugin Model" }]
+      };
+    }
+  };
+}
+"#,
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
+    )
+    .expect("write config");
+
+    let normal_auth = run(
+        cortex(&sandbox, &["auth", "list", "--format", "json"]),
+        Duration::from_secs(30),
+    );
+    assert_eq!(normal_auth.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&normal_auth.stdout).contains("plugin-auth"),
+        "normal auth list includes plugin auth"
+    );
+
+    let mut pure_auth = cortex(&sandbox, &["auth", "list", "--format", "json"]);
+    pure_auth.env("CORTEX_PURE", "1");
+    let pure_auth = run(pure_auth, Duration::from_secs(10));
+    assert_eq!(pure_auth.status.code(), Some(0));
+    assert!(
+        !String::from_utf8_lossy(&pure_auth.stdout).contains("plugin-auth"),
+        "CORTEX_PURE removes plugin auth registrations"
+    );
+
+    let pure_models = cortex(&sandbox, &["models", "--pure", "--format", "json"]);
+    let pure_models = run(pure_models, Duration::from_secs(10));
+    assert_eq!(pure_models.status.code(), Some(0));
+    assert!(
+        !String::from_utf8_lossy(&pure_models.stdout).contains("plugin/model"),
+        "--pure removes plugin models/providers"
     );
 }

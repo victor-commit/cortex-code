@@ -41,6 +41,7 @@ fn main() -> ExitCode {
     };
 
     let debug_events = observe::init(cli.verbose);
+    let pure_plugins = cli.pure || plugin_bridge::env_pure_enabled();
     let bus = Arc::new(EventBus::new());
     let counter = Arc::new(CounterSink::new());
     if debug_events {
@@ -62,12 +63,12 @@ fn main() -> ExitCode {
 
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
-        Some(Command::Run(args)) => run::run(args, bus.clone()).into(),
+        Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
-        Some(Command::Auth(args)) => auth_cmd::run(args).into(),
-        Some(Command::Models(args)) => models_cmd::run(args).into(),
+        Some(Command::Auth(args)) => auth_cmd::run(args, pure_plugins).into(),
+        Some(Command::Models(args)) => models_cmd::run(args, pure_plugins).into(),
         Some(Command::Generate(args)) => generate_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),

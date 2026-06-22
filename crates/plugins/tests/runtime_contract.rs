@@ -28,6 +28,24 @@ fn write_plugin(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write plugin");
 }
 
+fn write_package_plugin(root: &Path, name: &str, version: &str, body: &str) {
+    std::fs::create_dir_all(root).expect("create package root");
+    std::fs::write(
+        root.join("package.json"),
+        format!(
+            r#"{{
+  "name": "{name}",
+  "version": "{version}",
+  "type": "module",
+  "main": "index.mjs"
+}}
+"#
+        ),
+    )
+    .expect("write package json");
+    std::fs::write(root.join("index.mjs"), body).expect("write package entry");
+}
+
 fn skip_without_runtime() -> bool {
     if detect_runtime().is_none() {
         eprintln!("skipping plugin runtime proof: no Bun, Node, or Deno on PATH");
@@ -35,6 +53,126 @@ fn skip_without_runtime() -> bool {
     } else {
         false
     }
+}
+
+#[test]
+fn package_plugin_resolves_executes_receives_options_and_writes_lockfile() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let project = scratch("package");
+    let package = project.join("package-plugin");
+    let marker = project.join("package-marker.txt");
+    write_package_plugin(
+        &package,
+        "cortex-package-plugin-proof",
+        "1.2.3",
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(input, options) {
+  return {
+    async event() {
+      await writeFile(options.marker, `label=${options.label};dir=${input.directory}`);
+    }
+  };
+}
+"#,
+    );
+    let config = config_from(
+        &project,
+        &format!(
+            "plugin = [[\"file:{}\", {{ marker = \"{}\", label = \"L1\" }}]]",
+            package.display(),
+            marker.display()
+        ),
+    );
+
+    let reports = RuntimeHost::new()
+        .with_timeout(Duration::from_secs(30))
+        .load_config(&config)
+        .expect("package plugin loads through package manager and runtime resolver");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("label=L1;dir={}", project.display())
+    );
+    let lockfile = project.join(".cortex/plugin-lock.json");
+    let lock = std::fs::read_to_string(&lockfile).expect("package lockfile exists");
+    assert!(
+        lock.contains("cortex-package-plugin-proof") && lock.contains("1.2.3"),
+        "lockfile pins package version: {lock}"
+    );
+
+    let config = config_from(
+        &project,
+        &format!(
+            "plugin = [[\"file:{}\", {{ marker = \"{}\", label = \"L2\" }}]]",
+            package.display(),
+            marker.display()
+        ),
+    );
+    RuntimeHost::new()
+        .with_timeout(Duration::from_secs(30))
+        .load_config(&config)
+        .expect("second package load uses the pinned module path");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("label=L2;dir={}", project.display())
+    );
+}
+
+#[test]
+fn bare_package_spec_resolves_from_project_node_modules() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let project = scratch("bare-package");
+    let name = "cortex-node-modules-plugin-proof";
+    let package = project.join("node_modules").join(name);
+    let marker = project.join("bare-package-marker.txt");
+    write_package_plugin(
+        &package,
+        name,
+        "4.5.6",
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(_input, options) {
+  return {
+    async event() {
+      await writeFile(options.marker, `bare=${options.label}`);
+    }
+  };
+}
+"#,
+    );
+    let config = config_from(
+        &project,
+        &format!(
+            "plugin = [[\"{name}\", {{ marker = \"{}\", label = \"NODE_MODULES\" }}]]",
+            marker.display()
+        ),
+    );
+
+    RuntimeHost::new()
+        .with_timeout(Duration::from_secs(15))
+        .load_config(&config)
+        .expect("bare package plugin resolves through runtime resolver");
+
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "bare=NODE_MODULES"
+    );
+    let lock = std::fs::read_to_string(project.join(".cortex/plugin-lock.json"))
+        .expect("bare package lockfile exists");
+    assert!(
+        lock.contains(name) && lock.contains("4.5.6"),
+        "lockfile pins bare package version: {lock}"
+    );
 }
 
 #[test]

@@ -9,6 +9,10 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::config::{PluginConfig, PluginSpec};
+use crate::distribution::{
+    PackageLockEntry, PackageLockError, PackageLockfile, locked_entry_is_valid,
+    normalize_install_spec, package_import_spec, package_install_dir,
+};
 use crate::runtime::detection::{JsRuntime, RuntimeSelection, detect_runtime_in_path};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -83,7 +87,10 @@ impl RuntimeHost {
         config
             .entries()
             .iter()
-            .map(|plugin| self.load_plugin(plugin, &runtime))
+            .map(|plugin| {
+                let plugin = self.resolve_plugin(plugin, &runtime)?;
+                self.load_plugin(&plugin, &runtime)
+            })
             .collect()
     }
 
@@ -379,6 +386,204 @@ impl RuntimeHost {
         }
     }
 
+    fn resolve_plugin(
+        &self,
+        plugin: &PluginSpec,
+        runtime: &RuntimeSelection,
+    ) -> Result<PluginSpec, PluginRuntimeError> {
+        let Some(spec) = plugin.package_spec() else {
+            return Ok(plugin.clone());
+        };
+        let cwd = plugin.directory();
+        let mut lockfile =
+            PackageLockfile::load(cwd).map_err(|err| package_lock_error(spec, err))?;
+        if let Some(entry) = lockfile.entry(cwd, spec) {
+            locked_entry_is_valid(&entry).map_err(|message| {
+                PluginRuntimeError::PackageResolveFailed {
+                    spec: spec.to_owned(),
+                    message,
+                }
+            })?;
+            return Ok(plugin.with_resolved_path(entry.module_path));
+        }
+        let import_spec = package_import_spec(spec, cwd).map_err(|message| {
+            PluginRuntimeError::PackageResolveFailed {
+                spec: spec.to_owned(),
+                message,
+            }
+        })?;
+
+        if let Ok(entry) = self.resolve_package(runtime, spec, &import_spec, cwd) {
+            lockfile
+                .upsert(cwd, entry.clone())
+                .map_err(|err| package_lock_error(spec, err))?;
+            return Ok(plugin.with_resolved_path(entry.module_path));
+        }
+
+        if redaction::network_disabled() {
+            return Err(PluginRuntimeError::PackageNetDisabled {
+                spec: spec.to_owned(),
+            });
+        }
+
+        self.install_package(runtime, spec, cwd)?;
+        let install_dir = package_install_dir(cwd);
+        let entry = self.resolve_package(runtime, spec, &import_spec, &install_dir)?;
+        lockfile
+            .upsert(cwd, entry.clone())
+            .map_err(|err| package_lock_error(spec, err))?;
+        Ok(plugin.with_resolved_path(entry.module_path))
+    }
+
+    fn resolve_package(
+        &self,
+        runtime: &RuntimeSelection,
+        spec: &str,
+        import_spec: &str,
+        base_directory: &Path,
+    ) -> Result<PackageLockEntry, PluginRuntimeError> {
+        let temp = InvocationTemp::create()?;
+        let bridge_path = temp.path.join("package_resolver.mjs");
+        let input_path = temp.path.join("input.json");
+        let result_path = temp.path.join("result.json");
+        std::fs::write(&bridge_path, PACKAGE_RESOLVER_SCRIPT).map_err(|source| {
+            PluginRuntimeError::Io {
+                action: "write plugin package resolver",
+                path: bridge_path.clone(),
+                source,
+            }
+        })?;
+        std::fs::write(
+            &input_path,
+            serde_json::to_vec(&PackageResolveInput {
+                spec: spec.to_owned(),
+                import_spec: import_spec.to_owned(),
+                base_directory: base_directory.to_string_lossy().into_owned(),
+            })?,
+        )
+        .map_err(|source| PluginRuntimeError::Io {
+            action: "write plugin package resolver input",
+            path: input_path.clone(),
+            source,
+        })?;
+
+        let output = run_package_child(
+            runtime,
+            spec,
+            &bridge_path,
+            &input_path,
+            &result_path,
+            self.timeout,
+        )?;
+        let result = read_package_resolve_result(spec, runtime, &result_path, &output)?;
+        let _ = std::fs::remove_dir_all(&temp.path);
+        if result.ok {
+            let module_path =
+                result
+                    .resolved_path
+                    .ok_or_else(|| PluginRuntimeError::PackageResolveFailed {
+                        spec: spec.to_owned(),
+                        message: "resolver did not return a module path".to_owned(),
+                    })?;
+            let version =
+                result
+                    .version
+                    .ok_or_else(|| PluginRuntimeError::PackageResolveFailed {
+                        spec: spec.to_owned(),
+                        message: "resolver did not return a package version".to_owned(),
+                    })?;
+            Ok(PackageLockEntry {
+                spec: spec.to_owned(),
+                import_spec: import_spec.to_owned(),
+                package_name: result
+                    .package_name
+                    .unwrap_or_else(|| import_spec.to_owned()),
+                version,
+                module_path: PathBuf::from(module_path),
+            })
+        } else {
+            Err(package_error_from_bridge_result(
+                spec, runtime, result, "resolve",
+            ))
+        }
+    }
+
+    fn install_package(
+        &self,
+        runtime: &RuntimeSelection,
+        spec: &str,
+        cwd: &Path,
+    ) -> Result<(), PluginRuntimeError> {
+        let install_dir = package_install_dir(cwd);
+        std::fs::create_dir_all(&install_dir).map_err(|source| PluginRuntimeError::Io {
+            action: "create plugin package install directory",
+            path: install_dir.clone(),
+            source,
+        })?;
+        let package_json = install_dir.join("package.json");
+        if !package_json.exists() {
+            std::fs::write(
+                &package_json,
+                b"{\"private\":true,\"type\":\"module\",\"dependencies\":{}}\n",
+            )
+            .map_err(|source| PluginRuntimeError::Io {
+                action: "write plugin package install package.json",
+                path: package_json,
+                source,
+            })?;
+        }
+
+        let install_spec = normalize_install_spec(spec, cwd);
+        let (program, args): (PathBuf, Vec<String>) = match runtime.runtime {
+            JsRuntime::Bun => (
+                runtime.executable.clone(),
+                vec![
+                    "add".to_owned(),
+                    "--cwd".to_owned(),
+                    install_dir.to_string_lossy().into_owned(),
+                    install_spec,
+                ],
+            ),
+            JsRuntime::Node => (
+                PathBuf::from("npm"),
+                vec![
+                    "install".to_owned(),
+                    "--prefix".to_owned(),
+                    install_dir.to_string_lossy().into_owned(),
+                    "--no-audit".to_owned(),
+                    "--no-fund".to_owned(),
+                    install_spec,
+                ],
+            ),
+            JsRuntime::Deno => {
+                return Err(PluginRuntimeError::PackageResolveFailed {
+                    spec: spec.to_owned(),
+                    message:
+                        "Deno cannot install npm packages for Cortex plugins; install the package in node_modules or use Bun/Node"
+                            .to_owned(),
+                });
+            }
+        };
+
+        let output = run_install_child(&program, &args, cwd, self.timeout).map_err(|source| {
+            PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: program.clone(),
+                source,
+            }
+        })?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(PluginRuntimeError::PackageInstallFailed {
+                spec: spec.to_owned(),
+                runtime: runtime.runtime,
+                status: status_text(output.status),
+                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
+            })
+        }
+    }
+
     fn load_plugin(
         &self,
         plugin: &PluginSpec,
@@ -650,6 +855,44 @@ pub enum PluginRuntimeError {
         /// The missing plugin path.
         path: PathBuf,
     },
+    /// A package plugin could not be resolved by the external runtime resolver.
+    #[error("failed to resolve plugin package `{spec}`: {message}")]
+    PackageResolveFailed {
+        /// Configured package spec.
+        spec: String,
+        /// Resolver diagnostic.
+        message: String,
+    },
+    /// Package resolution would need the network while the kill-switch is engaged.
+    #[error(
+        "failed to resolve plugin package `{spec}`: CORTEX_NO_NET=1 prevents fetching package plugins; install it locally or keep the plugin lockfile"
+    )]
+    PackageNetDisabled {
+        /// Configured package spec.
+        spec: String,
+    },
+    /// A package manager install failed.
+    #[error(
+        "failed to install plugin package `{spec}` with {runtime} (status {status}); stderr: {stderr}"
+    )]
+    PackageInstallFailed {
+        /// Configured package spec.
+        spec: String,
+        /// Selected runtime.
+        runtime: JsRuntime,
+        /// Exit status.
+        status: String,
+        /// Redacted stderr.
+        stderr: String,
+    },
+    /// The plugin lockfile could not be read or written.
+    #[error("failed to use plugin lockfile for `{spec}`: {message}")]
+    PackageLock {
+        /// Configured package spec.
+        spec: String,
+        /// Lockfile diagnostic.
+        message: String,
+    },
     /// A filesystem operation for the bridge failed.
     #[error("failed to {action} at {}: {source}", path.display())]
     Io {
@@ -740,6 +983,13 @@ struct BridgeInput {
 }
 
 #[derive(Serialize)]
+struct PackageResolveInput {
+    spec: String,
+    import_spec: String,
+    base_directory: String,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeOperation {
     Load { config: JsonValue },
@@ -773,6 +1023,15 @@ struct BridgeResult {
     registrations: BridgeRegistrations,
     #[serde(default)]
     output: Option<JsonValue>,
+    error: Option<BridgeError>,
+}
+
+#[derive(Deserialize)]
+struct PackageResolveResult {
+    ok: bool,
+    resolved_path: Option<String>,
+    package_name: Option<String>,
+    version: Option<String>,
     error: Option<BridgeError>,
 }
 
@@ -910,6 +1169,158 @@ fn run_child(
     })
 }
 
+fn run_package_child(
+    runtime: &RuntimeSelection,
+    spec: &str,
+    bridge_path: &Path,
+    input_path: &Path,
+    result_path: &Path,
+    timeout: Duration,
+) -> Result<ChildOutput, PluginRuntimeError> {
+    let mut command = Command::new(&runtime.executable);
+    match runtime.runtime {
+        JsRuntime::Bun | JsRuntime::Node => {
+            command.arg(bridge_path);
+        }
+        JsRuntime::Deno => {
+            command.args([
+                "run",
+                "--allow-read",
+                "--allow-write",
+                "--allow-run",
+                "--allow-net",
+                "--allow-env",
+            ]);
+            command.arg(bridge_path);
+        }
+    }
+    command
+        .arg(input_path)
+        .arg(result_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .envs(secret_stripped_env());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|source| PluginRuntimeError::Spawn {
+            runtime: runtime.runtime,
+            executable: runtime.executable.clone(),
+            source,
+        })?;
+    let pid = child.id();
+    let stdout = child.stdout.take().map(read_pipe);
+    let stderr = child.stderr.take().map(read_pipe);
+    let started = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|source| PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: runtime.executable.clone(),
+                source,
+            })?
+        {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            kill_runtime_process_group(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(PluginRuntimeError::PackageResolveFailed {
+                spec: spec.to_owned(),
+                message: format!(
+                    "runtime resolver timed out after {}ms; runtime process pid {pid} was terminated",
+                    timeout.as_millis()
+                ),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = join_pipe(stdout);
+    let stderr = join_pipe(stderr);
+    Ok(ChildOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn run_install_child(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<ChildOutput, std::io::Error> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .envs(secret_stripped_env());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    let stdout = child.stdout.take().map(read_pipe);
+    let stderr = child.stderr.take().map(read_pipe);
+    let started = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            kill_runtime_process_group(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(ChildOutput {
+                status: timeout_status(),
+                stdout: join_pipe(stdout),
+                stderr: join_pipe(stderr),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    Ok(ChildOutput {
+        status,
+        stdout: join_pipe(stdout),
+        stderr: join_pipe(stderr),
+    })
+}
+
+#[cfg(unix)]
+fn timeout_status() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    ExitStatus::from_raw(124 << 8)
+}
+
+#[cfg(not(unix))]
+fn timeout_status() -> ExitStatus {
+    Command::new("false")
+        .status()
+        .unwrap_or_else(|_| panic!("failed to synthesize timeout exit status"))
+}
+
 fn read_pipe<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
@@ -980,6 +1391,48 @@ fn read_bridge_result(
     Ok(parsed)
 }
 
+fn read_package_resolve_result(
+    spec: &str,
+    runtime: &RuntimeSelection,
+    result_path: &Path,
+    output: &ChildOutput,
+) -> Result<PackageResolveResult, PluginRuntimeError> {
+    let result = match std::fs::read_to_string(result_path) {
+        Ok(result) => result,
+        Err(_) if !output.status.success() => {
+            return Err(PluginRuntimeError::PackageResolveFailed {
+                spec: spec.to_owned(),
+                message: format!(
+                    "runtime resolver failed in {} (status {}); stderr: {}",
+                    runtime.runtime,
+                    status_text(output.status),
+                    redaction::redact(&String::from_utf8_lossy(&output.stderr))
+                ),
+            });
+        }
+        Err(source) => {
+            return Err(PluginRuntimeError::Io {
+                action: "read plugin package resolver result",
+                path: result_path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let parsed: PackageResolveResult = serde_json::from_str(&result)?;
+    if !output.status.success() && parsed.ok {
+        return Err(PluginRuntimeError::PackageResolveFailed {
+            spec: spec.to_owned(),
+            message: format!(
+                "runtime resolver exited non-zero in {} (status {}); stderr: {}",
+                runtime.runtime,
+                status_text(output.status),
+                redaction::redact(&String::from_utf8_lossy(&output.stderr))
+            ),
+        });
+    }
+    Ok(parsed)
+}
+
 fn status_text(status: ExitStatus) -> String {
     status.code().map_or_else(
         || "terminated by signal".to_owned(),
@@ -1029,6 +1482,36 @@ fn error_from_bridge_result(
     }
 }
 
+fn package_error_from_bridge_result(
+    spec: &str,
+    runtime: &RuntimeSelection,
+    result: PackageResolveResult,
+    fallback_hook: &str,
+) -> PluginRuntimeError {
+    let error = result.error.unwrap_or_else(|| BridgeError {
+        name: "Error".to_owned(),
+        message: "package resolver failed without an error message".to_owned(),
+        stack: None,
+        hook: Some(fallback_hook.to_owned()),
+    });
+    let message = redaction::redact(&error.message);
+    PluginRuntimeError::PackageResolveFailed {
+        spec: spec.to_owned(),
+        message: format!(
+            "{} resolver error in {}: {message}",
+            runtime.runtime,
+            runtime.executable.display()
+        ),
+    }
+}
+
+fn package_lock_error(spec: &str, err: PackageLockError) -> PluginRuntimeError {
+    PluginRuntimeError::PackageLock {
+        spec: spec.to_owned(),
+        message: err.to_string(),
+    }
+}
+
 fn default_parameters() -> JsonValue {
     serde_json::json!({
         "type": "object",
@@ -1048,6 +1531,93 @@ fn output_content(value: &JsonValue) -> String {
     }
     serde_json::to_string(value).unwrap_or_else(|_| String::new())
 }
+
+const PACKAGE_RESOLVER_SCRIPT: &str = r#"
+import processModule from "node:process";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { readFile, writeFile } from "node:fs/promises";
+
+const proc = globalThis.process ?? processModule;
+const inputPath = proc.argv[2];
+const resultPath = proc.argv[3];
+
+function runtimeInfo() {
+  if (globalThis.Bun) {
+    return { name: "bun", version: String(globalThis.Bun.version ?? "unknown") };
+  }
+  if (globalThis.Deno) {
+    return { name: "deno", version: String(globalThis.Deno.version?.deno ?? "unknown") };
+  }
+  if (proc?.versions?.node) {
+    return { name: "node", version: String(proc.versions.node) };
+  }
+  return { name: "javascript", version: "unknown" };
+}
+
+async function writeResult(result) {
+  await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
+}
+
+function errorToJson(error) {
+  return {
+    name: String(error?.name ?? "Error"),
+    message: String(error?.message ?? error),
+    stack: error?.stack ? String(error.stack) : undefined,
+    hook: "resolve"
+  };
+}
+
+async function nearestPackageJson(resolvedPath) {
+  let current = dirname(resolvedPath);
+  for (;;) {
+    const candidate = join(current, "package.json");
+    try {
+      const text = await readFile(candidate, "utf8");
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        return { path: candidate, packageJson: parsed };
+      }
+    } catch (_error) {
+      // Keep walking toward the filesystem root.
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw new Error(`could not find package.json for resolved module ${resolvedPath}`);
+}
+
+try {
+  const raw = JSON.parse(await readFile(inputPath, "utf8"));
+  const baseDirectory = String(raw.base_directory);
+  const importSpec = String(raw.import_spec);
+  const require = createRequire(pathToFileURL(join(baseDirectory, "package.json")).href);
+  const resolvedPath = require.resolve(importSpec);
+  const { packageJson } = await nearestPackageJson(resolvedPath);
+  const version = String(packageJson.version ?? "");
+  if (!version) {
+    throw new Error(`package ${importSpec} resolved to ${resolvedPath} but package.json has no version`);
+  }
+  await writeResult({
+    ok: true,
+    runtime: runtimeInfo(),
+    pid: typeof proc.pid === "number" ? proc.pid : null,
+    resolved_path: resolvedPath,
+    package_name: String(packageJson.name ?? importSpec),
+    version
+  });
+} catch (error) {
+  await writeResult({
+    ok: false,
+    runtime: runtimeInfo(),
+    pid: typeof proc.pid === "number" ? proc.pid : null,
+    error: errorToJson(error)
+  });
+  proc.exitCode = 1;
+}
+"#;
 
 const BRIDGE_SCRIPT: &str = r#"
 import processModule from "node:process";

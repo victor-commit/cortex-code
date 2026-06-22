@@ -17,6 +17,7 @@ const RESERVED_SUFFIXES: &[&str] = &[
     "CONFIG_HOME",
     "HOME",
     "DATA_DIR",
+    "PURE",
     "STREAM_IDLE_TIMEOUT_MS",
 ];
 
@@ -74,6 +75,7 @@ mod tests {
         let overrides = overrides_from(vars(&[
             ("PATH", "/usr/bin"),
             ("CORTEX_NO_NET", "1"),
+            ("CORTEX_PURE", "1"),
             ("CORTEX_CONFIG_FILE", "/x"),
             ("CORTEX_STREAM_IDLE_TIMEOUT_MS", "50"),
             ("CORTEX_", "empty-suffix"),

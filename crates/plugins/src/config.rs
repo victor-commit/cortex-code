@@ -16,10 +16,10 @@ impl PluginConfig {
     ///
     /// - `plugin = ["./plugin.mjs"]`
     /// - `plugin = [["./plugin.mjs", { label = "demo" }]]`
+    /// - `plugin = ["@scope/plugin-package"]`
     ///
-    /// Local paths are resolved relative to the run working directory. Package distribution and
-    /// lockfiles are intentionally left to later plugin distribution work; this foundation is the
-    /// local-file runtime contract.
+    /// Local paths are resolved relative to the run working directory. Package specs stay as
+    /// package specs until the runtime host resolves them through the external JavaScript runtime.
     pub fn from_toml_value(value: Option<&TomlValue>, cwd: &Path) -> Result<Self, String> {
         let Some(value) = value else {
             return Ok(Self::default());
@@ -48,21 +48,18 @@ impl PluginConfig {
     }
 }
 
-/// One local plugin module entry.
+/// One configured plugin module entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PluginSpec {
     raw_spec: String,
     path: PathBuf,
     directory: PathBuf,
     options: JsonValue,
+    source: PluginSource,
 }
 
 impl PluginSpec {
     /// Build a local plugin spec by resolving `raw_spec` against `cwd`.
-    ///
-    /// Package names are rejected for now because this feature's contract is explicitly the local
-    /// file path form. Later distribution work can extend this parser without weakening the
-    /// fail-closed behavior for local plugins.
     pub fn local_file(
         raw_spec: impl Into<String>,
         options: JsonValue,
@@ -73,10 +70,9 @@ impl PluginSpec {
         if trimmed.is_empty() {
             return Err("plugin path must not be empty".into());
         }
-        if looks_like_package_spec(trimmed) {
+        if is_package_spec(trimmed) {
             return Err(format!(
-                "plugin `{trimmed}` is not a local file path; this runtime foundation supports \
-                 local plugin files such as ./plugin.mjs"
+                "plugin `{trimmed}` is a package spec; use PluginSpec::package for package plugins"
             ));
         }
         let path = PathBuf::from(trimmed);
@@ -90,6 +86,30 @@ impl PluginSpec {
             path,
             directory: cwd.to_path_buf(),
             options,
+            source: PluginSource::LocalFile,
+        })
+    }
+
+    /// Build an npm-package plugin spec. The module path is resolved later by the runtime host.
+    pub fn package(
+        raw_spec: impl Into<String>,
+        options: JsonValue,
+        cwd: &Path,
+    ) -> Result<Self, String> {
+        let raw_spec = raw_spec.into();
+        let trimmed = raw_spec.trim();
+        if trimmed.is_empty() {
+            return Err("plugin package spec must not be empty".into());
+        }
+        validate_package_spec(trimmed)?;
+        Ok(Self {
+            raw_spec: trimmed.to_owned(),
+            path: package_placeholder_path(cwd, trimmed),
+            directory: cwd.to_path_buf(),
+            options,
+            source: PluginSource::Package {
+                spec: trimmed.to_owned(),
+            },
         })
     }
 
@@ -99,7 +119,10 @@ impl PluginSpec {
         &self.raw_spec
     }
 
-    /// The resolved local file path.
+    /// The resolved module path.
+    ///
+    /// For local-file specs this is available immediately. For package specs this is populated by
+    /// the runtime host after the package has been resolved or installed.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -116,13 +139,41 @@ impl PluginSpec {
     pub fn options(&self) -> &JsonValue {
         &self.options
     }
+
+    /// Whether this entry came from a package spec rather than a local file path.
+    #[must_use]
+    pub fn is_package(&self) -> bool {
+        matches!(self.source, PluginSource::Package { .. })
+    }
+
+    /// The configured package spec, if this entry is package-distributed.
+    #[must_use]
+    pub fn package_spec(&self) -> Option<&str> {
+        match &self.source {
+            PluginSource::LocalFile => None,
+            PluginSource::Package { spec } => Some(spec),
+        }
+    }
+
+    /// Return a clone with the package spec pinned to a concrete resolved module path.
+    #[must_use]
+    pub fn with_resolved_path(&self, path: impl Into<PathBuf>) -> Self {
+        let mut resolved = self.clone();
+        resolved.path = path.into();
+        resolved
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PluginSource {
+    LocalFile,
+    Package { spec: String },
 }
 
 fn parse_entry(item: &TomlValue, index: usize, cwd: &Path) -> Result<PluginSpec, String> {
     match item {
-        TomlValue::String(path) => {
-            PluginSpec::local_file(path, JsonValue::Object(Default::default()), cwd)
-                .map_err(|message| format!("plugin[{index}]: {message}"))
+        TomlValue::String(spec) => {
+            parse_spec(spec, JsonValue::Object(Default::default()), index, cwd)
         }
         TomlValue::Array(pair) => parse_pair(pair, index, cwd),
         other => Err(format!(
@@ -138,9 +189,9 @@ fn parse_pair(pair: &[TomlValue], index: usize, cwd: &Path) -> Result<PluginSpec
             "plugin[{index}]: expected [path, options] with exactly two items"
         ));
     }
-    let path = pair[0]
+    let spec = pair[0]
         .as_str()
-        .ok_or_else(|| format!("plugin[{index}]: pair first item must be a path string"))?;
+        .ok_or_else(|| format!("plugin[{index}]: pair first item must be a plugin spec string"))?;
     if !matches!(pair[1], TomlValue::Table(_)) {
         return Err(format!(
             "plugin[{index}]: pair second item must be an options table"
@@ -148,11 +199,30 @@ fn parse_pair(pair: &[TomlValue], index: usize, cwd: &Path) -> Result<PluginSpec
     }
     let options = serde_json::to_value(pair[1].clone())
         .map_err(|error| format!("plugin[{index}]: failed to convert options to JSON: {error}"))?;
-    PluginSpec::local_file(path, options, cwd)
-        .map_err(|message| format!("plugin[{index}]: {message}"))
+    parse_spec(spec, options, index, cwd)
 }
 
-fn looks_like_package_spec(spec: &str) -> bool {
+fn parse_spec(
+    spec: &str,
+    options: JsonValue,
+    index: usize,
+    cwd: &Path,
+) -> Result<PluginSpec, String> {
+    if is_package_spec(spec) {
+        PluginSpec::package(spec, options, cwd)
+    } else {
+        PluginSpec::local_file(spec, options, cwd)
+    }
+    .map_err(|message| format!("plugin[{index}]: {message}"))
+}
+
+fn is_package_spec(spec: &str) -> bool {
+    if spec.starts_with("file:") || spec.starts_with("npm:") {
+        return true;
+    }
+    if spec.starts_with('@') {
+        return true;
+    }
     if spec.starts_with("./")
         || spec.starts_with("../")
         || spec.starts_with('/')
@@ -161,13 +231,59 @@ fn looks_like_package_spec(spec: &str) -> bool {
         return false;
     }
     let path = Path::new(spec);
-    if path.components().count() > 1 {
+    let has_multiple_components = path.components().count() > 1;
+    let has_plugin_extension = matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
+    );
+    if has_multiple_components && has_plugin_extension {
         return false;
     }
     !matches!(
         path.extension().and_then(|extension| extension.to_str()),
         Some("js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
     )
+}
+
+fn validate_package_spec(spec: &str) -> Result<(), String> {
+    if spec.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "plugin package spec `{spec}` is invalid: package specs must not contain whitespace"
+        ));
+    }
+    if spec == "npm:" || spec == "file:" {
+        return Err(format!(
+            "plugin package spec `{spec}` is invalid: missing package name or path"
+        ));
+    }
+    if spec.starts_with('@') {
+        let mut parts = spec.split('/');
+        let scope = parts.next().unwrap_or_default();
+        let name = parts.next().unwrap_or_default();
+        if scope.len() <= 1 || name.is_empty() {
+            return Err(format!(
+                "plugin package spec `{spec}` is invalid: scoped packages must be @scope/name"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn package_placeholder_path(cwd: &Path, spec: &str) -> PathBuf {
+    let sanitized: String = spec
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    cwd.join(".cortex")
+        .join("plugins")
+        .join("unresolved")
+        .join(format!("{sanitized}.mjs"))
 }
 
 #[cfg(test)]
@@ -207,13 +323,13 @@ plugin = [
     }
 
     #[test]
-    fn rejects_package_specs_until_distribution_support_lands() {
+    fn parses_package_specs_for_runtime_resolution() {
         let value: TomlValue = toml::from_str(r#"plugin = ["some-package"]"#).unwrap();
-        let err = PluginConfig::from_toml_value(value.get("plugin"), &cwd()).unwrap_err();
-        assert!(
-            err.contains("local file path"),
-            "package-like specs fail clearly: {err}"
-        );
+        let config = PluginConfig::from_toml_value(value.get("plugin"), &cwd()).unwrap();
+
+        assert_eq!(config.entries()[0].raw_spec(), "some-package");
+        assert_eq!(config.entries()[0].package_spec(), Some("some-package"));
+        assert!(config.entries()[0].is_package());
     }
 
     #[test]
@@ -236,5 +352,15 @@ plugin = [
     fn absent_plugin_key_is_empty() {
         let config = PluginConfig::from_toml_value(None, &cwd()).unwrap();
         assert!(config.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_package_specs_with_indexed_error() {
+        let value: TomlValue = toml::from_str(r#"plugin = ["bad package"]"#).unwrap();
+        let err = PluginConfig::from_toml_value(value.get("plugin"), &cwd()).unwrap_err();
+        assert!(
+            err.contains("plugin[0]") && err.contains("whitespace"),
+            "malformed package spec is indexed: {err}"
+        );
     }
 }

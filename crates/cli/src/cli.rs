@@ -19,6 +19,14 @@ pub struct Cli {
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Disable every configured plugin and every plugin-registered capability for this process.
+    ///
+    /// This is a hard kill switch for plugin code: no plugin files or package specs are resolved,
+    /// no runtime is detected, no hooks fire, and plugin tools/auth/providers are not advertised.
+    /// The environment equivalent is `CORTEX_PURE=1`.
+    #[arg(long, global = true)]
+    pub pure: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -26,12 +34,15 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a single headless turn (scriptable; reads the prompt from an argument, stdin, or both).
+    /// Use global `--pure` to disable configured plugins and plugin tools.
     ///
     /// Input sources are combined deterministically. When both a positional prompt argument and
     /// piped stdin are present they are joined in a stable, documented order (piped stdin first,
     /// then the argument, separated by a blank line), so piped context reaches the model alongside
     /// the instruction. With only one source present that source is the prompt; with neither
     /// (empty stdin and no argument) the run fails fast with a clear no-input diagnostic.
+    ///
+    /// `CORTEX_PURE=1` is the environment equivalent for the plugin kill switch.
     Run(RunArgs),
 
     /// Launch the interactive terminal UI (same as running with no arguments).
@@ -684,7 +695,7 @@ mod tests {
             .find(|sub| sub.get_name() == "run")
             .expect("the `run` subcommand exists");
         let help = run.render_help().to_string();
-        for flag in ["--model", "--agent", "--session", "--format"] {
+        for flag in ["--model", "--agent", "--session", "--format", "--pure"] {
             assert!(
                 help.contains(flag),
                 "`run --help` should document `{flag}`:\n{help}"
@@ -767,6 +778,13 @@ mod tests {
             }
             other => panic!("expected run, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pure_is_a_global_flag() {
+        let cli = Cli::try_parse_from(["cortex", "run", "--pure", "hi"]).expect("parse");
+        assert!(cli.pure);
+        assert!(matches!(cli.command, Some(Command::Run(_))));
     }
 
     #[test]

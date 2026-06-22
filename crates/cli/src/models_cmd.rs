@@ -6,8 +6,8 @@ use serde::Serialize;
 use crate::cli::{ModelsArgs, OutputFormat};
 use crate::plugin_bridge::{ModelDoc, PluginState, ProviderDoc};
 
-pub fn run(args: ModelsArgs) -> Exit {
-    let state = match PluginState::from_process_config() {
+pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
+    let state = match PluginState::from_process_config(pure_plugins) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex models: {err}");
