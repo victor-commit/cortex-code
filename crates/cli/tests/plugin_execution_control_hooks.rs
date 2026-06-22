@@ -128,6 +128,16 @@ fn tool_execute_before_veto_blocks_write_and_records_audit_denial() {
     assert!(audit.contains("\"outcome\":\"denied\""), "{audit}");
     assert!(audit.contains("\"tool\":\"write\""), "{audit}");
     assert!(audit.contains("tool.execute.before"), "{audit}");
+    for line in audit.lines().filter(|line| !line.trim().is_empty()) {
+        let record: serde_json::Value = serde_json::from_str(line).expect("audit json");
+        assert!(
+            !(record["type"] == "file_mutation"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("target.txt"))),
+            "a vetoed write must not produce a file mutation record: {audit}"
+        );
+    }
     provider.shutdown_and_assert_released();
 }
 

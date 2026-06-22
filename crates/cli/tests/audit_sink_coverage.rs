@@ -61,6 +61,7 @@ enum ProviderScenario {
     CoreTools,
     McpTool,
     SecretBash,
+    BlockedBash,
 }
 
 impl ScriptedProvider {
@@ -76,10 +77,12 @@ impl ScriptedProvider {
         Self::spawn_scenario(ProviderScenario::SecretBash)
     }
 
+    fn spawn_blocked_bash() -> Self {
+        Self::spawn_scenario(ProviderScenario::BlockedBash)
+    }
+
     fn spawn_scenario(scenario: ProviderScenario) -> Self {
-        let port = free_port();
-        let listener =
-            TcpListener::bind(("127.0.0.1", port)).expect("bind OpenAI-compatible fixture");
+        let (port, listener) = bind_provider_listener();
         listener
             .set_nonblocking(true)
             .expect("set nonblocking listener");
@@ -91,6 +94,7 @@ impl ScriptedProvider {
                     (ProviderScenario::CoreTools, 0) => tool_call_body(),
                     (ProviderScenario::McpTool, 0) => mcp_tool_call_body(),
                     (ProviderScenario::SecretBash, 0) => secret_bash_tool_call_body(),
+                    (ProviderScenario::BlockedBash, 0) => blocked_bash_tool_call_body(),
                     _ => final_body(),
                 };
                 write_sse_response(&mut stream, &body).expect("write provider response");
@@ -222,6 +226,7 @@ fn run_writes_parseable_audit_records_for_permission_shell_file_and_provider_net
     assert!(scratch.project.join("audit.txt").exists());
 
     let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, Some(session));
     assert!(
         records.iter().all(|record| record["session"] == session),
         "every record must carry the run session id: {records:#?}"
@@ -256,6 +261,7 @@ fn run_writes_parseable_audit_records_for_permission_shell_file_and_provider_net
     assert!(records.iter().any(|record| {
         record["type"] == "file_mutation"
             && record["operation"] == "write"
+            && record["outcome"] == "success"
             && record["path"]
                 .as_str()
                 .is_some_and(|path| path.ends_with("audit.txt"))
@@ -270,6 +276,196 @@ fn run_writes_parseable_audit_records_for_permission_shell_file_and_provider_net
                 .as_str()
                 .is_some_and(|endpoint| endpoint.ends_with("/chat/completions"))
     }));
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "permission_decision"
+                && record["tool"] == "bash"
+                && record["request"] == "echo asked-ok"
+        }),
+        1,
+        "allowed permission should be audited exactly once: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "permission_decision"
+                && record["tool"] == "bash"
+                && record["request"] == "echo denied-direct"
+        }),
+        1,
+        "denied permission should be audited exactly once: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "shell_execution" && record["command"] == "echo asked-ok"
+        }),
+        1,
+        "successful shell execution should be audited exactly once: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "shell_execution" && record["command"] == "ls /no/such/dir"
+        }),
+        1,
+        "failing shell execution should be audited exactly once: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "file_mutation"
+                && record["operation"] == "write"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("audit.txt"))
+        }),
+        1,
+        "file write mutation should be audited exactly once: {records:#?}"
+    );
+}
+
+#[test]
+fn denied_shell_effect_is_audited_without_execution_or_disk_effect() {
+    let scratch = Scratch::new("deny");
+    let provider = ScriptedProvider::spawn_blocked_bash();
+
+    let out = run(cortex(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--format",
+            "json",
+            "--permission-deny",
+            "bash:touch denied-sentinel.txt",
+            "exercise denied shell audit",
+        ],
+    ));
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("run JSON");
+    let session = doc["session"].as_str().expect("session id");
+    assert!(
+        !scratch.project.join("denied-sentinel.txt").exists(),
+        "denied command must not touch the filesystem"
+    );
+
+    let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, Some(session));
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "permission_decision"
+                && record["tool"] == "bash"
+                && record["request"] == "touch denied-sentinel.txt"
+                && record["outcome"] == "denied"
+        }),
+        1,
+        "denial should be audited exactly once: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "shell_execution" && record["command"] == "touch denied-sentinel.txt"
+        }),
+        0,
+        "blocked shell command must not have an execution record: {records:#?}"
+    );
+}
+
+#[test]
+fn no_net_refusal_is_audited_as_blocked_network_attempt() {
+    let scratch = Scratch::new("no-net");
+    let mut command = cortex_without_provider(
+        &scratch,
+        &["run", "--format", "json", "exercise no-net audit"],
+    );
+    command.env("OPENROUTER_API_KEY", fake_openrouter_key());
+    command.env("CORTEX_NO_NET", "1");
+
+    let out = run(command);
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty(), "no-net refusal keeps stdout clean");
+
+    let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, None);
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "network_call"
+                && record["actor"] == "llm"
+                && record["outcome"] == "net-disabled"
+        }),
+        1,
+        "no-net refusal should be one blocked network record: {records:#?}"
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "network_call" && record["outcome"] == "success"
+        }),
+        0,
+        "no-net refusal must not claim a successful network call: {records:#?}"
+    );
+}
+
+#[test]
+fn pure_mode_keeps_core_audit_records_without_plugin_chatter() {
+    let scratch = Scratch::new("pure");
+    let provider = ScriptedProvider::spawn();
+    write_shell_env_plugin(&scratch.project);
+
+    let out = run(cortex(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--pure",
+            "--format",
+            "json",
+            "--permission-allow",
+            "bash:ls *",
+            "--permission-allow",
+            "write:*",
+            "--permission-allow-save",
+            "bash:echo asked*",
+            "--permission-deny",
+            "bash:echo denied*",
+            "exercise pure audit",
+        ],
+    ));
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("run JSON");
+    let session = doc["session"].as_str().expect("session id");
+    let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, Some(session));
+    assert!(
+        records
+            .iter()
+            .any(|record| record["type"] == "permission_decision")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["type"] == "shell_execution")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["type"] == "file_mutation")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| { record["type"] == "network_call" && record["actor"] == "llm" })
+    );
+    assert_eq!(
+        count_records(&records, |record| {
+            record["type"] == "plugin_load" || record["type"] == "plugin_hook"
+        }),
+        0,
+        "--pure should suppress plugin records only: {records:#?}"
+    );
 }
 
 #[test]
@@ -340,6 +536,27 @@ fn cortex_with_key(
     command
 }
 
+fn cortex_without_provider(scratch: &Scratch, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+    command.current_dir(&scratch.project);
+    command.args(args);
+    command.env("HOME", &scratch.home);
+    command.env("CORTEX_DB_PATH", &scratch.db);
+    command.env("CORTEX_AUDIT_LOG", &scratch.audit);
+    command
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CORTEX_DATA_DIR")
+        .env_remove("CORTEX_AUTH_FILE")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("CORTEX_OPENROUTER_BASE_URL")
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE")
+        .env_remove("NO_COLOR");
+    command
+}
+
 fn run(mut command: Command) -> Output {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
@@ -392,6 +609,65 @@ fn read_audit(path: &std::path::Path) -> Vec<Value> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("audit JSONL record"))
         .collect()
+}
+
+fn assert_schema_and_order(records: &[Value], session: Option<&str>) {
+    assert!(!records.is_empty(), "audit sink should contain records");
+    let mut previous_sequence = 0_u64;
+    let mut previous_timestamp = 0_u64;
+    let mut turn_id: Option<&str> = None;
+    for record in records {
+        assert_eq!(record["schema_version"], 1, "{record:#?}");
+        assert!(
+            record["type"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            record["outcome"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            record["session"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert_eq!(record["session_id"], record["session"], "{record:#?}");
+        if let Some(expected) = session {
+            assert_eq!(record["session"], expected, "{record:#?}");
+            match turn_id {
+                Some(existing) => assert_eq!(record["turn_id"], existing, "{record:#?}"),
+                None => turn_id = record["turn_id"].as_str(),
+            }
+        } else {
+            assert!(
+                record["turn_id"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
+        let sequence = record["sequence"].as_u64().expect("numeric sequence");
+        assert!(
+            sequence > previous_sequence,
+            "sequence must be strictly monotonic: {records:#?}"
+        );
+        previous_sequence = sequence;
+        let timestamp = record["timestamp_ms"].as_u64().expect("numeric timestamp");
+        assert_eq!(record["timestamp"], record["timestamp_ms"], "{record:#?}");
+        assert!(
+            timestamp >= previous_timestamp,
+            "timestamps should not go backwards: {records:#?}"
+        );
+        previous_timestamp = timestamp;
+    }
+}
+
+fn count_records<F>(records: &[Value], mut predicate: F) -> usize
+where
+    F: FnMut(&Value) -> bool,
+{
+    records.iter().filter(|record| predicate(record)).count()
 }
 
 fn tool_call_body() -> String {
@@ -485,6 +761,35 @@ fn secret_bash_tool_call_body() -> String {
                             "arguments": json!({
                                 "command": "printf '%s\\n' \"$SECRET\" && printf '%s\\n' \"topsecret123\""
                             }).to_string()
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        })
+        .to_string(),
+        json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ])
+}
+
+fn blocked_bash_tool_call_body() -> String {
+    sse_body(&[
+        json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_blocked_bash",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": json!({ "command": "touch denied-sentinel.txt" }).to_string()
                         }
                     }]
                 },
@@ -645,7 +950,7 @@ fn echo_server_bin() -> PathBuf {
     bin
 }
 
-fn free_port() -> u16 {
+fn bind_provider_listener() -> (u16, TcpListener) {
     for _ in 0..40 {
         let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
         if port > 3299 {
@@ -653,8 +958,8 @@ fn free_port() -> u16 {
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-        if TcpListener::bind(addr).is_ok() {
-            return port;
+        if let Ok(listener) = TcpListener::bind(addr) {
+            return (port, listener);
         }
     }
     panic!("no free port in 3280-3299");

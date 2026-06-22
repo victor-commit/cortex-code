@@ -277,14 +277,16 @@ fn net_disabled_run_makes_zero_connect_syscalls() {
         return;
     }
 
-    let trace_path = scratch_home().join("connect.trace");
+    let scratch = scratch_home();
+    let trace_path = scratch.join("connect.trace");
     let mut command = Command::new("strace");
     command
+        .current_dir(&scratch)
         .args(["-f", "-e", "trace=connect", "-o"])
         .arg(&trace_path)
         .arg(env!("CARGO_BIN_EXE_cortex"))
         .args(["run", "hi"])
-        .env("HOME", scratch_home())
+        .env("HOME", &scratch)
         .env("OPENROUTER_API_KEY", fake_key())
         .env("CORTEX_NO_NET", "1")
         .env_remove("CORTEX_OPENROUTER_BASE_URL")

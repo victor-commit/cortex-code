@@ -152,15 +152,42 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
     };
 
+    // Open the durable store and resolve the session this turn belongs to before the outbound
+    // guard, so even a fail-closed network refusal can be correlated to a durable session and
+    // written to the audit sink without touching credentials or sockets.
+    let (db, db_path) = match open_database() {
+        Ok(opened) => opened,
+        Err(exit) => return exit,
+    };
+    let session_id = match resolve_session(&db, session_selection(args.session, args.r#continue)) {
+        Ok(id) => id,
+        Err(exit) => return exit,
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let audit_sink = Arc::new(audit::AuditSink::from_env_or_cwd(&session_id, &cwd));
+
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
-    // so a refusal never touches the network even when a key is present.
+    // so a refusal never touches the network even when a key is present. The refusal itself is a
+    // blocked network attempt and is durable in the same structured audit sink as successful runs.
     if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
+        let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
+        let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
+        audit_sink.record_network_call(
+            "llm",
+            Some(providers::OPENROUTER_ID),
+            Some(&run_config.model.model_id),
+            "POST",
+            &host,
+            &endpoint,
+            None,
+            diag.kind(),
+        );
         eprintln!("cortex run: {diag}");
         return diag.exit();
     }
 
-    // Load configured local plugins through the external JavaScript runtime contract before any
-    // provider credentials are resolved or any session state is opened. A configured plugin is
+    // Load configured local plugins through the external JavaScript runtime contract after the
+    // audit session is ready but before provider credentials are resolved. A configured plugin is
     // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
     // an attributed error rather than silently continuing without hooks.
     let plugin_state = match PluginState::load_or_disabled(&run_config.plugins, pure_plugins) {
@@ -271,14 +298,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 (Arc::new(provider), None)
             }
             None => {
-                let endpoint = format!(
-                    "{}/chat/completions",
-                    run_config
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(providers::openrouter_base_url)
-                        .trim_end_matches('/')
-                );
+                let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
                 let inputs =
                     providers::CredentialInputs::openrouter_from_process(run_config.api_key);
                 match providers::resolve_openrouter_with_options(
@@ -291,19 +311,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 }
             }
         };
-    // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
-    // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
-    // when none exists), or a brand-new session otherwise. The store is touched only after setup
-    // has succeeded, so a refused run (net-disabled, no-credential, bad model) leaves no session.
-    let (db, db_path) = match open_database() {
-        Ok(opened) => opened,
-        Err(exit) => return exit,
-    };
-    let session_id = match resolve_session(&db, session_selection(args.session, args.r#continue)) {
-        Ok(id) => id,
-        Err(exit) => return exit,
-    };
-
     // Honor a model persisted with the session (chosen interactively via the TUI `/models` picker)
     // when the caller passed no explicit `--model`: resuming the session headless then uses that
     // per-session model rather than reverting to the global default (VAL-CROSS-006). An explicit
@@ -327,8 +334,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         run_config.model = providers::resolve_model(Some(&model));
     }
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let audit_sink = Arc::new(audit::AuditSink::from_env_or_cwd(&session_id, &cwd));
     plugin_state.attach_audit(audit_sink.clone());
     plugin_state.audit_loaded_plugins();
     if let Some(subscriber) = plugin_state.event_subscriber() {
@@ -482,6 +487,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     } else {
         let task_runner = task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
             provider: provider.clone(),
+            audit: audit_sink.clone(),
             db_path: db_path.clone(),
             cwd: cwd.clone(),
             parent_session_id: session_id.clone(),
@@ -1449,6 +1455,16 @@ fn resolve_run_model(inputs: ConfigInputs) -> Result<ResolvedModel, ConfigError>
 fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
     top_level_string(effective, "openrouter_base_url")
         .or_else(|| provider_openrouter_string(effective, "base_url"))
+}
+
+fn openrouter_chat_endpoint(base_url: Option<&str>) -> String {
+    format!(
+        "{}/chat/completions",
+        base_url
+            .map(str::to_owned)
+            .unwrap_or_else(providers::openrouter_base_url)
+            .trim_end_matches('/')
+    )
 }
 
 /// The OpenRouter API key supplied through configuration (the lowest-precedence credential layer,

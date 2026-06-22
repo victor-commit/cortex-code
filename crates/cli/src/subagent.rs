@@ -81,6 +81,7 @@ fn task_allowed(engine: Option<&Arc<PermissionEngine>>, agent_name: &str) -> boo
 /// Runtime configuration captured from the parent turn and reused by child tasks.
 pub(crate) struct CliTaskRunnerConfig {
     pub provider: Arc<dyn llm::Provider>,
+    pub audit: Arc<audit::AuditSink>,
     pub db_path: PathBuf,
     pub cwd: PathBuf,
     pub parent_session_id: String,
@@ -126,6 +127,7 @@ impl CliTaskRunner {
                 return ToolOutput::error(format!("task: failed to create child session: {err}"));
             }
         };
+        let child_audit = Arc::new(self.config.audit.child_session(child_session.id.clone()));
 
         if let Err(err) = db
             .messages()
@@ -164,7 +166,8 @@ impl CliTaskRunner {
             &model_id,
             child_session.id.clone(),
             todo_store,
-        );
+        )
+        .with_audit(child_audit);
 
         let child_permissions = match self.child_permissions(&agent) {
             Ok(engine) => engine,
@@ -456,6 +459,10 @@ mod tests {
         ]]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            audit: Arc::new(audit::AuditSink::new(
+                dir.join("audit.jsonl"),
+                parent.id.clone(),
+            )),
             db_path: db_path.clone(),
             cwd: dir.clone(),
             parent_session_id: parent.id.clone(),
@@ -542,6 +549,10 @@ mod tests {
         ]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            audit: Arc::new(audit::AuditSink::new(
+                dir.join("audit.jsonl"),
+                "parent-session",
+            )),
             db_path,
             cwd: dir.clone(),
             parent_session_id: "parent-session".to_owned(),
@@ -568,6 +579,24 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("victim.txt")).expect("victim survives"),
             "alive"
+        );
+        let records = audit::read_jsonl(&dir.join("audit.jsonl")).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "permission_decision"
+                    && record["session"].as_str() != Some("parent-session")
+                    && record["parent_session"] == "parent-session"
+                    && record["tool"] == "bash"
+                    && record["request"] == "rm victim.txt"
+                    && record["outcome"] == "denied"
+            }),
+            "{records:#?}"
+        );
+        assert!(
+            !records.iter().any(|record| {
+                record["type"] == "shell_execution" && record["command"] == "rm victim.txt"
+            }),
+            "{records:#?}"
         );
     }
 
@@ -607,6 +636,10 @@ mod tests {
         ]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            audit: Arc::new(audit::AuditSink::new(
+                dir.join("audit.jsonl"),
+                "parent-session",
+            )),
             db_path,
             cwd: dir.clone(),
             parent_session_id: "parent-session".to_owned(),

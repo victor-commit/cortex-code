@@ -20,9 +20,11 @@ pub type SharedAuditSink = Arc<AuditSink>;
 pub struct AuditSink {
     path: PathBuf,
     session: String,
-    sequence: AtomicU64,
-    write_lock: Mutex<()>,
-    extra_secrets: Mutex<Vec<String>>,
+    turn_id: String,
+    parent_session: Option<String>,
+    sequence: Arc<AtomicU64>,
+    write_lock: Arc<Mutex<()>>,
+    extra_secrets: Arc<Mutex<Vec<String>>>,
 }
 
 impl AuditSink {
@@ -32,9 +34,11 @@ impl AuditSink {
         Self {
             path: path.into(),
             session: session.into(),
-            sequence: AtomicU64::new(0),
-            write_lock: Mutex::new(()),
-            extra_secrets: Mutex::new(secret_values_from_process_env()),
+            turn_id: new_turn_id(),
+            parent_session: None,
+            sequence: Arc::new(AtomicU64::new(0)),
+            write_lock: Arc::new(Mutex::new(())),
+            extra_secrets: Arc::new(Mutex::new(secret_values_from_process_env())),
         }
     }
 
@@ -58,6 +62,27 @@ impl AuditSink {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// The turn id carried on every record written by this sink.
+    #[must_use]
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
+    /// Build a child sink for a subagent session using the same path and monotonic sequence as
+    /// the parent, while attributing records to the child session and linking back to the parent.
+    #[must_use]
+    pub fn child_session(&self, session: impl Into<String>) -> Self {
+        Self {
+            path: self.path.clone(),
+            session: session.into(),
+            turn_id: new_turn_id(),
+            parent_session: Some(self.session.clone()),
+            sequence: self.sequence.clone(),
+            write_lock: self.write_lock.clone(),
+            extra_secrets: self.extra_secrets.clone(),
+        }
     }
 
     /// Register a secret literal discovered outside the process environment, such as a plugin
@@ -114,6 +139,7 @@ impl AuditSink {
         insert_str(&mut fields, "path", path.to_string_lossy());
         insert_str(&mut fields, "operation", operation);
         insert_str(&mut fields, "op", operation);
+        insert_str(&mut fields, "outcome", "success");
         if let Some(detail) = detail {
             insert_str(&mut fields, "detail", detail);
         }
@@ -336,21 +362,30 @@ impl AuditSink {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut record = Map::new();
+        record.insert("schema_version".to_owned(), Value::Number(Number::from(1)));
         insert_str(&mut record, "type", kind);
         insert_str(&mut record, "session", &self.session);
+        insert_str(&mut record, "session_id", &self.session);
+        insert_str(&mut record, "turn_id", &self.turn_id);
+        if let Some(parent_session) = &self.parent_session {
+            insert_str(&mut record, "parent_session", parent_session);
+            insert_str(&mut record, "parent_session_id", parent_session);
+        }
         record.insert(
             "sequence".to_owned(),
             Value::Number(Number::from(
                 self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
             )),
         );
-        record.insert(
-            "timestamp_ms".to_owned(),
-            Value::Number(Number::from(timestamp_ms())),
-        );
+        let now = timestamp_ms();
+        record.insert("timestamp_ms".to_owned(), Value::Number(Number::from(now)));
+        record.insert("timestamp".to_owned(), Value::Number(Number::from(now)));
         for (key, value) in std::mem::take(&mut fields) {
             record.insert(key, value);
         }
+        record
+            .entry("outcome".to_owned())
+            .or_insert_with(|| Value::String("success".to_owned()));
         let record = redact_object(record, &self.secret_literals());
 
         if let Some(parent) = self.path.parent() {
@@ -450,6 +485,17 @@ fn timestamp_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn new_turn_id() -> String {
+    static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
+    let sequence = NEXT_TURN.fetch_add(1, Ordering::SeqCst);
+    format!(
+        "turn_{}_{}_{}",
+        std::process::id(),
+        timestamp_ms(),
+        sequence
+    )
 }
 
 fn secret_values_from_process_env() -> Vec<String> {
@@ -567,9 +613,39 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0]["type"], "permission_decision");
         assert_eq!(records[0]["session"], "ses_audit");
+        assert_eq!(records[0]["session_id"], "ses_audit");
+        assert!(
+            records[0]["turn_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+        assert!(records[0]["timestamp_ms"].as_u64().is_some());
+        assert_eq!(records[0]["timestamp"], records[0]["timestamp_ms"]);
         assert_eq!(records[0]["sequence"], 1);
         assert_eq!(records[1]["type"], "shell_execution");
         assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[1]["turn_id"], records[0]["turn_id"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn child_sink_shares_ordering_and_records_parent_linkage() {
+        let path = temp_log("child");
+        let sink = AuditSink::new(&path, "ses_parent");
+        sink.record_permission_decision("task", "general", "general", "allow", "allowed");
+        let child = sink.child_session("ses_child");
+        child.record_shell_execution("echo child", Path::new("/tmp/project"), Some(0), "success");
+        sink.record_shell_execution("echo parent", Path::new("/tmp/project"), Some(0), "success");
+
+        let records = read_jsonl(&path).expect("read records");
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[2]["sequence"], 3);
+        assert_eq!(records[1]["session"], "ses_child");
+        assert_eq!(records[1]["parent_session"], "ses_parent");
+        assert_eq!(records[1]["parent_session_id"], "ses_parent");
+        assert_ne!(records[1]["turn_id"], records[0]["turn_id"]);
         let _ = std::fs::remove_file(path);
     }
 
