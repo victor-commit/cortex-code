@@ -506,6 +506,124 @@ fn run_writes_mcp_tool_call_audit_record_with_server_tool_and_arguments() {
     }));
 }
 
+#[test]
+fn cross_m5_single_turn_observes_mcp_plugin_permission_and_audit() {
+    if plugins::detect_runtime().is_none() {
+        eprintln!("skipping cross-M5 proof: no Bun, Node, or Deno on PATH");
+        return;
+    }
+
+    let scratch = Scratch::new("cross-m5");
+    let provider = ScriptedProvider::spawn_mcp();
+    let server = echo_server_bin();
+    let session = format!("cross-m5-single-turn-{}", std::process::id());
+    let plugin_marker = scratch.project.join("plugin-events.jsonl");
+    let mcp_log = scratch.project.join("mcp-echo.log");
+    write_cross_m5_plugin_and_mcp_config(
+        &scratch.project,
+        &server,
+        &plugin_marker,
+        &mcp_log,
+        &session,
+    );
+
+    let mut command = cortex(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--session",
+            &session,
+            "--format",
+            "json",
+            "--permission-allow-save",
+            "demo_add:demo_add",
+            "exercise the full extensibility stack in one turn",
+        ],
+    );
+    command.env("CORTEX_VERBOSE", "1");
+    let out = run(command);
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("run JSON");
+    assert_eq!(doc["session"], session);
+    let tool_results = doc["tool_results"].as_array().expect("tool results array");
+    assert!(
+        tool_results.iter().any(|result| {
+            result["name"] == "demo_add"
+                && result["is_error"] == false
+                && serde_json::to_string(&result["parts"])
+                    .expect("parts json")
+                    .contains("42")
+        }),
+        "run JSON must show the MCP-provided demo_add result: {doc}"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("permission.asked") && stderr.contains("permission.replied"),
+        "verbose stderr should expose the permission.* decision events: {stderr}"
+    );
+
+    let plugin_events = read_json_lines(&plugin_marker);
+    assert!(
+        plugin_events.iter().all(|event| event["run"] == session),
+        "plugin marker lines should be attributed to the fixed run id: {plugin_events:#?}"
+    );
+    assert!(
+        plugin_events
+            .iter()
+            .any(|event| event["kind"] == "lifecycle")
+    );
+    assert!(
+        plugin_events
+            .iter()
+            .any(|event| event["kind"] == "permission.asked")
+            && plugin_events
+                .iter()
+                .any(|event| event["kind"] == "permission.replied")
+            && plugin_events
+                .iter()
+                .any(|event| event["kind"] == "tool.result"),
+        "plugin event hook must observe the gated tool lifecycle: {plugin_events:#?}"
+    );
+
+    let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, Some(&session));
+    assert!(records.iter().any(|record| {
+        record["type"] == "plugin_load"
+            && record["session"] == session
+            && record["hooks"]
+                .as_array()
+                .is_some_and(|hooks| hooks.iter().any(|hook| hook == "event"))
+    }));
+    assert!(records.iter().any(|record| {
+        record["type"] == "permission_decision"
+            && record["session"] == session
+            && record["tool"] == "demo_add"
+            && record["decision"] == "ask"
+            && record["outcome"] == "allowed"
+    }));
+    assert!(records.iter().any(|record| {
+        record["type"] == "mcp_tool_call"
+            && record["session"] == session
+            && record["server"] == "demo"
+            && record["tool"] == "add"
+            && record["qualified_tool"] == "demo_add"
+            && record["outcome"] == "success"
+    }));
+
+    let mcp_log_text = std::fs::read_to_string(&mcp_log).expect("MCP log");
+    assert!(
+        mcp_log_text.contains("tools/call name=add"),
+        "MCP fixture must receive a real tools/call: {mcp_log_text}"
+    );
+    assert_pid_reaped(mcp_pid_from_log(&mcp_log_text), "MCP echo server");
+    for pid in plugin_pids(&plugin_events) {
+        assert_pid_reaped(pid, "plugin runtime");
+    }
+}
+
 fn cortex(scratch: &Scratch, provider: &ScriptedProvider, args: &[&str]) -> Command {
     cortex_with_key(scratch, provider, args, &fake_openrouter_key())
 }
@@ -608,6 +726,14 @@ fn read_audit(path: &std::path::Path) -> Vec<Value> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("audit JSONL record"))
+        .collect()
+}
+
+fn read_json_lines(path: &std::path::Path) -> Vec<Value> {
+    let text = std::fs::read_to_string(path).expect("JSONL file");
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("JSONL record"))
         .collect()
 }
 
@@ -849,6 +975,54 @@ export default async function plugin() {
         .expect("write config");
 }
 
+fn write_cross_m5_plugin_and_mcp_config(
+    project: &std::path::Path,
+    server: &std::path::Path,
+    marker: &std::path::Path,
+    mcp_log: &std::path::Path,
+    session: &str,
+) {
+    std::fs::write(
+        project.join("plugin.mjs"),
+        r#"
+import { appendFile } from "node:fs/promises";
+
+export default async function plugin(_input, options) {
+  return {
+    async event(event) {
+      await appendFile(options.marker, JSON.stringify({
+        run: options.run,
+        kind: event.kind ?? event.type ?? "unknown",
+        tool: event.tool ?? event.name ?? null,
+        pid: process.pid
+      }) + "\n");
+    }
+  };
+}
+"#,
+    )
+    .expect("write cross-M5 plugin");
+
+    std::fs::write(
+        project.join("cortex.toml"),
+        format!(
+            r#"plugin = [["./plugin.mjs", {{ marker = "{}", run = "{}" }}]]
+
+[mcp.demo]
+command = ["{}"]
+
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+"#,
+            marker.display(),
+            session,
+            server.display(),
+            mcp_log.display()
+        ),
+    )
+    .expect("write cross-M5 config");
+}
+
 fn sse_body(frames: &[String]) -> String {
     let mut body = String::new();
     for frame in frames {
@@ -948,6 +1122,38 @@ fn echo_server_bin() -> PathBuf {
         bin.display()
     );
     bin
+}
+
+fn mcp_pid_from_log(log: &str) -> u32 {
+    log.lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once("started pid=")?;
+            let pid = rest.split_whitespace().next()?;
+            pid.parse().ok()
+        })
+        .expect("MCP startup pid in log")
+}
+
+fn plugin_pids(events: &[Value]) -> Vec<u32> {
+    let mut pids = events
+        .iter()
+        .filter_map(|event| event["pid"].as_u64())
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+fn assert_pid_reaped(pid: u32, label: &str) {
+    let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
+    for _ in 0..40 {
+        if !proc_path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    panic!("{label} process pid {pid} is still alive");
 }
 
 fn bind_provider_listener() -> (u16, TcpListener) {
