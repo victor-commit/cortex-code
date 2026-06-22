@@ -20,7 +20,9 @@
 //! - VAL-LLM-009: in BOTH modes, 100% of stdout parses as JSON with zero interleaved human chatter.
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// The default model the mission targets; asserted in the `--format json` model field.
@@ -34,13 +36,36 @@ fn live_key() -> Option<String> {
     }
 }
 
+/// A unique, freshly created empty temp directory used as a hermetic HOME/CWD.
+fn scratch_dir() -> PathBuf {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let unique = format!(
+        "cortex-machine-output-live-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
+}
+
 /// A `cortex` command carrying the live key and a clean, non-verbose environment so stdout stays
-/// pure machine output (no color, no logs).
-fn cortex(key: &str, args: &[&str]) -> Command {
+/// pure machine output (no color, no logs). HOME/CWD point at a fresh scratch directory and
+/// config-affecting env vars are removed so a developer's global config cannot change the default
+/// model asserted by these live contract tests.
+fn cortex(key: &str, home: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_cortex"));
     c.args(args);
+    c.current_dir(home);
+    c.env("HOME", home);
     c.env("OPENROUTER_API_KEY", key);
     c.env_remove("CORTEX_NO_NET")
+        .env_remove("CORTEX_MODEL")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CORTEX_DATA_DIR")
+        .env_remove("CORTEX_DB_PATH")
+        .env_remove("CORTEX_AUTH_FILE")
         .env_remove("RUST_LOG")
         .env_remove("CORTEX_VERBOSE")
         .env_remove("NO_COLOR");
@@ -98,9 +123,10 @@ fn format_json_is_a_strict_assistant_document_with_usage() {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let home = scratch_dir();
 
     let out = run(
-        cortex(&key, &["run", "--format", "json", "Say hi"]),
+        cortex(&key, &home, &["run", "--format", "json", "Say hi"]),
         Duration::from_secs(60),
     );
     assert_eq!(out.status.code(), Some(0), "a real turn must exit 0");
@@ -154,9 +180,10 @@ fn jsonl_is_typed_newline_delimited_events_that_reconstruct_the_answer() {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let home = scratch_dir();
 
     let out = run(
-        cortex(&key, &["run", "--jsonl", "Say hi"]),
+        cortex(&key, &home, &["run", "--jsonl", "Say hi"]),
         Duration::from_secs(60),
     );
     assert_eq!(out.status.code(), Some(0), "a real turn must exit 0");
@@ -211,7 +238,7 @@ fn jsonl_is_typed_newline_delimited_events_that_reconstruct_the_answer() {
         "concatenated text deltas must reconstruct a non-empty answer"
     );
     let json_out = run(
-        cortex(&key, &["run", "--format", "json", "Say hi"]),
+        cortex(&key, &home, &["run", "--format", "json", "Say hi"]),
         Duration::from_secs(60),
     );
     assert_eq!(json_out.status.code(), Some(0));
