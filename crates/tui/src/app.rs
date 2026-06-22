@@ -4781,6 +4781,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_picker_lists_sessions_created_by_external_surfaces() {
+        // VAL-CROSS-003/044 (TUI-picker half): sessions that other surfaces persisted to the
+        // shared store are listed by `/sessions`, not isolated to their creating surface.
+        let path = session_store_path("external-surfaces");
+        let (server_id, acp_id) = {
+            let db = db::Database::open(&path).expect("open seed");
+            let server = db
+                .sessions()
+                .create(Some("server api marker"))
+                .expect("server session");
+            let acp = db
+                .sessions()
+                .create(Some("acp stdio marker"))
+                .expect("acp session");
+            (server.id, acp.id)
+        };
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        dispatch(&mut a, "sessions");
+        let dialog = a.dialog().expect("the session picker opened");
+
+        assert!(
+            dialog
+                .items
+                .iter()
+                .any(|item| item.contains(&server_id) && item.contains("server api marker")),
+            "server-created session should be present in picker rows: {:?}",
+            dialog.items
+        );
+        assert!(
+            dialog
+                .items
+                .iter()
+                .any(|item| item.contains(&acp_id) && item.contains("acp stdio marker")),
+            "ACP-created session should be present in picker rows: {:?}",
+            dialog.items
+        );
+    }
+
     /// Manually drive the session picker into a state with one persisted entry, bypassing the store
     /// so the rename state-machine can be exercised without touching the filesystem.
     fn sessions_dialog_with_one_persisted(a: &mut App) {
