@@ -18,9 +18,9 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::{
-        IntoResponse, Response,
+        Html, IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -54,6 +54,7 @@ pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// The outbound operation named when the network kill-switch refuses a server prompt turn.
 const OUTBOUND_OPERATION: &str = "LLM turn";
 static REMOTE_COMMAND_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOCAL_SHARE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Small machine-readable health response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -74,6 +75,7 @@ pub struct ServerState {
     active_turns: ActiveTurns,
     event_bus: Arc<EventBus>,
     prompt_buffers: PromptBuffers,
+    local_shares: LocalShares,
 }
 
 impl ServerState {
@@ -86,6 +88,7 @@ impl ServerState {
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
+            local_shares: LocalShares::default(),
         }
     }
 
@@ -101,6 +104,7 @@ impl ServerState {
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
+            local_shares: LocalShares::default(),
         }
     }
 
@@ -136,6 +140,7 @@ impl std::fmt::Debug for ServerState {
             .field("db_path", &self.db_path)
             .field("event_subscribers", &self.event_bus.subscriber_count())
             .field("prompt_buffers", &self.prompt_buffers.len())
+            .field("local_shares", &self.local_shares.len())
             .finish_non_exhaustive()
     }
 }
@@ -156,6 +161,11 @@ struct ActiveTurns {
 
 #[derive(Clone, Default)]
 struct PromptBuffers {
+    inner: Arc<Mutex<HashMap<String, String>>>,
+}
+
+#[derive(Clone, Default)]
+struct LocalShares {
     inner: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -269,6 +279,9 @@ pub fn app_with_state(state: ServerState) -> Router {
         .route("/session/{id}/prompt/clear", post(clear_prompt))
         .route("/session/{id}/command", post(execute_command))
         .route("/session/{id}/abort", post(abort_session))
+        .route("/session/{id}/share", post(create_share))
+        .route("/session/{id}/unshare", post(unshare_session))
+        .route("/share/{share_id}", get(get_share))
         .with_state(state)
 }
 
@@ -448,6 +461,19 @@ struct PromptDraftResponse {
 struct AbortResponse {
     status: &'static str,
     active: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ShareResponse {
+    status: &'static str,
+    share_id: String,
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UnshareResponse {
+    status: &'static str,
+    revoked: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -723,6 +749,54 @@ async fn abort_session(
         status: "abort_requested",
         active,
     }))
+}
+
+async fn create_share(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<ShareResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let origin = loopback_share_origin(&headers)?;
+    let share_id = state.local_shares.create(&id)?;
+    let url = format!("{origin}/share/{share_id}");
+    Ok(Json(ShareResponse {
+        status: "shared",
+        share_id,
+        url,
+    }))
+}
+
+async fn unshare_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<UnshareResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let revoked = state.local_shares.revoke_session(&id)?;
+    Ok(Json(UnshareResponse {
+        status: "unshared",
+        revoked,
+    }))
+}
+
+async fn get_share(
+    State(state): State<ServerState>,
+    AxumPath(share_id): AxumPath<String>,
+) -> Result<Html<String>, ApiError> {
+    let session_id = state
+        .local_shares
+        .session_for_share(&share_id)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "share not found"))?;
+    let db = open_database(&state)?;
+    let session = db
+        .sessions()
+        .require(&session_id)
+        .map_err(ApiError::from_db)?;
+    let messages = db
+        .messages()
+        .list_for_session(&session_id)
+        .map_err(ApiError::from_db)?;
+    Ok(Html(render_share_page(&session, &messages)))
 }
 
 fn open_database(state: &ServerState) -> Result<Database, ApiError> {
@@ -1135,6 +1209,90 @@ fn non_empty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+fn loopback_share_origin(headers: &HeaderMap) -> Result<String, ApiError> {
+    let host = headers
+        .get(header::HOST)
+        .ok_or_else(|| ApiError::bad_request("share requires a loopback Host header"))?
+        .to_str()
+        .map_err(|_| ApiError::bad_request("share Host header must be valid UTF-8"))?;
+    let (hostname, port) = parse_loopback_host(host)?;
+    Ok(format!("http://{hostname}:{port}"))
+}
+
+fn parse_loopback_host(host: &str) -> Result<(&'static str, u16), ApiError> {
+    let trimmed = host.trim();
+    let (hostname, port) = trimmed.rsplit_once(':').ok_or_else(|| {
+        ApiError::bad_request("share Host header must include a loopback port in 3200-3299")
+    })?;
+    let port = port.parse::<u16>().map_err(|_| {
+        ApiError::bad_request("share Host header must include a numeric port in 3200-3299")
+    })?;
+    if !(MIN_PORT..=MAX_PORT).contains(&port) {
+        return Err(ApiError::bad_request(format!(
+            "share Host header port {port} is outside the loopback range 3200-3299"
+        )));
+    }
+    match hostname.trim() {
+        "127.0.0.1" => Ok(("127.0.0.1", port)),
+        host if host.eq_ignore_ascii_case("localhost") => Ok(("localhost", port)),
+        "[::1]" => Ok(("127.0.0.1", port)),
+        _ => Err(ApiError::bad_request(
+            "share Host header must reference loopback (127.0.0.1 or localhost)",
+        )),
+    }
+}
+
+fn render_share_page(session: &Session, messages: &[Message]) -> String {
+    let title = session.title.as_deref().unwrap_or(&session.id);
+    let mut html = String::from(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    );
+    html.push_str("<title>");
+    html.push_str(&escape_html(title));
+    html.push_str("</title><style>");
+    html.push_str(
+        "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;margin:2rem;\
+         line-height:1.45;color:#111;background:#fff}main{max-width:860px}\
+         article{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}\
+         h1{font-size:1.6rem}h2{font-size:.9rem;text-transform:uppercase;color:#555}\
+         pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit}",
+    );
+    html.push_str("</style></head><body><main><h1>");
+    html.push_str(&escape_html(title));
+    html.push_str("</h1><p>Local loopback share for session <code>");
+    html.push_str(&escape_html(&session.id));
+    html.push_str("</code>.</p>");
+    if messages.is_empty() {
+        html.push_str("<p>No messages in this session.</p>");
+    } else {
+        for message in messages {
+            html.push_str("<article><h2>");
+            html.push_str(&escape_html(&message.role));
+            html.push_str("</h2><pre>");
+            html.push_str(&escape_html(&message.content));
+            html.push_str("</pre></article>");
+        }
+    }
+    html.push_str("</main></body></html>");
+    html
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 impl ActiveTurns {
     fn insert(
         &self,
@@ -1240,6 +1398,56 @@ impl PromptBuffers {
             })?
             .remove(session_id)
             .unwrap_or_default())
+    }
+}
+
+impl LocalShares {
+    fn len(&self) -> usize {
+        self.inner.lock().map(|shares| shares.len()).unwrap_or(0)
+    }
+
+    fn create(&self, session_id: &str) -> Result<String, ApiError> {
+        let share_id = format!(
+            "shr_{}_{}",
+            std::process::id(),
+            LOCAL_SHARE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        self.inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "local share registry is unavailable",
+                )
+            })?
+            .insert(share_id.clone(), session_id.to_owned());
+        Ok(share_id)
+    }
+
+    fn session_for_share(&self, share_id: &str) -> Result<Option<String>, ApiError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "local share registry is unavailable",
+                )
+            })?
+            .get(share_id)
+            .cloned())
+    }
+
+    fn revoke_session(&self, session_id: &str) -> Result<bool, ApiError> {
+        let mut shares = self.inner.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "local share registry is unavailable",
+            )
+        })?;
+        let before = shares.len();
+        shares.retain(|_, shared_session| shared_session != session_id);
+        Ok(before != shares.len())
     }
 }
 

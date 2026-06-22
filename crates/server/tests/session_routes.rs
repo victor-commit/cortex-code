@@ -294,6 +294,141 @@ async fn command_route_runs_shell_command_and_returns_output() {
 }
 
 #[tokio::test]
+async fn share_route_serves_conversation_over_loopback_and_unshare_revokes() {
+    let scratch = Scratch::new("server-share");
+    let app = server::app_with_provider(scratch.db_path(), Arc::new(EchoProvider::default()));
+    let session = create_session(&app).await;
+    let nonce = "nonce-local-share-123";
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"text":"please echo {nonce}"}}"#)))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/share", session.id))
+                .header(header::HOST, "127.0.0.1:3201")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("share response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "shared");
+    assert!(
+        body["share_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "share id should be non-empty: {body:?}"
+    );
+    let url = body["url"].as_str().expect("share url");
+    assert!(
+        url.starts_with("http://127.0.0.1:3201/share/"),
+        "share URL must point at the loopback server, got {url:?}"
+    );
+
+    let share_path = url
+        .strip_prefix("http://127.0.0.1:3201")
+        .expect("loopback URL prefix");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(share_path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("shared page response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = text_body(response).await;
+    assert!(
+        html.contains(nonce),
+        "shared page should render assistant content containing nonce: {html}"
+    );
+    assert!(
+        html.contains("assistant"),
+        "shared page should label assistant messages: {html}"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/unshare", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("unshare response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "unshared");
+    assert_eq!(body["revoked"], true);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(share_path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("revoked share response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = text_body(response).await;
+    assert!(
+        !body.contains(nonce),
+        "revoked share must not keep serving the session content: {body}"
+    );
+}
+
+#[tokio::test]
+async fn share_rejects_non_loopback_host_reference() {
+    let scratch = Scratch::new("server-share-host");
+    let app = server::app_with_db_path(scratch.db_path());
+    let session = create_session(&app).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/share", session.id))
+                .header(header::HOST, "share.example.com:443")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("share response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("loopback")),
+        "non-loopback host should be rejected clearly: {body:?}"
+    );
+}
+
+#[tokio::test]
 async fn prompt_to_unknown_session_returns_404_without_starting_turn() {
     let scratch = Scratch::new("server-message-unknown");
     let provider = Arc::new(EchoProvider::default());
@@ -778,6 +913,11 @@ where
 {
     let bytes = to_bytes(response.into_body(), 8192).await.expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
+}
+
+async fn text_body(response: axum::response::Response) -> String {
+    let bytes = to_bytes(response.into_body(), 16_384).await.expect("body");
+    String::from_utf8(bytes.to_vec()).expect("UTF-8 body")
 }
 
 fn assert_json_content_type(response: &axum::response::Response) {

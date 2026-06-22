@@ -241,6 +241,47 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "404": json_response("Session was not found.", "ErrorResponse")
                     }
                 }
+            },
+            "/session/{id}/share": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "shareSessionLocal",
+                    "summary": "Create a loopback-only local share for one session.",
+                    "responses": {
+                        "200": json_response("Local share reference.", "ShareResponse"),
+                        "400": json_response("Host header was not loopback or port was outside 3200-3299.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/unshare": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "unshareSessionLocal",
+                    "summary": "Revoke all local shares for one session.",
+                    "responses": {
+                        "200": json_response("Local share revocation status.", "UnshareResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/share/{share_id}": {
+                "parameters": [share_id_parameter()],
+                "get": {
+                    "operationId": "getLocalShare",
+                    "summary": "Render a shared session over the loopback server.",
+                    "responses": {
+                        "200": {
+                            "description": "HTML rendering of the shared session.",
+                            "content": {
+                                "text/html": {
+                                    "schema": { "type": "string" }
+                                }
+                            }
+                        },
+                        "404": json_response("Share was not found or was revoked.", "ErrorResponse")
+                    }
+                }
             }
         },
         "components": {
@@ -380,6 +421,32 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "model": { "type": ["string", "null"] }
                     }
                 },
+                "ShareResponse": {
+                    "type": "object",
+                    "required": ["status", "share_id", "url"],
+                    "properties": {
+                        "status": { "type": "string", "const": "shared" },
+                        "share_id": {
+                            "type": "string",
+                            "description": "Ephemeral local share identifier."
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "Loopback-only URL for the shared session."
+                        }
+                    }
+                },
+                "UnshareResponse": {
+                    "type": "object",
+                    "required": ["status", "revoked"],
+                    "properties": {
+                        "status": { "type": "string", "const": "unshared" },
+                        "revoked": {
+                            "type": "boolean",
+                            "description": "Whether at least one active local share was revoked."
+                        }
+                    }
+                },
                 "Usage": {
                     "type": "object",
                     "required": ["input_tokens", "output_tokens", "total_tokens"],
@@ -423,5 +490,15 @@ fn session_id_parameter() -> serde_json::Value {
         "required": true,
         "schema": { "type": "string" },
         "description": "Opaque session id."
+    })
+}
+
+fn share_id_parameter() -> serde_json::Value {
+    serde_json::json!({
+        "name": "share_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Ephemeral local share id."
     })
 }

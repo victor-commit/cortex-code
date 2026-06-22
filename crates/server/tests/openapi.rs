@@ -58,6 +58,9 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session/{id}/prompt/clear", "post", 200);
     assert_method(paths, "/session/{id}/command", "post", 200);
     assert_method(paths, "/session/{id}/abort", "post", 200);
+    assert_method(paths, "/session/{id}/share", "post", 200);
+    assert_method(paths, "/session/{id}/unshare", "post", 200);
+    assert_method(paths, "/share/{share_id}", "get", 200);
 
     for path in paths.keys() {
         assert!(
@@ -74,6 +77,9 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/session/{id}/prompt/clear"
                     | "/session/{id}/command"
                     | "/session/{id}/abort"
+                    | "/session/{id}/share"
+                    | "/session/{id}/unshare"
+                    | "/share/{share_id}"
                     | "/openapi.json"
             ),
             "OpenAPI document should not advertise phantom path {path:?}"
