@@ -1,3 +1,4 @@
+mod acp_cmd;
 mod agent_cmd;
 mod auth_cmd;
 mod checkpoint;
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
     match cli.command {
         None | Some(Command::Tui(_)) => tui::launch(),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
+        Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
@@ -84,6 +86,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
     match command {
         None | Some(Command::Tui(_)) => Surface::Tui,
         Some(Command::Run(_)) => Surface::Run,
+        Some(Command::Acp(_)) => Surface::Acp,
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
         Some(Command::Agent(_)) | Some(Command::Generate(_)) => Surface::Agent,

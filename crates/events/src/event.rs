@@ -12,6 +12,8 @@ pub enum Surface {
     Run,
     /// The local loopback server.
     Serve,
+    /// The Agent Client Protocol stdio server.
+    Acp,
     /// The configuration-reporting path.
     Config,
     /// The persisted-session management path (`cortex session`).
@@ -40,6 +42,7 @@ impl Surface {
             Surface::Tui => "tui",
             Surface::Run => "run",
             Surface::Serve => "serve",
+            Surface::Acp => "acp",
             Surface::Config => "config",
             Surface::Session => "session",
             Surface::Agent => "agent",

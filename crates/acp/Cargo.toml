@@ -1,0 +1,31 @@
+[package]
+name = "acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+db = { workspace = true }
+engine = { workspace = true }
+errors = { workspace = true }
+events = { workspace = true }
+futures-util = { workspace = true }
+llm = { workspace = true }
+permissions = { workspace = true }
+policy = { workspace = true }
+protocol = { workspace = true }
+providers = { workspace = true }
+redaction = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+settings = { workspace = true }
+tokio = { workspace = true }
+tools = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }

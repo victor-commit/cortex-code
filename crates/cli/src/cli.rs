@@ -51,6 +51,9 @@ pub enum Command {
     /// Start the local loopback HTTP/SSE server.
     Serve(ServeArgs),
 
+    /// Run the Agent Client Protocol (ACP) stdio server for editor integrations.
+    Acp(AcpArgs),
+
     /// Report the effective configuration after merging every layer.
     ///
     /// Layers are merged lowest-precedence first:
@@ -543,6 +546,9 @@ pub struct ServeArgs {
     pub token: Option<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct AcpArgs {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,7 +595,7 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
         for sub in [
-            "run", "tui", "serve", "session", "agent", "auth", "models", "generate",
+            "run", "tui", "serve", "acp", "session", "agent", "auth", "models", "generate",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
@@ -903,6 +909,12 @@ mod tests {
             }
             other => panic!("expected serve, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn acp_command_parses() {
+        let cli = Cli::try_parse_from(["cortex", "acp"]).expect("parse");
+        assert!(matches!(cli.command, Some(Command::Acp(_))));
     }
 
     #[test]

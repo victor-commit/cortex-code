@@ -30,6 +30,7 @@ members = [
     "crates/tui-components",
     "crates/tui",
     "crates/server",
+    "crates/acp",
     "crates/cli",
 ]
 
@@ -75,10 +76,12 @@ frame = { path = "crates/frame" }
 tui-components = { path = "crates/tui-components" }
 tui = { path = "crates/tui" }
 server = { path = "crates/server" }
+acp = { path = "crates/acp" }
+agent-client-protocol = "=0.15.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rmcp = { version = "1.7", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "reqwest", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util", "io-std", "net"] }
 tokio-test = "0.4"
 eventsource-stream = "0.2"
 axum = "0.8"
