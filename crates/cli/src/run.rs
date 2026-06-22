@@ -41,7 +41,8 @@ use engine::{
 };
 use errors::{Diagnostic, Exit};
 use events::{Event, EventBus};
-use llm::ToolDef;
+use futures_util::future::BoxFuture;
+use llm::{LlmError, LlmRequest, LlmStream, Provider, ToolDef};
 use protocol::ToolResultPart;
 use providers::ResolvedModel;
 use redaction::guard_outbound;
@@ -169,9 +170,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             return Exit::Failure;
         }
     };
-    if let Some(subscriber) = plugin_state.event_subscriber() {
-        bus.subscribe(subscriber);
-    }
 
     // The per-project working directory the saved-permission store is keyed by (identical to the
     // checkpoint store's key), captured before `config_inputs` is consumed by config resolution.
@@ -262,31 +260,37 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // The credential resolves through env > 0600 file > config indirection; an endpoint override
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
-    let provider: Arc<dyn llm::Provider> = match plugin_state
-        .provider_for_model(&run_config.model.model_id)
-    {
-        Some(provider) => {
-            eprintln!(
-                "cortex run: using plugin provider {} for model {}",
-                provider.provider_id(),
-                provider.model_id()
-            );
-            Arc::new(provider)
-        }
-        None => {
-            let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
-            match providers::resolve_openrouter_with_options(
-                &inputs,
-                run_config.base_url.as_deref(),
-                stream_idle_timeout(),
-            ) {
-                Ok(provider) => Arc::new(provider),
-                Err(diag) => return report_setup_diagnostic(&diag),
+    let (provider, audit_provider_endpoint): (Arc<dyn llm::Provider>, Option<String>) =
+        match plugin_state.provider_for_model(&run_config.model.model_id) {
+            Some(provider) => {
+                eprintln!(
+                    "cortex run: using plugin provider {} for model {}",
+                    provider.provider_id(),
+                    provider.model_id()
+                );
+                (Arc::new(provider), None)
             }
-        }
-    };
-    let provider = plugin_state.wrap_provider(provider);
-
+            None => {
+                let endpoint = format!(
+                    "{}/chat/completions",
+                    run_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(providers::openrouter_base_url)
+                        .trim_end_matches('/')
+                );
+                let inputs =
+                    providers::CredentialInputs::openrouter_from_process(run_config.api_key);
+                match providers::resolve_openrouter_with_options(
+                    &inputs,
+                    run_config.base_url.as_deref(),
+                    stream_idle_timeout(),
+                ) {
+                    Ok(provider) => (Arc::new(provider), Some(endpoint)),
+                    Err(diag) => return report_setup_diagnostic(&diag),
+                }
+            }
+        };
     // Open the durable store and resolve the session this turn belongs to: an explicit `--session`
     // id (created on demand if unknown), the most recent session under `--continue` (a fresh one
     // when none exists), or a brand-new session otherwise. The store is touched only after setup
@@ -322,6 +326,27 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
         run_config.model = providers::resolve_model(Some(&model));
     }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let audit_sink = Arc::new(audit::AuditSink::from_env_or_cwd(&session_id, &cwd));
+    plugin_state.attach_audit(audit_sink.clone());
+    plugin_state.audit_loaded_plugins();
+    if let Some(subscriber) = plugin_state.event_subscriber() {
+        bus.subscribe(subscriber);
+    }
+    let provider = match audit_provider_endpoint {
+        Some(endpoint) => {
+            let audited = AuditedProvider::new(
+                provider,
+                audit_sink.clone(),
+                providers::OPENROUTER_ID,
+                endpoint,
+            );
+            Arc::new(audited) as Arc<dyn llm::Provider>
+        }
+        None => provider,
+    };
+    let provider = plugin_state.wrap_provider(provider);
 
     // Project the session's prior turns into canonical history BEFORE persisting this prompt, so
     // the new user input is sent once (as the turn's input) and not duplicated into the history.
@@ -385,7 +410,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // directory, so the model can read/edit the filesystem for real this turn. A GPT-family model
     // gets `apply_patch` (and loses `edit`/`write`); any other model keeps `edit`/`write`
     // (architecture §3.4 / §4).
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let todo_store: std::sync::Arc<dyn tools::TodoStore> =
         std::sync::Arc::new(crate::todo_store::DbTodoStore::new(db_path.clone()));
 
@@ -417,6 +441,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
 
     let dispatcher =
         RegistryDispatcher::for_model(cwd.clone(), &model_id, session_id.clone(), todo_store);
+    let dispatcher = dispatcher.with_audit(audit_sink.clone());
     let dispatcher = match run_config.websearch.clone() {
         Some(config) => dispatcher.with_websearch(config),
         None => dispatcher,
@@ -833,6 +858,54 @@ enum TurnResult {
     Completed(RunOutcome),
     /// SIGINT (Ctrl-C) cancelled the turn at a safe await boundary before it completed.
     Interrupted,
+}
+
+struct AuditedProvider {
+    inner: Arc<dyn Provider>,
+    audit: Arc<audit::AuditSink>,
+    provider: String,
+    endpoint: String,
+    host: String,
+}
+
+impl AuditedProvider {
+    fn new(
+        inner: Arc<dyn Provider>,
+        audit: Arc<audit::AuditSink>,
+        provider: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> Self {
+        let endpoint = endpoint.into();
+        let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
+        Self {
+            inner,
+            audit,
+            provider: provider.into(),
+            endpoint,
+            host,
+        }
+    }
+}
+
+impl Provider for AuditedProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let model = request.model.clone();
+            let result = self.inner.stream(request).await;
+            let outcome = if result.is_ok() { "success" } else { "error" };
+            self.audit.record_network_call(
+                "llm",
+                Some(&self.provider),
+                Some(&model),
+                "POST",
+                &self.host,
+                &self.endpoint,
+                None,
+                outcome,
+            );
+            result
+        })
+    }
 }
 
 /// Run a turn against the provider, racing it against a SIGINT so the process cancels cleanly at a

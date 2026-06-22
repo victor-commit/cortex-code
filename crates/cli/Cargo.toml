@@ -30,6 +30,7 @@ format = { workspace = true }
 mcp = { workspace = true }
 lsp = { workspace = true }
 plugins = { workspace = true }
+audit = { workspace = true }
 skills = { workspace = true }
 memory = { workspace = true }
 tui = { workspace = true }
@@ -41,6 +42,7 @@ toml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

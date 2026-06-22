@@ -209,6 +209,15 @@ impl McpManager {
             .any(|tool| tool.id == id)
     }
 
+    /// Return the live catalogue entry for a qualified tool id.
+    #[must_use]
+    pub fn tool_info(&self, id: &str) -> Option<crate::catalogue::McpTool> {
+        self.catalogue
+            .flatten_tools()
+            .into_iter()
+            .find(|tool| tool.id == id)
+    }
+
     /// Whether `id` resolves to a currently-advertised MCP resource.
     #[must_use]
     pub fn has_resource(&self, id: &str) -> bool {

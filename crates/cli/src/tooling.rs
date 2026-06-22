@@ -81,6 +81,13 @@ impl RegistryDispatcher {
         self
     }
 
+    /// Attach the durable audit sink used to record every real action surfaced through this context.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
+        self.context = self.context.with_audit(audit);
+        self
+    }
+
     /// Attach the pre-mutation checkpoint recorder so each mutating tool snapshots a file's prior
     /// state before it changes it (builder style). Without this the headless context records no
     /// checkpoints, so `/undo` has nothing to restore.
@@ -274,7 +281,7 @@ impl ToolDispatcher for RegistryDispatcher {
                             is_error: true,
                         };
                     }
-                    return dispatch_mcp(manager, call).await;
+                    return dispatch_mcp(manager, call, &self.context).await;
                 }
             }
             let output = self
@@ -293,7 +300,12 @@ impl ToolDispatcher for RegistryDispatcher {
 /// Execute one MCP tool call through the manager and convert the relayed result into the runner's
 /// [`ToolDispatchResult`]. A non-object/unparseable arguments string or a transport error resolves
 /// to an error result so the turn continues and the model can recover.
-async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResult {
+async fn dispatch_mcp(
+    manager: &McpManager,
+    call: &ToolCall,
+    ctx: &ToolContext,
+) -> ToolDispatchResult {
+    let audit_tool = manager.tool_info(&call.name);
     let arguments = if call.arguments.trim().is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
     } else {
@@ -319,6 +331,16 @@ async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResu
     } else {
         manager.call(&call.name, arguments).await
     };
+
+    if let Some(tool) = audit_tool
+        && let Some(audit) = ctx.audit_sink()
+    {
+        let outcome = match &result {
+            Ok(relayed) if !relayed.is_error => "success",
+            Ok(_) | Err(_) => "error",
+        };
+        audit.record_mcp_tool_call(&tool.server, &tool.tool, &tool.id, &call.arguments, outcome);
+    }
 
     match result {
         Ok(relayed) => ToolDispatchResult {

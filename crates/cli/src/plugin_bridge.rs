@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::ToolDispatcher;
@@ -31,6 +32,7 @@ pub(crate) struct PluginState {
     loaded: Vec<LoadedPlugin>,
     host: RuntimeHost,
     disposed: Arc<AtomicBool>,
+    audit: Arc<Mutex<Option<Arc<audit::AuditSink>>>>,
 }
 
 impl PluginState {
@@ -48,6 +50,7 @@ impl PluginState {
             loaded,
             host,
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -60,6 +63,27 @@ impl PluginState {
             Ok(Self::disabled())
         } else {
             Self::load(config)
+        }
+    }
+
+    /// Attach the durable audit sink after the run session id has been resolved.
+    pub(crate) fn attach_audit(&self, audit: Arc<audit::AuditSink>) {
+        if let Ok(mut slot) = self.audit.lock() {
+            *slot = Some(audit);
+        }
+    }
+
+    fn audit_sink(&self) -> Option<Arc<audit::AuditSink>> {
+        self.audit.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Record the already-completed plugin load reports in the attached audit sink.
+    pub(crate) fn audit_loaded_plugins(&self) {
+        let Some(audit) = self.audit_sink() else {
+            return;
+        };
+        for loaded in &self.loaded {
+            audit.record_plugin_load(loaded.spec.raw_spec(), &loaded.report.hooks, "success");
         }
     }
 
@@ -156,6 +180,15 @@ impl PluginState {
             match self.host.invoke_shell_env(&loaded.spec) {
                 Ok(output) => {
                     if let Some(JsonValue::Object(map)) = output.output {
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "shell.env",
+                                "inject_env",
+                                "success",
+                                Some("environment variables provided"),
+                            );
+                        }
                         env.extend(map.into_iter().filter_map(|(name, value)| {
                             let value = match value {
                                 JsonValue::Null => return None,
@@ -213,7 +246,7 @@ impl PluginState {
         PluginToolDefinitionDispatcher {
             inner,
             state: self,
-            session_id: session_id.into(),
+            _session_id: session_id.into(),
         }
     }
 
@@ -266,6 +299,15 @@ impl PluginState {
                     if let Some(value) = output.output
                         && let Some(decision) = decision_from_value(&value)
                     {
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "permission.ask",
+                                "override",
+                                decision.action().as_str(),
+                                Some(&request.subject),
+                            );
+                        }
                         current = decision.action();
                         overridden = Some(decision);
                     }
@@ -289,6 +331,15 @@ impl PluginState {
                         continue;
                     };
                     if let Some(reason) = veto_reason(&value) {
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "tool.execute.before",
+                                "veto",
+                                "denied",
+                                Some(&reason),
+                            );
+                        }
                         return (
                             current,
                             Some(ToolVeto {
@@ -318,6 +369,15 @@ impl PluginState {
             match self.host.invoke_tool_after(&loaded.spec, input) {
                 Ok(output) => {
                     if let Some(value) = output.output {
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "tool.execute.after",
+                                "transform",
+                                "success",
+                                Some(&call.name),
+                            );
+                        }
                         result = tool_result_from_output(result, value);
                     }
                 }
@@ -380,6 +440,15 @@ impl PluginState {
                 else {
                     continue;
                 };
+                if let Some(audit) = self.audit_sink() {
+                    audit.record_plugin_hook(
+                        loaded.spec.raw_spec(),
+                        "chat.message",
+                        "shape_message",
+                        "success",
+                        Some(&format!("{:?}", message.role)),
+                    );
+                }
                 *message = serde_json::from_value(output)?;
             }
         }
@@ -391,6 +460,10 @@ impl PluginState {
             ) {
                 continue;
             }
+            let hook_name = first_plugin_hook(
+                loaded,
+                &["experimental.chat.messages.transform", "chat.messages"],
+            );
             let input = serde_json::to_value(&*messages)?;
             let Some(output) = self
                 .host
@@ -399,6 +472,15 @@ impl PluginState {
             else {
                 continue;
             };
+            if let Some(audit) = self.audit_sink() {
+                audit.record_plugin_hook(
+                    loaded.spec.raw_spec(),
+                    hook_name,
+                    "transform_messages",
+                    "success",
+                    Some(&format!("{} messages", messages.len())),
+                );
+            }
             *messages = serde_json::from_value(output)?;
         }
 
@@ -409,6 +491,10 @@ impl PluginState {
             ) {
                 continue;
             }
+            let hook_name = first_plugin_hook(
+                loaded,
+                &["experimental.chat.system.transform", "chat.system"],
+            );
             let system = messages
                 .iter()
                 .find(|message| message.role == Role::System)
@@ -419,6 +505,15 @@ impl PluginState {
                 .invoke_chat_system_transform(&loaded.spec, system.clone())?
                 .output
                 .unwrap_or(serde_json::Value::String(system));
+            if let Some(audit) = self.audit_sink() {
+                audit.record_plugin_hook(
+                    loaded.spec.raw_spec(),
+                    hook_name,
+                    "transform_system",
+                    "success",
+                    None,
+                );
+            }
             let transformed = system_output_to_string(output);
             if let Some(message) = messages
                 .iter_mut()
@@ -445,6 +540,15 @@ impl PluginState {
             else {
                 continue;
             };
+            if let Some(audit) = self.audit_sink() {
+                audit.record_plugin_hook(
+                    loaded.spec.raw_spec(),
+                    "chat.params",
+                    "shape_params",
+                    "success",
+                    None,
+                );
+            }
             request.extra_params = json_object(output);
         }
         Ok(())
@@ -462,6 +566,15 @@ impl PluginState {
             else {
                 continue;
             };
+            if let Some(audit) = self.audit_sink() {
+                audit.record_plugin_hook(
+                    loaded.spec.raw_spec(),
+                    "chat.headers",
+                    "shape_headers",
+                    "success",
+                    None,
+                );
+            }
             request.extra_headers = json_headers(output);
         }
         Ok(())
@@ -484,6 +597,15 @@ impl PluginState {
                 else {
                     continue;
                 };
+                if let Some(audit) = self.audit_sink() {
+                    audit.record_plugin_hook(
+                        loaded.spec.raw_spec(),
+                        "tool.definition",
+                        "shape_definition",
+                        "success",
+                        Some(&definition.name),
+                    );
+                }
                 *definition = serde_json::from_value(output)?;
             }
         }
@@ -675,6 +797,14 @@ fn plugin_has_hook(loaded: &LoadedPlugin, hook: &str) -> bool {
 
 fn plugin_has_any_hook(loaded: &LoadedPlugin, hooks: &[&str]) -> bool {
     hooks.iter().any(|hook| plugin_has_hook(loaded, hook))
+}
+
+fn first_plugin_hook<'a>(loaded: &LoadedPlugin, hooks: &'a [&'a str]) -> &'a str {
+    hooks
+        .iter()
+        .copied()
+        .find(|hook| plugin_has_hook(loaded, hook))
+        .unwrap_or_else(|| hooks.first().copied().unwrap_or(""))
 }
 
 fn params_to_json(request: &LlmRequest) -> JsonValue {
@@ -906,7 +1036,7 @@ impl Provider for PluginShapingProvider {
 pub(crate) struct PluginToolDefinitionDispatcher<'a> {
     inner: &'a dyn ToolDispatcher,
     state: &'a PluginState,
-    session_id: String,
+    _session_id: String,
 }
 
 impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
@@ -918,14 +1048,15 @@ impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
         Box::pin(async move {
             let (call, veto) = self.state.apply_tool_before_hooks(call);
             if let Some(veto) = veto {
-                crate::audit::record_plugin_tool_denial(
-                    &self.session_id,
-                    &call.id,
-                    &call.name,
-                    &veto.plugin,
-                    &veto.reason,
-                    &call.arguments,
-                );
+                if let Some(audit) = self.state.audit_sink() {
+                    audit.record_plugin_tool_denial(
+                        &call.id,
+                        &call.name,
+                        &veto.plugin,
+                        &veto.reason,
+                        &call.arguments,
+                    );
+                }
                 let message = format!(
                     "{}: plugin {} vetoed tool.execute.before: {}",
                     call.name, veto.plugin, veto.reason
@@ -992,8 +1123,28 @@ impl Tool for PluginTool {
                 .host
                 .execute_tool(&self.spec, self.name(), arguments.clone())
             {
-                Ok(output) => ToolOutput::text(output.content),
-                Err(err) => ToolOutput::error(err.to_string()),
+                Ok(output) => {
+                    if let Some(audit) = ctx.audit_sink() {
+                        audit.record_plugin_tool_execution(
+                            self.spec.raw_spec(),
+                            self.name(),
+                            &subject,
+                            "success",
+                        );
+                    }
+                    ToolOutput::text(output.content)
+                }
+                Err(err) => {
+                    if let Some(audit) = ctx.audit_sink() {
+                        audit.record_plugin_tool_execution(
+                            self.spec.raw_spec(),
+                            self.name(),
+                            &subject,
+                            "error",
+                        );
+                    }
+                    ToolOutput::error(err.to_string())
+                }
             }
         })
     }
@@ -1206,6 +1357,7 @@ export default async function plugin(input, options) {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
         };
         assert_eq!(tool_defs_from_state(&state)[0].name, "cortex_write_marker");
 
@@ -1275,6 +1427,7 @@ export default async function plugin() {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
         };
         let override_hook = state.permission_override().expect("permission hook");
 
@@ -1341,6 +1494,7 @@ export default async function plugin() {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
         };
 
         let dispatcher = crate::tooling::RegistryDispatcher::for_model(
@@ -1435,6 +1589,7 @@ export default async function plugin() {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
         };
         let dispatcher = crate::tooling::RegistryDispatcher::for_model(
             project.clone(),

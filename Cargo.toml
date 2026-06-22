@@ -17,6 +17,7 @@ members = [
     "crates/mcp",
     "crates/lsp",
     "crates/plugins",
+    "crates/audit",
     "crates/skills",
     "crates/memory",
     "crates/tools",
@@ -60,6 +61,7 @@ format = { path = "crates/format" }
 mcp = { path = "crates/mcp" }
 lsp = { path = "crates/lsp" }
 plugins = { path = "crates/plugins" }
+audit = { path = "crates/audit" }
 skills = { path = "crates/skills" }
 memory = { path = "crates/memory" }
 tools = { path = "crates/tools" }

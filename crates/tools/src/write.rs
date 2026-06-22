@@ -125,6 +125,10 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(err) = fs::write(&resolved, content.as_bytes()) {
         return ToolOutput::error(format!("write: could not write {path}: {err}"));
     }
+    if let Some(audit) = ctx.audit_sink() {
+        let detail = if created { "create" } else { "overwrite" };
+        audit.record_file_mutation(&resolved, "write", Some(detail));
+    }
 
     // The write succeeded, so the on-disk content is now this session's source of truth: record the
     // path as read so a later overwrite in the same session is permitted.
@@ -201,6 +205,10 @@ mod tests {
         ToolContext::new(dir.to_path_buf())
     }
 
+    fn audit_for(dir: &Path, session: &str) -> Arc<audit::AuditSink> {
+        Arc::new(audit::AuditSink::new(dir.join("audit.jsonl"), session))
+    }
+
     fn write_args(path: &str, content: &str) -> Value {
         json!({ "path": path, "content": content })
     }
@@ -212,10 +220,24 @@ mod tests {
     #[test]
     fn creates_new_file_with_exact_bytes_and_parent_dirs() {
         let dir = temp_dir("create");
-        let output = run(&write_args("a/b/new.txt", "hello\nworld\n"), &ctx_for(&dir));
+        let audit = audit_for(&dir, "ses_write");
+        let output = run(
+            &write_args("a/b/new.txt", "hello\nworld\n"),
+            &ctx_for(&dir).with_audit(audit.clone()),
+        );
         assert!(!output.is_error, "{}", text_of(&output));
         let written = fs::read(dir.join("a/b/new.txt")).unwrap();
         assert_eq!(written, b"hello\nworld\n");
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "file_mutation"
+                && record["session"] == "ses_write"
+                && record["operation"] == "write"
+                && record["detail"] == "create"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("a/b/new.txt"))
+        }));
     }
 
     #[test]

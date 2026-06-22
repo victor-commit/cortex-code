@@ -166,6 +166,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(err) = fs::write(&resolved, applied.content.as_bytes()) {
         return ToolOutput::error(format!("edit: could not write {path}: {err}"));
     }
+    if let Some(audit) = ctx.audit_sink() {
+        audit.record_file_mutation(&resolved, "edit", Some("replace"));
+    }
 
     // The edit succeeded, so the on-disk content is now this session's source of truth: refresh the
     // read ledger so a later edit/overwrite in the same session is permitted.

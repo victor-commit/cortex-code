@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 protocol = { workspace = true }
+audit = { workspace = true }
 errors = { workspace = true }
 llm = { workspace = true }
 permissions = { workspace = true }

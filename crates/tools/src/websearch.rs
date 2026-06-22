@@ -284,7 +284,14 @@ async fn run(arguments: Value, ctx: &ToolContext, config: &WebSearchConfig) -> T
         Err(message) => return ToolOutput::error(message),
     };
 
-    match search(config, query, options).await {
+    match search(
+        config,
+        query,
+        options,
+        ctx.audit_sink().map(|sink| sink.as_ref()),
+    )
+    .await
+    {
         Ok(results) => ToolOutput::text(results),
         Err(message) => ToolOutput::error(message),
     }
@@ -325,8 +332,12 @@ async fn search(
     config: &WebSearchConfig,
     query: &str,
     options: SearchOptions,
+    audit: Option<&audit::AuditSink>,
 ) -> Result<String, String> {
-    guard_outbound(OUTBOUND_OPERATION).map_err(|diagnostic| format!("websearch: {diagnostic}"))?;
+    if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
+        record_network(audit, config.endpoint(), None, "blocked");
+        return Err(format!("websearch: {diagnostic}"));
+    }
 
     let client = reqwest::Client::builder()
         .use_rustls_tls()
@@ -342,8 +353,10 @@ async fn search(
         .map_err(|err| redaction::redact(&format!("websearch: transport setup failed: {err}")))?;
 
     let results = match config.provider {
-        WebSearchProvider::DuckDuckGo => duckduckgo_search(&client, config, query, options).await,
-        WebSearchProvider::Brave => brave_search(&client, config, query, options).await,
+        WebSearchProvider::DuckDuckGo => {
+            duckduckgo_search(&client, config, query, options, audit).await
+        }
+        WebSearchProvider::Brave => brave_search(&client, config, query, options, audit).await,
     }?;
 
     if results.is_empty() {
@@ -361,6 +374,7 @@ async fn duckduckgo_search(
     config: &WebSearchConfig,
     query: &str,
     options: SearchOptions,
+    audit: Option<&audit::AuditSink>,
 ) -> Result<Vec<SearchResult>, String> {
     let mut url = endpoint_url(config)?;
     url.query_pairs_mut()
@@ -368,6 +382,7 @@ async fn duckduckgo_search(
         .append_pair("format", "json")
         .append_pair("no_html", "1")
         .append_pair("skip_disambig", "1");
+    let endpoint = url.clone();
 
     let json = send_json(
         client
@@ -379,6 +394,8 @@ async fn duckduckgo_search(
             ),
         config.provider,
         options.timeout,
+        audit,
+        &endpoint,
     )
     .await?;
 
@@ -390,6 +407,7 @@ async fn brave_search(
     config: &WebSearchConfig,
     query: &str,
     options: SearchOptions,
+    audit: Option<&audit::AuditSink>,
 ) -> Result<Vec<SearchResult>, String> {
     let Some(api_key) = config.api_key.as_deref() else {
         return Err(
@@ -404,6 +422,7 @@ async fn brave_search(
         .append_pair("q", query)
         .append_pair("count", &options.count.to_string())
         .append_pair("text_decorations", "false");
+    let endpoint = url.clone();
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -426,6 +445,8 @@ async fn brave_search(
             ),
         config.provider,
         options.timeout,
+        audit,
+        &endpoint,
     )
     .await?;
 
@@ -445,9 +466,12 @@ async fn send_json(
     request: reqwest::RequestBuilder,
     provider: WebSearchProvider,
     timeout: Duration,
+    audit: Option<&audit::AuditSink>,
+    endpoint: &Url,
 ) -> Result<Value, String> {
     let response = match tokio::time::timeout(timeout, request.send()).await {
         Err(_) => {
+            record_network(audit, endpoint.as_str(), None, "timeout");
             return Err(format!(
                 "websearch: timeout contacting provider {} after {} ms",
                 provider.as_str(),
@@ -455,12 +479,14 @@ async fn send_json(
             ));
         }
         Ok(Err(err)) if err.is_timeout() => {
+            record_network(audit, endpoint.as_str(), None, "timeout");
             return Err(redaction::redact(&format!(
                 "websearch: timeout contacting provider {}: {err}",
                 provider.as_str()
             )));
         }
         Ok(Err(err)) => {
+            record_network(audit, endpoint.as_str(), None, "error");
             return Err(redaction::redact(&format!(
                 "websearch: transport error contacting provider {}: {err}",
                 provider.as_str()
@@ -477,10 +503,17 @@ async fn send_json(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_owned();
-    let body = collect_body(response, timeout).await?;
+    let body = match collect_body(response, timeout).await {
+        Ok(body) => body,
+        Err(message) => {
+            record_network(audit, final_url.as_str(), Some(status), "error");
+            return Err(message);
+        }
+    };
     let text = String::from_utf8_lossy(&body.bytes).into_owned();
 
     if !status.is_success() {
+        record_network(audit, final_url.as_str(), Some(status), "error");
         return Err(render_status_error(
             provider,
             &final_url,
@@ -491,12 +524,40 @@ async fn send_json(
         ));
     }
 
-    serde_json::from_str(&text).map_err(|err| {
-        redaction::redact(&format!(
-            "websearch: provider {} returned invalid JSON from {final_url}: {err}",
-            provider.as_str()
-        ))
-    })
+    match serde_json::from_str(&text) {
+        Ok(value) => {
+            record_network(audit, final_url.as_str(), Some(status), "success");
+            Ok(value)
+        }
+        Err(err) => {
+            record_network(audit, final_url.as_str(), Some(status), "error");
+            Err(redaction::redact(&format!(
+                "websearch: provider {} returned invalid JSON from {final_url}: {err}",
+                provider.as_str()
+            )))
+        }
+    }
+}
+
+fn record_network(
+    audit: Option<&audit::AuditSink>,
+    endpoint: &str,
+    status: Option<StatusCode>,
+    outcome: &str,
+) {
+    if let Some(audit) = audit {
+        let host = audit::host_from_endpoint(endpoint).unwrap_or_default();
+        audit.record_network_call(
+            "websearch",
+            None,
+            None,
+            "GET",
+            &host,
+            endpoint,
+            status.map(|status| status.as_u16()),
+            outcome,
+        );
+    }
 }
 
 struct ProviderBody {
@@ -789,6 +850,18 @@ fn unescape_basic_entities(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn temp_log(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "cortex-websearch-audit-{tag}-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn provider_names_are_normalized() {
@@ -880,5 +953,29 @@ mod tests {
         assert!(rendered.contains("1. Rust Programming Language"));
         assert!(rendered.contains("URL: https://www.rust-lang.org/"));
         assert!(rendered.contains("Snippet: Official site"));
+    }
+
+    #[test]
+    fn network_audit_record_names_endpoint_host_and_method() {
+        let path = temp_log("network");
+        let sink = audit::AuditSink::new(&path, "ses_websearch");
+
+        record_network(
+            Some(&sink),
+            "https://api.duckduckgo.com/?q=Rust",
+            Some(StatusCode::OK),
+            "success",
+        );
+
+        let records = audit::read_jsonl(&path).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "network_call"
+                && record["session"] == "ses_websearch"
+                && record["tool"] == "websearch"
+                && record["method"] == "GET"
+                && record["host"] == "api.duckduckgo.com"
+                && record["status"] == 200
+        }));
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -1,5 +1,4 @@
 mod agent_cmd;
-mod audit;
 mod auth_cmd;
 mod checkpoint;
 mod cli;

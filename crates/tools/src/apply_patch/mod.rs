@@ -120,6 +120,15 @@ fn action_summary(action: &Action, display: &str) -> String {
     }
 }
 
+fn action_detail(action: &Action) -> &'static str {
+    match action {
+        Action::Create { .. } => "create",
+        Action::Overwrite { .. } => "overwrite",
+        Action::Delete { .. } => "delete",
+        Action::Rename { .. } => "rename",
+    }
+}
+
 /// Execute an apply_patch call against the resolved arguments (synchronous filesystem work).
 fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     let Some(patch) = string_arg(arguments, "patch")
@@ -189,6 +198,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     for (action, display) in &plan {
         if let Err(message) = commit(ctx, action) {
             return ToolOutput::error(message);
+        }
+        if let Some(audit) = ctx.audit_sink() {
+            for path in action_paths(action) {
+                audit.record_file_mutation(path, "apply_patch", Some(action_detail(action)));
+            }
         }
         summaries.push(action_summary(action, display));
         if let Some(path) = written_path(action) {
@@ -422,6 +436,10 @@ mod tests {
         ToolContext::new(dir.to_path_buf())
     }
 
+    fn audit_for(dir: &Path, session: &str) -> Arc<audit::AuditSink> {
+        Arc::new(audit::AuditSink::new(dir.join("audit.jsonl"), session))
+    }
+
     fn apply(ctx: &ToolContext, patch: &str) -> ToolOutput {
         run(&json!({ "patch": patch }), ctx)
     }
@@ -429,7 +447,8 @@ mod tests {
     #[test]
     fn add_file_writes_exactly_the_added_lines() {
         let dir = temp_dir("add");
-        let ctx = ctx_for(&dir);
+        let audit = audit_for(&dir, "ses_patch");
+        let ctx = ctx_for(&dir).with_audit(audit.clone());
         let output = apply(
             &ctx,
             "*** Begin Patch\n*** Add File: new.py\n+print(1)\n+print(2)\n*** End Patch",
@@ -439,6 +458,15 @@ mod tests {
             fs::read_to_string(dir.join("new.py")).unwrap(),
             "print(1)\nprint(2)\n"
         );
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "file_mutation"
+                && record["operation"] == "apply_patch"
+                && record["detail"] == "create"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("new.py"))
+        }));
     }
 
     #[test]

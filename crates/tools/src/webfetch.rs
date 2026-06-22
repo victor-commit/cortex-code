@@ -102,7 +102,7 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
         Err(message) => return ToolOutput::error(message),
     };
 
-    match fetch(&url, options).await {
+    match fetch(&url, options, ctx.audit_sink().map(|sink| sink.as_ref())).await {
         Ok(markdown) => ToolOutput::text(markdown),
         Err(message) => ToolOutput::error(message),
     }
@@ -141,8 +141,15 @@ fn options_from(arguments: &Value) -> Result<FetchOptions, String> {
     Ok(options)
 }
 
-async fn fetch(url: &Url, options: FetchOptions) -> Result<String, String> {
-    guard_outbound(OUTBOUND_OPERATION).map_err(|diagnostic| format!("webfetch: {diagnostic}"))?;
+async fn fetch(
+    url: &Url,
+    options: FetchOptions,
+    audit: Option<&audit::AuditSink>,
+) -> Result<String, String> {
+    if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
+        record_network(audit, url, None, "blocked");
+        return Err(format!("webfetch: {diagnostic}"));
+    }
 
     let client = reqwest::Client::builder()
         .use_rustls_tls()
@@ -168,17 +175,20 @@ async fn fetch(url: &Url, options: FetchOptions) -> Result<String, String> {
 
     let response = match tokio::time::timeout(options.timeout, request.send()).await {
         Err(_) => {
+            record_network(audit, url, None, "timeout");
             return Err(redaction::redact(&format!(
                 "webfetch: timeout fetching {url} after {} ms",
                 options.timeout.as_millis()
             )));
         }
         Ok(Err(err)) if err.is_timeout() => {
+            record_network(audit, url, None, "timeout");
             return Err(redaction::redact(&format!(
                 "webfetch: timeout fetching {url}: {err}"
             )));
         }
         Ok(Err(err)) => {
+            record_network(audit, url, None, "error");
             return Err(redaction::redact(&format!(
                 "webfetch: transport error fetching {url}: {err}"
             )));
@@ -195,8 +205,15 @@ async fn fetch(url: &Url, options: FetchOptions) -> Result<String, String> {
         .unwrap_or("unknown")
         .to_owned();
 
-    let body = collect_body(response, options).await?;
+    let body = match collect_body(response, options).await {
+        Ok(body) => body,
+        Err(message) => {
+            record_network(audit, &final_url, Some(status), "error");
+            return Err(message);
+        }
+    };
     if !status.is_success() {
+        record_network(audit, &final_url, Some(status), "error");
         return Err(render_status_error(
             &final_url,
             status,
@@ -205,7 +222,28 @@ async fn fetch(url: &Url, options: FetchOptions) -> Result<String, String> {
         ));
     }
 
+    record_network(audit, &final_url, Some(status), "success");
     Ok(render_response(&final_url, status, &content_type, &body))
+}
+
+fn record_network(
+    audit: Option<&audit::AuditSink>,
+    url: &Url,
+    status: Option<StatusCode>,
+    outcome: &str,
+) {
+    if let Some(audit) = audit {
+        audit.record_network_call(
+            "webfetch",
+            None,
+            None,
+            "GET",
+            url.host_str().unwrap_or(""),
+            url.as_str(),
+            status.map(|status| status.as_u16()),
+            outcome,
+        );
+    }
 }
 
 struct FetchedBody {
@@ -965,6 +1003,18 @@ fn decode_entity(entity: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn temp_log(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "cortex-webfetch-audit-{tag}-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn html_converter_omits_script_style_and_keeps_link_markdown() {
@@ -993,5 +1043,26 @@ mod tests {
             None,
         );
         assert_eq!(markdown, "unsafe link");
+    }
+
+    #[test]
+    fn network_audit_record_names_host_endpoint_and_method() {
+        let path = temp_log("network");
+        let sink = audit::AuditSink::new(&path, "ses_webfetch");
+        let url = Url::parse("https://example.com/page?q=1").unwrap();
+
+        record_network(Some(&sink), &url, Some(StatusCode::OK), "success");
+
+        let records = audit::read_jsonl(&path).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "network_call"
+                && record["session"] == "ses_webfetch"
+                && record["tool"] == "webfetch"
+                && record["method"] == "GET"
+                && record["host"] == "example.com"
+                && record["endpoint"] == "https://example.com/page?q=1"
+                && record["status"] == 200
+        }));
+        let _ = std::fs::remove_file(path);
     }
 }

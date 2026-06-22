@@ -116,6 +116,26 @@ impl Outcome {
     pub const fn is_allowed(self) -> bool {
         matches!(self, Outcome::Allowed)
     }
+
+    /// The stable lowercase audit label for this final outcome.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Allowed => "allowed",
+            Outcome::Denied => "denied",
+        }
+    }
+}
+
+/// The configured permission action, matched pattern, and final resolved outcome for one request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionEvaluation {
+    /// The configured action that classified the request before final responder or override output.
+    pub action: Action,
+    /// The matched rule/saved/default pattern that classified the request.
+    pub pattern: String,
+    /// The final verdict after responder and override hooks.
+    pub outcome: Outcome,
 }
 
 /// The seam through which an `ask` is answered.
@@ -270,6 +290,11 @@ impl PermissionEngine {
 
     /// Resolve a gated action to a final [`Outcome`], surfacing and answering an `ask` as needed.
     pub fn evaluate(&self, request: &PermissionRequest) -> Outcome {
+        self.evaluate_detail(request).outcome
+    }
+
+    /// Resolve a gated action and return its full audit-relevant decision details.
+    pub fn evaluate_detail(&self, request: &PermissionRequest) -> PermissionEvaluation {
         let (action, pattern) = self.effective(&request.tool, &request.subject);
         if let Some(override_hook) = &self.override_hook
             && let Some(decision) = override_hook.override_decision(request, action)
@@ -284,9 +309,13 @@ impl PermissionEngine {
                 &request.subject,
                 event_decision,
             ));
-            return decision.outcome();
+            return PermissionEvaluation {
+                action,
+                pattern,
+                outcome: decision.outcome(),
+            };
         }
-        match action {
+        let outcome = match action {
             Action::Allow => Outcome::Allowed,
             Action::Deny => Outcome::Denied,
             Action::Ask => {
@@ -320,6 +349,11 @@ impl PermissionEngine {
                 ));
                 reply.decision.outcome()
             }
+        };
+        PermissionEvaluation {
+            action,
+            pattern,
+            outcome,
         }
     }
 

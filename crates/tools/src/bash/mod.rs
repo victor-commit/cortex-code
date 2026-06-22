@@ -218,14 +218,32 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
     let pid = child.id();
 
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => render_completed(&output),
-        Ok(Err(err)) => ToolOutput::error(format!("bash: command failed to run: {err}")),
+        Ok(Ok(output)) => {
+            if let Some(audit) = ctx.audit_sink() {
+                let outcome = if output.status.success() {
+                    "success"
+                } else {
+                    "error"
+                };
+                audit.record_shell_execution(command, ctx.cwd(), output.status.code(), outcome);
+            }
+            render_completed(&output)
+        }
+        Ok(Err(err)) => {
+            if let Some(audit) = ctx.audit_sink() {
+                audit.record_shell_execution(command, ctx.cwd(), None, "error");
+            }
+            ToolOutput::error(format!("bash: command failed to run: {err}"))
+        }
         Err(_elapsed) => {
             // The cancelled `wait_with_output` future dropped the child, which `kill_on_drop`
             // terminates and the runtime reaps. Also kill the whole process group so a forked
             // grandchild (e.g. from a compound command) is not orphaned.
             if let Some(pid) = pid {
                 kill_process_group(pid).await;
+            }
+            if let Some(audit) = ctx.audit_sink() {
+                audit.record_shell_execution(command, ctx.cwd(), None, "timeout");
             }
             let pid = pid.map_or_else(|| "unknown".to_owned(), |p| p.to_string());
             ToolOutput::error(format!(
@@ -306,6 +324,9 @@ fn spawn_background(command: &str, ctx: &ToolContext) -> ToolOutput {
         }
     };
     let pid = child.id().unwrap_or(0);
+    if let Some(audit) = ctx.audit_sink() {
+        audit.record_shell_execution(command, ctx.cwd(), None, "started");
+    }
 
     jobs.register(BackgroundJob::new(
         id.clone(),
@@ -346,6 +367,10 @@ mod tests {
         dir
     }
 
+    fn audit_for(dir: &Path, session: &str) -> Arc<audit::AuditSink> {
+        Arc::new(audit::AuditSink::new(dir.join("audit.jsonl"), session))
+    }
+
     fn pid_alive(pid: u32) -> bool {
         Path::new(&format!("/proc/{pid}")).exists()
     }
@@ -354,7 +379,8 @@ mod tests {
     #[tokio::test]
     async fn captures_stdout_and_zero_exit() {
         let dir = temp_dir("ok");
-        let ctx = ToolContext::new(dir.clone());
+        let audit = audit_for(&dir, "ses_bash");
+        let ctx = ToolContext::new(dir.clone()).with_audit(audit.clone());
         let out = run(json!({ "command": "echo cortex-ok" }), &ctx).await;
         assert!(!out.is_error, "a successful command is not an error");
         let text = out.model_content();
@@ -363,6 +389,16 @@ mod tests {
             text.contains("[exit code: 0]"),
             "zero exit reported: {text}"
         );
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "shell_execution"
+                && record["session"] == "ses_bash"
+                && record["command"] == "echo cortex-ok"
+                && record["exit_status"] == 0
+                && record["cwd"]
+                    .as_str()
+                    .is_some_and(|cwd| cwd.contains("cortex-bash-ok"))
+        }));
     }
 
     #[tokio::test]

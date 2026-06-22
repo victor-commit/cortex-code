@@ -390,6 +390,7 @@ pub struct ToolContext {
     cwd: PathBuf,
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
+    audit: Option<Arc<audit::AuditSink>>,
     hooks: Option<Arc<dyn MutationHooks>>,
     lsp: Option<Arc<dyn LspService>>,
     checkpoints: Option<Arc<dyn CheckpointRecorder>>,
@@ -409,6 +410,7 @@ impl ToolContext {
             cwd: cwd.into(),
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
+            audit: None,
             hooks: None,
             lsp: None,
             checkpoints: None,
@@ -424,6 +426,13 @@ impl ToolContext {
     #[must_use]
     pub fn with_permissions(mut self, engine: Arc<PermissionEngine>) -> Self {
         self.permissions = Some(engine);
+        self
+    }
+
+    /// Attach the audit sink that records real tool, permission, network, and MCP activity.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
+        self.audit = Some(audit);
         self
     }
 
@@ -490,6 +499,12 @@ impl ToolContext {
     #[must_use]
     pub fn shell_env(&self) -> &[(OsString, OsString)] {
         self.shell_env.as_slice()
+    }
+
+    /// The attached audit sink, if the current surface records audit events.
+    #[must_use]
+    pub fn audit_sink(&self) -> Option<&Arc<audit::AuditSink>> {
+        self.audit.as_ref()
     }
 
     /// Attach the post-mutation downstream hooks (formatter + LSP diagnostics) used after a write or
@@ -635,7 +650,20 @@ impl ToolContext {
     #[must_use]
     pub fn permits(&self, tool: &str, target: &str) -> bool {
         match &self.permissions {
-            Some(engine) => engine.evaluate(&request_for(tool, target)).is_allowed(),
+            Some(engine) => {
+                let request = request_for(tool, target);
+                let evaluation = engine.evaluate_detail(&request);
+                if let Some(audit) = &self.audit {
+                    audit.record_permission_decision(
+                        &request.tool,
+                        &evaluation.pattern,
+                        &request.subject,
+                        evaluation.action.as_str(),
+                        evaluation.outcome.as_str(),
+                    );
+                }
+                evaluation.outcome.is_allowed()
+            }
             None => true,
         }
     }
@@ -665,4 +693,57 @@ pub trait Tool: Send + Sync {
         arguments: serde_json::Value,
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolOutput>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permissions::{Action, PermissionEngine, Rule, Ruleset};
+    use std::sync::Arc;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-tool-audit-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn permits_records_permission_decision_details() {
+        let dir = temp_dir("permission");
+        let audit = Arc::new(audit::AuditSink::new(dir.join("audit.jsonl"), "ses_perm"));
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("write", "src/**", Action::Allow),
+            Rule::new("bash", "rm *", Action::Deny),
+        ])));
+        let ctx = ToolContext::new(dir.clone())
+            .with_permissions(engine)
+            .with_audit(audit.clone());
+
+        assert!(ctx.permits("write", "src/lib.rs"));
+        assert!(!ctx.permits("bash", "rm target"));
+
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "permission_decision"
+                && record["tool"] == "write"
+                && record["pattern"] == "src/**"
+                && record["decision"] == "allow"
+                && record["outcome"] == "allowed"
+        }));
+        assert!(records.iter().any(|record| {
+            record["type"] == "permission_decision"
+                && record["tool"] == "bash"
+                && record["pattern"] == "rm *"
+                && record["decision"] == "deny"
+                && record["outcome"] == "denied"
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
