@@ -40,6 +40,8 @@ use thiserror::Error;
 use tokio::{net::TcpListener, sync::broadcast, sync::watch};
 use tools::{ToolContext, ToolRegistry};
 
+mod openapi;
+
 /// First allowed port for `cortex serve` and server test fixtures.
 pub const MIN_PORT: u16 = 3200;
 /// Last allowed port for `cortex serve` and server test fixtures.
@@ -240,6 +242,7 @@ pub fn app_with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider
 pub fn app_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi::openapi_json))
         .route("/event", get(event_stream))
         .route("/session", get(list_sessions).post(create_session))
         .route("/session/{id}", get(get_session).delete(delete_session))
