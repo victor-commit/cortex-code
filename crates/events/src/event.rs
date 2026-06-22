@@ -1,9 +1,9 @@
 //! Typed event definitions carried on the [`EventBus`](crate::EventBus).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The surface that produced an event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
     /// The interactive terminal UI.
@@ -57,7 +57,7 @@ impl Surface {
 }
 
 /// The phase of a process/surface lifecycle transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecyclePhase {
     /// A surface is starting up.
@@ -78,7 +78,7 @@ impl LifecyclePhase {
 }
 
 /// A process/surface lifecycle event (e.g. a surface starting up).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lifecycle {
     /// Whether the surface is starting up or shutting down.
     pub phase: LifecyclePhase,
@@ -89,7 +89,7 @@ pub struct Lifecycle {
 }
 
 /// The concrete answer to a permission ask: run the action or block it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionDecision {
     /// The gated action may proceed.
@@ -114,7 +114,7 @@ impl PermissionDecision {
 /// The payload names the tool and the pattern (the matching rule's pattern, or the action's
 /// subject when no rule matched and the default `ask` applied) plus the concrete request subject,
 /// so a subscriber can surface or audit exactly what is awaiting approval.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionAsked {
     /// Owning session id when the ask belongs to a user turn.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ pub struct PermissionAsked {
 }
 
 /// A pending permission ask was answered with a decision.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionReplied {
     /// Owning session id when the reply belongs to a user turn.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,7 +152,7 @@ pub struct PermissionReplied {
 /// A connected MCP server's advertised tool set changed at runtime (the server sent a
 /// tool-list-changed notification and the catalogue was re-listed), so subscribers can refresh
 /// without restarting.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpToolsChanged {
     /// The configured MCP server whose tool set changed.
     pub server: String,
@@ -162,7 +162,7 @@ pub struct McpToolsChanged {
 
 /// A connected MCP server's advertised resource set changed at runtime, so subscribers can refresh
 /// without restarting.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpResourcesChanged {
     /// The configured MCP server whose resource set changed.
     pub server: String,
@@ -172,7 +172,7 @@ pub struct McpResourcesChanged {
 
 /// A connected MCP server's advertised prompt set changed at runtime, so subscribers can refresh
 /// without restarting.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpPromptsChanged {
     /// The configured MCP server whose prompt set changed.
     pub server: String,
@@ -181,7 +181,7 @@ pub struct McpPromptsChanged {
 }
 
 /// A model requested a tool call during a turn.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallEvent {
     /// Owning session id when the call belongs to a user turn.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,7 +198,7 @@ pub struct ToolCallEvent {
 }
 
 /// A tool call completed and produced a model-visible result.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultEvent {
     /// Owning session id when the result belongs to a user turn.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,7 +215,7 @@ pub struct ToolResultEvent {
 }
 
 /// A server/runner turn started for a session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnStartedEvent {
     /// Owning session id.
     pub session_id: String,
@@ -224,7 +224,7 @@ pub struct TurnStartedEvent {
 }
 
 /// A fragment of assistant-visible text for one session turn.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantTextDeltaEvent {
     /// Owning session id.
     pub session_id: String,
@@ -235,7 +235,7 @@ pub struct AssistantTextDeltaEvent {
 }
 
 /// A fragment of model reasoning for one session turn.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantReasoningDeltaEvent {
     /// Owning session id.
     pub session_id: String,
@@ -246,7 +246,7 @@ pub struct AssistantReasoningDeltaEvent {
 }
 
 /// Per-turn token usage reported by the model provider.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnUsageEvent {
     /// Owning session id.
     pub session_id: String,
@@ -264,7 +264,7 @@ pub struct TurnUsageEvent {
 }
 
 /// A normalized turn failure.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnErrorEvent {
     /// Owning session id.
     pub session_id: String,
@@ -277,7 +277,7 @@ pub struct TurnErrorEvent {
 }
 
 /// A turn reached a terminal state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnDoneEvent {
     /// Owning session id.
     pub session_id: String,
@@ -294,7 +294,7 @@ pub struct TurnDoneEvent {
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
 /// (in-process today, the server SSE stream later) observe named fields rather than opaque
 /// strings. Variants serialize with an internal `kind` tag, making them SSE/JSON ready.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// A process/surface lifecycle transition.

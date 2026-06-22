@@ -71,6 +71,26 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                             }
                         }
                     }
+                },
+                "post": {
+                    "operationId": "publishSurfaceEvent",
+                    "summary": "Publish a typed event from an attached local surface onto the SSE stream.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["kind"],
+                                    "description": "A typed Cortex event payload."
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Event publication acknowledgement.", "EventPublishResponse"),
+                        "400": json_response("Malformed event payload.", "ErrorResponse")
+                    }
                 }
             },
             "/session": {
@@ -333,6 +353,14 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "kind": { "type": ["string", "null"] }
                     }
                 },
+                "EventPublishResponse": {
+                    "type": "object",
+                    "required": ["status", "kind"],
+                    "properties": {
+                        "status": { "type": "string", "const": "published" },
+                        "kind": { "type": "string" }
+                    }
+                },
                 "HealthResponse": {
                     "type": "object",
                     "required": ["status"],
@@ -475,7 +503,7 @@ pub(crate) fn openapi_document() -> serde_json::Value {
 }
 
 const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
-    ("/event", &["get"]),
+    ("/event", &["get", "post"]),
     ("/session", &["get", "post"]),
     ("/session/{id}", &["get", "delete"]),
     ("/session/{id}/message", &["get", "post"]),

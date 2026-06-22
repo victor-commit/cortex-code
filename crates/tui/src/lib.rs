@@ -15,6 +15,7 @@ mod lsp_bridge;
 mod mcp_runtime;
 mod mention;
 mod permission;
+mod remote;
 mod shell;
 mod slash;
 mod tool_card;
@@ -42,11 +43,36 @@ use ratatui::backend::{Backend, CrosstermBackend};
 
 pub use app::{App, Status};
 
+/// Startup options for the interactive TUI.
+#[derive(Debug, Clone, Default)]
+pub struct LaunchOptions {
+    /// Persisted session id to attach on startup.
+    pub session: Option<String>,
+    /// Loopback `cortex serve` origin used for SSE event publication, share creation, and aborts.
+    pub server_url: Option<String>,
+}
+
+impl LaunchOptions {
+    /// Build options from environment variables used by black-box TUI validation harnesses.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            session: env_non_empty("CORTEX_SESSION"),
+            server_url: env_non_empty("CORTEX_SERVER_URL"),
+        }
+    }
+}
+
 /// Launches the interactive TUI, returning a process exit code.
 ///
 /// Requires both stdin and stdout to be a TTY; otherwise it fails fast with a clear
 /// message instead of blocking on a terminal that cannot deliver key events.
 pub fn launch() -> ExitCode {
+    launch_with_options(LaunchOptions::from_env())
+}
+
+/// Launch the interactive TUI with explicit startup options.
+pub fn launch_with_options(options: LaunchOptions) -> ExitCode {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         eprintln!(
             "cortex: the interactive TUI requires a TTY on stdin and stdout. \
@@ -55,7 +81,7 @@ pub fn launch() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match run() {
+    match run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("cortex: TUI error: {err}");
@@ -64,7 +90,7 @@ pub fn launch() -> ExitCode {
     }
 }
 
-fn run() -> io::Result<()> {
+fn run(options: LaunchOptions) -> io::Result<()> {
     let mut app = App::new(initial_status());
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
@@ -78,6 +104,19 @@ fn run() -> io::Result<()> {
     // Bind durable session persistence to the shared store so interactive turns are recorded and
     // become resumable from headless `cortex run` and the session picker (cross-surface continuity).
     app.set_session_store(db::DbPathInputs::from_process().resolve());
+    let server_url = options
+        .server_url
+        .or_else(|| env_non_empty("CORTEX_SERVER_URL"));
+    if let Some(url) = server_url {
+        match remote::RemoteServer::from_url(&url) {
+            Ok(server) => app.set_remote_server(Some(server)),
+            Err(err) => app.note_error(format!("Could not attach to server: {err}")),
+        }
+    }
+    let initial_session = options.session.or_else(|| env_non_empty("CORTEX_SESSION"));
+    if let Some(session) = initial_session {
+        app.attach_session(&session);
+    }
     // Connect configured MCP servers once for the attached TUI so `/mcp` and tool materialization
     // share a live catalogue. Runtime `mcp.tools.changed` notifications flow into the app state and
     // update the visible MCP view without a restart.
@@ -170,11 +209,13 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         // interrupt seam: the UI sets it (Esc) to stop the turn gracefully.
         if let Some(prompt) = app.take_pending_prompt() {
             let cancel = Arc::new(AtomicBool::new(false));
+            let remote = app.remote_bridge_for_turn();
             let rx = turn::spawn(
                 prompt.clone(),
                 app.history_snapshot(),
                 app.active_model(),
                 app.mcp_manager(),
+                remote,
                 cancel.clone(),
             );
             app.begin_turn(prompt, rx, cancel);
@@ -216,12 +257,18 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
             let _ = copy_to_clipboard(terminal, &text);
         }
 
+        // Apply a server-side abort request before draining new deltas so the stream halts promptly.
+        app.poll_remote_abort();
+
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
 
         // Apply MCP live catalogue events (notably `mcp.tools.changed`) so an open `/mcp` view is
         // refreshed from the manager's current tool set without relaunching the TUI.
         app.poll_mcp();
+
+        // Pull in messages appended to the attached session by the server surface.
+        app.poll_remote_session();
 
         // Expire any toasts whose display window has elapsed so they auto-dismiss on a timer.
         app.tick_toasts();
@@ -231,6 +278,12 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         }
     }
     Ok(())
+}
+
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// Suspend the TUI, open the user's external editor to compose prompt text, then restore the TUI

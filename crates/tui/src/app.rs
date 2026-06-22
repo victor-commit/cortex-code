@@ -5,7 +5,7 @@
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
@@ -25,6 +25,7 @@ use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
 use crate::permission::PermissionAsk;
+use crate::remote::RemoteServer;
 use crate::shell;
 use crate::slash;
 use crate::tool_card::ToolCard;
@@ -395,6 +396,14 @@ pub struct App {
     /// the durable id a headless `cortex run --session <id>` resumes; it is surfaced in the footer
     /// once known so the same conversation is addressable across surfaces.
     session_id: Option<String>,
+    /// Attached loopback server, when configured. Used to publish TUI turn events to `/event`,
+    /// create server-backed `/share` URLs, and observe server-driven abort requests.
+    remote_server: Option<RemoteServer>,
+    /// Message ids already represented in the transcript/history. This lets the TUI poll the
+    /// shared store and append messages created by the server without duplicating its own messages.
+    seen_message_ids: BTreeSet<String>,
+    /// Last time the attached-session store was polled for server-created messages.
+    last_remote_sync: Option<Instant>,
 }
 
 impl App {
@@ -445,6 +454,9 @@ impl App {
             pending_permission: None,
             db_path: None,
             session_id: None,
+            remote_server: None,
+            seen_message_ids: BTreeSet::new(),
+            last_remote_sync: None,
         }
     }
 
@@ -500,6 +512,16 @@ impl App {
     /// real database; opening per write degrades gracefully when the store cannot be opened.
     pub fn set_session_store(&mut self, path: Option<PathBuf>) {
         self.db_path = path;
+    }
+
+    /// Attach or detach the loopback server bridge used by cross-surface validation.
+    pub fn set_remote_server(&mut self, server: Option<RemoteServer>) {
+        self.remote_server = server;
+    }
+
+    /// Load a persisted session at startup, used by `cortex tui --session <id>`.
+    pub fn attach_session(&mut self, id: &str) {
+        self.load_session(id);
     }
 
     /// The active model id (the value the footer shows and the next turn runs against), used to
@@ -636,6 +658,17 @@ impl App {
         self.pending_prompt.take()
     }
 
+    /// Build the attached-server bridge for the next local TUI turn.
+    ///
+    /// This ensures a durable session id exists before the worker starts streaming so every event
+    /// posted to the server carries the same session id the transcript and database use.
+    #[must_use]
+    pub fn remote_bridge_for_turn(&mut self) -> Option<crate::turn::RemoteBridge> {
+        let server = self.remote_server.clone()?;
+        let session_id = self.ensure_session_id()?;
+        Some(crate::turn::RemoteBridge::new(server, session_id))
+    }
+
     /// Begin a streaming turn for `prompt`: record the user message, open an in-progress assistant
     /// entry, attach the worker's event channel, and start the busy indicator.
     ///
@@ -736,6 +769,60 @@ impl App {
         for server in changed_servers {
             self.push_toast(ToastLevel::Info, format!("MCP catalogue updated: {server}"));
         }
+        true
+    }
+
+    /// Apply server-created messages for the attached session from the shared database.
+    ///
+    /// The server persists user messages when a remote turn starts and assistant messages when it
+    /// completes. Polling the shared store makes those changes appear in the attached TUI without
+    /// reopening `/sessions` or manually reloading the transcript.
+    pub fn poll_remote_session(&mut self) -> bool {
+        if self.remote_server.is_none() || self.is_busy() {
+            return false;
+        }
+        if self
+            .last_remote_sync
+            .is_some_and(|last| last.elapsed() < Duration::from_millis(250))
+        {
+            return false;
+        }
+        self.last_remote_sync = Some(Instant::now());
+        let Some(id) = self.session_id.clone() else {
+            return false;
+        };
+        let loaded = match self.load_persisted_session(&id) {
+            Ok(Some(loaded)) => loaded,
+            _ => return false,
+        };
+        let mut changed = false;
+        for message in loaded.messages {
+            if self.seen_message_ids.insert(message.id.clone()) {
+                self.append_loaded_message(&message);
+                changed = true;
+            }
+        }
+        if changed {
+            self.pin_to_bottom();
+        }
+        changed
+    }
+
+    /// Observe a server-side abort marker for the active remote session and interrupt the local
+    /// TUI turn promptly. The marker is removed after being consumed so one abort affects one turn.
+    pub fn poll_remote_abort(&mut self) -> bool {
+        if self.remote_server.is_none() || !self.is_busy() {
+            return false;
+        }
+        let Some(id) = self.session_id.as_deref() else {
+            return false;
+        };
+        let marker = remote_abort_path(id);
+        if !marker.is_file() {
+            return false;
+        }
+        let _ = std::fs::remove_file(marker);
+        self.interrupt_turn();
         true
     }
 
@@ -1538,6 +1625,26 @@ impl App {
     /// share id, persist a small reference file under the data directory (best-effort), and surface
     /// the loopback URL and identifier. Only local share is in scope (no external upload).
     fn share_session(&mut self) {
+        if let Some(server) = self.remote_server.clone()
+            && let Some(session_id) = self.ensure_session_id()
+        {
+            match server.share_session(&session_id) {
+                Ok(share) => {
+                    self.transcript.push(Entry::Notice(format!(
+                        "Local share reference created: {}  ·  id {}",
+                        share.url, share.share_id
+                    )));
+                    self.push_toast(ToastLevel::Success, "Share link created");
+                    return;
+                }
+                Err(err) => {
+                    self.transcript
+                        .push(Entry::Notice(format!("Server share failed: {err}")));
+                    self.push_toast(ToastLevel::Error, "Share failed");
+                    return;
+                }
+            }
+        }
         let id = local_share_id();
         let url = format!("http://127.0.0.1:3200/share/{id}");
         let notice = match write_share_reference(&id, &self.status.session) {
@@ -1832,7 +1939,9 @@ impl App {
             return;
         };
         if let Some(db) = self.open_store() {
-            let _ = db.messages().create(&id, role, content);
+            if let Ok(message) = db.messages().create(&id, role, content) {
+                self.seen_message_ids.insert(message.id);
+            }
         }
     }
 
@@ -1961,6 +2070,24 @@ impl App {
             .and_then(|entry| entry.id.clone())
     }
 
+    fn append_loaded_message(&mut self, message: &db::Message) {
+        match message.role.as_str() {
+            "user" => {
+                self.transcript.push(Entry::User(message.content.clone()));
+                self.history.push(Message::user(message.content.clone()));
+            }
+            "assistant" => {
+                self.transcript.push(Entry::Assistant(AssistantTurn {
+                    reasoning: String::new(),
+                    answer: message.content.clone(),
+                }));
+                self.history
+                    .push(Message::assistant(message.content.clone()));
+            }
+            _ => {}
+        }
+    }
+
     /// Load a persisted session's transcript into the view (`Enter` on a session-picker row): the
     /// stored user/assistant messages replace the current transcript and projected history, and the
     /// footer's session label updates. Ignored while a turn streams; a read failure surfaces a
@@ -1983,23 +2110,11 @@ impl App {
 
         self.transcript.clear();
         self.history.clear();
+        self.seen_message_ids.clear();
         self.usage = UsageSummary::default();
         for message in &session.messages {
-            match message.role.as_str() {
-                "user" => {
-                    self.transcript.push(Entry::User(message.content.clone()));
-                    self.history.push(Message::user(message.content.clone()));
-                }
-                "assistant" => {
-                    self.transcript.push(Entry::Assistant(AssistantTurn {
-                        reasoning: String::new(),
-                        answer: message.content.clone(),
-                    }));
-                    self.history
-                        .push(Message::assistant(message.content.clone()));
-                }
-                _ => {}
-            }
+            self.seen_message_ids.insert(message.id.clone());
+            self.append_loaded_message(message);
         }
         // Adopt the loaded session as the active durable session so subsequent turns append to it,
         // and honor its persisted model choice (if any) so the footer and the next turn match what
@@ -2150,6 +2265,7 @@ impl App {
         }
         self.transcript.clear();
         self.history.clear();
+        self.seen_message_ids.clear();
         self.usage = UsageSummary::default();
         // Detach from the current durable session so the next turn creates a fresh one rather than
         // appending to the prior conversation; the footer returns to the "new" placeholder until it
@@ -3049,6 +3165,10 @@ fn write_share_reference(id: &str, session: &str) -> io::Result<PathBuf> {
     );
     std::fs::write(&path, body)?;
     Ok(path)
+}
+
+fn remote_abort_path(session_id: &str) -> PathBuf {
+    data_subdir("remote-abort").join(format!("{session_id}.abort"))
 }
 
 /// Resolve a named subdirectory under the data directory, mirroring [`export_dir`]'s precedence.
@@ -4820,6 +4940,51 @@ mod tests {
             "ACP-created session should be present in picker rows: {:?}",
             dialog.items
         );
+    }
+
+    #[test]
+    fn attached_tui_polls_server_created_messages_into_the_transcript() {
+        // VAL-CROSS-038 in-process seam: a server appends messages to the shared session store, and
+        // the attached TUI picks them up without reopening the session picker.
+        let path = session_store_path("remote-sync");
+        let session_id = {
+            let db = db::Database::open(&path).expect("open seed");
+            let session = db.sessions().create(Some("remote sync")).expect("session");
+            db.messages()
+                .create(&session.id, "user", "initial local prompt")
+                .expect("initial message");
+            session.id
+        };
+
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        a.set_remote_server(Some(
+            crate::remote::RemoteServer::from_url("http://127.0.0.1:3200").unwrap(),
+        ));
+        a.attach_session(&session_id);
+        let before = a.transcript.len();
+
+        {
+            let db = db::Database::open(&path).expect("reopen seed");
+            db.messages()
+                .create(&session_id, "user", "server injected prompt")
+                .expect("server user");
+            db.messages()
+                .create(&session_id, "assistant", "server injected answer")
+                .expect("server assistant");
+        }
+
+        assert!(
+            a.poll_remote_session(),
+            "new remote messages should be applied"
+        );
+        assert!(
+            a.transcript.len() >= before + 2,
+            "the injected user and assistant messages are appended"
+        );
+        let rendered = a.render_session_markdown();
+        assert!(rendered.contains("server injected prompt"), "{rendered}");
+        assert!(rendered.contains("server injected answer"), "{rendered}");
     }
 
     /// Manually drive the session picker into a state with one persisted entry, bypassing the store

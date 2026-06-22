@@ -46,6 +46,7 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     let paths = document["paths"].as_object().expect("paths object");
     assert_method(paths, "/health", "get", 200);
     assert_method(paths, "/event", "get", 200);
+    assert_method(paths, "/event", "post", 200);
     assert_method(paths, "/session", "get", 200);
     assert_method(paths, "/session", "post", 201);
     assert_method(paths, "/session/{id}", "get", 200);

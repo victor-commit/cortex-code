@@ -63,7 +63,11 @@ fn main() -> ExitCode {
     }
 
     match cli.command {
-        None | Some(Command::Tui(_)) => tui::launch(),
+        None => tui::launch(),
+        Some(Command::Tui(args)) => tui::launch_with_options(tui::LaunchOptions {
+            session: args.session,
+            server_url: args.server,
+        }),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),

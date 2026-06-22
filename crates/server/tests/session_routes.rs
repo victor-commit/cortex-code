@@ -7,7 +7,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use db::Session;
 use futures_util::future::BoxFuture;
-use llm::{FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Provider, Role, Usage};
+use llm::{
+    FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Provider, Role, ToolCall, Usage,
+};
 use tower::ServiceExt;
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -543,6 +545,65 @@ async fn abort_stops_in_flight_turn_without_assistant_completion() {
 }
 
 #[tokio::test]
+async fn server_tool_edit_records_checkpoint_revertible_by_tui_store() {
+    let scratch = Scratch::new("server-checkpoint-edit");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let target = workspace.join("target.txt");
+    let h0 = "H0 server checkpoint target\n";
+    std::fs::write(&target, h0).expect("seed target");
+    let checkpoint_base = scratch.dir.join("checkpoints");
+    let provider = Arc::new(CheckpointEditingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_cwd(workspace.clone())
+        .with_checkpoint_base(checkpoint_base.clone());
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"text":"edit target.txt from H0 to H1 using tools"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("edited target"),
+        "H1 server checkpoint target\n",
+        "the server-driven tool edit should change the file"
+    );
+
+    let store = checkpoints::ShadowStore::open(
+        &workspace,
+        &checkpoint_base.join(checkpoints::workspace_key(&workspace)),
+    )
+    .expect("reopen checkpoint store like attached TUI");
+    assert!(
+        store.history().expect("history").can_undo(),
+        "server-originated edit should append an undoable checkpoint"
+    );
+    let undo = store.undo().expect("undo through attached TUI store");
+    assert!(
+        matches!(undo, checkpoints::RestoreOutcome::Restored { .. }),
+        "undo should restore a recorded turn, got {undo:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("restored target"),
+        h0,
+        "the attached TUI checkpoint store should restore the exact pre-edit bytes"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_prompts_to_distinct_sessions_are_isolated() {
     let scratch = Scratch::new("server-message-concurrent");
     let app = server::app_with_provider(scratch.db_path(), Arc::new(EchoProvider::default()));
@@ -953,6 +1014,61 @@ async fn create_session(app: &axum::Router) -> Session {
 struct EchoProvider {
     calls: AtomicUsize,
     delay: Option<Duration>,
+}
+
+#[derive(Debug, Default)]
+struct CheckpointEditingProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for CheckpointEditingProvider {
+    fn stream<'a>(&'a self, _request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = match call {
+                0 => vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_read".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: r#"{"path":"target.txt"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ],
+                1 => vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_edit".to_owned(),
+                        name: "edit".to_owned(),
+                        arguments: serde_json::json!({
+                            "path": "target.txt",
+                            "oldString": "H0 server checkpoint target\n",
+                            "newString": "H1 server checkpoint target\n"
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ],
+                _ => vec![
+                    LlmEvent::TextDelta {
+                        text: "server edit complete".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 13,
+                        output_tokens: 5,
+                        total_tokens: 18,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
 }
 
 impl EchoProvider {

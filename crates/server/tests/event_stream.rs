@@ -197,6 +197,80 @@ async fn command_route_surfaces_correlated_tool_lifecycle_events() {
     );
 }
 
+#[tokio::test]
+async fn posted_tui_turn_events_are_rebroadcast_and_abort_observes_remote_activity() {
+    let scratch = Scratch::new("server-event-posted-tui");
+    let bus = Arc::new(EventBus::new());
+    let state = server::ServerState::new(scratch.db_path()).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+    let message_id = "tui-msg-remote-1";
+
+    post_event(
+        &app,
+        &Event::turn_started(session.id.clone(), message_id.to_owned()),
+    )
+    .await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/abort", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("abort response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let abort: serde_json::Value = json_body(response).await;
+    assert_eq!(abort["status"], "abort_requested");
+    assert_eq!(
+        abort["active"], true,
+        "a posted TUI turn.started event should make server abort observe remote activity"
+    );
+
+    post_event(
+        &app,
+        &Event::turn_usage(
+            session.id.clone(),
+            message_id.to_owned(),
+            3,
+            4,
+            7,
+            Some(0.1),
+        ),
+    )
+    .await;
+    post_event(
+        &app,
+        &Event::turn_done(session.id.clone(), message_id.to_owned(), "stop", 1),
+    )
+    .await;
+
+    let events = collect_data_events(&mut stream, 3, Duration::from_secs(3)).await;
+    assert!(
+        events.iter().any(|event| event["kind"] == "turn.started"
+            && event["session_id"] == session.id
+            && event["message_id"] == message_id),
+        "posted turn.started should be visible on SSE: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "turn.usage"
+            && event["session_id"] == session.id
+            && event["total_tokens"] == 7),
+        "posted turn.usage should be visible on SSE: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "turn.done"
+            && event["session_id"] == session.id
+            && event["reason"] == "stop"),
+        "posted turn.done should be visible on SSE: {events:?}"
+    );
+}
+
 fn assert_sse_content_type(response: &axum::response::Response) {
     let content_type = response
         .headers()
@@ -207,6 +281,27 @@ fn assert_sse_content_type(response: &axum::response::Response) {
         content_type.starts_with("text/event-stream"),
         "expected text/event-stream content type, got {content_type:?}"
     );
+}
+
+async fn post_event(app: &axum::Router, event: &Event) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/event")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_string(event).expect("event JSON"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("event post response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "published");
+    assert_eq!(body["kind"], event.kind());
 }
 
 async fn subscribe(app: &axum::Router) -> axum::body::BodyDataStream {

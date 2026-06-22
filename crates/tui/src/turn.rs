@@ -22,6 +22,7 @@ use std::time::Duration;
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn,
 };
+use events::Event;
 use llm::Message;
 use redaction::guard_outbound;
 use settings::EffectiveConfig;
@@ -49,6 +50,51 @@ pub enum TurnMessage {
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
 const OUTBOUND_OPERATION: &str = "LLM turn";
 
+/// Server bridge used when the TUI is attached to `cortex serve`.
+#[derive(Clone, Debug)]
+pub struct RemoteBridge {
+    server: crate::remote::RemoteServer,
+    session_id: String,
+    message_id: String,
+}
+
+impl RemoteBridge {
+    #[must_use]
+    pub fn new(server: crate::remote::RemoteServer, session_id: String) -> Self {
+        Self {
+            server,
+            session_id,
+            message_id: remote_message_id(),
+        }
+    }
+
+    fn publish(&self, event: Event) {
+        let _ = self.server.publish_event(&event);
+    }
+
+    fn publish_started(&self) {
+        self.publish(Event::turn_started(
+            self.session_id.clone(),
+            self.message_id.clone(),
+        ));
+    }
+
+    fn publish_runner_event(&self, event: &RunnerEvent) {
+        if let Some(event) = event_for_runner(&self.session_id, &self.message_id, event) {
+            self.publish(event);
+        }
+    }
+
+    fn publish_aborted(&self) {
+        self.publish(Event::turn_done(
+            self.session_id.clone(),
+            self.message_id.clone(),
+            "aborted",
+            0,
+        ));
+    }
+}
+
 /// Spawn a worker thread that streams a turn for `prompt` (with prior `history` for context),
 /// returning the receiver the UI drains for [`TurnMessage`]s.
 ///
@@ -65,6 +111,7 @@ pub fn spawn(
     history: Vec<Message>,
     model: String,
     mcp_manager: Option<Arc<mcp::McpManager>>,
+    remote: Option<RemoteBridge>,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<TurnMessage> {
     let (tx, rx) = mpsc::channel();
@@ -83,7 +130,10 @@ pub fn spawn(
                             // real this turn. The dispatcher emits a FileDiff for each change.
                             let cwd = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                            let session_id = ephemeral_session_id();
+                            let session_id = remote
+                                .as_ref()
+                                .map(|remote| remote.session_id.clone())
+                                .unwrap_or_else(ephemeral_session_id);
                             let lsp_hooks =
                                 Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
                             let mutation_hooks =
@@ -127,14 +177,25 @@ pub fn spawn(
                                 dispatcher = dispatcher.with_mcp(manager.clone());
                             }
                             let runner = SessionRunner::default();
+                            if let Some(remote) = &remote {
+                                remote.publish_started();
+                            }
                             // Race the streaming turn against the interrupt signal: if the UI asks
                             // to cancel, the runner future is dropped here (closing the upstream
                             // stream) and the turn stops streaming at a safe boundary.
-                            tokio::select! {
+                            let cancelled = tokio::select! {
                                 _ = runner.run_with_tools(&setup.provider, setup.turn, &dispatcher, |event| {
+                                    if let Some(remote) = &remote {
+                                        remote.publish_runner_event(&event);
+                                    }
                                     let _ = tx_events.send(TurnMessage::Event(event));
-                                }) => {}
-                                () = wait_for_cancel(cancel.clone()) => {}
+                                }) => false,
+                                () = wait_for_cancel(cancel.clone()) => true,
+                            };
+                            if cancelled
+                                && let Some(remote) = &remote
+                            {
+                                remote.publish_aborted();
                             }
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
                             // orphan process outlives the turn (even after an interrupt).
@@ -182,14 +243,84 @@ async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
     }
 }
 
+fn event_for_runner(session_id: &str, message_id: &str, event: &RunnerEvent) -> Option<Event> {
+    match event {
+        RunnerEvent::TextDelta { text } => Some(Event::assistant_text_delta(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            text.clone(),
+        )),
+        RunnerEvent::Reasoning { text } => Some(Event::assistant_reasoning_delta(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            text.clone(),
+        )),
+        RunnerEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => Some(Event::tool_call_for_turn(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            id.clone(),
+            name.clone(),
+            arguments.clone(),
+        )),
+        RunnerEvent::ToolResult {
+            id, name, is_error, ..
+        } => Some(Event::tool_result_for_turn(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            id.clone(),
+            name.clone(),
+            *is_error,
+        )),
+        RunnerEvent::Usage(usage) => Some(Event::turn_usage(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+            usage.cost,
+        )),
+        RunnerEvent::Error { message, kind } => Some(Event::turn_error(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            kind.clone(),
+            message.clone(),
+        )),
+        RunnerEvent::Done { reason, steps } => Some(Event::turn_done(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            finish_reason_name(reason),
+            *steps,
+        )),
+        RunnerEvent::ToolSetChanged { .. } => None,
+    }
+}
+
+fn finish_reason_name(reason: &llm::FinishReason) -> String {
+    serde_json::to_value(reason)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("{reason:?}"))
+}
+
 /// An ephemeral session id scoping this turn's tool context (the TUI does not yet persist sessions;
 /// the id only keys the in-memory per-session todo list for the turn).
 fn ephemeral_session_id() -> String {
-    let nanos = std::time::SystemTime::now()
+    format!("tui-{}-{}", std::process::id(), monotonic_nanos())
+}
+
+fn remote_message_id() -> String {
+    format!("tui-msg-{}-{}", std::process::id(), monotonic_nanos())
+}
+
+fn monotonic_nanos() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    format!("tui-{}-{nanos}", std::process::id())
+        .unwrap_or_default()
 }
 
 /// Build the provider and assembled [`Turn`] for a prompt, running against the supplied active

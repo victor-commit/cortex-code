@@ -4,7 +4,7 @@
 //! turns are backed by the shared SQLite repositories and the core durable runner so the server
 //! remains a thin surface over the engine and store.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -72,9 +72,12 @@ pub struct HealthResponse {
 #[derive(Clone)]
 pub struct ServerState {
     db_path: PathBuf,
+    cwd: PathBuf,
+    checkpoint_base: Option<PathBuf>,
     provider: ProviderSource,
     auth: ServerAuth,
     active_turns: ActiveTurns,
+    remote_turns: RemoteTurns,
     event_bus: Arc<EventBus>,
     prompt_buffers: PromptBuffers,
     local_shares: LocalShares,
@@ -86,9 +89,12 @@ impl ServerState {
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         Self {
             db_path: db_path.into(),
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            checkpoint_base: None,
             provider: ProviderSource::OpenRouter,
             auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
+            remote_turns: RemoteTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
@@ -100,12 +106,15 @@ impl ServerState {
     pub fn with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider>) -> Self {
         Self {
             db_path: db_path.into(),
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            checkpoint_base: None,
             provider: ProviderSource::Fixed {
                 model_id: providers::OPENROUTER_DEFAULT_MODEL.to_owned(),
                 provider,
             },
             auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
+            remote_turns: RemoteTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
@@ -116,6 +125,26 @@ impl ServerState {
     #[must_use]
     pub fn with_event_bus(mut self, event_bus: Arc<EventBus>) -> Self {
         self.event_bus = event_bus;
+        self
+    }
+
+    /// Override the working directory used by tool execution and checkpoints.
+    ///
+    /// The process server path leaves this at the process current directory; in-process tests use
+    /// it to avoid global `set_current_dir` races while still exercising real tools.
+    #[must_use]
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = cwd.into();
+        self
+    }
+
+    /// Override the base directory for the shadow checkpoint store.
+    ///
+    /// The process server path uses the standard data-dir resolution. Tests can inject a hermetic
+    /// base directory and later reopen the same store from another surface.
+    #[must_use]
+    pub fn with_checkpoint_base(mut self, base: impl Into<PathBuf>) -> Self {
+        self.checkpoint_base = Some(base.into());
         self
     }
 
@@ -149,6 +178,7 @@ impl std::fmt::Debug for ServerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerState")
             .field("db_path", &self.db_path)
+            .field("cwd", &self.cwd)
             .field("auth", &self.auth)
             .field("event_subscribers", &self.event_bus.subscriber_count())
             .field("prompt_buffers", &self.prompt_buffers.len())
@@ -268,6 +298,11 @@ struct ActiveTurns {
 }
 
 #[derive(Clone, Default)]
+struct RemoteTurns {
+    inner: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Clone, Default)]
 struct PromptBuffers {
     inner: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -383,7 +418,10 @@ pub fn app_with_state(state: ServerState) -> Router {
             "/openapi.json",
             get(openapi::openapi_json).options(preflight),
         )
-        .route("/event", get(event_stream).options(preflight))
+        .route(
+            "/event",
+            get(event_stream).post(publish_event).options(preflight),
+        )
         .route(
             "/session",
             get(list_sessions).post(create_session).options(preflight),
@@ -641,6 +679,19 @@ async fn event_stream(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
+async fn publish_event(
+    State(state): State<ServerState>,
+    Json(event): Json<Event>,
+) -> Json<EventPublishResponse> {
+    state.remote_turns.observe(&event);
+    let kind = event.kind();
+    state.event_bus.publish(&event);
+    Json(EventPublishResponse {
+        status: "published",
+        kind,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateSessionRequest {
@@ -723,6 +774,12 @@ struct PromptDraftResponse {
 struct AbortResponse {
     status: &'static str,
     active: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct EventPublishResponse {
+    status: &'static str,
+    kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -971,12 +1028,11 @@ async fn execute_command(
     ));
 
     let permission_engine = permission_engine_for_turn(state.event_bus.clone(), &id, &call_id)?;
-    let mut context =
-        ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .with_session(id.clone())
-            .with_todo_store(Arc::new(ServerTodoStore {
-                db_path: state.db_path.clone(),
-            }));
+    let mut context = ToolContext::new(state.cwd.clone())
+        .with_session(id.clone())
+        .with_todo_store(Arc::new(ServerTodoStore {
+            db_path: state.db_path.clone(),
+        }));
     if let Some(permission_engine) = permission_engine {
         context = context.with_permissions(permission_engine);
     }
@@ -1006,10 +1062,14 @@ async fn abort_session(
 ) -> Result<Json<AbortResponse>, ApiError> {
     let db = open_database(&state)?;
     db.sessions().require(&id).map_err(ApiError::from_db)?;
-    let active = state.active_turns.abort(&id)?;
+    let server_active = state.active_turns.abort(&id)?;
+    let remote_active = state.remote_turns.is_active(&id)?;
+    if let Err(err) = write_remote_abort_request(&id) {
+        eprintln!("cortex serve: failed to write remote abort marker for session {id}: {err}");
+    }
     Ok(Json(AbortResponse {
         status: "abort_requested",
-        active,
+        active: server_active || remote_active,
     }))
 }
 
@@ -1113,10 +1173,11 @@ async fn run_message_turn(
     let permission_engine =
         permission_engine_for_turn(state.event_bus.clone(), &session_id, &user_message.id)?;
     let dispatcher = ServerToolDispatcher::for_model(
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        state.cwd.clone(),
         &resolved.model_id,
         session_id.clone(),
         state.db_path.clone(),
+        state.checkpoint_base.clone(),
         permission_engine,
     );
     let outcome = run_cancellable_turn(
@@ -1396,6 +1457,7 @@ fn permission_config_error(err: RuleError) -> ApiError {
 struct ServerToolDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
+    checkpoint_recorder: Option<Arc<checkpoints::TurnRecorder>>,
 }
 
 impl ServerToolDispatcher {
@@ -1404,6 +1466,7 @@ impl ServerToolDispatcher {
         model_id: &str,
         session_id: String,
         db_path: PathBuf,
+        checkpoint_base: Option<PathBuf>,
         permissions: Option<Arc<PermissionEngine>>,
     ) -> Self {
         let registry = match ModelFamily::from_model_id(model_id) {
@@ -1412,17 +1475,32 @@ impl ServerToolDispatcher {
                 ToolRegistry::builtin()
             }
         };
+        let checkpoint_recorder = open_checkpoint_recorder(&cwd, checkpoint_base, &session_id);
         let mut context = ToolContext::new(cwd)
             .with_session(session_id)
             .with_todo_store(Arc::new(ServerTodoStore { db_path }));
         if let Some(permissions) = permissions {
             context = context.with_permissions(permissions);
         }
-        Self { registry, context }
+        if let Some(recorder) = &checkpoint_recorder {
+            context = context.with_checkpoints(Arc::new(ServerCheckpointRecorder {
+                inner: recorder.clone(),
+            }));
+        }
+        Self {
+            registry,
+            context,
+            checkpoint_recorder,
+        }
     }
 
     async fn shutdown(&self) {
         self.context.background_jobs().shutdown().await;
+        if let Some(recorder) = &self.checkpoint_recorder
+            && let Err(err) = recorder.finalize()
+        {
+            eprintln!("cortex serve: checkpoint finalization failed: {err}");
+        }
     }
 }
 
@@ -1444,6 +1522,31 @@ impl ToolDispatcher for ServerToolDispatcher {
             }
         })
     }
+}
+
+struct ServerCheckpointRecorder {
+    inner: Arc<checkpoints::TurnRecorder>,
+}
+
+impl tools::CheckpointRecorder for ServerCheckpointRecorder {
+    fn record_pre_image(&self, path: &Path) {
+        self.inner.record_pre_image(path);
+    }
+}
+
+fn open_checkpoint_recorder(
+    cwd: &Path,
+    checkpoint_base: Option<PathBuf>,
+    session_id: &str,
+) -> Option<Arc<checkpoints::TurnRecorder>> {
+    let store = match checkpoint_base {
+        Some(base) => {
+            let git_dir = base.join(checkpoints::workspace_key(cwd));
+            checkpoints::ShadowStore::open(cwd, &git_dir).ok()
+        }
+        None => checkpoints::ShadowStore::open_default(cwd).ok().flatten(),
+    }?;
+    Some(Arc::new(store.begin_turn(session_id.to_owned())))
 }
 
 struct ServerTodoStore {
@@ -1555,6 +1658,31 @@ fn escape_html(value: &str) -> String {
     escaped
 }
 
+fn write_remote_abort_request(session_id: &str) -> std::io::Result<()> {
+    let dir = data_subdir("remote-abort");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(format!("{session_id}.abort")), b"abort\n")
+}
+
+fn data_subdir(name: &str) -> PathBuf {
+    if let Some(dir) = env_non_empty("CORTEX_DATA_DIR") {
+        return PathBuf::from(dir).join(name);
+    }
+    if let Some(dir) = env_non_empty("XDG_DATA_HOME") {
+        return PathBuf::from(dir).join("cortex").join(name);
+    }
+    if let Some(home) = env_non_empty("HOME") {
+        return PathBuf::from(home).join(".local/share/cortex").join(name);
+    }
+    std::env::temp_dir().join("cortex").join(name)
+}
+
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 impl ActiveTurns {
     fn insert(
         &self,
@@ -1600,6 +1728,42 @@ impl ActiveTurns {
         if let Ok(mut active) = self.inner.lock() {
             active.remove(session_id);
         }
+    }
+}
+
+impl RemoteTurns {
+    fn observe(&self, event: &Event) {
+        match event {
+            Event::TurnStarted(turn) => self.insert(&turn.session_id),
+            Event::TurnDone(turn) => self.remove(&turn.session_id),
+            Event::TurnError(turn) => self.remove(&turn.session_id),
+            _ => {}
+        }
+    }
+
+    fn insert(&self, session_id: &str) {
+        if let Ok(mut active) = self.inner.lock() {
+            active.insert(session_id.to_owned());
+        }
+    }
+
+    fn remove(&self, session_id: &str) {
+        if let Ok(mut active) = self.inner.lock() {
+            active.remove(session_id);
+        }
+    }
+
+    fn is_active(&self, session_id: &str) -> Result<bool, ApiError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "remote turn registry is unavailable",
+                )
+            })?
+            .contains(session_id))
     }
 }
 

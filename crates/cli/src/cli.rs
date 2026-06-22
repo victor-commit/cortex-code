@@ -519,7 +519,15 @@ pub struct ConfigArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct TuiArgs {}
+pub struct TuiArgs {
+    /// Attach the TUI to an existing persisted session at startup.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+
+    /// Attach to a loopback `cortex serve` origin for remote control integration.
+    #[arg(long, value_name = "URL")]
+    pub server: Option<String>,
+}
 
 #[derive(Debug, Args)]
 pub struct ServeArgs {
