@@ -1,26 +1,34 @@
 //! Axum HTTP surface for `cortex serve`.
 //!
-//! This crate owns the local loopback listener and lightweight HTTP routes. Session CRUD is backed
-//! by the shared SQLite repositories; later M6 features can add message, SSE, and OpenAPI handlers
-//! here while reusing the same lifecycle shell.
+//! This crate owns the local loopback listener and lightweight HTTP routes. Session CRUD and prompt
+//! turns are backed by the shared SQLite repositories and the core durable runner so the server
+//! remains a thin surface over the engine and store.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
-use db::{Database, DbError, Session};
+use db::{Database, DbError, Message, Session, UsageTotals};
+use engine::{
+    CompactionPolicy, EnvironmentBlock, HistoryMessage, RunError, RunOutcome, RunnerEvent,
+    SessionRunner, SystemContext, Turn, project_history,
+};
 use events::{Event, EventBus, LifecyclePhase, Surface};
+use llm::{Provider, Usage};
+use providers::ResolvedModel;
+use redaction::guard_outbound;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::watch};
 
 /// First allowed port for `cortex serve` and server test fixtures.
 pub const MIN_PORT: u16 = 3200;
@@ -28,6 +36,8 @@ pub const MIN_PORT: u16 = 3200;
 pub const MAX_PORT: u16 = 3299;
 /// Canonical loopback bind address required by the server validation contract.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
+/// The outbound operation named when the network kill-switch refuses a server prompt turn.
+const OUTBOUND_OPERATION: &str = "LLM turn";
 
 /// Small machine-readable health response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,9 +51,11 @@ pub struct HealthResponse {
 /// The server stores a database path, not an in-memory session map. Each route opens the shared
 /// SQLite database and uses the `db` crate repositories, so sessions are durable across process
 /// restarts and visible to other surfaces that use the same path.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServerState {
     db_path: PathBuf,
+    provider: ProviderSource,
+    active_turns: ActiveTurns,
 }
 
 impl ServerState {
@@ -52,6 +64,21 @@ impl ServerState {
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         Self {
             db_path: db_path.into(),
+            provider: ProviderSource::OpenRouter,
+            active_turns: ActiveTurns::default(),
+        }
+    }
+
+    /// Build server state with a preconstructed provider, used by in-process route tests.
+    #[must_use]
+    pub fn with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider>) -> Self {
+        Self {
+            db_path: db_path.into(),
+            provider: ProviderSource::Fixed {
+                model_id: providers::OPENROUTER_DEFAULT_MODEL.to_owned(),
+                provider,
+            },
+            active_turns: ActiveTurns::default(),
         }
     }
 
@@ -72,6 +99,28 @@ impl ServerState {
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
+}
+
+impl std::fmt::Debug for ServerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerState")
+            .field("db_path", &self.db_path)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+enum ProviderSource {
+    OpenRouter,
+    Fixed {
+        model_id: String,
+        provider: Arc<dyn Provider>,
+    },
+}
+
+#[derive(Clone, Default)]
+struct ActiveTurns {
+    inner: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
 }
 
 /// Errors produced while preparing or running the local server.
@@ -158,12 +207,25 @@ pub fn app_with_db_path(db_path: impl Into<PathBuf>) -> Router {
     app(db_path)
 }
 
+/// Construct the axum application with a preconstructed provider.
+///
+/// This keeps route tests deterministic while the process `cortex serve` path still resolves the
+/// real OpenRouter provider at request time.
+pub fn app_with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider>) -> Router {
+    app_with_state(ServerState::with_provider(db_path, provider))
+}
+
 /// Construct the axum application from pre-resolved server state.
 pub fn app_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/session", get(list_sessions).post(create_session))
         .route("/session/{id}", get(get_session).delete(delete_session))
+        .route(
+            "/session/{id}/message",
+            get(list_messages).post(post_message),
+        )
+        .route("/session/{id}/abort", post(abort_session))
         .with_state(state)
 }
 
@@ -241,15 +303,89 @@ struct CreateSessionRequest {
     title: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageRequest {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    parts: Vec<MessagePart>,
+}
+
+impl MessageRequest {
+    fn into_prompt(self) -> Option<String> {
+        let part_text = self
+            .parts
+            .into_iter()
+            .filter(|part| part.kind.as_deref().unwrap_or("text") == "text")
+            .filter_map(|part| part.text)
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        non_empty(&part_text)
+            .or_else(|| self.text.and_then(|text| non_empty(&text)))
+            .or_else(|| self.content.and_then(|content| non_empty(&content)))
+            .or_else(|| self.message.and_then(|message| non_empty(&message)))
+            .or_else(|| self.prompt.and_then(|prompt| non_empty(&prompt)))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagePart {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MessageListResponse {
+    session: Session,
+    messages: Vec<Message>,
+    usage: UsageTotals,
+}
+
+#[derive(Debug, Serialize)]
+struct PromptResponse {
+    status: &'static str,
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Usage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<llm::FinishReason>,
+}
+
+#[derive(Debug, Serialize)]
+struct AbortResponse {
+    status: &'static str,
+    active: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
 }
 
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
+    kind: Option<String>,
 }
 
 impl ApiError {
@@ -257,11 +393,24 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            kind: None,
+        }
+    }
+
+    fn diagnostic(status: StatusCode, diagnostic: errors::Diagnostic) -> Self {
+        Self {
+            status,
+            kind: Some(diagnostic.kind().to_owned()),
+            message: diagnostic.to_string(),
         }
     }
 
     fn not_found(id: &str) -> Self {
         Self::new(StatusCode::NOT_FOUND, format!("no such session: {id}"))
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, message)
     }
 
     fn from_db(source: DbError) -> Self {
@@ -272,6 +421,21 @@ impl ApiError {
         };
         Self::new(status, source.to_string())
     }
+
+    fn from_run_error(error: &RunError) -> Self {
+        let status = match error.kind() {
+            "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
+            "no-credential" => StatusCode::UNAUTHORIZED,
+            "transport-unavailable" | "upstream" => StatusCode::BAD_GATEWAY,
+            "step-limit-exceeded" | "context-overflow" => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self {
+            status,
+            kind: Some(error.kind().to_owned()),
+            message: error.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -280,6 +444,7 @@ impl IntoResponse for ApiError {
             self.status,
             Json(ErrorResponse {
                 error: self.message,
+                kind: self.kind,
             }),
         )
             .into_response()
@@ -325,8 +490,304 @@ async fn delete_session(
     }
 }
 
+async fn list_messages(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<MessageListResponse>, ApiError> {
+    let db = open_database(&state)?;
+    let session = db.sessions().require(&id).map_err(ApiError::from_db)?;
+    let messages = db
+        .messages()
+        .list_for_session(&id)
+        .map_err(ApiError::from_db)?;
+    let usage = db.usage().session_totals(&id).map_err(ApiError::from_db)?;
+    Ok(Json(MessageListResponse {
+        session,
+        messages,
+        usage,
+    }))
+}
+
+async fn post_message(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<MessageRequest>,
+) -> Result<Json<PromptResponse>, ApiError> {
+    let prompt = payload
+        .into_prompt()
+        .ok_or_else(|| ApiError::bad_request("message body must include non-empty text"))?;
+    run_message_turn(state, id, prompt).await.map(Json)
+}
+
+async fn abort_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<AbortResponse>, ApiError> {
+    let db = open_database(&state)?;
+    db.sessions().require(&id).map_err(ApiError::from_db)?;
+    let active = state.active_turns.abort(&id)?;
+    Ok(Json(AbortResponse {
+        status: "abort_requested",
+        active,
+    }))
+}
+
 fn open_database(state: &ServerState) -> Result<Database, ApiError> {
     Database::open(state.db_path()).map_err(ApiError::from_db)
+}
+
+async fn run_message_turn(
+    state: ServerState,
+    session_id: String,
+    prompt: String,
+) -> Result<PromptResponse, ApiError> {
+    let db = open_database(&state)?;
+    let session = db
+        .sessions()
+        .require(&session_id)
+        .map_err(ApiError::from_db)?;
+
+    // The kill-switch wins before credential resolution, prompt persistence, or any outbound
+    // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
+    if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
+        return Err(ApiError::diagnostic(
+            StatusCode::SERVICE_UNAVAILABLE,
+            diagnostic,
+        ));
+    }
+
+    let resolved = resolve_turn_provider(&state.provider, session.model.as_deref())?;
+    let history = load_history(&db, &session_id)?;
+    let _user_message = db
+        .messages()
+        .create(&session_id, "user", &prompt)
+        .map_err(ApiError::from_db)?;
+    let (abort_tx, abort_rx) = watch::channel(false);
+    let _active = state
+        .active_turns
+        .insert(session_id.clone(), abort_tx)
+        .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
+
+    let system =
+        SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
+    let turn = Turn::new(&resolved.model_id, system, prompt)
+        .with_history(history)
+        .with_compaction(compaction_policy(&resolved.model));
+    let outcome = run_cancellable_turn(resolved.provider.as_ref(), turn, abort_rx).await;
+
+    let Some(outcome) = outcome else {
+        return Ok(PromptResponse {
+            status: "aborted",
+            model: resolved.model_id,
+            role: None,
+            content: None,
+            message: None,
+            usage: None,
+            finish_reason: None,
+        });
+    };
+
+    if let Some(error) = &outcome.error {
+        return Err(ApiError::from_run_error(error));
+    }
+
+    persist_usage(&db, &session_id, &outcome);
+    let assistant = db
+        .messages()
+        .create(&session_id, "assistant", outcome.answer())
+        .map_err(ApiError::from_db)?;
+
+    Ok(PromptResponse {
+        status: "completed",
+        model: resolved.model_id,
+        role: Some("assistant"),
+        content: Some(outcome.answer().to_owned()),
+        message: Some(assistant),
+        usage: outcome.usage,
+        finish_reason: Some(outcome.finish_reason),
+    })
+}
+
+struct ResolvedTurnProvider {
+    model_id: String,
+    model: ResolvedModel,
+    provider: Arc<dyn Provider>,
+}
+
+fn resolve_turn_provider(
+    source: &ProviderSource,
+    session_model: Option<&str>,
+) -> Result<ResolvedTurnProvider, ApiError> {
+    match source {
+        ProviderSource::OpenRouter => {
+            let model = session_model
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .unwrap_or(providers::OPENROUTER_DEFAULT_MODEL);
+            validate_model_id(model).map_err(ApiError::bad_request)?;
+            let resolved = providers::resolve_model(Some(model));
+            let inputs = providers::CredentialInputs::openrouter_from_process(None);
+            let provider = providers::resolve_openrouter(&inputs).map_err(|diagnostic| {
+                let status = match diagnostic.kind() {
+                    "no-credential" => StatusCode::UNAUTHORIZED,
+                    "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
+                    _ => StatusCode::BAD_GATEWAY,
+                };
+                ApiError::diagnostic(status, diagnostic)
+            })?;
+            Ok(ResolvedTurnProvider {
+                model_id: resolved.model_id.clone(),
+                model: resolved,
+                provider: Arc::new(provider),
+            })
+        }
+        ProviderSource::Fixed { model_id, provider } => {
+            let resolved = providers::resolve_model(Some(model_id));
+            Ok(ResolvedTurnProvider {
+                model_id: resolved.model_id.clone(),
+                model: resolved,
+                provider: provider.clone(),
+            })
+        }
+    }
+}
+
+async fn run_cancellable_turn(
+    provider: &dyn Provider,
+    turn: Turn,
+    mut abort_rx: watch::Receiver<bool>,
+) -> Option<RunOutcome> {
+    let runner = SessionRunner::default();
+    tokio::select! {
+        outcome = runner.run(provider, turn, publish_noop) => Some(outcome),
+        () = wait_for_abort(&mut abort_rx) => None,
+    }
+}
+
+fn publish_noop(_event: RunnerEvent) {}
+
+async fn wait_for_abort(abort_rx: &mut watch::Receiver<bool>) {
+    loop {
+        if *abort_rx.borrow() {
+            break;
+        }
+        if abort_rx.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, ApiError> {
+    let messages = db
+        .messages()
+        .list_for_session(session_id)
+        .map_err(ApiError::from_db)?;
+    let history = messages
+        .into_iter()
+        .map(|message| HistoryMessage::new(message.role, message.content))
+        .collect::<Vec<_>>();
+    Ok(project_history(&history))
+}
+
+fn persist_usage(db: &Database, session_id: &str, outcome: &RunOutcome) {
+    let Some(usage) = outcome.usage.as_ref() else {
+        return;
+    };
+    if let Err(err) = db.usage().record(
+        session_id,
+        u64::from(usage.input_tokens),
+        u64::from(usage.output_tokens),
+        u64::from(usage.total_tokens),
+        usage.cost,
+    ) {
+        eprintln!("cortex serve: failed to persist usage for session {session_id}: {err}");
+    }
+}
+
+fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
+    let (context, output) = match &model.info {
+        Some(info) => (
+            usize::try_from(info.limit.context).unwrap_or(usize::MAX),
+            usize::try_from(info.limit.output).unwrap_or(0),
+        ),
+        None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
+    };
+    CompactionPolicy::for_context_window(context, output)
+}
+
+fn validate_model_id(model_id: &str) -> Result<(), String> {
+    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
+    if provider.is_empty() || model.is_empty() {
+        return Err(format!(
+            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
+             (for example google/gemini-2.5-flash)"
+        ));
+    }
+    Ok(())
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+impl ActiveTurns {
+    fn insert(
+        &self,
+        session_id: String,
+        abort: watch::Sender<bool>,
+    ) -> Result<ActiveTurnGuard, String> {
+        let mut active = self
+            .inner
+            .lock()
+            .map_err(|_| "active turn registry is unavailable".to_owned())?;
+        if active.contains_key(&session_id) {
+            return Err(format!(
+                "session {session_id} already has an in-flight turn; abort it before starting another"
+            ));
+        }
+        active.insert(session_id.clone(), abort);
+        Ok(ActiveTurnGuard {
+            active: self.clone(),
+            session_id,
+        })
+    }
+
+    fn abort(&self, session_id: &str) -> Result<bool, ApiError> {
+        let abort = self
+            .inner
+            .lock()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "active turn registry is unavailable",
+                )
+            })?
+            .get(session_id)
+            .cloned();
+        let Some(abort) = abort else {
+            return Ok(false);
+        };
+        let _ = abort.send(true);
+        Ok(true)
+    }
+
+    fn remove(&self, session_id: &str) {
+        if let Ok(mut active) = self.inner.lock() {
+            active.remove(session_id);
+        }
+    }
+}
+
+struct ActiveTurnGuard {
+    active: ActiveTurns,
+    session_id: String,
+}
+
+impl Drop for ActiveTurnGuard {
+    fn drop(&mut self) {
+        self.active.remove(&self.session_id);
+    }
 }
 
 async fn shutdown_signal(bus: Arc<EventBus>, version: String) {

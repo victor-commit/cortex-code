@@ -1,12 +1,301 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use db::Session;
+use futures_util::future::BoxFuture;
+use llm::{FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Provider, Role, Usage};
 use tower::ServiceExt;
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[tokio::test]
+async fn message_route_runs_turn_persists_assistant_and_usage() {
+    let scratch = Scratch::new("server-message-turn");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+    let nonce = "nonce-server-message-123";
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"parts":[{{"type":"text","text":"please echo {nonce}"}}]}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["role"], "assistant");
+    assert!(
+        body["content"]
+            .as_str()
+            .is_some_and(|text| text.contains(nonce)),
+        "assistant content should contain nonce: {body:?}"
+    );
+    assert_eq!(body["message"]["role"], "assistant");
+    assert_eq!(body["usage"]["input_tokens"], 11);
+    assert_eq!(body["usage"]["output_tokens"], 7);
+    assert_eq!(provider.calls(), 1);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(messages.len(), 2, "user + assistant should persist");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains(nonce)),
+        "persisted assistant should contain nonce: {body:?}"
+    );
+    assert_eq!(body["usage"]["output_tokens"], 7);
+}
+
+#[tokio::test]
+async fn prompt_to_unknown_session_returns_404_without_starting_turn() {
+    let scratch = Scratch::new("server-message-unknown");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let unknown_id = format!("missing-{}", std::process::id());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{unknown_id}/message"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"hi"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("unknown message response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains(&unknown_id)),
+        "404 body should name unknown session: {body:?}"
+    );
+    assert_eq!(provider.calls(), 0, "unknown session must not start a turn");
+}
+
+#[tokio::test]
+async fn abort_stops_in_flight_turn_without_assistant_completion() {
+    let scratch = Scratch::new("server-message-abort");
+    let provider = Arc::new(EchoProvider::with_delay(Duration::from_secs(30)));
+    let app = server::app_with_provider(scratch.db_path(), provider);
+    let session = create_session(&app).await;
+
+    let post_app = app.clone();
+    let post_uri = format!("/session/{}/message", session.id);
+    let post = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(post_uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"Count slowly from 1 to 300."}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("post response")
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/abort", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("abort response");
+    assert!(response.status().is_success());
+    let abort_body: serde_json::Value = json_body(response).await;
+    assert_eq!(abort_body["status"], "abort_requested");
+    assert_eq!(abort_body["active"], true);
+
+    let response = tokio::time::timeout(Duration::from_secs(3), post)
+        .await
+        .expect("prompt stopped promptly")
+        .expect("prompt task joined");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "aborted");
+    assert!(
+        body.get("content").is_none(),
+        "aborted turn must not fabricate assistant content: {body:?}"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    let body: serde_json::Value = json_body(response).await;
+    let messages = body["messages"].as_array().expect("messages array");
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["role"] != "assistant"),
+        "aborted turn should not persist a completed assistant: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_prompts_to_distinct_sessions_are_isolated() {
+    let scratch = Scratch::new("server-message-concurrent");
+    let app = server::app_with_provider(scratch.db_path(), Arc::new(EchoProvider::default()));
+    let sessions = [
+        create_session(&app).await,
+        create_session(&app).await,
+        create_session(&app).await,
+    ];
+    let nonces = ["nonce-alpha", "nonce-bravo", "nonce-charlie"];
+
+    let mut tasks = Vec::new();
+    for (session, nonce) in sessions.iter().zip(nonces) {
+        let app = app.clone();
+        let uri = format!("/session/{}/message", session.id);
+        tasks.push(tokio::spawn(async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(r#"{{"text":"return {nonce}"}}"#)))
+                        .expect("request"),
+                )
+                .await
+                .expect("message response");
+            (nonce, response)
+        }));
+    }
+
+    for task in tasks {
+        let (nonce, response) = task.await.expect("task joined");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = json_body(response).await;
+        let content = body["content"].as_str().expect("assistant content");
+        assert!(
+            content.contains(nonce),
+            "response for {nonce} should contain its own nonce: {body:?}"
+        );
+        for other in nonces {
+            if other != nonce {
+                assert!(
+                    !content.contains(other),
+                    "response for {nonce} must not contain {other}: {body:?}"
+                );
+            }
+        }
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn messages_survive_app_recreation_on_same_database() {
+    let scratch = Scratch::new("server-message-durable");
+    let provider = Arc::new(EchoProvider::default());
+    let first_app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&first_app).await;
+    let nonce = "nonce-durable-restart";
+
+    let response = first_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"text":"echo {nonce}"}}"#)))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let relaunched_app = server::app_with_provider(scratch.db_path(), provider);
+    let response = relaunched_app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .any(|message| message["role"] == "assistant"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains(nonce))),
+        "recreated app should serve prior assistant content: {body:?}"
+    );
+}
 
 #[tokio::test]
 async fn session_crud_routes_create_list_get_and_delete_with_database_backing() {
@@ -283,6 +572,74 @@ fn assert_json_content_type(response: &axum::response::Response) {
         content_type.starts_with("application/json"),
         "expected application/json content type, got {content_type:?}"
     );
+}
+
+async fn create_session(app: &axum::Router) -> Session {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .expect("request"),
+        )
+        .await
+        .expect("create response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    json_body(response).await
+}
+
+#[derive(Debug, Default)]
+struct EchoProvider {
+    calls: AtomicUsize,
+    delay: Option<Duration>,
+}
+
+impl EchoProvider {
+    fn with_delay(delay: Duration) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            delay: Some(delay),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Provider for EchoProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
+            let prompt = request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::User)
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let answer = format!("assistant saw: {prompt}");
+            let events = vec![
+                LlmEvent::TextDelta { text: answer },
+                LlmEvent::Usage(Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    total_tokens: 18,
+                    cost: Some(0.000_001),
+                }),
+                LlmEvent::Done {
+                    reason: FinishReason::Stop,
+                },
+            ];
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
 }
 
 struct Scratch {

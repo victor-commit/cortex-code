@@ -2217,7 +2217,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "db",
+ "engine",
+ "errors",
  "events",
+ "futures-util",
+ "llm",
+ "providers",
+ "redaction",
  "serde",
  "serde_json",
  "thiserror",
