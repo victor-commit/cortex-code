@@ -23,8 +23,8 @@
 //!   `{file:PATH}` is replaced by the environment variable's value, or the file's trimmed
 //!   contents. An unset variable or unreadable file is a hard error with a clear diagnostic;
 //!   the literal token is never silently leaked into an effective value.
-//! - **Type validation** (see [`schema`]): the small set of typed keys (`model` is a string,
-//!   `max_steps` an integer) is checked, so a wrongly-typed value yields a clear diagnostic
+//! - **Type validation** (see [`schema`]): the small set of typed keys (`model`/`agent` are
+//!   strings, `max_steps` an integer) is checked, so a wrongly-typed value yields a clear diagnostic
 //!   naming the offending key and its expected type rather than mis-driving the tool.
 //!
 //! Both passes surface failures as [`ConfigError`], which the config-reporting path renders to
@@ -48,6 +48,9 @@ pub use env::env_var_name;
 
 /// The built-in default model used when no layer overrides it.
 pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
+
+/// The built-in default agent persona used when no layer overrides it.
+pub const DEFAULT_AGENT: &str = "build";
 
 /// The built-in default step budget for a single agent turn (architecture §4, `MAX_STEPS`).
 pub const DEFAULT_MAX_STEPS: i64 = 25;
@@ -104,6 +107,15 @@ impl EffectiveConfig {
             .get("model")
             .and_then(Value::as_str)
             .unwrap_or(DEFAULT_MODEL)
+    }
+
+    /// The effective default agent, falling back to [`DEFAULT_AGENT`] if it was somehow cleared.
+    #[must_use]
+    pub fn agent(&self) -> &str {
+        self.table
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_AGENT)
     }
 
     /// The effective step budget, falling back to [`DEFAULT_MAX_STEPS`] if it was cleared.
@@ -442,6 +454,7 @@ pub fn layer_tables(inputs: &ConfigInputs) -> Result<Vec<ConfigLayer>, ConfigErr
 fn default_table() -> Table {
     let mut table = Table::new();
     table.insert("model".to_owned(), Value::String(DEFAULT_MODEL.to_owned()));
+    table.insert("agent".to_owned(), Value::String(DEFAULT_AGENT.to_owned()));
     table.insert("max_steps".to_owned(), Value::Integer(DEFAULT_MAX_STEPS));
     table
 }

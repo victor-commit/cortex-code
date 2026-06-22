@@ -106,10 +106,24 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     }
     let project_memory_block = project_memory.render();
 
+    let configured_agent = if args.agent.is_none() {
+        match configured_agent_name(&config_inputs) {
+            Ok(agent) => agent,
+            Err(err) => {
+                eprintln!("cortex run: {err}");
+                return Exit::Config;
+            }
+        }
+    } else {
+        None
+    };
+    let requested_agent = args.agent.as_deref().or(configured_agent.as_deref());
+
     // Resolve the agent persona before any network consideration so an unknown agent fails fast
     // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
-    // durable store and never writing an assistant answer to stdout.
-    let agent = match custom_agents::resolve(args.agent.as_deref(), &discovered_agents) {
+    // durable store and never writing an assistant answer to stdout. When `--agent` is absent, the
+    // layered config's `agent` key supplies the default persona.
+    let agent = match custom_agents::resolve(requested_agent, &discovered_agents) {
         Ok(agent) => agent,
         Err(err) => {
             eprintln!(
@@ -209,10 +223,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
 
     // When an `--agent` is active, the permission BASE is that agent's effective ruleset (the
     // top-level `[[permission]]` base followed by the agent's `[[agent.<name>.permission]]`
-    // overrides), so a per-agent rule gates the turn (VAL-PERM-009); with no `--agent` the base is
-    // the top-level layered ruleset exactly as before. The flag's presence (not the resolved
-    // default persona) decides this, so a default run keeps its unchanged top-level behavior.
-    let active_agent = args.agent.is_some().then(|| agent.name());
+    // overrides), so a per-agent rule gates the turn (VAL-PERM-009); a project-configured default
+    // agent is active in the same way as a CLI-selected one, so its mode restrictions and scoped
+    // permission rules govern the turn across surfaces.
+    let active_agent = Some(agent.name());
     let builtin_agent_rules = permission::builtin_agent_permission_rules(agent.base_agent());
     let builtin_hard_denies = builtin_agent_rules.restriction_rules.clone();
     let mut post_save_permission_rules = agent.permissions().to_vec();
@@ -1368,6 +1382,15 @@ fn model_overrides(cli_model: Option<&str>) -> BTreeMap<String, String> {
         overrides.insert("model".to_owned(), model.to_owned());
     }
     overrides
+}
+
+/// The layered default agent for `cortex run` when no `--agent` flag is supplied.
+///
+/// # Errors
+/// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded.
+fn configured_agent_name(inputs: &ConfigInputs) -> Result<Option<String>, ConfigError> {
+    let effective = settings::load(inputs.clone())?;
+    Ok(non_empty(effective.agent()))
 }
 
 /// The configuration-derived inputs for a run: the resolved model plus the optional OpenRouter

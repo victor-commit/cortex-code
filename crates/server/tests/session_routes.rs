@@ -154,6 +154,174 @@ async fn message_route_uses_session_model_when_request_model_is_absent() {
 }
 
 #[tokio::test]
+async fn message_route_uses_project_config_model_when_request_and_session_are_absent() {
+    let scratch = Scratch::new("server-message-project-model");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"model = "anthropic/claude-sonnet-4""#,
+    )
+    .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"please use project model"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["model"], "anthropic/claude-sonnet-4");
+    assert_eq!(
+        provider.seen_models(),
+        vec!["anthropic/claude-sonnet-4".to_owned()],
+        "server turns should honor project-layer model config when no request/session model wins"
+    );
+}
+
+#[tokio::test]
+async fn message_route_config_env_override_beats_project_model() {
+    let scratch = Scratch::new("server-message-env-model");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"model = "google/gemini-2.5-flash""#,
+    )
+    .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider.clone())
+        .with_cwd(workspace)
+        .with_config_env(vec![(
+            "CORTEX_MODEL".to_owned(),
+            "anthropic/claude-sonnet-4".to_owned(),
+        )]);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"please use env model"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["model"], "anthropic/claude-sonnet-4");
+    assert_eq!(
+        provider.seen_models(),
+        vec!["anthropic/claude-sonnet-4".to_owned()],
+        "CORTEX_MODEL should override the project file on server turns"
+    );
+}
+
+#[tokio::test]
+async fn message_route_uses_project_default_agent_for_system_context_and_response() {
+    let scratch = Scratch::new("server-message-project-agent");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(workspace.join("cortex.toml"), r#"agent = "plan""#)
+        .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"outline only"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(
+        body["agent"], "plan",
+        "server turn responses should report the project-configured default agent"
+    );
+    assert!(
+        provider
+            .seen_systems()
+            .iter()
+            .any(|system| system.contains("plan persona")),
+        "server system context should include the plan persona, got {:?}",
+        provider.seen_systems()
+    );
+}
+
+#[tokio::test]
+async fn message_route_project_permission_deny_blocks_bash_tool_without_side_effect() {
+    let scratch = Scratch::new("server-message-project-permission");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let victim = workspace.join("victim.txt");
+    std::fs::write(&victim, "keep me\n").expect("seed victim");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "bash"
+pattern = "rm *"
+action = "deny"
+"#,
+    )
+    .expect("write project config");
+    let provider = Arc::new(BashRmProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"remove victim.txt with bash"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        victim.exists(),
+        "project-layer bash deny must prevent the rm side effect"
+    );
+}
+
+#[tokio::test]
 async fn malformed_message_model_is_rejected_without_persisting_or_calling_provider() {
     let scratch = Scratch::new("server-message-invalid-model");
     let provider = Arc::new(EchoProvider::default());
@@ -1139,11 +1307,17 @@ async fn create_session(app: &axum::Router) -> Session {
 struct EchoProvider {
     calls: AtomicUsize,
     seen_models: Mutex<Vec<String>>,
+    seen_systems: Mutex<Vec<String>>,
     delay: Option<Duration>,
 }
 
 #[derive(Debug, Default)]
 struct CheckpointEditingProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
+struct BashRmProvider {
     calls: AtomicUsize,
 }
 
@@ -1197,11 +1371,47 @@ impl Provider for CheckpointEditingProvider {
     }
 }
 
+impl Provider for BashRmProvider {
+    fn stream<'a>(&'a self, _request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = match call {
+                0 => vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_rm".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: r#"{"command":"rm victim.txt"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ],
+                _ => vec![
+                    LlmEvent::TextDelta {
+                        text: "bash attempt finished".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 13,
+                        output_tokens: 5,
+                        total_tokens: 18,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
 impl EchoProvider {
     fn with_delay(delay: Duration) -> Self {
         Self {
             calls: AtomicUsize::new(0),
             seen_models: Mutex::new(Vec::new()),
+            seen_systems: Mutex::new(Vec::new()),
             delay: Some(delay),
         }
     }
@@ -1213,6 +1423,10 @@ impl EchoProvider {
     fn seen_models(&self) -> Vec<String> {
         self.seen_models.lock().expect("seen models lock").clone()
     }
+
+    fn seen_systems(&self) -> Vec<String> {
+        self.seen_systems.lock().expect("seen systems lock").clone()
+    }
 }
 
 impl Provider for EchoProvider {
@@ -1223,6 +1437,16 @@ impl Provider for EchoProvider {
                 .lock()
                 .expect("seen models lock")
                 .push(request.model.clone());
+            if let Some(system) = request
+                .messages
+                .iter()
+                .find(|message| message.role == Role::System)
+            {
+                self.seen_systems
+                    .lock()
+                    .expect("seen systems lock")
+                    .push(system.content.clone());
+            }
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }

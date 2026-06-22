@@ -214,6 +214,7 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
                 prompt.clone(),
                 app.history_snapshot(),
                 app.active_model(),
+                app.active_agent(),
                 app.mcp_manager(),
                 remote,
                 cancel.clone(),
@@ -335,10 +336,8 @@ fn initial_status() -> Status {
 
     let agent = effective
         .as_ref()
-        .and_then(|cfg| cfg.get("agent"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("build")
-        .to_owned();
+        .map(|cfg| cfg.agent().to_owned())
+        .unwrap_or_else(|| settings::DEFAULT_AGENT.to_owned());
 
     let mode = effective
         .as_ref()

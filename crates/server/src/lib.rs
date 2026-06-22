@@ -28,7 +28,7 @@ use axum::{
 };
 use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
-    CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunError, RunOutcome,
+    Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunError, RunOutcome,
     RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
     project_history,
 };
@@ -74,6 +74,7 @@ pub struct ServerState {
     db_path: PathBuf,
     cwd: PathBuf,
     checkpoint_base: Option<PathBuf>,
+    config: ConfigContext,
     provider: ProviderSource,
     auth: ServerAuth,
     active_turns: ActiveTurns,
@@ -91,6 +92,7 @@ impl ServerState {
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_base: None,
+            config: ConfigContext::from_process(),
             provider: ProviderSource::OpenRouter,
             auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
@@ -108,6 +110,7 @@ impl ServerState {
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_base: None,
+            config: ConfigContext::from_process(),
             provider: ProviderSource::Fixed { provider },
             auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
@@ -132,6 +135,16 @@ impl ServerState {
     #[must_use]
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = cwd.into();
+        self
+    }
+
+    /// Override the environment snapshot used for layered config resolution.
+    ///
+    /// The process server captures its environment at startup; in-process tests use this to prove
+    /// `CORTEX_*` precedence without mutating global process environment.
+    #[must_use]
+    pub fn with_config_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.config.env = env;
         self
     }
 
@@ -284,6 +297,39 @@ enum CorsPolicy {
 enum ProviderSource {
     OpenRouter,
     Fixed { provider: Arc<dyn Provider> },
+}
+
+#[derive(Clone)]
+struct ConfigContext {
+    home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+    env: Vec<(String, String)>,
+}
+
+impl ConfigContext {
+    fn from_process() -> Self {
+        Self {
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty()),
+            env: std::env::vars().collect(),
+        }
+    }
+
+    fn inputs(
+        &self,
+        cwd: &Path,
+        cli_overrides: BTreeMap<String, String>,
+    ) -> settings::ConfigInputs {
+        settings::ConfigInputs {
+            home: self.home.clone(),
+            xdg_config_home: self.xdg_config_home.clone(),
+            cwd: cwd.to_path_buf(),
+            env: self.env.clone(),
+            cli_overrides,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -752,6 +798,7 @@ struct MessageListResponse {
 struct PromptResponse {
     status: &'static str,
     model: String,
+    agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1028,7 +1075,17 @@ async fn execute_command(
         arguments.clone(),
     ));
 
-    let permission_engine = permission_engine_for_turn(state.event_bus.clone(), &id, &call_id)?;
+    let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
+    let effective_config = settings::load(config_inputs.clone()).map_err(config_api_error)?;
+    let selected_agent =
+        select_turn_agent(effective_config.agent()).map_err(ApiError::bad_request)?;
+    let permission_engine = permission_engine_for_turn(
+        state.event_bus.clone(),
+        &id,
+        &call_id,
+        &config_inputs,
+        selected_agent,
+    )?;
     let mut context = ToolContext::new(state.cwd.clone())
         .with_session(id.clone())
         .with_todo_store(Arc::new(ServerTodoStore {
@@ -1142,8 +1199,16 @@ async fn run_message_turn(
         .sessions()
         .require(&session_id)
         .map_err(ApiError::from_db)?;
-    let selected_model = select_turn_model(request_model.as_deref(), session.model.as_deref())
-        .map_err(ApiError::bad_request)?;
+    let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
+    let effective_config = settings::load(config_inputs.clone()).map_err(config_api_error)?;
+    let selected_model = select_turn_model(
+        request_model.as_deref(),
+        session.model.as_deref(),
+        effective_config.model(),
+    )
+    .map_err(ApiError::bad_request)?;
+    let selected_agent =
+        select_turn_agent(effective_config.agent()).map_err(ApiError::bad_request)?;
 
     // The kill-switch wins before credential resolution, prompt persistence, or any outbound
     // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
@@ -1154,7 +1219,7 @@ async fn run_message_turn(
         ));
     }
 
-    let resolved = resolve_turn_provider(&state.provider, &selected_model)?;
+    let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
     let history = load_history(&db, &session_id)?;
     let user_message = db
         .messages()
@@ -1169,13 +1234,19 @@ async fn run_message_turn(
         .insert(session_id.clone(), abort_tx)
         .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
 
-    let system =
-        SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
+    let system = SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process())
+        .with_agent(selected_agent)
+        .render();
     let turn = Turn::new(&resolved.model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction_policy(&resolved.model));
-    let permission_engine =
-        permission_engine_for_turn(state.event_bus.clone(), &session_id, &user_message.id)?;
+    let permission_engine = permission_engine_for_turn(
+        state.event_bus.clone(),
+        &session_id,
+        &user_message.id,
+        &config_inputs,
+        selected_agent,
+    )?;
     let dispatcher = ServerToolDispatcher::for_model(
         state.cwd.clone(),
         &resolved.model_id,
@@ -1206,6 +1277,7 @@ async fn run_message_turn(
         return Ok(PromptResponse {
             status: "aborted",
             model: resolved.model_id,
+            agent: selected_agent.name().to_owned(),
             role: None,
             content: None,
             message: None,
@@ -1227,6 +1299,7 @@ async fn run_message_turn(
     Ok(PromptResponse {
         status: "completed",
         model: resolved.model_id,
+        agent: selected_agent.name().to_owned(),
         role: Some("assistant"),
         content: Some(outcome.answer().to_owned()),
         message: Some(assistant),
@@ -1244,12 +1317,19 @@ struct ResolvedTurnProvider {
 fn resolve_turn_provider(
     source: &ProviderSource,
     model_id: &str,
+    effective_config: &settings::EffectiveConfig,
 ) -> Result<ResolvedTurnProvider, ApiError> {
     match source {
         ProviderSource::OpenRouter => {
             let resolved = providers::resolve_model(Some(model_id));
-            let inputs = providers::CredentialInputs::openrouter_from_process(None);
-            let provider = providers::resolve_openrouter(&inputs).map_err(|diagnostic| {
+            let inputs = providers::CredentialInputs::openrouter_from_process(openrouter_api_key(
+                effective_config,
+            ));
+            let provider = providers::resolve_openrouter_with(
+                &inputs,
+                openrouter_base_url_override(effective_config).as_deref(),
+            )
+            .map_err(|diagnostic| {
                 let status = match diagnostic.kind() {
                     "no-credential" => StatusCode::UNAUTHORIZED,
                     "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
@@ -1277,13 +1357,19 @@ fn resolve_turn_provider(
 fn select_turn_model(
     request_model: Option<&str>,
     session_model: Option<&str>,
+    config_model: &str,
 ) -> Result<String, String> {
     let model = request_model
         .and_then(non_empty)
         .or_else(|| session_model.and_then(non_empty))
+        .or_else(|| non_empty(config_model))
         .unwrap_or_else(|| providers::OPENROUTER_DEFAULT_MODEL.to_owned());
     providers::validate_model_id(&model)?;
     Ok(model)
+}
+
+fn select_turn_agent(config_agent: &str) -> Result<Agent, String> {
+    Agent::from_name(config_agent).map_err(|err| err.to_string())
 }
 
 async fn run_cancellable_turn(
@@ -1416,19 +1502,57 @@ fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
     CompactionPolicy::for_context_window(context, output)
 }
 
+fn config_api_error(err: settings::ConfigError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("invalid server configuration: {err}"),
+    )
+}
+
+fn openrouter_base_url_override(effective: &settings::EffectiveConfig) -> Option<String> {
+    top_level_string(effective, "openrouter_base_url")
+        .or_else(|| provider_openrouter_string(effective, "base_url"))
+}
+
+fn openrouter_api_key(effective: &settings::EffectiveConfig) -> Option<String> {
+    provider_openrouter_string(effective, "api_key")
+        .or_else(|| top_level_string(effective, "api_key"))
+}
+
+fn top_level_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get(key)
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
+fn provider_openrouter_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get("provider")
+        .and_then(|provider| provider.get("openrouter"))
+        .and_then(|openrouter| openrouter.get(key))
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+}
+
 fn permission_engine_for_turn(
     bus: Arc<EventBus>,
     session_id: &str,
     message_id: &str,
+    inputs: &settings::ConfigInputs,
+    agent: Agent,
 ) -> Result<Option<Arc<PermissionEngine>>, ApiError> {
-    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("cannot load permission configuration context: {err}"),
-        )
-    })?;
-    let mut ruleset = permissions::load_layered(&inputs).map_err(permission_config_error)?;
-    let trust = policy::resolve_trust(&inputs).map_err(|err| {
+    let config_ruleset = permissions::load_agent_rulesets(inputs)
+        .map(|rulesets| rulesets.for_agent(agent.name()))
+        .map_err(permission_config_error)?;
+    let mut ruleset = permissions::Ruleset::new(readonly_agent_base_rules(agent));
+    for rule in config_ruleset.rules() {
+        ruleset.push(rule.clone());
+    }
+    for rule in readonly_agent_restriction_rules(agent) {
+        ruleset.push(rule);
+    }
+    let trust = policy::resolve_trust(inputs).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("cannot load trust policy: {err}"),
@@ -1437,14 +1561,36 @@ fn permission_engine_for_turn(
     for rule in policy::trust_ruleset(trust).rules() {
         ruleset.push(rule.clone());
     }
-    if ruleset.is_empty() {
+    let hard_denies = readonly_agent_restriction_rules(agent);
+    if ruleset.is_empty() && hard_denies.is_empty() {
         return Ok(None);
     }
     Ok(Some(Arc::new(
         PermissionEngine::new(ruleset)
+            .with_hard_denies(permissions::Ruleset::new(hard_denies))
             .with_bus(bus)
             .with_event_context(session_id.to_owned(), message_id.to_owned()),
     )))
+}
+
+fn readonly_agent_base_rules(agent: Agent) -> Vec<permissions::Rule> {
+    match agent {
+        Agent::Plan | Agent::Explore => ["read", "glob", "grep", "lsp", "webfetch", "websearch"]
+            .into_iter()
+            .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Allow))
+            .collect(),
+        Agent::Build | Agent::General => Vec::new(),
+    }
+}
+
+fn readonly_agent_restriction_rules(agent: Agent) -> Vec<permissions::Rule> {
+    match agent {
+        Agent::Plan | Agent::Explore => ["write", "edit", "apply_patch", "format", "bash"]
+            .into_iter()
+            .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Deny))
+            .collect(),
+        Agent::Build | Agent::General => Vec::new(),
+    }
 }
 
 fn permission_config_error(err: RuleError) -> ApiError {

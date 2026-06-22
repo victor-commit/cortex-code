@@ -21,8 +21,20 @@ use crate::ConfigError;
 /// Returns [`ConfigError::TypeMismatch`] for a key whose value cannot be the expected type.
 pub fn validate(table: &mut Table) -> Result<(), ConfigError> {
     require_string(table, "model")?;
+    require_agent(table)?;
     require_integer(table, "max_steps")?;
     Ok(())
+}
+
+fn require_agent(table: &Table) -> Result<(), ConfigError> {
+    match table.get("agent") {
+        None | Some(Value::String(_)) | Some(Value::Table(_)) => Ok(()),
+        Some(other) => Err(ConfigError::type_mismatch(
+            "agent",
+            "a string or table",
+            other,
+        )),
+    }
 }
 
 /// A string-typed key must hold a TOML string. Absent is fine (defaults/lower layers cover it).

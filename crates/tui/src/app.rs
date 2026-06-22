@@ -531,6 +531,12 @@ impl App {
         self.status.model.clone()
     }
 
+    /// The active agent name (the value the footer shows and the next turn uses for its persona).
+    #[must_use]
+    pub fn active_agent(&self) -> String {
+        self.status.agent.clone()
+    }
+
     /// The active keybind set (for rendering the which-key overlay and `/help`).
     #[must_use]
     pub fn keybinds(&self) -> &Keybinds {

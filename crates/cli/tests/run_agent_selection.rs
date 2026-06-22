@@ -273,6 +273,41 @@ fn build_agent_is_accepted_and_reflected() {
     );
 }
 
+// VAL-CROSS-014 (headless side): a project-level default agent is active when no `--agent` flag is
+// supplied, and the JSON output reports that configured agent.
+#[test]
+fn project_config_default_agent_is_honored_without_flag() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+
+    let home = scratch_home();
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).expect("create project dir");
+    std::fs::write(proj.join("cortex.toml"), r#"agent = "plan""#).expect("write project config");
+    let mut cmd = cortex(
+        &key,
+        &[
+            "run",
+            "--format",
+            "json",
+            "Outline, do not implement, a tiny shell script.",
+        ],
+    );
+    cmd.current_dir(&proj);
+    let out = run(cmd);
+    assert_eq!(out.status.code(), Some(0), "a real plan turn must exit 0");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let doc: serde_json::Value =
+        serde_json::from_str(stdout.trim_end()).expect("stdout must be one strict JSON value");
+    assert_eq!(
+        doc["agent"], "plan",
+        "project config should select the default agent without a flag: {doc}"
+    );
+}
+
 // The leading `--jsonl` session event surfaces the selected agent so a streaming consumer can read
 // it before the runner's own events; proven over a real turn.
 #[test]

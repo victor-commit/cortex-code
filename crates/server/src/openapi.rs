@@ -417,13 +417,14 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 },
                 "PromptResponse": {
                     "type": "object",
-                    "required": ["status", "model"],
+                    "required": ["status", "model", "agent"],
                     "properties": {
                         "status": {
                             "type": "string",
                             "enum": ["completed", "aborted"]
                         },
                         "model": { "type": "string" },
+                        "agent": { "type": "string" },
                         "role": { "type": "string" },
                         "content": { "type": "string" },
                         "message": { "$ref": "#/components/schemas/Message" },

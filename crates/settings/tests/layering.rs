@@ -92,6 +92,11 @@ fn defaults_when_no_files_present() {
     let config = scratch.load(&[], &[]);
     assert_eq!(config.model(), DEFAULT_MODEL);
     assert_eq!(config.model(), "google/gemini-2.5-flash");
+    assert_eq!(
+        config.get("agent").and_then(|value| value.as_str()),
+        Some("build"),
+        "the default agent should be observable in the effective config"
+    );
 }
 
 // VAL-SKEL-019: a value set only in global overrides the default.
@@ -128,6 +133,28 @@ fn env_overrides_files() {
     scratch.write_nested(r#"model = "from-nested""#);
     let config = scratch.load(&[("CORTEX_MODEL", "from-env")], &[]);
     assert_eq!(config.model(), "from-env");
+}
+
+#[test]
+fn project_agent_and_env_override_follow_the_same_layering() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"agent = "plan""#);
+    assert_eq!(
+        scratch
+            .load(&[], &[])
+            .get("agent")
+            .and_then(|value| value.as_str()),
+        Some("plan")
+    );
+
+    assert_eq!(
+        scratch
+            .load(&[("CORTEX_AGENT", "general")], &[])
+            .get("agent")
+            .and_then(|value| value.as_str()),
+        Some("general"),
+        "CORTEX_AGENT should override a project-layer agent just like CORTEX_MODEL does"
+    );
 }
 
 // VAL-SKEL-023: a CLI flag overrides the env var and all file layers.

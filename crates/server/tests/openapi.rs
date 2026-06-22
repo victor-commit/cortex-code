@@ -83,6 +83,11 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
             }),
         "model schema should explain the fully-qualified id shape and default: {document:?}"
     );
+    assert_eq!(
+        document["components"]["schemas"]["PromptResponse"]["properties"]["agent"]["type"],
+        "string",
+        "prompt responses should document the active agent field"
+    );
     assert!(
         !document.to_string().contains("server-token"),
         "OpenAPI must not embed configured token values"

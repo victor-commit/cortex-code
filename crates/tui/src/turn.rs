@@ -110,6 +110,7 @@ pub fn spawn(
     prompt: String,
     history: Vec<Message>,
     model: String,
+    agent: String,
     mcp_manager: Option<Arc<mcp::McpManager>>,
     remote: Option<RemoteBridge>,
     cancel: Arc<AtomicBool>,
@@ -117,7 +118,7 @@ pub fn spawn(
     let (tx, rx) = mpsc::channel();
     let tx_events = tx.clone();
     thread::spawn(move || {
-        match build_turn(&prompt, history, &model) {
+        match build_turn(&prompt, history, &model, &agent) {
             Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -157,7 +158,7 @@ pub fn spawn(
                             // is recorded and a previously saved decision is honored without
                             // re-asking. `loaded` is the on-disk baseline used to detect new saves.
                             let (engine, saved, loaded) =
-                                build_permission_engine(tx_events.clone(), &cwd);
+                                build_permission_engine(tx_events.clone(), &cwd, setup.agent);
                             let mut dispatcher = TurnDispatcher::new(
                                 cwd.clone(),
                                 &setup.model_id,
@@ -334,6 +335,7 @@ struct TurnSetup {
     provider: llm::OpenAiCompatible,
     turn: Turn,
     model_id: String,
+    agent: Agent,
     formatter_config: format::FormatterConfig,
     skills: Vec<skills::Skill>,
 }
@@ -342,6 +344,7 @@ fn build_turn(
     prompt: &str,
     history: Vec<Message>,
     active_model: &str,
+    active_agent: &str,
 ) -> Result<TurnSetup, String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
     guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
@@ -360,6 +363,7 @@ fn build_turn(
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
+    let agent = Agent::from_name(active_agent).map_err(|err| err.to_string())?;
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
     // so a per-session model choice governs the turn directly rather than via a config round-trip.
@@ -377,7 +381,12 @@ fn build_turn(
 
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
-    let system = render_system_context(&model_id, project_memory.render(), &discovered_skill_list);
+    let system = render_system_context(
+        &model_id,
+        agent,
+        project_memory.render(),
+        &discovered_skill_list,
+    );
     let turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
@@ -386,6 +395,7 @@ fn build_turn(
         provider,
         turn,
         model_id,
+        agent,
         formatter_config,
         skills: discovered_skill_list,
     })
@@ -393,12 +403,13 @@ fn build_turn(
 
 fn render_system_context(
     model_id: &str,
+    agent: Agent,
     project_memory: Option<String>,
     skills: &[skills::Skill],
 ) -> String {
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
         .with_project_memory(project_memory)
-        .with_agent(Agent::default())
+        .with_agent(agent)
         .render();
     if let Some(hint) = skills::render_system_hint(skills) {
         system.push_str("\n\n");
@@ -423,24 +434,33 @@ fn render_system_context(
 fn build_permission_engine(
     events: Sender<TurnMessage>,
     cwd: &std::path::Path,
+    agent: Agent,
 ) -> (
     Arc<permissions::PermissionEngine>,
     Arc<permissions::SavedDecisions>,
     Vec<permissions::SavedDecision>,
 ) {
     let base = default_ruleset();
-    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).ok();
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
+        .ok()
+        .map(|mut inputs| {
+            inputs.cwd = cwd.to_path_buf();
+            inputs
+        });
     let config = inputs
         .as_ref()
-        .and_then(|inputs| permissions::load_layered(inputs).ok());
+        .and_then(|inputs| permissions::load_agent_rulesets(inputs).ok())
+        .map(|rulesets| rulesets.for_agent(agent.name()));
     let trust = inputs
         .as_ref()
         .and_then(|inputs| policy::resolve_trust(inputs).ok())
         .unwrap_or_default();
     let trust_layer = policy::trust_ruleset(trust);
+    let hard_denies = readonly_agent_hard_denies(agent);
+    let mode_layer = permissions::Ruleset::new(hard_denies.clone());
     let ruleset = match config {
-        Some(config) => permissions::Ruleset::from_layers([base, config, trust_layer]),
-        None => permissions::Ruleset::from_layers([base, trust_layer]),
+        Some(config) => permissions::Ruleset::from_layers([base, config, mode_layer, trust_layer]),
+        None => permissions::Ruleset::from_layers([base, mode_layer, trust_layer]),
     };
 
     // Seed the saved-decisions store from the shared per-project store on disk, keyed by the same
@@ -452,9 +472,20 @@ fn build_permission_engine(
     let engine = Arc::new(
         permissions::PermissionEngine::new(ruleset)
             .with_responder(responder)
+            .with_hard_denies(permissions::Ruleset::new(hard_denies))
             .with_saved_decisions(saved.clone()),
     );
     (engine, saved, loaded)
+}
+
+fn readonly_agent_hard_denies(agent: Agent) -> Vec<permissions::Rule> {
+    match agent {
+        Agent::Plan | Agent::Explore => ["write", "edit", "apply_patch", "format", "bash"]
+            .into_iter()
+            .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Deny))
+            .collect(),
+        Agent::Build | Agent::General => Vec::new(),
+    }
 }
 
 /// Persist any "always allow/deny" decisions recorded this turn to the shared per-project store, so
@@ -594,6 +625,7 @@ mod tests {
     fn system_context_advertises_discovered_skills_without_guidance() {
         let system = render_system_context(
             "google/gemini-2.5-flash",
+            Agent::Build,
             None,
             &[skills::Skill {
                 name: "cross-skill".to_owned(),
@@ -609,6 +641,31 @@ mod tests {
         assert!(
             !system.contains("TUI-SKILL-SECRET"),
             "skill bodies must remain inactive until the skill tool is called"
+        );
+    }
+
+    #[test]
+    fn system_context_uses_the_active_agent_persona() {
+        let system = render_system_context("google/gemini-2.5-flash", Agent::Plan, None, &[]);
+        assert!(
+            system.contains("plan persona") && system.contains("MUST NOT"),
+            "active TUI agent should shape the system context: {system}"
+        );
+    }
+
+    #[test]
+    fn plan_agent_hard_denies_effectful_tools_before_prompting() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let (engine, _saved, _loaded) =
+            build_permission_engine(_tx, std::path::Path::new("."), Agent::Plan);
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            permissions::Action::Deny,
+            "plan mode should hard-deny bash rather than prompting"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a hard deny should not surface a permission prompt"
         );
     }
 }

@@ -207,9 +207,15 @@ pub fn load_agent_rulesets(inputs: &ConfigInputs) -> Result<AgentRulesets, RuleE
         base_layers.push(Ruleset::new(base_rules));
 
         if let Some(agent_value) = layer.table.get(AGENT_KEY) {
-            let agent_table = agent_value.as_table().ok_or_else(|| {
-                RuleError::malformed(source, format!("`{AGENT_KEY}` must be a table of agents"))
-            })?;
+            let Some(agent_table) = agent_value.as_table() else {
+                if agent_value.as_str().is_some() {
+                    continue;
+                }
+                return Err(RuleError::malformed(
+                    source,
+                    format!("`{AGENT_KEY}` must be a table of agents or a default-agent string"),
+                ));
+            };
             for (name, value) in agent_table {
                 let table = value.as_table().ok_or_else(|| {
                     RuleError::malformed(source, format!("`{AGENT_KEY}.{name}` must be a table"))
