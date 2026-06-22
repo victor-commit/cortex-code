@@ -492,14 +492,7 @@ fn default_ruleset() -> permissions::Ruleset {
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id, rejecting
 /// a bare id locally with an actionable message (mirroring the headless run's validation).
 fn validate_model_id(model_id: &str) -> Result<(), String> {
-    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
-    if provider.is_empty() || model.is_empty() {
-        return Err(format!(
-            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
-             (for example google/gemini-2.5-flash)"
-        ));
-    }
-    Ok(())
+    providers::validate_model_id(model_id)
 }
 
 /// The compaction policy derived from the resolved model's context window (an unknown model falls

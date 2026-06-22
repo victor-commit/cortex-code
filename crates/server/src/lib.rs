@@ -108,10 +108,7 @@ impl ServerState {
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_base: None,
-            provider: ProviderSource::Fixed {
-                model_id: providers::OPENROUTER_DEFAULT_MODEL.to_owned(),
-                provider,
-            },
+            provider: ProviderSource::Fixed { provider },
             auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
             remote_turns: RemoteTurns::default(),
@@ -286,10 +283,7 @@ enum CorsPolicy {
 #[derive(Clone)]
 enum ProviderSource {
     OpenRouter,
-    Fixed {
-        model_id: String,
-        provider: Arc<dyn Provider>,
-    },
+    Fixed { provider: Arc<dyn Provider> },
 }
 
 #[derive(Clone, Default)]
@@ -703,6 +697,8 @@ struct CreateSessionRequest {
 #[serde(rename_all = "camelCase")]
 struct MessageRequest {
     #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
     text: Option<String>,
     #[serde(default)]
     content: Option<String>,
@@ -715,6 +711,10 @@ struct MessageRequest {
 }
 
 impl MessageRequest {
+    fn model_override(&self) -> Option<String> {
+        self.model.as_deref().and_then(non_empty)
+    }
+
     fn into_prompt(self) -> Option<String> {
         let part_text = self
             .parts
@@ -947,10 +947,11 @@ async fn post_message(
     AxumPath(id): AxumPath<String>,
     Json(payload): Json<MessageRequest>,
 ) -> Result<Json<PromptResponse>, ApiError> {
+    let model = payload.model_override();
     let prompt = payload
         .into_prompt()
         .ok_or_else(|| ApiError::bad_request("message body must include non-empty text"))?;
-    run_message_turn(state, id, prompt).await.map(Json)
+    run_message_turn(state, id, prompt, model).await.map(Json)
 }
 
 async fn get_prompt_draft(
@@ -990,7 +991,7 @@ async fn submit_prompt(
     let prompt = non_empty(&prompt).ok_or_else(|| {
         ApiError::bad_request("prompt buffer is empty; append text before submit")
     })?;
-    run_message_turn(state, id, prompt).await.map(Json)
+    run_message_turn(state, id, prompt, None).await.map(Json)
 }
 
 async fn clear_prompt(
@@ -1134,12 +1135,15 @@ async fn run_message_turn(
     state: ServerState,
     session_id: String,
     prompt: String,
+    request_model: Option<String>,
 ) -> Result<PromptResponse, ApiError> {
     let db = open_database(&state)?;
     let session = db
         .sessions()
         .require(&session_id)
         .map_err(ApiError::from_db)?;
+    let selected_model = select_turn_model(request_model.as_deref(), session.model.as_deref())
+        .map_err(ApiError::bad_request)?;
 
     // The kill-switch wins before credential resolution, prompt persistence, or any outbound
     // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
@@ -1150,7 +1154,7 @@ async fn run_message_turn(
         ));
     }
 
-    let resolved = resolve_turn_provider(&state.provider, session.model.as_deref())?;
+    let resolved = resolve_turn_provider(&state.provider, &selected_model)?;
     let history = load_history(&db, &session_id)?;
     let user_message = db
         .messages()
@@ -1239,16 +1243,11 @@ struct ResolvedTurnProvider {
 
 fn resolve_turn_provider(
     source: &ProviderSource,
-    session_model: Option<&str>,
+    model_id: &str,
 ) -> Result<ResolvedTurnProvider, ApiError> {
     match source {
         ProviderSource::OpenRouter => {
-            let model = session_model
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .unwrap_or(providers::OPENROUTER_DEFAULT_MODEL);
-            validate_model_id(model).map_err(ApiError::bad_request)?;
-            let resolved = providers::resolve_model(Some(model));
+            let resolved = providers::resolve_model(Some(model_id));
             let inputs = providers::CredentialInputs::openrouter_from_process(None);
             let provider = providers::resolve_openrouter(&inputs).map_err(|diagnostic| {
                 let status = match diagnostic.kind() {
@@ -1264,7 +1263,7 @@ fn resolve_turn_provider(
                 provider: Arc::new(provider),
             })
         }
-        ProviderSource::Fixed { model_id, provider } => {
+        ProviderSource::Fixed { provider } => {
             let resolved = providers::resolve_model(Some(model_id));
             Ok(ResolvedTurnProvider {
                 model_id: resolved.model_id.clone(),
@@ -1273,6 +1272,18 @@ fn resolve_turn_provider(
             })
         }
     }
+}
+
+fn select_turn_model(
+    request_model: Option<&str>,
+    session_model: Option<&str>,
+) -> Result<String, String> {
+    let model = request_model
+        .and_then(non_empty)
+        .or_else(|| session_model.and_then(non_empty))
+        .unwrap_or_else(|| providers::OPENROUTER_DEFAULT_MODEL.to_owned());
+    providers::validate_model_id(&model)?;
+    Ok(model)
 }
 
 async fn run_cancellable_turn(
@@ -1403,17 +1414,6 @@ fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
         None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
     };
     CompactionPolicy::for_context_window(context, output)
-}
-
-fn validate_model_id(model_id: &str) -> Result<(), String> {
-    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
-    if provider.is_empty() || model.is_empty() {
-        return Err(format!(
-            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
-             (for example google/gemini-2.5-flash)"
-        ));
-    }
-    Ok(())
 }
 
 fn permission_engine_for_turn(

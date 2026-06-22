@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -75,6 +76,130 @@ async fn message_route_runs_turn_persists_assistant_and_usage() {
         "persisted assistant should contain nonce: {body:?}"
     );
     assert_eq!(body["usage"]["output_tokens"], 7);
+}
+
+#[tokio::test]
+async fn message_route_model_parameter_selects_requested_model_for_turn() {
+    let scratch = Scratch::new("server-message-model-param");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"text":"please use requested model","model":"anthropic/claude-sonnet-4"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["model"], "anthropic/claude-sonnet-4");
+    assert_eq!(
+        provider.seen_models(),
+        vec!["anthropic/claude-sonnet-4".to_owned()],
+        "provider request should carry the selected model id"
+    );
+
+    let db = db::Database::open(scratch.db_path()).expect("reopen db");
+    let stored_session = db.sessions().require(&session.id).expect("session");
+    assert_eq!(
+        stored_session.model, None,
+        "a per-request server model parameter must not silently rewrite the session default"
+    );
+}
+
+#[tokio::test]
+async fn message_route_uses_session_model_when_request_model_is_absent() {
+    let scratch = Scratch::new("server-message-session-model");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+    let db = db::Database::open(scratch.db_path()).expect("open db");
+    db.sessions()
+        .set_model(&session.id, Some("anthropic/claude-sonnet-4"))
+        .expect("set session model");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"please use stored model"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["model"], "anthropic/claude-sonnet-4");
+    assert_eq!(
+        provider.seen_models(),
+        vec!["anthropic/claude-sonnet-4".to_owned()],
+        "provider request should carry the stored session model id"
+    );
+}
+
+#[tokio::test]
+async fn malformed_message_model_is_rejected_without_persisting_or_calling_provider() {
+    let scratch = Scratch::new("server-message-invalid-model");
+    let provider = Arc::new(EchoProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"text":"this must not run","model":"not-a-real-model"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["error"].as_str().is_some_and(|message| {
+            message.contains("not-a-real-model") && message.contains("provider/model")
+        }),
+        "invalid-model error should name the model and expected form: {body:?}"
+    );
+    assert_eq!(provider.calls(), 0, "invalid model must not call provider");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["messages"].as_array().expect("messages").is_empty(),
+        "invalid model must be rejected before persisting a user message: {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -1013,6 +1138,7 @@ async fn create_session(app: &axum::Router) -> Session {
 #[derive(Debug, Default)]
 struct EchoProvider {
     calls: AtomicUsize,
+    seen_models: Mutex<Vec<String>>,
     delay: Option<Duration>,
 }
 
@@ -1075,6 +1201,7 @@ impl EchoProvider {
     fn with_delay(delay: Duration) -> Self {
         Self {
             calls: AtomicUsize::new(0),
+            seen_models: Mutex::new(Vec::new()),
             delay: Some(delay),
         }
     }
@@ -1082,12 +1209,20 @@ impl EchoProvider {
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    fn seen_models(&self) -> Vec<String> {
+        self.seen_models.lock().expect("seen models lock").clone()
+    }
 }
 
 impl Provider for EchoProvider {
     fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen_models
+                .lock()
+                .expect("seen models lock")
+                .push(request.model.clone());
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }

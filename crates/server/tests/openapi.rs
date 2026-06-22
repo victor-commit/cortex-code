@@ -69,6 +69,20 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_protected_operation(&document, "/session", "get");
     assert_protected_operation(&document, "/session/{id}/message", "post");
     assert_protected_operation(&document, "/event", "get");
+    assert_eq!(
+        document["components"]["schemas"]["MessageRequest"]["properties"]["model"]["type"],
+        "string",
+        "message requests should document the per-turn model selector"
+    );
+    assert!(
+        document["components"]["schemas"]["MessageRequest"]["properties"]["model"]["description"]
+            .as_str()
+            .is_some_and(|description| {
+                description.contains("provider/model")
+                    && description.contains("google/gemini-2.5-flash")
+            }),
+        "model schema should explain the fully-qualified id shape and default: {document:?}"
+    );
     assert!(
         !document.to_string().contains("server-token"),
         "OpenAPI must not embed configured token values"

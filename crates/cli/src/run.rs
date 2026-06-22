@@ -276,6 +276,27 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         false
     };
 
+    // Honor a model persisted with the session (chosen interactively via the TUI `/models` picker)
+    // when the caller passed no explicit `--model`: resuming the session headless then uses that
+    // per-session model rather than reverting to the global default (VAL-CROSS-006). This happens
+    // BEFORE provider/plugin selection, so every downstream setup step sees the final model.
+    let stored_model = db
+        .sessions()
+        .get(&session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| session.model);
+    if let Some(model) = session_model_override(
+        explicit_model || agent_model_selected,
+        stored_model.as_deref(),
+    ) {
+        if let Err(message) = validate_model_id(&model) {
+            eprintln!("cortex run: {message}");
+            return Exit::Failure;
+        }
+        run_config.model = providers::resolve_model(Some(&model));
+    }
+
     // Reject a malformed model id locally, before any credential or socket, with an actionable
     // error naming the offending model. A well-formed but unknown id is left to the provider to
     // accept or reject upstream, preserving the OpenRouter passthrough for newer models.
@@ -311,28 +332,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 }
             }
         };
-    // Honor a model persisted with the session (chosen interactively via the TUI `/models` picker)
-    // when the caller passed no explicit `--model`: resuming the session headless then uses that
-    // per-session model rather than reverting to the global default (VAL-CROSS-006). An explicit
-    // `--model` always wins; a session with no stored model leaves the config-resolved model in
-    // place. The stored id is validated the same way as a flag/config id, so a malformed stored
-    // value fails fast rather than reaching the provider.
-    let stored_model = db
-        .sessions()
-        .get(&session_id)
-        .ok()
-        .flatten()
-        .and_then(|session| session.model);
-    if let Some(model) = session_model_override(
-        explicit_model || agent_model_selected,
-        stored_model.as_deref(),
-    ) {
-        if let Err(message) = validate_model_id(&model) {
-            eprintln!("cortex run: {message}");
-            return Exit::Failure;
-        }
-        run_config.model = providers::resolve_model(Some(&model));
-    }
 
     plugin_state.attach_audit(audit_sink.clone());
     plugin_state.audit_loaded_plugins();
@@ -1687,14 +1686,7 @@ fn parse_context_limit(raw: Option<&str>) -> Option<usize> {
 /// # Errors
 /// Returns an actionable, model-naming message when the id is not a `provider/model` pair.
 pub(crate) fn validate_model_id(model_id: &str) -> Result<(), String> {
-    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
-    if provider.is_empty() || model.is_empty() {
-        return Err(format!(
-            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
-             (for example google/gemini-2.5-flash)"
-        ));
-    }
-    Ok(())
+    providers::validate_model_id(model_id)
 }
 
 /// Decide whether a session's persisted model should override the config-resolved model for a

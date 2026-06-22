@@ -185,6 +185,26 @@ pub fn resolve_model(requested: Option<&str>) -> ResolvedModel {
     Catalogue::embedded().resolve_model(requested)
 }
 
+/// Validate that a model id is a fully-qualified `provider/model` identifier.
+///
+/// Cortex lets OpenRouter reject well-formed but unknown model ids upstream, so this only rejects
+/// malformed local inputs such as bare model names or empty provider/model halves. Keeping this
+/// check in the provider crate ensures headless, TUI, server, and ACP surfaces produce the same
+/// actionable diagnostic for invalid model ids before credentials or sockets are touched.
+///
+/// # Errors
+/// Returns an actionable, model-naming message when `model_id` is not a `provider/model` pair.
+pub fn validate_model_id(model_id: &str) -> Result<(), String> {
+    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
+    if provider.is_empty() || model.is_empty() {
+        return Err(format!(
+            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
+             (for example google/gemini-2.5-flash)"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +260,25 @@ mod tests {
             resolved.info.is_none(),
             "an unknown id carries no metadata but still resolves"
         );
+    }
+
+    #[test]
+    fn bare_model_id_is_rejected_with_consistent_guidance() {
+        let err = validate_model_id("not-a-real-model").expect_err("bare id must be invalid");
+        assert!(err.contains("not-a-real-model"), "message: {err}");
+        assert!(err.contains("provider/model"), "message: {err}");
+        assert!(
+            err.contains(DEFAULT_MODEL),
+            "message should include the default as a concrete example: {err}"
+        );
+        assert!(validate_model_id("/gemini-2.5-flash").is_err());
+        assert!(validate_model_id("google/").is_err());
+    }
+
+    #[test]
+    fn qualified_unknown_model_id_is_allowed_for_upstream_passthrough() {
+        assert!(validate_model_id(DEFAULT_MODEL).is_ok());
+        assert!(validate_model_id("some/brand-new-model-v9").is_ok());
     }
 
     #[test]

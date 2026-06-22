@@ -401,6 +401,10 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 "MessageRequest": {
                     "type": "object",
                     "properties": {
+                        "model": {
+                            "type": "string",
+                            "description": "Optional per-turn model id in fully-qualified provider/model form, for example google/gemini-2.5-flash. When omitted, the session model is used, then the server default."
+                        },
                         "text": { "type": "string" },
                         "content": { "type": "string" },
                         "message": { "type": "string" },

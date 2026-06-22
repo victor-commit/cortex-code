@@ -324,14 +324,7 @@ fn model_overrides(cli_model: Option<&str>) -> BTreeMap<String, String> {
 }
 
 fn validate_model_id(model_id: &str) -> Result<(), String> {
-    let (provider, model) = model_id.split_once('/').unwrap_or(("", model_id));
-    if provider.is_empty() || model.is_empty() {
-        return Err(format!(
-            "unknown model '{model_id}': expected a fully-qualified 'provider/model' id \
-             (for example google/gemini-2.5-flash)"
-        ));
-    }
-    Ok(())
+    providers::validate_model_id(model_id)
 }
 
 fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
