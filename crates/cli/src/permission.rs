@@ -23,7 +23,8 @@
 //! ## CLI rule spec form
 //! Each flag value is `TOOL:GLOB`, split on the first `:`:
 //! - `TOOL` selects the gated tool
-//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`/`task`), a dynamically
+//!   (`read`/`write`/`edit`/`apply_patch`/`glob`/`grep`/`format`/`bash`/`task`/`webfetch`/
+//!   `websearch`), a dynamically
 //!   registered plugin/MCP tool id, or `*` for any tool.
 //! - `GLOB` is matched against the action's subject — a normalized file path for the file tools, or
 //!   the parsed command for `bash` (see [`permissions::request_for`]).
@@ -130,7 +131,7 @@ pub fn builtin_agent_permission_rules(agent: Agent) -> BuiltinAgentPermissionRul
 }
 
 fn read_only_allow_rules() -> Vec<Rule> {
-    ["read", "glob", "grep", "lsp"]
+    ["read", "glob", "grep", "lsp", "webfetch", "websearch"]
         .into_iter()
         .map(|tool| Rule::new(tool, "*", Action::Allow))
         .collect()
@@ -378,7 +379,7 @@ fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
         return Err(format!(
             "invalid permission rule `{spec}`: invalid tool id `{tool}` \
              (expected read, write, edit, apply_patch, glob, grep, format, bash, task, \
-              a plugin/MCP tool id, or *)"
+              webfetch, websearch, a plugin/MCP tool id, or *)"
         ));
     }
     Ok(Rule::new(tool, glob, action))
@@ -537,7 +538,7 @@ mod tests {
             .engine
             .expect("built-in mode rules attach an engine");
 
-            for tool in ["read", "glob", "grep", "lsp"] {
+            for tool in ["read", "glob", "grep", "lsp", "webfetch", "websearch"] {
                 assert_eq!(
                     engine.classify(tool, "src/main.rs"),
                     Action::Allow,

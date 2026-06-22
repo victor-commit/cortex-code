@@ -20,6 +20,7 @@ use crate::task::TaskTool;
 use crate::todo::TodoTool;
 use crate::tool::{TaskTarget, Tool, ToolContext, ToolOutput};
 use crate::webfetch::WebFetchTool;
+use crate::websearch::{WebSearchConfig, WebSearchTool};
 use crate::write::WriteTool;
 
 /// An ordered set of callable tools.
@@ -38,6 +39,7 @@ impl ToolRegistry {
     /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
     /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the utility tools
     /// `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. This set has no `apply_patch`.
+    /// `websearch` is deliberately omitted until a surface supplies an explicit provider config.
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::new();
@@ -51,8 +53,9 @@ impl ToolRegistry {
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
     /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. GPT-family
     /// models edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately
-    /// swapped out (architecture §3.4, model-aware tool materialization); the shell/search/LSP/todo
-    /// utilities are model-agnostic and present for every family.
+    /// swapped out (architecture §3.4, model-aware tool materialization); the shell/code-search/LSP/
+    /// todo utilities are model-agnostic and present for every family. `websearch` is deliberately
+    /// omitted until a surface supplies an explicit provider config.
     #[must_use]
     pub fn gpt() -> Self {
         let mut registry = Self::new();
@@ -71,6 +74,15 @@ impl ToolRegistry {
         self.register(Box::new(LspTool));
         self.register(Box::new(TodoTool));
         self.register(Box::new(WebFetchTool));
+    }
+
+    /// Add the real `websearch` tool with an explicit provider configuration.
+    ///
+    /// The default registries do not include `websearch`, so a run with no provider configured is
+    /// unmistakably default-off. Calling this method is the single materialization seam used by
+    /// surfaces after they have resolved `[websearch] enabled = true`.
+    pub fn register_websearch(&mut self, config: WebSearchConfig) {
+        self.register(Box::new(WebSearchTool::new(config)));
     }
 
     /// Add the `task` tool with the already-filtered subagent targets.
@@ -184,7 +196,26 @@ mod tests {
                     "expected `{name}` in the advertised catalogue"
                 );
             }
+            assert!(
+                registry.get("websearch").is_none(),
+                "websearch is default-off until configured"
+            );
         }
+    }
+
+    #[test]
+    fn websearch_registers_only_with_explicit_config() {
+        let mut registry = ToolRegistry::builtin();
+        assert!(registry.get("websearch").is_none());
+        registry.register_websearch(WebSearchConfig::duckduckgo());
+        assert!(registry.get("websearch").is_some());
+        assert!(
+            registry
+                .definitions()
+                .iter()
+                .any(|def| def.name == "websearch"),
+            "configured websearch must be advertised"
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use mcp::McpManager;
 use permissions::PermissionEngine;
 use tools::{
     BackgroundJobs, LspService, MutationHooks, TaskRunner, TaskTarget, TodoStore, Tool,
-    ToolContext, ToolRegistry,
+    ToolContext, ToolRegistry, WebSearchConfig,
 };
 
 /// A [`ToolDispatcher`] backed by a [`ToolRegistry`] and a shared [`ToolContext`].
@@ -134,6 +134,16 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_skills(mut self, skills: Vec<skills::Skill>) -> Self {
         self.registry.register_skills(skills);
+        self
+    }
+
+    /// Attach the real `websearch` tool after the run config has explicitly enabled a provider.
+    ///
+    /// With no call to this method, `websearch` is omitted from the advertised tool set, making the
+    /// default-off policy observable in `cortex run --format json`.
+    #[must_use]
+    pub fn with_websearch(mut self, config: WebSearchConfig) -> Self {
+        self.registry.register_websearch(config);
         self
     }
 

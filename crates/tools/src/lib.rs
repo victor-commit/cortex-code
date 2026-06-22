@@ -26,6 +26,7 @@ mod task;
 mod todo;
 mod tool;
 mod webfetch;
+mod websearch;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
@@ -45,4 +46,5 @@ pub use tool::{
     MutationHooks, TaskRequest, TaskRunner, TaskTarget, TodoStore, Tool, ToolContext, ToolOutput,
 };
 pub use webfetch::WebFetchTool;
+pub use websearch::{WebSearchConfig, WebSearchProvider, WebSearchTool};
 pub use write::WriteTool;

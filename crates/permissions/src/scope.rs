@@ -13,6 +13,9 @@
 //!   segments with [`split_bash_commands`] so each is classified on its own; the `bash` tool feeds
 //!   tree-sitter-extracted commands through the same matcher for robust, obfuscation-resistant
 //!   classification.
+//! - **Target tools** (`task`, `webfetch`, `websearch`) scope by the requested target string (the
+//!   subagent name, URL, or query), so callers can allow/deny specific network searches without
+//!   treating them as file paths.
 //! - **`task`** scopes by its requested subagent name, so a rule like `task:explore` governs
 //!   whether that exact subagent type may be spawned (VAL-AGENT-013/014).
 //!
@@ -48,8 +51,8 @@ const PATH_TOOLS: [&str; 7] = [
 /// The tool whose permission subject is the shell command it runs.
 const COMMAND_TOOL: &str = "bash";
 
-/// Tools whose permission subject is the requested target name.
-const TARGET_TOOLS: [&str; 1] = ["task"];
+/// Tools whose permission subject is the requested target string.
+const TARGET_TOOLS: [&str; 3] = ["task", "webfetch", "websearch"];
 
 /// How `tool` derives its permission subject, or `None` for a tool with no path/command scoping.
 #[must_use]
@@ -254,7 +257,13 @@ mod tests {
         }
         assert_eq!(scope_of("bash"), Some(ToolScope::Command));
         assert!(is_command_tool("bash"));
-        assert_eq!(scope_of("task"), Some(ToolScope::Target));
+        for tool in ["task", "webfetch", "websearch"] {
+            assert_eq!(
+                scope_of(tool),
+                Some(ToolScope::Target),
+                "{tool} scopes by target string"
+            );
+        }
         // A tool with no path/command scope (e.g. todo) has no scope.
         assert_eq!(scope_of("todo"), None);
         assert!(!is_file_tool("todo") && !is_command_tool("todo"));
