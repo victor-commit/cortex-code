@@ -60,6 +60,7 @@ struct ScriptedProvider {
 enum ProviderScenario {
     CoreTools,
     McpTool,
+    SecretBash,
 }
 
 impl ScriptedProvider {
@@ -69,6 +70,10 @@ impl ScriptedProvider {
 
     fn spawn_mcp() -> Self {
         Self::spawn_scenario(ProviderScenario::McpTool)
+    }
+
+    fn spawn_secret_bash() -> Self {
+        Self::spawn_scenario(ProviderScenario::SecretBash)
     }
 
     fn spawn_scenario(scenario: ProviderScenario) -> Self {
@@ -85,6 +90,7 @@ impl ScriptedProvider {
                 let body = match (scenario, round) {
                     (ProviderScenario::CoreTools, 0) => tool_call_body(),
                     (ProviderScenario::McpTool, 0) => mcp_tool_call_body(),
+                    (ProviderScenario::SecretBash, 0) => secret_bash_tool_call_body(),
                     _ => final_body(),
                 };
                 write_sse_response(&mut stream, &body).expect("write provider response");
@@ -120,6 +126,70 @@ impl Drop for ScriptedProvider {
             let _ = thread.join();
         }
     }
+}
+
+#[test]
+fn run_redacts_provider_auth_body_and_shell_env_secrets_in_audit_records() {
+    let scratch = Scratch::new("redaction");
+    let provider = ScriptedProvider::spawn_secret_bash();
+    write_shell_env_plugin(&scratch.project);
+    let key = fake_openrouter_key();
+    let test_secret = "topsecret123";
+
+    let out = run(cortex_with_key(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--format",
+            "json",
+            "exercise audit redaction for prompt secret topsecret123",
+        ],
+        &key,
+    ));
+    assert_success(&out);
+
+    let raw = std::fs::read_to_string(&scratch.audit).expect("audit raw");
+    assert!(
+        !raw.contains(&key),
+        "audit must not contain the OpenRouter key literal: {raw}"
+    );
+    assert!(
+        !raw.contains(test_secret),
+        "audit must not contain the plugin/test secret literal: {raw}"
+    );
+    assert!(
+        raw.contains(redaction::PLACEHOLDER),
+        "audit should mark redacted fields with the canonical placeholder: {raw}"
+    );
+
+    let records = read_audit(&scratch.audit);
+    assert!(records.iter().any(|record| {
+        record["type"] == "network_call"
+            && record["kind"] == "provider_request"
+            && record["provider"] == "openrouter"
+            && record["model"] == "google/gemini-2.5-flash"
+            && record["host"] == "127.0.0.1"
+            && record["auth"] == redaction::PLACEHOLDER
+            && record["body"] == redaction::PLACEHOLDER
+            && record["headers"]["authorization"] == redaction::PLACEHOLDER
+            && record["duration_ms"].as_u64().is_some()
+            && record["outcome"] == "success"
+    }));
+    assert!(records.iter().any(|record| {
+        record["type"] == "plugin_hook"
+            && record["hook"] == "shell.env"
+            && record["env"]["SECRET"] == redaction::PLACEHOLDER
+            && record["env_keys"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|key| key == "SECRET"))
+    }));
+    assert!(records.iter().any(|record| {
+        record["type"] == "shell_execution"
+            && record["command"]
+                .as_str()
+                .is_some_and(|command| command.contains(redaction::PLACEHOLDER))
+    }));
 }
 
 #[test]
@@ -241,13 +311,22 @@ fn run_writes_mcp_tool_call_audit_record_with_server_tool_and_arguments() {
 }
 
 fn cortex(scratch: &Scratch, provider: &ScriptedProvider, args: &[&str]) -> Command {
+    cortex_with_key(scratch, provider, args, &fake_openrouter_key())
+}
+
+fn cortex_with_key(
+    scratch: &Scratch,
+    provider: &ScriptedProvider,
+    args: &[&str],
+    key: &str,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(&scratch.project);
     command.args(args);
     command.env("HOME", &scratch.home);
     command.env("CORTEX_DB_PATH", &scratch.db);
     command.env("CORTEX_AUDIT_LOG", &scratch.audit);
-    command.env("OPENROUTER_API_KEY", fake_openrouter_key());
+    command.env("OPENROUTER_API_KEY", key);
     command.env("CORTEX_OPENROUTER_BASE_URL", &provider.base_url);
     command
         .env_remove("XDG_CONFIG_HOME")
@@ -392,6 +471,37 @@ fn mcp_tool_call_body() -> String {
     ])
 }
 
+fn secret_bash_tool_call_body() -> String {
+    sse_body(&[
+        json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_secret_bash",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": json!({
+                                "command": "printf '%s\\n' \"$SECRET\" && printf '%s\\n' \"topsecret123\""
+                            }).to_string()
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        })
+        .to_string(),
+        json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ])
+}
+
 fn final_body() -> String {
     sse_body(&[
         json!({
@@ -414,6 +524,24 @@ fn final_body() -> String {
         })
         .to_string(),
     ])
+}
+
+fn write_shell_env_plugin(project: &std::path::Path) {
+    std::fs::write(
+        project.join("plugin.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    "shell.env": async () => {
+      return { SECRET: "topsecret123", VISIBLE_FLAG: "present" };
+    }
+  };
+}
+"#,
+    )
+    .expect("write plugin");
+    std::fs::write(project.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
+        .expect("write config");
 }
 
 fn sse_body(frames: &[String]) -> String {

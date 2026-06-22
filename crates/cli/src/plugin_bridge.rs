@@ -180,23 +180,29 @@ impl PluginState {
             match self.host.invoke_shell_env(&loaded.spec) {
                 Ok(output) => {
                     if let Some(JsonValue::Object(map)) = output.output {
+                        let entries = map
+                            .into_iter()
+                            .filter_map(|(name, value)| {
+                                let value = match value {
+                                    JsonValue::Null => return None,
+                                    JsonValue::String(value) => value,
+                                    other => other.to_string(),
+                                };
+                                Some((name, value))
+                            })
+                            .collect::<Vec<_>>();
                         if let Some(audit) = self.audit_sink() {
-                            audit.record_plugin_hook(
+                            audit.record_plugin_shell_env(
                                 loaded.spec.raw_spec(),
-                                "shell.env",
-                                "inject_env",
+                                &entries,
                                 "success",
-                                Some("environment variables provided"),
                             );
                         }
-                        env.extend(map.into_iter().filter_map(|(name, value)| {
-                            let value = match value {
-                                JsonValue::Null => return None,
-                                JsonValue::String(value) => value,
-                                other => other.to_string(),
-                            };
-                            Some((OsString::from(name), OsString::from(value)))
-                        }));
+                        env.extend(
+                            entries
+                                .into_iter()
+                                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+                        );
                     }
                 }
                 Err(err) => eprintln!("cortex plugin shell.env: {err}"),

@@ -32,7 +32,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
@@ -891,17 +891,20 @@ impl Provider for AuditedProvider {
     fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
         Box::pin(async move {
             let model = request.model.clone();
+            let extra_headers = request.extra_headers.clone();
+            let started = Instant::now();
             let result = self.inner.stream(request).await;
             let outcome = if result.is_ok() { "success" } else { "error" };
-            self.audit.record_network_call(
-                "llm",
-                Some(&self.provider),
-                Some(&model),
+            self.audit.record_provider_request(
+                &self.provider,
+                &model,
                 "POST",
                 &self.host,
                 &self.endpoint,
                 None,
+                started.elapsed().as_millis(),
                 outcome,
+                &extra_headers,
             );
             result
         })

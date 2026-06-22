@@ -22,6 +22,7 @@ pub struct AuditSink {
     session: String,
     sequence: AtomicU64,
     write_lock: Mutex<()>,
+    extra_secrets: Mutex<Vec<String>>,
 }
 
 impl AuditSink {
@@ -33,6 +34,7 @@ impl AuditSink {
             session: session.into(),
             sequence: AtomicU64::new(0),
             write_lock: Mutex::new(()),
+            extra_secrets: Mutex::new(secret_values_from_process_env()),
         }
     }
 
@@ -56,6 +58,19 @@ impl AuditSink {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// Register a secret literal discovered outside the process environment, such as a plugin
+    /// `shell.env` value. Future audit records replace this exact value wherever it appears.
+    pub fn register_secret(&self, value: impl AsRef<str>) {
+        let Some(secret) = normalize_secret_literal(value.as_ref()) else {
+            return;
+        };
+        if let Ok(mut secrets) = self.extra_secrets.lock()
+            && !secrets.iter().any(|existing| existing == &secret)
+        {
+            secrets.push(secret);
+        }
     }
 
     /// Record a permission decision with the configured action and final outcome.
@@ -135,6 +150,48 @@ impl AuditSink {
         self.write("network_call", fields);
     }
 
+    /// Record an LLM provider request without persisting the raw request body or authorization.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_provider_request(
+        &self,
+        provider: &str,
+        model: &str,
+        method: &str,
+        host: &str,
+        endpoint: &str,
+        status: Option<u16>,
+        duration_ms: u128,
+        outcome: &str,
+        extra_headers: &[(String, String)],
+    ) {
+        let mut fields = Map::new();
+        insert_str(&mut fields, "actor", "llm");
+        insert_str(&mut fields, "tool", "llm");
+        insert_str(&mut fields, "kind", "provider_request");
+        insert_str(&mut fields, "provider", provider);
+        insert_str(&mut fields, "model", model);
+        insert_str(&mut fields, "method", method);
+        insert_str(&mut fields, "host", host);
+        insert_str(&mut fields, "endpoint", endpoint);
+        insert_optional_i64(&mut fields, "status", status.map(i64::from));
+        fields.insert(
+            "duration_ms".to_owned(),
+            Value::Number(Number::from(u64::try_from(duration_ms).unwrap_or(u64::MAX))),
+        );
+        insert_str(&mut fields, "outcome", outcome);
+        insert_str(&mut fields, "auth", redaction::PLACEHOLDER);
+        insert_str(&mut fields, "body", redaction::PLACEHOLDER);
+
+        let mut headers = Map::new();
+        insert_str(&mut headers, "authorization", redaction::PLACEHOLDER);
+        for (name, value) in extra_headers {
+            headers.insert(name.clone(), Value::String(value.clone()));
+        }
+        fields.insert("headers".to_owned(), Value::Object(headers));
+
+        self.write("network_call", fields);
+    }
+
     /// Record a real MCP `tools/call` invocation.
     pub fn record_mcp_tool_call(
         &self,
@@ -192,6 +249,43 @@ impl AuditSink {
             insert_str(&mut fields, "detail", detail);
             insert_str(&mut fields, "reason", detail);
         }
+        self.write("plugin_hook", fields);
+    }
+
+    /// Record a plugin `shell.env` result while preserving env field presence and redacting values
+    /// whose names or shapes are secret-listed.
+    pub fn record_plugin_shell_env(&self, plugin: &str, env: &[(String, String)], outcome: &str) {
+        for (name, value) in env {
+            if redaction::is_secret_env_var(name) || redaction::value_is_secret(value) {
+                self.register_secret(value);
+            }
+        }
+
+        let mut fields = Map::new();
+        insert_str(&mut fields, "plugin", plugin);
+        insert_str(&mut fields, "hook", "shell.env");
+        insert_str(&mut fields, "action", "inject_env");
+        insert_str(&mut fields, "outcome", outcome);
+        insert_str(&mut fields, "detail", "environment variables provided");
+        insert_str(&mut fields, "reason", "environment variables provided");
+
+        let mut env_keys = env
+            .iter()
+            .map(|(name, _)| Value::String(name.clone()))
+            .collect::<Vec<_>>();
+        env_keys.sort_by(|left, right| {
+            left.as_str()
+                .unwrap_or_default()
+                .cmp(right.as_str().unwrap_or_default())
+        });
+        fields.insert("env_keys".to_owned(), Value::Array(env_keys));
+
+        let env_object = env
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+            .collect::<Map<_, _>>();
+        fields.insert("env".to_owned(), Value::Object(env_object));
+
         self.write("plugin_hook", fields);
     }
 
@@ -255,8 +349,9 @@ impl AuditSink {
             Value::Number(Number::from(timestamp_ms())),
         );
         for (key, value) in std::mem::take(&mut fields) {
-            record.insert(key, redact_value(value));
+            record.insert(key, value);
         }
+        let record = redact_object(record, &self.secret_literals());
 
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -271,6 +366,16 @@ impl AuditSink {
         {
             let _ = writeln!(file, "{line}");
         }
+    }
+
+    fn secret_literals(&self) -> Vec<String> {
+        let mut secrets = self
+            .extra_secrets
+            .lock()
+            .map_or_else(|_| Vec::new(), |secrets| secrets.clone());
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        secrets.dedup();
+        secrets
     }
 }
 
@@ -307,13 +412,10 @@ pub fn argument_summary(arguments: &str) -> String {
         Ok(Value::Object(map)) => {
             let mut keys = map.keys().cloned().collect::<Vec<_>>();
             keys.sort();
-            format!(
-                "object keys: {}; json: {}",
-                keys.join(","),
-                Value::Object(map)
-            )
+            let redacted = redact_value(Value::Object(map), &[]);
+            format!("object keys: {}; json: {}", keys.join(","), redacted)
         }
-        Ok(value) => value.to_string(),
+        Ok(value) => redact_value(value, &[]).to_string(),
         Err(_) => arguments.to_owned(),
     };
     let redacted = redaction::redact(&rendered);
@@ -350,17 +452,95 @@ fn timestamp_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn redact_value(value: Value) -> Value {
+fn secret_values_from_process_env() -> Vec<String> {
+    let mut secrets = std::env::vars_os()
+        .filter_map(|(name, value)| {
+            let name = name.to_string_lossy();
+            let value = value.to_string_lossy();
+            (redaction::is_secret_env_var(&name) || redaction::value_is_secret(&value))
+                .then(|| normalize_secret_literal(&value))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    secrets.sort();
+    secrets.dedup();
+    secrets
+}
+
+fn normalize_secret_literal(value: &str) -> Option<String> {
+    const MIN_SECRET_LITERAL_LEN: usize = 4;
+    let value = value.trim();
+    if value.is_empty()
+        || value == redaction::PLACEHOLDER
+        || value.chars().count() < MIN_SECRET_LITERAL_LEN
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn redact_object(map: Map<String, Value>, secrets: &[String]) -> Map<String, Value> {
+    map.into_iter()
+        .map(|(key, value)| {
+            let redacted = redact_value_for_key(&key, value, secrets);
+            (key, redacted)
+        })
+        .collect()
+}
+
+fn redact_value_for_key(key: &str, value: Value, secrets: &[String]) -> Value {
+    if is_secret_field_name(key) {
+        return Value::String(redaction::PLACEHOLDER.to_owned());
+    }
+    redact_value(value, secrets)
+}
+
+fn redact_value(value: Value, secrets: &[String]) -> Value {
     match value {
-        Value::String(value) => Value::String(redaction::redact(&value)),
-        Value::Array(values) => Value::Array(values.into_iter().map(redact_value).collect()),
+        Value::String(value) => Value::String(redact_text(&value, secrets)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_value(value, secrets))
+                .collect(),
+        ),
         Value::Object(map) => Value::Object(
             map.into_iter()
-                .map(|(key, value)| (key, redact_value(value)))
+                .map(|(key, value)| {
+                    let redacted = redact_value_for_key(&key, value, secrets);
+                    (key, redacted)
+                })
                 .collect(),
         ),
         other => other,
     }
+}
+
+fn redact_text(value: &str, secrets: &[String]) -> String {
+    let trimmed = value.trim_start();
+    let candidate = if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        serde_json::from_str::<Value>(value)
+            .ok()
+            .map(|parsed| redact_value(parsed, secrets).to_string())
+    } else {
+        None
+    };
+    let mut redacted = redaction::redact(candidate.as_deref().unwrap_or(value));
+    for secret in secrets {
+        if !secret.is_empty() && redacted.contains(secret) {
+            redacted = redacted.replace(secret, redaction::PLACEHOLDER);
+        }
+    }
+    redacted
+}
+
+fn is_secret_field_name(name: &str) -> bool {
+    let normalized = name.replace(['-', '.'], "_").to_ascii_uppercase();
+    matches!(
+        normalized.as_str(),
+        "AUTH" | "AUTHORIZATION" | "PROXY_AUTHORIZATION"
+    ) || normalized.ends_with("_AUTH")
+        || redaction::is_secret_env_var(&normalized)
 }
 
 #[cfg(test)]
@@ -413,6 +593,130 @@ mod tests {
         let raw = std::fs::read_to_string(&path).expect("read raw");
         assert!(!raw.contains(&secret));
         assert!(raw.contains(redaction::PLACEHOLDER));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn registered_secret_literals_are_redacted_from_later_records() {
+        let path = temp_log("registered");
+        let sink = AuditSink::new(&path, "ses_registered");
+        let secret = "topsecret123";
+        sink.register_secret(secret);
+
+        sink.record_shell_execution(
+            &format!("printf '%s\\n' {secret}"),
+            Path::new("/tmp/project"),
+            Some(0),
+            "success",
+        );
+
+        let raw = std::fs::read_to_string(&path).expect("read raw");
+        assert!(!raw.contains(secret), "{raw}");
+        assert!(raw.contains(redaction::PLACEHOLDER), "{raw}");
+        let records = read_jsonl(&path).expect("records");
+        assert!(
+            records[0]["command"]
+                .as_str()
+                .is_some_and(|command| command.contains(redaction::PLACEHOLDER)),
+            "{records:#?}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shell_env_records_presence_while_redacting_secret_named_values() {
+        let path = temp_log("shell-env");
+        let sink = AuditSink::new(&path, "ses_env");
+        let secret = "topsecret123";
+
+        sink.record_plugin_shell_env(
+            "./plugin.mjs",
+            &[
+                ("SECRET".to_owned(), secret.to_owned()),
+                ("VISIBLE_FLAG".to_owned(), "present".to_owned()),
+            ],
+            "success",
+        );
+
+        let raw = std::fs::read_to_string(&path).expect("read raw");
+        assert!(!raw.contains(secret), "{raw}");
+        let records = read_jsonl(&path).expect("records");
+        let record = &records[0];
+        assert_eq!(record["type"], "plugin_hook");
+        assert_eq!(record["hook"], "shell.env");
+        assert_eq!(record["env"]["SECRET"], redaction::PLACEHOLDER);
+        assert_eq!(record["env"]["VISIBLE_FLAG"], "present");
+        assert!(
+            record["env_keys"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|key| key == "SECRET")),
+            "{record:#?}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn provider_request_records_metadata_and_redacted_auth_body_headers() {
+        let path = temp_log("provider");
+        let sink = AuditSink::new(&path, "ses_provider");
+        let secret = "topsecret123";
+        sink.register_secret(secret);
+
+        sink.record_provider_request(
+            "openrouter",
+            "google/gemini-2.5-flash",
+            "POST",
+            "openrouter.ai",
+            "https://openrouter.ai/api/v1/chat/completions",
+            Some(200),
+            42,
+            "success",
+            &[
+                ("X-Trace".to_owned(), "abc".to_owned()),
+                ("X-Secret-Token".to_owned(), secret.to_owned()),
+            ],
+        );
+
+        let raw = std::fs::read_to_string(&path).expect("read raw");
+        assert!(!raw.contains(secret), "{raw}");
+        let records = read_jsonl(&path).expect("records");
+        let record = &records[0];
+        assert_eq!(record["type"], "network_call");
+        assert_eq!(record["kind"], "provider_request");
+        assert_eq!(record["model"], "google/gemini-2.5-flash");
+        assert_eq!(record["host"], "openrouter.ai");
+        assert_eq!(record["duration_ms"], 42);
+        assert_eq!(record["auth"], redaction::PLACEHOLDER);
+        assert_eq!(record["body"], redaction::PLACEHOLDER);
+        assert_eq!(record["headers"]["authorization"], redaction::PLACEHOLDER);
+        assert_eq!(record["headers"]["X-Trace"], "abc");
+        assert_eq!(record["headers"]["X-Secret-Token"], redaction::PLACEHOLDER);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn argument_json_strings_redact_secret_named_fields() {
+        let path = temp_log("arguments");
+        let sink = AuditSink::new(&path, "ses_arguments");
+        let secret = "topsecret123";
+
+        sink.record_plugin_tool_denial(
+            "call_a",
+            "bash",
+            "./plugin.mjs",
+            "denied",
+            &serde_json::json!({ "SECRET": secret, "visible": "ok" }).to_string(),
+        );
+
+        let raw = std::fs::read_to_string(&path).expect("read raw");
+        assert!(!raw.contains(secret), "{raw}");
+        let records = read_jsonl(&path).expect("records");
+        assert!(
+            records[0]["arguments"]
+                .as_str()
+                .is_some_and(|arguments| arguments.contains(redaction::PLACEHOLDER)),
+            "{records:#?}"
+        );
         let _ = std::fs::remove_file(path);
     }
 }
