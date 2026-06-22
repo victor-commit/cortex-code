@@ -7,7 +7,7 @@ pub(crate) async fn openapi_json() -> Json<serde_json::Value> {
 /// Build the static OpenAPI document for the routes currently wired into the server router.
 #[must_use]
 pub(crate) fn openapi_document() -> serde_json::Value {
-    serde_json::json!({
+    let mut document = serde_json::json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Cortex Code Local Server API",
@@ -469,7 +469,81 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 }
             }
         }
-    })
+    });
+    add_auth_documentation(&mut document);
+    document
+}
+
+const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
+    ("/event", &["get"]),
+    ("/session", &["get", "post"]),
+    ("/session/{id}", &["get", "delete"]),
+    ("/session/{id}/message", &["get", "post"]),
+    ("/session/{id}/prompt", &["get"]),
+    ("/session/{id}/prompt/append", &["post"]),
+    ("/session/{id}/prompt/submit", &["post"]),
+    ("/session/{id}/prompt/clear", &["post"]),
+    ("/session/{id}/command", &["post"]),
+    ("/session/{id}/abort", &["post"]),
+    ("/session/{id}/share", &["post"]),
+    ("/session/{id}/unshare", &["post"]),
+    ("/share/{share_id}", &["get"]),
+];
+
+fn add_auth_documentation(document: &mut serde_json::Value) {
+    if let Some(components) = document
+        .get_mut("components")
+        .and_then(|value| value.as_object_mut())
+    {
+        components.insert(
+            "securitySchemes".to_owned(),
+            serde_json::json!({
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "opaque",
+                    "description": "When `cortex serve --token <TOKEN>` is configured, protected routes require `Authorization: Bearer <TOKEN>`."
+                }
+            }),
+        );
+    }
+
+    for (path, methods) in PROTECTED_OPERATIONS {
+        let Some(path_item) = document
+            .get_mut("paths")
+            .and_then(|value| value.as_object_mut())
+            .and_then(|paths| paths.get_mut(*path))
+            .and_then(|value| value.as_object_mut())
+        else {
+            continue;
+        };
+        for method in *methods {
+            let Some(operation) = path_item
+                .get_mut(*method)
+                .and_then(|value| value.as_object_mut())
+            else {
+                continue;
+            };
+            operation
+                .entry("security".to_owned())
+                .or_insert_with(|| serde_json::json!([{ "bearerAuth": [] }]));
+            let responses = operation
+                .entry("responses".to_owned())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(responses) = responses.as_object_mut() {
+                responses
+                    .entry("401".to_owned())
+                    .or_insert_with(auth_response);
+            }
+        }
+    }
+}
+
+fn auth_response() -> serde_json::Value {
+    json_response(
+        "Authentication is required when the server is started with --token.",
+        "ErrorResponse",
+    )
 }
 
 fn json_response(description: &str, schema: &str) -> serde_json::Value {

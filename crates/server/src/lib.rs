@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{Path as AxumPath, Request, State},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{
         Html, IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -72,6 +73,7 @@ pub struct HealthResponse {
 pub struct ServerState {
     db_path: PathBuf,
     provider: ProviderSource,
+    auth: ServerAuth,
     active_turns: ActiveTurns,
     event_bus: Arc<EventBus>,
     prompt_buffers: PromptBuffers,
@@ -85,6 +87,7 @@ impl ServerState {
         Self {
             db_path: db_path.into(),
             provider: ProviderSource::OpenRouter,
+            auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
@@ -101,6 +104,7 @@ impl ServerState {
                 model_id: providers::OPENROUTER_DEFAULT_MODEL.to_owned(),
                 provider,
             },
+            auth: ServerAuth::trusted_loopback(),
             active_turns: ActiveTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
@@ -112,6 +116,13 @@ impl ServerState {
     #[must_use]
     pub fn with_event_bus(mut self, event_bus: Arc<EventBus>) -> Self {
         self.event_bus = event_bus;
+        self
+    }
+
+    /// Configure optional bearer-token auth and browser CORS policy for protected routes.
+    #[must_use]
+    pub fn with_auth(mut self, auth: ServerAuth) -> Self {
+        self.auth = auth;
         self
     }
 
@@ -138,11 +149,108 @@ impl std::fmt::Debug for ServerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerState")
             .field("db_path", &self.db_path)
+            .field("auth", &self.auth)
             .field("event_subscribers", &self.event_bus.subscriber_count())
             .field("prompt_buffers", &self.prompt_buffers.len())
             .field("local_shares", &self.local_shares.len())
             .finish_non_exhaustive()
     }
+}
+
+/// Optional request-auth policy for `cortex serve`.
+///
+/// The default mode trusts the loopback listener and requires no request credential. Supplying a
+/// token switches protected routes to `Authorization: Bearer <token>` validation; the raw token is
+/// intentionally omitted from `Debug`, responses, and OpenAPI.
+#[derive(Clone)]
+pub struct ServerAuth {
+    bearer_token: Option<Arc<str>>,
+    cors: CorsPolicy,
+}
+
+impl ServerAuth {
+    /// Trusted-loopback default: no token required and no browser CORS headers emitted.
+    #[must_use]
+    pub fn trusted_loopback() -> Self {
+        Self {
+            bearer_token: None,
+            cors: CorsPolicy::Absent,
+        }
+    }
+
+    /// Token-gated mode using the documented `Authorization: Bearer <token>` scheme.
+    pub fn bearer_token(
+        token: impl Into<String>,
+        allow_loopback_cors: bool,
+    ) -> Result<Self, ServeError> {
+        let token = token.into();
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(ServeError::EmptyAuthToken);
+        }
+        Ok(Self {
+            bearer_token: Some(Arc::<str>::from(token)),
+            cors: if allow_loopback_cors {
+                CorsPolicy::LoopbackOrigins
+            } else {
+                CorsPolicy::Absent
+            },
+        })
+    }
+
+    fn requires_auth(&self, method: &Method, path: &str) -> bool {
+        self.bearer_token.is_some() && *method != Method::OPTIONS && !is_public_path(path)
+    }
+
+    fn accepts(&self, headers: &HeaderMap) -> bool {
+        let Some(expected) = self.bearer_token.as_deref() else {
+            return true;
+        };
+        let Some(header_value) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+        else {
+            return false;
+        };
+        let Some(token) = bearer_token_from_header(header_value) else {
+            return false;
+        };
+        constant_time_eq(token.as_bytes(), expected.as_bytes())
+    }
+
+    fn cors_origin(&self, headers: &HeaderMap) -> Option<HeaderValue> {
+        if self.cors != CorsPolicy::LoopbackOrigins {
+            return None;
+        }
+        let origin = headers.get(header::ORIGIN)?;
+        let origin_str = origin.to_str().ok()?;
+        is_loopback_origin(origin_str).then(|| origin.clone())
+    }
+}
+
+impl Default for ServerAuth {
+    fn default() -> Self {
+        Self::trusted_loopback()
+    }
+}
+
+impl std::fmt::Debug for ServerAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerAuth")
+            .field("token_configured", &self.bearer_token.is_some())
+            .field(
+                "token",
+                &self.bearer_token.as_ref().map(|_| redaction::PLACEHOLDER),
+            )
+            .field("cors", &self.cors)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorsPolicy {
+    Absent,
+    LoopbackOrigins,
 }
 
 #[derive(Clone)]
@@ -230,6 +338,9 @@ pub enum ServeError {
         #[source]
         source: DbError,
     },
+    /// Token auth was requested with an empty token value.
+    #[error("auth token cannot be empty")]
+    EmptyAuthToken,
 }
 
 impl ServeError {
@@ -238,7 +349,9 @@ impl ServeError {
     pub const fn is_usage_error(&self) -> bool {
         matches!(
             self,
-            ServeError::NonLoopbackHost { .. } | ServeError::PortOutOfRange { .. }
+            ServeError::NonLoopbackHost { .. }
+                | ServeError::PortOutOfRange { .. }
+                | ServeError::EmptyAuthToken
         )
     }
 }
@@ -263,26 +376,58 @@ pub fn app_with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider
 
 /// Construct the axum application from pre-resolved server state.
 pub fn app_with_state(state: ServerState) -> Router {
+    let auth = state.auth.clone();
     Router::new()
-        .route("/health", get(health))
-        .route("/openapi.json", get(openapi::openapi_json))
-        .route("/event", get(event_stream))
-        .route("/session", get(list_sessions).post(create_session))
-        .route("/session/{id}", get(get_session).delete(delete_session))
+        .route("/health", get(health).options(preflight))
+        .route(
+            "/openapi.json",
+            get(openapi::openapi_json).options(preflight),
+        )
+        .route("/event", get(event_stream).options(preflight))
+        .route(
+            "/session",
+            get(list_sessions).post(create_session).options(preflight),
+        )
+        .route(
+            "/session/{id}",
+            get(get_session).delete(delete_session).options(preflight),
+        )
         .route(
             "/session/{id}/message",
-            get(list_messages).post(post_message),
+            get(list_messages).post(post_message).options(preflight),
         )
-        .route("/session/{id}/prompt", get(get_prompt_draft))
-        .route("/session/{id}/prompt/append", post(append_prompt))
-        .route("/session/{id}/prompt/submit", post(submit_prompt))
-        .route("/session/{id}/prompt/clear", post(clear_prompt))
-        .route("/session/{id}/command", post(execute_command))
-        .route("/session/{id}/abort", post(abort_session))
-        .route("/session/{id}/share", post(create_share))
-        .route("/session/{id}/unshare", post(unshare_session))
-        .route("/share/{share_id}", get(get_share))
+        .route(
+            "/session/{id}/prompt",
+            get(get_prompt_draft).options(preflight),
+        )
+        .route(
+            "/session/{id}/prompt/append",
+            post(append_prompt).options(preflight),
+        )
+        .route(
+            "/session/{id}/prompt/submit",
+            post(submit_prompt).options(preflight),
+        )
+        .route(
+            "/session/{id}/prompt/clear",
+            post(clear_prompt).options(preflight),
+        )
+        .route(
+            "/session/{id}/command",
+            post(execute_command).options(preflight),
+        )
+        .route(
+            "/session/{id}/abort",
+            post(abort_session).options(preflight),
+        )
+        .route("/session/{id}/share", post(create_share).options(preflight))
+        .route(
+            "/session/{id}/unshare",
+            post(unshare_session).options(preflight),
+        )
+        .route("/share/{share_id}", get(get_share).options(preflight))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(auth, auth_and_cors))
 }
 
 /// Resolve and validate the requested bind address.
@@ -350,6 +495,123 @@ pub async fn serve_with_signals(
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+async fn preflight() -> StatusCode {
+    StatusCode::NO_CONTENT
+}
+
+async fn auth_and_cors(State(auth): State<ServerAuth>, request: Request, next: Next) -> Response {
+    let cors_origin = auth.cors_origin(request.headers());
+
+    if request.method() == Method::OPTIONS {
+        return preflight_response(cors_origin).into_response();
+    }
+
+    if auth.requires_auth(request.method(), request.uri().path())
+        && !auth.accepts(request.headers())
+    {
+        return unauthorized_response(cors_origin);
+    }
+
+    let mut response = next.run(request).await;
+    if let Some(origin) = cors_origin {
+        add_cors_headers(response.headers_mut(), origin, false);
+    }
+    response
+}
+
+fn preflight_response(cors_origin: Option<HeaderValue>) -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    if let Some(origin) = cors_origin {
+        add_cors_headers(response.headers_mut(), origin, true);
+    }
+    response
+}
+
+fn unauthorized_response(cors_origin: Option<HeaderValue>) -> Response {
+    let mut response = (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Bearer realm=\"cortex\"")],
+        Json(ErrorResponse {
+            error: "authentication required".to_owned(),
+            kind: Some("auth".to_owned()),
+        }),
+    )
+        .into_response();
+    if let Some(origin) = cors_origin {
+        add_cors_headers(response.headers_mut(), origin, false);
+    }
+    response
+}
+
+fn add_cors_headers(headers: &mut HeaderMap, origin: HeaderValue, preflight: bool) {
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    if preflight {
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("authorization, content-type"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+    }
+}
+
+fn is_public_path(path: &str) -> bool {
+    matches!(path, "/health" | "/openapi.json")
+}
+
+fn bearer_token_from_header(header_value: &str) -> Option<&str> {
+    let mut parts = header_value.trim().splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    let token = parts.next()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim())
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+    diff == 0
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.eq_ignore_ascii_case("localhost")
+        || authority == "127.0.0.1"
+        || authority == "[::1]"
+    {
+        return true;
+    }
+    if let Some(portless) = authority.strip_prefix("[::1]:") {
+        return portless.parse::<u16>().is_ok();
+    }
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return false;
+    };
+    (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") && port.parse::<u16>().is_ok()
 }
 
 async fn event_stream(

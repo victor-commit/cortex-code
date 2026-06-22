@@ -19,7 +19,17 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
 
     runtime.block_on(async move {
         let state = match server::ServerState::from_process() {
-            Ok(state) => state,
+            Ok(state) => match auth_from_args(&args) {
+                Ok(auth) => state.with_auth(auth),
+                Err(err) => {
+                    eprintln!("cortex serve: {err}");
+                    return if err.is_usage_error() {
+                        Exit::Usage
+                    } else {
+                        Exit::Failure
+                    };
+                }
+            },
             Err(err) => {
                 eprintln!("cortex serve: {err}");
                 return Exit::Failure;
@@ -54,4 +64,11 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
             }
         }
     })
+}
+
+fn auth_from_args(args: &ServeArgs) -> Result<server::ServerAuth, server::ServeError> {
+    match args.token.as_deref() {
+        Some(token) => server::ServerAuth::bearer_token(token, args.public),
+        None => Ok(server::ServerAuth::trusted_loopback()),
+    }
 }

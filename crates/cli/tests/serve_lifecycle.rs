@@ -142,6 +142,113 @@ fn serve_session_crud_routes_are_black_box_visible_and_db_backed() {
 }
 
 #[test]
+fn serve_public_token_auth_and_preflight_are_black_box_visible() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let port = free_port();
+    let scratch = Scratch::new("serve-auth-command");
+    let token = format!(
+        "server-token-blackbox-{}-{}",
+        std::process::id(),
+        SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    let db_path = scratch.db_path();
+    let mut server = ServerProcess::start_with_db_path_and_args(
+        port,
+        &db_path,
+        &["--public", "--token", &token],
+    );
+
+    let missing = request_json(port, "GET", "/session", None);
+    assert_eq!(missing.status, 401);
+    assert_json_content_type(&missing);
+
+    let wrong = request_json_with_headers(
+        port,
+        "GET",
+        "/session",
+        None,
+        &[("Authorization", "Bearer wrong-token")],
+    );
+    assert_eq!(wrong.status, 401);
+    assert_json_content_type(&wrong);
+
+    let authorization = format!("Bearer {token}");
+    let accepted = request_json_with_headers(
+        port,
+        "GET",
+        "/session",
+        None,
+        &[("Authorization", authorization.as_str())],
+    );
+    assert_eq!(accepted.status, 200);
+    assert_json_content_type(&accepted);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&accepted.body).expect("session list JSON"),
+        serde_json::json!([])
+    );
+
+    let preflight = request_json_with_headers(
+        port,
+        "OPTIONS",
+        "/session",
+        None,
+        &[
+            ("Origin", "http://localhost:9999"),
+            ("Access-Control-Request-Method", "POST"),
+        ],
+    );
+    assert_eq!(preflight.status, 204);
+    let preflight_headers = preflight.headers.to_ascii_lowercase();
+    assert!(
+        preflight_headers.contains("access-control-allow-origin: http://localhost:9999"),
+        "preflight should echo the trusted loopback browser origin:\n{}",
+        preflight.headers
+    );
+    assert!(
+        preflight_headers.contains("access-control-allow-methods:")
+            && preflight_headers.contains("post"),
+        "preflight should advertise POST as allowed:\n{}",
+        preflight.headers
+    );
+    assert!(
+        preflight_headers.contains("access-control-allow-headers:")
+            && preflight_headers.contains("authorization"),
+        "preflight should advertise Authorization as allowed:\n{}",
+        preflight.headers
+    );
+
+    let health = request_json(port, "GET", "/health", None);
+    assert_eq!(health.status, 200);
+    let openapi = request_json(port, "GET", "/openapi.json", None);
+    assert_eq!(openapi.status, 200);
+    assert!(
+        openapi.body.contains("Authorization: Bearer <TOKEN>"),
+        "OpenAPI should document the bearer scheme without embedding the configured token"
+    );
+
+    let response_capture = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        missing.headers,
+        missing.body,
+        wrong.headers,
+        wrong.body,
+        accepted.headers,
+        accepted.body,
+        preflight.headers,
+        preflight.body,
+        openapi.headers,
+        openapi.body
+    );
+    let (stdout, stderr) = server.captured_output();
+    wait_for_port_released(port);
+    let captured = format!("{response_capture}\n{stdout}\n{stderr}");
+    assert!(
+        !captured.contains(&token),
+        "configured server token leaked into response data or logs:\n{captured}"
+    );
+}
+
+#[test]
 fn serve_busy_port_exits_nonzero_with_clear_diagnostic() {
     let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
     let port = free_port();
@@ -197,14 +304,30 @@ impl ServerProcess {
         Self::start_with_db_path_and_scratch(port, db_path, None)
     }
 
+    fn start_with_db_path_and_args(port: u16, db_path: &Path, extra_args: &[&str]) -> Self {
+        Self::start_with_db_path_and_scratch_and_args(port, db_path, None, extra_args)
+    }
+
     fn start_with_db_path_and_scratch(port: u16, db_path: &Path, scratch: Option<Scratch>) -> Self {
-        let mut command = cortex_command(&[
+        Self::start_with_db_path_and_scratch_and_args(port, db_path, scratch, &[])
+    }
+
+    fn start_with_db_path_and_scratch_and_args(
+        port: u16,
+        db_path: &Path,
+        scratch: Option<Scratch>,
+        extra_args: &[&str],
+    ) -> Self {
+        let port_arg = port.to_string();
+        let mut args = vec![
             "serve",
             "--hostname",
             "127.0.0.1",
             "--port",
-            &port.to_string(),
-        ]);
+            port_arg.as_str(),
+        ];
+        args.extend_from_slice(extra_args);
+        let mut command = cortex_command(&args);
         command.env("CORTEX_DB_PATH", db_path);
         let mut child = command.spawn().expect("spawn cortex serve");
         let _ = wait_for_health(port, &mut child);
@@ -225,6 +348,19 @@ impl ServerProcess {
         }
         wait_for_child_exit(&mut self.child, WAIT_TIMEOUT);
         self.stopped = true;
+    }
+
+    fn captured_output(&mut self) -> (String, String) {
+        self.stop();
+        let mut stdout = String::new();
+        if let Some(mut handle) = self.child.stdout.take() {
+            handle.read_to_string(&mut stdout).expect("read stdout");
+        }
+        let mut stderr = String::new();
+        if let Some(mut handle) = self.child.stderr.take() {
+            handle.read_to_string(&mut stderr).expect("read stderr");
+        }
+        (stdout, stderr)
     }
 }
 
@@ -287,30 +423,53 @@ fn request_json(port: u16, method: &str, path: &str, body: Option<&str>) -> Http
     })
 }
 
+fn request_json_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> HttpResponse {
+    request_http_with_headers(port, method, path, body, headers).unwrap_or_else(|err| {
+        panic!("HTTP request {method} {path} to port {port} failed: {err}");
+    })
+}
+
 fn request_http(
     port: u16,
     method: &str,
     path: &str,
     body: Option<&str>,
 ) -> std::io::Result<HttpResponse> {
+    request_http_with_headers(port, method, path, body, &[])
+}
+
+fn request_http_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> std::io::Result<HttpResponse> {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let body = body.unwrap_or("");
-    let request = if body.is_empty() {
-        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-    } else {
-        format!(
-            "{method} {path} HTTP/1.1\r\n\
-             Host: 127.0.0.1\r\n\
-             Connection: close\r\n\
-             Content-Type: application/json\r\n\
-             Content-Length: {}\r\n\r\n\
-             {body}",
-            body.len()
-        )
-    };
+    let mut request =
+        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    if !body.is_empty() {
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
     stream.write_all(request.as_bytes())?;
 
     let mut raw = String::new();

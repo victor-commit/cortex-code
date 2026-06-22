@@ -527,6 +527,20 @@ pub struct ServeArgs {
     /// Port to bind the loopback server to.
     #[arg(long, default_value_t = 3200, value_name = "PORT")]
     pub port: u16,
+
+    /// Enable browser-facing loopback CORS for token-gated protected routes.
+    ///
+    /// This does not relax the loopback-only bind invariant. Use it with `--token` when a local
+    /// browser client on localhost needs to call the server with an Authorization header.
+    #[arg(long, requires = "token")]
+    pub public: bool,
+
+    /// Require `Authorization: Bearer <TOKEN>` on protected server routes.
+    ///
+    /// The token is never printed, logged, or embedded in the OpenAPI document. `/health`,
+    /// `/openapi.json`, and clean `OPTIONS` preflights remain available without the credential.
+    #[arg(long, value_name = "TOKEN")]
+    pub token: Option<String>,
 }
 
 #[cfg(test)]
@@ -884,9 +898,42 @@ mod tests {
             Some(Command::Serve(args)) => {
                 assert_eq!(args.hostname, "127.0.0.1");
                 assert_eq!(args.port, 3200);
+                assert!(!args.public);
+                assert_eq!(args.token, None);
             }
             other => panic!("expected serve, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn serve_parses_public_token_auth() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            "3201",
+            "--public",
+            "--token",
+            "server-token",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Serve(args)) => {
+                assert_eq!(args.hostname, "127.0.0.1");
+                assert_eq!(args.port, 3201);
+                assert!(args.public);
+                assert_eq!(args.token.as_deref(), Some("server-token"));
+            }
+            other => panic!("expected serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_public_requires_token() {
+        let err = Cli::try_parse_from(["cortex", "serve", "--public"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

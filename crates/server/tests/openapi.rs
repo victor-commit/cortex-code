@@ -61,6 +61,17 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session/{id}/share", "post", 200);
     assert_method(paths, "/session/{id}/unshare", "post", 200);
     assert_method(paths, "/share/{share_id}", "get", 200);
+    assert_eq!(
+        document["components"]["securitySchemes"]["bearerAuth"]["scheme"], "bearer",
+        "OpenAPI should document the Authorization bearer scheme"
+    );
+    assert_protected_operation(&document, "/session", "get");
+    assert_protected_operation(&document, "/session/{id}/message", "post");
+    assert_protected_operation(&document, "/event", "get");
+    assert!(
+        !document.to_string().contains("server-token"),
+        "OpenAPI must not embed configured token values"
+    );
 
     for path in paths.keys() {
         assert!(
@@ -149,6 +160,21 @@ async fn openapi_documented_gets_match_real_routes_and_unknown_paths_404() {
         .await
         .expect("unknown response");
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+}
+
+fn assert_protected_operation(document: &serde_json::Value, path: &str, method: &str) {
+    let operation = &document["paths"][path][method];
+    assert_eq!(
+        operation["security"],
+        serde_json::json!([{ "bearerAuth": [] }]),
+        "operation {method} {path} should document optional bearer auth"
+    );
+    assert!(
+        operation["responses"]
+            .as_object()
+            .is_some_and(|responses| responses.contains_key("401")),
+        "operation {method} {path} should document auth failures: {operation:?}"
+    );
 }
 
 fn assert_method(
