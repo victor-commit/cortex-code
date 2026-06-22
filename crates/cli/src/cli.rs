@@ -447,6 +447,17 @@ pub struct RunArgs {
     #[arg(long, short = 'c', conflicts_with = "session")]
     pub r#continue: bool,
 
+    /// Execute a local command path instead of starting an LLM turn.
+    ///
+    /// This is the headless command surface used by plugin `command.execute.before` hooks. Built-in
+    /// proof commands include `touch <path>`, `write-marker <path> [content...]`, and `echo [text...]`.
+    #[arg(long, value_name = "NAME")]
+    pub command: Option<String>,
+
+    /// Argument passed to `--command` (repeatable, preserves order).
+    #[arg(long = "command-arg", value_name = "ARG", requires = "command")]
+    pub command_args: Vec<String>,
+
     /// Allow a gated tool action, in `TOOL:GLOB` form (repeatable).
     ///
     /// `TOOL` selects the gated tool

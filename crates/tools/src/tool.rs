@@ -9,6 +9,7 @@
 //! [`ToolOutput`] with [`is_error`](ToolOutput::is_error) set so the model can recover.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -396,6 +397,7 @@ pub struct ToolContext {
     todos: Option<Arc<dyn TodoStore>>,
     task_runner: Option<Arc<dyn TaskRunner>>,
     background_jobs: Arc<BackgroundJobs>,
+    shell_env: Arc<Vec<(OsString, OsString)>>,
 }
 
 impl ToolContext {
@@ -414,6 +416,7 @@ impl ToolContext {
             todos: None,
             task_runner: None,
             background_jobs: Arc::new(BackgroundJobs::new()),
+            shell_env: Arc::new(Vec::new()),
         }
     }
 
@@ -447,6 +450,17 @@ impl ToolContext {
         self
     }
 
+    /// Attach additional environment variables to every `bash` child spawned by this context.
+    ///
+    /// The base bash environment is still secret-stripped first; these values are intentionally
+    /// supplied by the current surface (for example, a plugin `shell.env` hook) and therefore are
+    /// appended afterward.
+    #[must_use]
+    pub fn with_shell_env(mut self, env: Vec<(OsString, OsString)>) -> Self {
+        self.shell_env = Arc::new(env);
+        self
+    }
+
     /// The session id tool calls are scoped to, if one was set.
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
@@ -470,6 +484,12 @@ impl ToolContext {
     #[must_use]
     pub fn background_jobs(&self) -> &Arc<BackgroundJobs> {
         &self.background_jobs
+    }
+
+    /// Additional environment variables to inject into `bash` children.
+    #[must_use]
+    pub fn shell_env(&self) -> &[(OsString, OsString)] {
+        self.shell_env.as_slice()
     }
 
     /// Attach the post-mutation downstream hooks (formatter + LSP diagnostics) used after a write or

@@ -52,7 +52,7 @@ use crate::cli::{OutputFormat, RunArgs};
 use crate::custom_agents;
 use crate::permission;
 use crate::permission_store;
-use crate::plugin_bridge::PluginState;
+use crate::plugin_bridge::{CommandBeforeOutcome, CommandInvocation, PluginState};
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
@@ -60,6 +60,10 @@ const OUTBOUND_OPERATION: &str = "LLM turn";
 
 /// Execute a single headless `cortex run` turn.
 pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
+    if args.command.is_some() {
+        return run_command_path(args, bus);
+    }
+
     let stdin = io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let prompt = match resolve_prompt(args.prompt, stdin_is_terminal, stdin.lock()) {
@@ -209,24 +213,26 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // attached whenever any source is non-empty; with none of them the run stays ungated.
     let mut effective_cli_permission_rules = plugin_state.permission_rules();
     effective_cli_permission_rules.extend(cli_permission_rules);
-    let prepared_permissions = match permission::prepare_headless_permissions_with_builtin_rules(
-        &config_inputs,
-        active_agent,
-        builtin_agent_rules.base_rules,
-        effective_cli_permission_rules,
-        save_specs,
-        post_save_permission_rules,
-        builtin_hard_denies,
-        trust_rules,
-        loaded_decisions,
-        bus.clone(),
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            eprintln!("cortex run: {err}");
-            return Exit::Config;
-        }
-    };
+    let prepared_permissions =
+        match permission::prepare_headless_permissions_with_builtin_rules_and_override(
+            &config_inputs,
+            active_agent,
+            builtin_agent_rules.base_rules,
+            effective_cli_permission_rules,
+            save_specs,
+            post_save_permission_rules,
+            builtin_hard_denies,
+            trust_rules,
+            loaded_decisions,
+            bus.clone(),
+            plugin_state.permission_override(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                eprintln!("cortex run: {err}");
+                return Exit::Config;
+            }
+        };
     let permission_engine = prepared_permissions.engine.clone();
 
     // Whether the caller passed an explicit `--model`: when present it always wins, so a model
@@ -431,6 +437,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
     // Attach the real formatter + LSP diagnostics hook so write/edit/apply_patch first canonicalize
     // the on-disk file and then report diagnostics from the matching language server.
     let dispatcher = dispatcher.with_hooks(mutation_hooks);
+    // Attach environment variables supplied by plugin `shell.env` hooks to bash children.
+    let dispatcher = dispatcher.with_shell_env(plugin_state.shell_env());
     // Attach the same real LSP manager to the read-only `lsp` navigation tool, so hover,
     // definition, references, and symbols use the live server and share its lifecycle.
     let dispatcher = dispatcher.with_lsp_service(lsp_hooks.clone());
@@ -457,7 +465,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         });
         dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
     };
-    let shaped_dispatcher = plugin_state.tool_definition_dispatcher(&dispatcher);
+    let shaped_dispatcher =
+        plugin_state.tool_definition_dispatcher(&dispatcher, session_id.clone());
     let tool_definitions = shaped_dispatcher.definitions();
     let tool_names = tool_names_from(&tool_definitions);
 
@@ -534,6 +543,123 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>) -> Exit {
         }
     }
     exit
+}
+
+fn run_command_path(args: RunArgs, bus: Arc<EventBus>) -> Exit {
+    let config_inputs = match ConfigInputs::from_process(model_overrides(args.model.as_deref())) {
+        Ok(config_inputs) => config_inputs,
+        Err(err) => {
+            eprintln!("cortex run: cannot determine the working directory: {err}");
+            return Exit::Failure;
+        }
+    };
+    let run_config = match resolve_run_config(config_inputs) {
+        Ok(run_config) => run_config,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Config;
+        }
+    };
+    let plugin_state = match PluginState::load(&run_config.plugins) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("cortex run: {err}");
+            return Exit::Failure;
+        }
+    };
+    if let Some(subscriber) = plugin_state.event_subscriber() {
+        bus.subscribe(subscriber);
+    }
+
+    let command = CommandInvocation::new(
+        args.command.expect("command path checked before dispatch"),
+        args.command_args,
+    );
+    let command = match plugin_state.command_before(command) {
+        CommandBeforeOutcome::Run(command) => command,
+        CommandBeforeOutcome::Veto { plugin, reason } => {
+            eprintln!("cortex run: plugin {plugin} vetoed command.execute.before: {reason}");
+            plugin_state.dispose();
+            return Exit::Failure;
+        }
+    };
+
+    let exit = execute_local_command(command);
+    plugin_state.dispose();
+    exit
+}
+
+fn execute_local_command(command: CommandInvocation) -> Exit {
+    match command.name.as_str() {
+        "touch" => {
+            let Some(path) = command.args.first() else {
+                eprintln!("cortex run --command touch: missing path argument");
+                return Exit::Usage;
+            };
+            let path = resolve_command_path(path);
+            if let Some(parent) = path.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("cortex run --command touch: {err}");
+                return Exit::Failure;
+            }
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(_) => Exit::Success,
+                Err(err) => {
+                    eprintln!("cortex run --command touch: {err}");
+                    Exit::Failure
+                }
+            }
+        }
+        "write-marker" | "write" => {
+            let Some(path) = command.args.first() else {
+                eprintln!("cortex run --command write-marker: missing path argument");
+                return Exit::Usage;
+            };
+            let content = if command.args.len() > 1 {
+                command.args[1..].join(" ")
+            } else {
+                "command".to_owned()
+            };
+            let path = resolve_command_path(path);
+            if let Some(parent) = path.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("cortex run --command write-marker: {err}");
+                return Exit::Failure;
+            }
+            match std::fs::write(&path, content) {
+                Ok(()) => Exit::Success,
+                Err(err) => {
+                    eprintln!("cortex run --command write-marker: {err}");
+                    Exit::Failure
+                }
+            }
+        }
+        "echo" => {
+            println!("{}", command.args.join(" "));
+            Exit::Success
+        }
+        other => {
+            eprintln!("cortex run --command: unknown command `{other}`");
+            Exit::Usage
+        }
+    }
+}
+
+fn resolve_command_path(path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    }
 }
 
 fn render_system_context(

@@ -138,6 +138,18 @@ pub trait Responder: Send + Sync {
     }
 }
 
+/// A final decision override hook for plugin and policy extensions.
+///
+/// The core permission engine first resolves the action that the configured rules, saved
+/// decisions, hard-deny layer, and parent cap would take. A registered override receives that
+/// proposed action and may force a final allow or deny. Returning `None` preserves the engine's
+/// proposal. This stays subject-agnostic so the plugin host can live outside the permissions
+/// crate.
+pub trait DecisionOverride: Send + Sync {
+    /// Return a final decision for `request`, or `None` to keep `proposed`.
+    fn override_decision(&self, request: &PermissionRequest, proposed: Action) -> Option<Decision>;
+}
+
 /// Resolves every gated tool action to [`Outcome::Allowed`] or [`Outcome::Denied`].
 ///
 /// The engine owns the combined [`Ruleset`], an optional [`Responder`] for answering asks, and an
@@ -155,6 +167,7 @@ pub struct PermissionEngine {
     parent_cap: Option<Ruleset>,
     saved: Option<Arc<SavedDecisions>>,
     responder: Option<Arc<dyn Responder>>,
+    override_hook: Option<Arc<dyn DecisionOverride>>,
     bus: Option<Arc<EventBus>>,
 }
 
@@ -168,6 +181,7 @@ impl PermissionEngine {
             parent_cap: None,
             saved: None,
             responder: None,
+            override_hook: None,
             bus: None,
         }
     }
@@ -214,6 +228,17 @@ impl PermissionEngine {
         self
     }
 
+    /// Attach a final decision override hook (builder style).
+    ///
+    /// The hook receives the engine's proposed action and may force allow or deny. It is evaluated
+    /// before an `ask` is surfaced, so a hook-forced allow proceeds without prompting and a
+    /// hook-forced deny blocks an otherwise-allowed action.
+    #[must_use]
+    pub fn with_override(mut self, override_hook: Arc<dyn DecisionOverride>) -> Self {
+        self.override_hook = Some(override_hook);
+        self
+    }
+
     /// Attach the event bus that `permission.asked`/`permission.replied` are published on
     /// (builder style); without one, the engine resolves silently.
     #[must_use]
@@ -246,6 +271,21 @@ impl PermissionEngine {
     /// Resolve a gated action to a final [`Outcome`], surfacing and answering an `ask` as needed.
     pub fn evaluate(&self, request: &PermissionRequest) -> Outcome {
         let (action, pattern) = self.effective(&request.tool, &request.subject);
+        if let Some(override_hook) = &self.override_hook
+            && let Some(decision) = override_hook.override_decision(request, action)
+        {
+            let event_decision = match decision {
+                Decision::Allow => PermissionDecision::Allow,
+                Decision::Deny => PermissionDecision::Deny,
+            };
+            self.publish(events::Event::permission_replied(
+                &request.tool,
+                &pattern,
+                &request.subject,
+                event_decision,
+            ));
+            return decision.outcome();
+        }
         match action {
             Action::Allow => Outcome::Allowed,
             Action::Deny => Outcome::Denied,

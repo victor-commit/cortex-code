@@ -1,7 +1,9 @@
 //! CLI-owned integration of plugin registrations with run/auth/model surfaces.
 
+use std::ffi::OsString;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::ToolDispatcher;
 use events::{Event, Subscriber};
@@ -10,7 +12,7 @@ use llm::{
     FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Message, Provider, Role, ToolCall,
     ToolDef,
 };
-use permissions::{Action, Rule};
+use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
     LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginModelRegistration,
     PluginProviderRegistration, PluginRuntimeError, PluginSpec, PluginToolRegistration,
@@ -26,6 +28,7 @@ use tools::{Tool, ToolContext, ToolOutput};
 pub(crate) struct PluginState {
     loaded: Vec<LoadedPlugin>,
     host: RuntimeHost,
+    disposed: Arc<AtomicBool>,
 }
 
 impl PluginState {
@@ -33,7 +36,11 @@ impl PluginState {
     pub(crate) fn load(config: &plugins::PluginConfig) -> Result<Self, PluginRuntimeError> {
         let host = RuntimeHost::new();
         let loaded = host.load_plugins(config)?;
-        Ok(Self { loaded, host })
+        Ok(Self {
+            loaded,
+            host,
+            disposed: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Resolve the current process config and load configured plugins for a non-run surface.
@@ -105,6 +112,43 @@ impl PluginState {
             .collect()
     }
 
+    /// A permission decision override hook, if any loaded plugin registered `permission.ask`.
+    #[must_use]
+    pub(crate) fn permission_override(&self) -> Option<Arc<dyn DecisionOverride>> {
+        self.has_hook("permission.ask").then(|| {
+            Arc::new(PluginPermissionOverride {
+                state: self.clone(),
+            }) as Arc<dyn DecisionOverride>
+        })
+    }
+
+    /// Environment variables contributed by `shell.env` hooks for bash children.
+    #[must_use]
+    pub(crate) fn shell_env(&self) -> Vec<(OsString, OsString)> {
+        let mut env = Vec::new();
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "shell.env") {
+                continue;
+            }
+            match self.host.invoke_shell_env(&loaded.spec) {
+                Ok(output) => {
+                    if let Some(JsonValue::Object(map)) = output.output {
+                        env.extend(map.into_iter().filter_map(|(name, value)| {
+                            let value = match value {
+                                JsonValue::Null => return None,
+                                JsonValue::String(value) => value,
+                                other => other.to_string(),
+                            };
+                            Some((OsString::from(name), OsString::from(value)))
+                        }));
+                    }
+                }
+                Err(err) => eprintln!("cortex plugin shell.env: {err}"),
+            }
+        }
+        env
+    }
+
     /// Find the plugin provider that declared `model`.
     #[must_use]
     pub(crate) fn provider_for_model(&self, model: &str) -> Option<PluginModelProvider> {
@@ -141,8 +185,138 @@ impl PluginState {
     pub(crate) fn tool_definition_dispatcher<'a>(
         &'a self,
         inner: &'a dyn ToolDispatcher,
+        session_id: impl Into<String>,
     ) -> PluginToolDefinitionDispatcher<'a> {
-        PluginToolDefinitionDispatcher { inner, state: self }
+        PluginToolDefinitionDispatcher {
+            inner,
+            state: self,
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Apply `command.execute.before` hooks to a command invocation.
+    pub(crate) fn command_before(&self, mut command: CommandInvocation) -> CommandBeforeOutcome {
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "command.execute.before") {
+                continue;
+            }
+            let input = command.to_json();
+            match self.host.invoke_command_before(&loaded.spec, input) {
+                Ok(output) => {
+                    let Some(value) = output.output else {
+                        continue;
+                    };
+                    if let Some(reason) = veto_reason(&value) {
+                        return CommandBeforeOutcome::Veto {
+                            plugin: loaded.spec.raw_spec().to_owned(),
+                            reason,
+                        };
+                    }
+                    command = command_from_output(command, value);
+                }
+                Err(err) => eprintln!("cortex plugin command.execute.before: {err}"),
+            }
+        }
+        CommandBeforeOutcome::Run(command)
+    }
+
+    fn permission_override_decision(
+        &self,
+        request: &PermissionRequest,
+        proposed: Action,
+    ) -> Option<Decision> {
+        let mut current = proposed;
+        let mut overridden = None;
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "permission.ask") {
+                continue;
+            }
+            let input = serde_json::json!({
+                "tool": request.tool,
+                "subject": request.subject,
+                "request": request.subject,
+                "action": current.as_str(),
+                "decision": current.as_str(),
+            });
+            match self.host.invoke_permission_ask(&loaded.spec, input) {
+                Ok(output) => {
+                    if let Some(value) = output.output
+                        && let Some(decision) = decision_from_value(&value)
+                    {
+                        current = decision.action();
+                        overridden = Some(decision);
+                    }
+                }
+                Err(err) => eprintln!("cortex plugin permission.ask: {err}"),
+            }
+        }
+        overridden
+    }
+
+    fn apply_tool_before_hooks(&self, call: &ToolCall) -> (ToolCall, Option<ToolVeto>) {
+        let mut current = call.clone();
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "tool.execute.before") {
+                continue;
+            }
+            let input = tool_call_to_json(&current);
+            match self.host.invoke_tool_before(&loaded.spec, input) {
+                Ok(output) => {
+                    let Some(value) = output.output else {
+                        continue;
+                    };
+                    if let Some(reason) = veto_reason(&value) {
+                        return (
+                            current,
+                            Some(ToolVeto {
+                                plugin: loaded.spec.raw_spec().to_owned(),
+                                reason,
+                            }),
+                        );
+                    }
+                    current = tool_call_from_output(current, value);
+                }
+                Err(err) => eprintln!("cortex plugin tool.execute.before: {err}"),
+            }
+        }
+        (current, None)
+    }
+
+    fn apply_tool_after_hooks(
+        &self,
+        call: &ToolCall,
+        mut result: engine::ToolDispatchResult,
+    ) -> engine::ToolDispatchResult {
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "tool.execute.after") {
+                continue;
+            }
+            let input = tool_result_to_json(call, &result);
+            match self.host.invoke_tool_after(&loaded.spec, input) {
+                Ok(output) => {
+                    if let Some(value) = output.output {
+                        result = tool_result_from_output(result, value);
+                    }
+                }
+                Err(err) => eprintln!("cortex plugin tool.execute.after: {err}"),
+            }
+        }
+        result
+    }
+
+    /// Invoke every loaded plugin's `dispose` hook once.
+    pub(crate) fn dispose(&self) {
+        if self.disposed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "dispose") {
+                continue;
+            }
+            if let Err(err) = self.host.invoke_dispose(&loaded.spec) {
+                eprintln!("cortex plugin dispose: {err}");
+            }
+        }
     }
 
     fn has_request_shaping_hooks(&self) -> bool {
@@ -318,6 +492,12 @@ impl PluginState {
     }
 }
 
+impl Drop for PluginState {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
 /// Loading plugins for an auxiliary surface can fail because config failed or because the real
 /// JavaScript runtime/plugin failed.
 #[derive(Debug)]
@@ -340,6 +520,39 @@ impl std::fmt::Display for ConfigOrRuntimeError {
 fn plugin_rule_to_permission_rule(rule: &PluginConfigRule) -> Option<Rule> {
     let action = Action::parse(&rule.action)?;
     Some(Rule::new(rule.tool.clone(), rule.pattern.clone(), action))
+}
+
+/// One command/slash-command invocation passed through `command.execute.before`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommandInvocation {
+    pub(crate) name: String,
+    pub(crate) args: Vec<String>,
+}
+
+impl CommandInvocation {
+    #[must_use]
+    pub(crate) fn new(name: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            args,
+        }
+    }
+
+    fn to_json(&self) -> JsonValue {
+        serde_json::json!({
+            "name": self.name,
+            "command": self.name,
+            "args": self.args,
+            "arguments": self.args,
+        })
+    }
+}
+
+/// Result of the command-before hook chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CommandBeforeOutcome {
+    Run(CommandInvocation),
+    Veto { plugin: String, reason: String },
 }
 
 /// One plugin-auth method as emitted by `cortex auth list`.
@@ -481,6 +694,157 @@ fn json_headers(value: JsonValue) -> Vec<(String, String)> {
         .collect()
 }
 
+fn decision_from_value(value: &JsonValue) -> Option<Decision> {
+    let raw = value
+        .as_str()
+        .or_else(|| value.get("decision").and_then(JsonValue::as_str))
+        .or_else(|| value.get("action").and_then(JsonValue::as_str))
+        .or_else(|| value.get("permission").and_then(JsonValue::as_str))?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "allow" | "allowed" => Some(Decision::Allow),
+        "deny" | "denied" | "block" | "blocked" => Some(Decision::Deny),
+        _ => None,
+    }
+}
+
+fn veto_reason(value: &JsonValue) -> Option<String> {
+    let object = value.as_object()?;
+    let veto = object
+        .get("veto")
+        .and_then(JsonValue::as_bool)
+        .or_else(|| object.get("deny").and_then(JsonValue::as_bool))
+        .or_else(|| object.get("denied").and_then(JsonValue::as_bool))
+        .unwrap_or(false);
+    let decision_denies = decision_from_value(value) == Some(Decision::Deny);
+    (veto || decision_denies).then(|| {
+        object
+            .get("reason")
+            .or_else(|| object.get("message"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or("denied by plugin")
+            .to_owned()
+    })
+}
+
+fn string_array(value: &JsonValue) -> Option<Vec<String>> {
+    value
+        .as_array()
+        .map(|items| items.iter().map(json_to_string).collect())
+}
+
+fn json_to_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn command_from_output(mut command: CommandInvocation, value: JsonValue) -> CommandInvocation {
+    let Some(object) = value.as_object() else {
+        return command;
+    };
+    if let Some(name) = object
+        .get("name")
+        .or_else(|| object.get("command"))
+        .and_then(JsonValue::as_str)
+    {
+        command.name = name.to_owned();
+    }
+    if let Some(args) = object
+        .get("args")
+        .or_else(|| object.get("arguments"))
+        .and_then(string_array)
+    {
+        command.args = args;
+    }
+    command
+}
+
+fn tool_call_to_json(call: &ToolCall) -> JsonValue {
+    let arguments = serde_json::from_str::<JsonValue>(&call.arguments)
+        .unwrap_or_else(|_| JsonValue::String(call.arguments.clone()));
+    serde_json::json!({
+        "id": call.id,
+        "name": call.name,
+        "tool": call.name,
+        "arguments": arguments,
+    })
+}
+
+fn tool_call_from_output(mut call: ToolCall, value: JsonValue) -> ToolCall {
+    let Some(object) = value.as_object() else {
+        return call;
+    };
+    if let Some(name) = object
+        .get("name")
+        .or_else(|| object.get("tool"))
+        .and_then(JsonValue::as_str)
+    {
+        call.name = name.to_owned();
+    }
+    if let Some(arguments) = object.get("arguments").or_else(|| object.get("args")) {
+        call.arguments = match arguments {
+            JsonValue::String(raw) => raw.clone(),
+            other => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_owned()),
+        };
+    }
+    call
+}
+
+fn tool_result_to_json(call: &ToolCall, result: &engine::ToolDispatchResult) -> JsonValue {
+    serde_json::json!({
+        "id": call.id,
+        "name": call.name,
+        "tool": call.name,
+        "arguments": serde_json::from_str::<JsonValue>(&call.arguments).unwrap_or(JsonValue::Null),
+        "content": result.content,
+        "parts": result.parts,
+        "is_error": result.is_error,
+    })
+}
+
+fn tool_result_from_output(
+    mut result: engine::ToolDispatchResult,
+    value: JsonValue,
+) -> engine::ToolDispatchResult {
+    match value {
+        JsonValue::String(content) => {
+            result.content = content.clone();
+            result.parts = vec![protocol::ToolResultPart::text(content)];
+            result
+        }
+        JsonValue::Object(mut object) => {
+            if let Some(is_error) = object.get("is_error").and_then(JsonValue::as_bool) {
+                result.is_error = is_error;
+            } else if let Some(is_error) = object.get("error").and_then(JsonValue::as_bool) {
+                result.is_error = is_error;
+            }
+            if let Some(parts) = object.remove("parts")
+                && let Ok(parsed) = serde_json::from_value(parts)
+            {
+                result.parts = parsed;
+            }
+            if let Some(content) = object
+                .get("content")
+                .or_else(|| object.get("text"))
+                .and_then(JsonValue::as_str)
+            {
+                result.content = content.to_owned();
+                if result.parts.is_empty()
+                    || result
+                        .parts
+                        .iter()
+                        .all(|part| matches!(part, protocol::ToolResultPart::Text { .. }))
+                {
+                    result.parts = vec![protocol::ToolResultPart::text(content.to_owned())];
+                }
+            }
+            result
+        }
+        _ => result,
+    }
+}
+
 fn system_output_to_string(value: JsonValue) -> String {
     match value {
         JsonValue::String(text) => text,
@@ -513,6 +877,7 @@ impl Provider for PluginShapingProvider {
 pub(crate) struct PluginToolDefinitionDispatcher<'a> {
     inner: &'a dyn ToolDispatcher,
     state: &'a PluginState,
+    session_id: String,
 }
 
 impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
@@ -521,8 +886,48 @@ impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
     }
 
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, engine::ToolDispatchResult> {
-        self.inner.dispatch(call)
+        Box::pin(async move {
+            let (call, veto) = self.state.apply_tool_before_hooks(call);
+            if let Some(veto) = veto {
+                crate::audit::record_plugin_tool_denial(
+                    &self.session_id,
+                    &call.id,
+                    &call.name,
+                    &veto.plugin,
+                    &veto.reason,
+                    &call.arguments,
+                );
+                let message = format!(
+                    "{}: plugin {} vetoed tool.execute.before: {}",
+                    call.name, veto.plugin, veto.reason
+                );
+                return engine::ToolDispatchResult {
+                    content: message.clone(),
+                    parts: vec![protocol::ToolResultPart::text(message)],
+                    is_error: true,
+                };
+            }
+
+            let result = self.inner.dispatch(&call).await;
+            self.state.apply_tool_after_hooks(&call, result)
+        })
     }
+}
+
+struct PluginPermissionOverride {
+    state: PluginState,
+}
+
+impl DecisionOverride for PluginPermissionOverride {
+    fn override_decision(&self, request: &PermissionRequest, proposed: Action) -> Option<Decision> {
+        self.state.permission_override_decision(request, proposed)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolVeto {
+    plugin: String,
+    reason: String,
 }
 
 struct PluginTool {
@@ -670,6 +1075,7 @@ mod tests {
     use plugins::{PluginConfig, RuntimeHost, detect_runtime};
     use serde_json::json;
     use toml::Value as TomlValue;
+    use tools::TodoStore;
 
     use super::*;
 
@@ -697,6 +1103,26 @@ mod tests {
             true
         } else {
             false
+        }
+    }
+
+    fn call(name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "call_1".to_owned(),
+            name: name.to_owned(),
+            arguments: arguments.to_owned(),
+        }
+    }
+
+    struct NoopTodos;
+
+    impl TodoStore for NoopTodos {
+        fn list(&self, _session_id: &str) -> Result<Vec<protocol::TodoItem>, String> {
+            Ok(Vec::new())
+        }
+
+        fn replace(&self, _session_id: &str, _items: &[protocol::TodoItem]) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -750,6 +1176,7 @@ export default async function plugin(input, options) {
         let state = PluginState {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            disposed: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(tool_defs_from_state(&state)[0].name, "cortex_write_marker");
 
@@ -786,5 +1213,228 @@ export default async function plugin(input, options) {
         assert!(!allowed.is_error, "{}", allowed.model_content());
         assert_eq!(allowed.model_content(), "WROTE:ALLOWED");
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "ALLOWED");
+    }
+
+    #[test]
+    fn permission_ask_hook_overrides_allowed_and_denied_actions() {
+        if skip_without_runtime() {
+            return;
+        }
+
+        let project = scratch("permission-ask");
+        std::fs::write(
+            project.join("plugin.mjs"),
+            r#"
+export default async function plugin() {
+  return {
+    "permission.ask": async (request) => {
+      if (request.subject.includes("force-deny")) return "deny";
+      if (request.subject.includes("force-allow")) return { decision: "allow" };
+      return request.decision;
+    }
+  };
+}
+"#,
+        )
+        .expect("write plugin");
+        let config = config_from(&project, "plugin = [\"./plugin.mjs\"]\n");
+        let loaded = RuntimeHost::new()
+            .with_timeout(Duration::from_secs(15))
+            .load_plugins(&config)
+            .expect("load plugin");
+        let state = PluginState {
+            loaded,
+            host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            disposed: Arc::new(AtomicBool::new(false)),
+        };
+        let override_hook = state.permission_override().expect("permission hook");
+
+        let engine = PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("bash", "echo *", Action::Allow),
+            Rule::new("write", "force-allow.txt", Action::Deny),
+        ]))
+        .with_override(override_hook);
+
+        assert_eq!(
+            engine.evaluate(&permissions::PermissionRequest::new(
+                "bash",
+                "echo force-deny"
+            )),
+            permissions::Outcome::Denied,
+            "plugin-forced deny blocks an otherwise allowed command"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::PermissionRequest::new(
+                "write",
+                "force-allow.txt"
+            )),
+            permissions::Outcome::Allowed,
+            "plugin-forced allow permits an otherwise denied write"
+        );
+    }
+
+    #[test]
+    fn tool_before_after_and_shell_env_hooks_have_real_effects() {
+        if skip_without_runtime() {
+            return;
+        }
+
+        let project = scratch("tool-hooks");
+        std::fs::write(
+            project.join("plugin.mjs"),
+            r#"
+export default async function plugin() {
+  return {
+    "tool.execute.before": async (call) => {
+      if (call.name === "write" && call.arguments?.path === "a.txt") {
+        return { ...call, arguments: { ...call.arguments, path: "b.txt" } };
+      }
+      return call;
+    },
+    "tool.execute.after": async (result) => {
+      if (result.name === "read") {
+        return { ...result, content: `${result.content}\n[via-plugin]` };
+      }
+      return result;
+    },
+    "shell.env": async () => ({ CORTEX_PLUGIN_ENV: "on" })
+  };
+}
+"#,
+        )
+        .expect("write plugin");
+        let config = config_from(&project, "plugin = [\"./plugin.mjs\"]\n");
+        let loaded = RuntimeHost::new()
+            .with_timeout(Duration::from_secs(15))
+            .load_plugins(&config)
+            .expect("load plugin");
+        let state = PluginState {
+            loaded,
+            host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            disposed: Arc::new(AtomicBool::new(false)),
+        };
+
+        let dispatcher = crate::tooling::RegistryDispatcher::for_model(
+            project.clone(),
+            "google/gemini-2.5-flash",
+            "ses_hooks".to_owned(),
+            Arc::new(NoopTodos),
+        )
+        .with_shell_env(state.shell_env());
+        let dispatcher = state.tool_definition_dispatcher(&dispatcher, "ses_hooks");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let write = runtime
+            .block_on(dispatcher.dispatch(&call("write", r#"{"path":"a.txt","content":"hello"}"#)));
+        assert!(!write.is_error, "{}", write.content);
+        assert!(
+            !project.join("a.txt").exists(),
+            "the original write target must stay absent"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("b.txt")).unwrap(),
+            "hello"
+        );
+
+        let read = runtime.block_on(dispatcher.dispatch(&call("read", r#"{"path":"b.txt"}"#)));
+        assert!(!read.is_error, "{}", read.content);
+        assert!(
+            read.content.ends_with("[via-plugin]"),
+            "tool.execute.after transforms the model-visible result: {}",
+            read.content
+        );
+
+        let env = runtime.block_on(
+            dispatcher.dispatch(&call("bash", r#"{"command":"printenv CORTEX_PLUGIN_ENV"}"#)),
+        );
+        assert!(!env.is_error, "{}", env.content);
+        assert!(
+            env.content.contains("on"),
+            "shell.env injection should be visible to bash: {}",
+            env.content
+        );
+    }
+
+    #[test]
+    fn throwing_runtime_hook_is_isolated_and_later_hooks_still_fire() {
+        if skip_without_runtime() {
+            return;
+        }
+
+        let project = scratch("hook-throw");
+        std::fs::write(
+            project.join("thrower.mjs"),
+            r#"
+export default async function plugin() {
+  return {
+    "tool.execute.before": async () => {
+      throw new Error("hook-boom");
+    }
+  };
+}
+"#,
+        )
+        .expect("write throwing plugin");
+        std::fs::write(
+            project.join("rewriter.mjs"),
+            r#"
+export default async function plugin() {
+  return {
+    "tool.execute.before": async (call) => {
+      if (call.name === "write") {
+        return { ...call, arguments: { ...call.arguments, path: "after-throw.txt" } };
+      }
+      return call;
+    }
+  };
+}
+"#,
+        )
+        .expect("write rewriter plugin");
+        let config = config_from(
+            &project,
+            "plugin = [\"./thrower.mjs\", \"./rewriter.mjs\"]\n",
+        );
+        let loaded = RuntimeHost::new()
+            .with_timeout(Duration::from_secs(15))
+            .load_plugins(&config)
+            .expect("load plugins");
+        let state = PluginState {
+            loaded,
+            host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            disposed: Arc::new(AtomicBool::new(false)),
+        };
+        let dispatcher = crate::tooling::RegistryDispatcher::for_model(
+            project.clone(),
+            "google/gemini-2.5-flash",
+            "ses_throw".to_owned(),
+            Arc::new(NoopTodos),
+        );
+        let dispatcher = state.tool_definition_dispatcher(&dispatcher, "ses_throw");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime.block_on(
+            dispatcher.dispatch(&call("write", r#"{"path":"original.txt","content":"ok"}"#)),
+        );
+
+        assert!(
+            !result.is_error,
+            "a throwing hook is isolated so the turn/tool survives: {}",
+            result.content
+        );
+        assert!(
+            !project.join("original.txt").exists(),
+            "later hook transformed away from original path"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("after-throw.txt")).unwrap(),
+            "ok"
+        );
     }
 }

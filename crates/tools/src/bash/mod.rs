@@ -159,6 +159,7 @@ fn base_command(command: &str, ctx: &ToolContext) -> Command {
         .current_dir(ctx.cwd())
         .env_clear()
         .envs(child_env())
+        .envs(ctx.shell_env().iter().cloned())
         .stdin(Stdio::null())
         .process_group(0)
         .kill_on_drop(true);

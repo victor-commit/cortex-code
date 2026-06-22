@@ -54,8 +54,8 @@ pub use action::Action;
 pub use agent::{AgentRulesets, narrow_action};
 pub use config::{RuleError, load_agent_rulesets, load_layered, rules_from_table};
 pub use engine::{
-    Decision, DecisionScope, Outcome, PermissionEngine, PermissionRequest, Responder,
-    ScopedDecision,
+    Decision, DecisionOverride, DecisionScope, Outcome, PermissionEngine, PermissionRequest,
+    Responder, ScopedDecision,
 };
 pub use glob::glob_match;
 pub use rule::{ANY_TOOL, Rule};

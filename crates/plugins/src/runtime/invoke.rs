@@ -167,6 +167,92 @@ impl RuntimeHost {
         )
     }
 
+    /// Invoke a plugin's `permission.ask` hook with the permission request/proposed decision.
+    pub fn invoke_permission_ask(
+        &self,
+        plugin: &PluginSpec,
+        request: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::PermissionAsk { request },
+            "permission.ask",
+        )
+    }
+
+    /// Invoke a plugin's `command.execute.before` hook with a command invocation.
+    pub fn invoke_command_before(
+        &self,
+        plugin: &PluginSpec,
+        command: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::CommandBefore { command },
+            "command.execute.before",
+        )
+    }
+
+    /// Invoke a plugin's `tool.execute.before` hook with a pending tool call.
+    pub fn invoke_tool_before(
+        &self,
+        plugin: &PluginSpec,
+        call: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ToolBefore { call },
+            "tool.execute.before",
+        )
+    }
+
+    /// Invoke a plugin's `tool.execute.after` hook with a completed tool result.
+    pub fn invoke_tool_after(
+        &self,
+        plugin: &PluginSpec,
+        result: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ToolAfter { result },
+            "tool.execute.after",
+        )
+    }
+
+    /// Invoke a plugin's `shell.env` hook and return its environment object.
+    pub fn invoke_shell_env(
+        &self,
+        plugin: &PluginSpec,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(plugin, BridgeOperation::ShellEnv, "shell.env")
+    }
+
+    /// Invoke a plugin's `dispose` hook during clean surface shutdown.
+    pub fn invoke_dispose(
+        &self,
+        plugin: &PluginSpec,
+    ) -> Result<PluginHookReport, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, output) = self.invoke_plugin(plugin, &runtime, BridgeOperation::Dispose)?;
+        if result.ok {
+            Ok(PluginHookReport {
+                plugin_path: plugin.path().to_path_buf(),
+                runtime: runtime.runtime,
+                runtime_pid: result.pid,
+                invoked_hooks: result.invoked_hooks,
+                stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
+                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
+            })
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "dispose",
+            ))
+        }
+    }
+
     /// Invoke a plugin's messages-array transform hook.
     pub fn invoke_chat_messages_transform(
         &self,
@@ -662,6 +748,12 @@ enum BridgeOperation {
     ChatParams { params: JsonValue },
     ChatHeaders { headers: JsonValue },
     ToolDefinition { definition: JsonValue },
+    PermissionAsk { request: JsonValue },
+    CommandBefore { command: JsonValue },
+    ToolBefore { call: JsonValue },
+    ToolAfter { result: JsonValue },
+    ShellEnv,
+    Dispose,
     ChatMessagesTransform { messages: JsonValue },
     ChatSystemTransform { system: String },
     ToolExecute { name: String, arguments: JsonValue },
@@ -1284,6 +1376,28 @@ function normalizeDefinitionResult(returned, mutated) {
   return mutated;
 }
 
+function normalizeObjectMutationResult(returned, mutated) {
+  if (returned === undefined || returned === null) return mutated;
+  if (typeof returned === "string") return { ...mutated, decision: returned };
+  if (returned && typeof returned === "object" && !Array.isArray(returned)) {
+    return { ...mutated, ...returned };
+  }
+  return mutated;
+}
+
+function normalizeEnvResult(returned) {
+  if (!returned || typeof returned !== "object" || Array.isArray(returned)) return {};
+  const env = returned.env && typeof returned.env === "object" && !Array.isArray(returned.env)
+    ? returned.env
+    : returned;
+  const out = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || value === null) continue;
+    out[String(key)] = String(value);
+  }
+  return out;
+}
+
 function normalizeSystemResult(returned, mutated) {
   if (typeof returned === "string") return returned;
   if (returned && typeof returned === "object" && typeof returned.content === "string") {
@@ -1397,6 +1511,60 @@ try {
       hook: "tool.definition"
     }], invokedHooks);
     output = normalizeDefinitionResult(returned, definition);
+  } else if (operation.type === "permission_ask") {
+    const request = operation.request && typeof operation.request === "object" && !Array.isArray(operation.request)
+      ? { ...operation.request }
+      : {};
+    const returned = await callHook(hooks, "permission.ask", [request, {
+      directory,
+      hook: "permission.ask"
+    }], invokedHooks);
+    output = normalizeObjectMutationResult(returned, request);
+  } else if (operation.type === "command_before") {
+    const command = operation.command && typeof operation.command === "object" && !Array.isArray(operation.command)
+      ? { ...operation.command }
+      : {};
+    const returned = await callHook(hooks, "command.execute.before", [command, {
+      directory,
+      hook: "command.execute.before"
+    }], invokedHooks);
+    output = normalizeObjectMutationResult(returned, command);
+  } else if (operation.type === "tool_before") {
+    const call = operation.call && typeof operation.call === "object" && !Array.isArray(operation.call)
+      ? { ...operation.call }
+      : {};
+    const returned = await callHook(hooks, "tool.execute.before", [call, {
+      directory,
+      hook: "tool.execute.before"
+    }], invokedHooks);
+    output = normalizeObjectMutationResult(returned, call);
+  } else if (operation.type === "tool_after") {
+    const result = operation.result && typeof operation.result === "object" && !Array.isArray(operation.result)
+      ? { ...operation.result }
+      : {};
+    const returned = await callHook(hooks, "tool.execute.after", [result, {
+      directory,
+      hook: "tool.execute.after"
+    }], invokedHooks);
+    output = normalizeObjectMutationResult(returned, result);
+  } else if (operation.type === "shell_env") {
+    const returned = await callHook(hooks, "shell.env", [{
+      directory,
+      cwd: directory,
+      env: {}
+    }, {
+      directory,
+      hook: "shell.env"
+    }], invokedHooks);
+    output = normalizeEnvResult(returned);
+  } else if (operation.type === "dispose") {
+    await callHook(hooks, "dispose", [{
+      directory,
+      cwd: directory
+    }, {
+      directory,
+      hook: "dispose"
+    }], invokedHooks);
   } else if (operation.type === "chat_messages_transform") {
     const messages = Array.isArray(operation.messages)
       ? operation.messages.map((message) => message && typeof message === "object" ? { ...message } : message)

@@ -6,6 +6,7 @@
 //! assembled tool call to the registry, converting the structured [`tools::ToolOutput`] into the
 //! runner's [`ToolDispatchResult`].
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -93,6 +94,13 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_hooks(mut self, hooks: Arc<dyn MutationHooks>) -> Self {
         self.context = self.context.with_hooks(hooks);
+        self
+    }
+
+    /// Attach environment variables injected by plugin `shell.env` hooks to the bash child env.
+    #[must_use]
+    pub fn with_shell_env(mut self, env: Vec<(OsString, OsString)>) -> Self {
+        self.context = self.context.with_shell_env(env);
         self
     }
 

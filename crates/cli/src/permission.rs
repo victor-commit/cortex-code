@@ -41,9 +41,9 @@ use std::sync::Arc;
 use engine::Agent;
 use events::EventBus;
 use permissions::{
-    ANY_TOOL, Action, Decision, PermissionEngine, PermissionRequest, Responder, Rule, RuleError,
-    Ruleset, SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets, load_layered,
-    scope_of,
+    ANY_TOOL, Action, Decision, DecisionOverride, PermissionEngine, PermissionRequest, Responder,
+    Rule, RuleError, Ruleset, SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets,
+    load_layered, scope_of,
 };
 use settings::ConfigInputs;
 
@@ -185,7 +185,7 @@ pub fn prepare_headless_permissions(
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
 ) -> Result<HeadlessPermissions, RuleError> {
-    prepare_headless_permissions_with_builtin_rules(
+    prepare_headless_permissions_with_builtin_rules_and_override(
         inputs,
         agent,
         Vec::new(),
@@ -196,6 +196,7 @@ pub fn prepare_headless_permissions(
         trust_rules,
         loaded,
         bus,
+        None,
     )
 }
 
@@ -206,6 +207,7 @@ pub fn prepare_headless_permissions(
 /// engine's hard-deny layer, so read-only built-in modes can block mutations before saved decisions
 /// are considered while preserving the ordinary ruleset for subagent parent caps.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn prepare_headless_permissions_with_builtin_rules(
     inputs: &ConfigInputs,
     agent: Option<&str>,
@@ -217,6 +219,37 @@ pub fn prepare_headless_permissions_with_builtin_rules(
     trust_rules: Vec<Rule>,
     loaded: Vec<SavedDecision>,
     bus: Arc<EventBus>,
+) -> Result<HeadlessPermissions, RuleError> {
+    prepare_headless_permissions_with_builtin_rules_and_override(
+        inputs,
+        agent,
+        builtin_base_rules,
+        cli_rules,
+        save_specs,
+        post_save_rules,
+        hard_deny_rules,
+        trust_rules,
+        loaded,
+        bus,
+        None,
+    )
+}
+
+/// Assemble headless permissions with additional built-in mode rules and an optional final
+/// decision override hook.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_headless_permissions_with_builtin_rules_and_override(
+    inputs: &ConfigInputs,
+    agent: Option<&str>,
+    builtin_base_rules: Vec<Rule>,
+    cli_rules: Vec<Rule>,
+    save_specs: Vec<Rule>,
+    post_save_rules: Vec<Rule>,
+    hard_deny_rules: Vec<Rule>,
+    trust_rules: Vec<Rule>,
+    loaded: Vec<SavedDecision>,
+    bus: Arc<EventBus>,
+    override_hook: Option<Arc<dyn DecisionOverride>>,
 ) -> Result<HeadlessPermissions, RuleError> {
     // When an agent is active its effective ruleset (base ++ that agent's overrides) is the base, so
     // a per-agent rule gates the turn (VAL-PERM-009); otherwise the top-level layered ruleset is the
@@ -251,6 +284,9 @@ pub fn prepare_headless_permissions_with_builtin_rules(
     for rule in trust_rules {
         ruleset.push(rule);
     }
+    if override_hook.is_some() && ruleset.is_empty() {
+        ruleset.push(Rule::new(ANY_TOOL, "**", Action::Allow));
+    }
 
     let has_hard_denies = !hard_deny_rules.is_empty();
     let saved = Arc::new(SavedDecisions::from_decisions(loaded));
@@ -258,7 +294,7 @@ pub fn prepare_headless_permissions_with_builtin_rules(
 
     // Attach an engine when anything would gate or honor an action: a configured/CLI rule, a
     // hard-deny constraint, a previously saved decision to honor, or a save spec to record this run.
-    if ruleset.is_empty() && !has_hard_denies && saved.is_empty() {
+    if ruleset.is_empty() && !has_hard_denies && saved.is_empty() && override_hook.is_none() {
         return Ok(HeadlessPermissions {
             engine: None,
             saved,
@@ -272,6 +308,9 @@ pub fn prepare_headless_permissions_with_builtin_rules(
         .with_bus(bus);
     if !save_specs.is_empty() {
         engine = engine.with_responder(Arc::new(SaveResponder::new(save_specs)));
+    }
+    if let Some(override_hook) = override_hook {
+        engine = engine.with_override(override_hook);
     }
     Ok(HeadlessPermissions {
         engine: Some(Arc::new(engine)),
