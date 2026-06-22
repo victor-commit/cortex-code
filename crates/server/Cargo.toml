@@ -14,14 +14,19 @@ db = { workspace = true }
 engine = { workspace = true }
 errors = { workspace = true }
 events = { workspace = true }
+futures-util = { workspace = true }
 llm = { workspace = true }
+permissions = { workspace = true }
+policy = { workspace = true }
+protocol = { workspace = true }
 providers = { workspace = true }
 redaction = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+settings = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tools = { workspace = true }
 
 [dev-dependencies]
-futures-util = { workspace = true }
-serde_json = { workspace = true }
 tower = { workspace = true }

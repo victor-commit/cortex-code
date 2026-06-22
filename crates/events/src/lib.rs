@@ -11,6 +11,8 @@ mod event;
 
 pub use bus::{EventBus, Subscriber};
 pub use event::{
-    Event, Lifecycle, LifecyclePhase, McpToolsChanged, PermissionAsked, PermissionDecision,
-    PermissionReplied, Surface, ToolCallEvent, ToolResultEvent,
+    AssistantReasoningDeltaEvent, AssistantTextDeltaEvent, Event, Lifecycle, LifecyclePhase,
+    McpToolsChanged, PermissionAsked, PermissionDecision, PermissionReplied, Surface,
+    ToolCallEvent, ToolResultEvent, TurnDoneEvent, TurnErrorEvent, TurnStartedEvent,
+    TurnUsageEvent,
 };

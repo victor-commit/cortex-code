@@ -4,31 +4,41 @@
 //! turns are backed by the shared SQLite repositories and the core durable runner so the server
 //! remains a thin surface over the engine and store.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::convert::Infallible;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event as SseEvent, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
-    CompactionPolicy, EnvironmentBlock, HistoryMessage, RunError, RunOutcome, RunnerEvent,
-    SessionRunner, SystemContext, Turn, project_history,
+    CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunError, RunOutcome,
+    RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
+    project_history,
 };
 use events::{Event, EventBus, LifecyclePhase, Surface};
-use llm::{Provider, Usage};
+use futures_util::{future::BoxFuture, stream};
+use llm::{Provider, ToolCall, ToolDef, Usage};
+use permissions::{PermissionEngine, RuleError};
+use protocol::TodoItem;
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{net::TcpListener, sync::broadcast, sync::watch};
+use tools::{ToolContext, ToolRegistry};
 
 /// First allowed port for `cortex serve` and server test fixtures.
 pub const MIN_PORT: u16 = 3200;
@@ -56,6 +66,7 @@ pub struct ServerState {
     db_path: PathBuf,
     provider: ProviderSource,
     active_turns: ActiveTurns,
+    event_bus: Arc<EventBus>,
 }
 
 impl ServerState {
@@ -66,6 +77,7 @@ impl ServerState {
             db_path: db_path.into(),
             provider: ProviderSource::OpenRouter,
             active_turns: ActiveTurns::default(),
+            event_bus: Arc::new(EventBus::new()),
         }
     }
 
@@ -79,7 +91,15 @@ impl ServerState {
                 provider,
             },
             active_turns: ActiveTurns::default(),
+            event_bus: Arc::new(EventBus::new()),
         }
+    }
+
+    /// Attach the event bus that backs `/event` and turn lifecycle publication.
+    #[must_use]
+    pub fn with_event_bus(mut self, event_bus: Arc<EventBus>) -> Self {
+        self.event_bus = event_bus;
+        self
     }
 
     /// Resolve the process database path and verify the database can be opened.
@@ -105,6 +125,7 @@ impl std::fmt::Debug for ServerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerState")
             .field("db_path", &self.db_path)
+            .field("event_subscribers", &self.event_bus.subscriber_count())
             .finish_non_exhaustive()
     }
 }
@@ -219,6 +240,7 @@ pub fn app_with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider
 pub fn app_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/event", get(event_stream))
         .route("/session", get(list_sessions).post(create_session))
         .route("/session/{id}", get(get_session).delete(delete_session))
         .route(
@@ -286,7 +308,7 @@ pub async fn serve_with_signals(
     let version = version.into();
     serve_with_shutdown(
         listener,
-        app_with_state(state),
+        app_with_state(state.with_event_bus(bus.clone())),
         shutdown_signal(bus, version),
     )
     .await
@@ -294,6 +316,33 @@ pub async fn serve_with_signals(
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+async fn event_stream(
+    State(state): State<ServerState>,
+) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+    let receiver = state.event_bus.subscribe_stream();
+    let stream = stream::unfold(receiver, |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    let data = serde_json::to_string(&event).unwrap_or_else(|err| {
+                        serde_json::json!({
+                            "kind": "event.serialization_error",
+                            "message": err.to_string(),
+                        })
+                        .to_string()
+                    });
+                    let frame = SseEvent::default().event(event.kind()).data(data);
+                    return Some((Ok(frame), receiver));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -558,10 +607,13 @@ async fn run_message_turn(
 
     let resolved = resolve_turn_provider(&state.provider, session.model.as_deref())?;
     let history = load_history(&db, &session_id)?;
-    let _user_message = db
+    let user_message = db
         .messages()
         .create(&session_id, "user", &prompt)
         .map_err(ApiError::from_db)?;
+    state
+        .event_bus
+        .publish(&Event::turn_started(&session_id, &user_message.id));
     let (abort_tx, abort_rx) = watch::channel(false);
     let _active = state
         .active_turns
@@ -573,9 +625,34 @@ async fn run_message_turn(
     let turn = Turn::new(&resolved.model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction_policy(&resolved.model));
-    let outcome = run_cancellable_turn(resolved.provider.as_ref(), turn, abort_rx).await;
+    let permission_engine =
+        permission_engine_for_turn(state.event_bus.clone(), &session_id, &user_message.id)?;
+    let dispatcher = ServerToolDispatcher::for_model(
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        &resolved.model_id,
+        session_id.clone(),
+        state.db_path.clone(),
+        permission_engine,
+    );
+    let outcome = run_cancellable_turn(
+        resolved.provider.as_ref(),
+        turn,
+        &dispatcher,
+        abort_rx,
+        state.event_bus.clone(),
+        session_id.clone(),
+        user_message.id.clone(),
+    )
+    .await;
+    dispatcher.shutdown().await;
 
     let Some(outcome) = outcome else {
+        state.event_bus.publish(&Event::turn_done(
+            &session_id,
+            &user_message.id,
+            "aborted",
+            0,
+        ));
         return Ok(PromptResponse {
             status: "aborted",
             model: resolved.model_id,
@@ -655,16 +732,83 @@ fn resolve_turn_provider(
 async fn run_cancellable_turn(
     provider: &dyn Provider,
     turn: Turn,
+    dispatcher: &dyn ToolDispatcher,
     mut abort_rx: watch::Receiver<bool>,
+    bus: Arc<EventBus>,
+    session_id: String,
+    message_id: String,
 ) -> Option<RunOutcome> {
     let runner = SessionRunner::default();
     tokio::select! {
-        outcome = runner.run(provider, turn, publish_noop) => Some(outcome),
+        outcome = runner.run_with_tools(provider, turn, dispatcher, move |event| {
+            publish_runner_event(&bus, &session_id, &message_id, &event);
+        }) => Some(outcome),
         () = wait_for_abort(&mut abort_rx) => None,
     }
 }
 
-fn publish_noop(_event: RunnerEvent) {}
+fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, event: &RunnerEvent) {
+    match event {
+        RunnerEvent::TextDelta { text } => bus.publish(&Event::assistant_text_delta(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            text.clone(),
+        )),
+        RunnerEvent::Reasoning { text } => bus.publish(&Event::assistant_reasoning_delta(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            text.clone(),
+        )),
+        RunnerEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => bus.publish(&Event::tool_call_for_turn(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            id.clone(),
+            name.clone(),
+            arguments.clone(),
+        )),
+        RunnerEvent::ToolResult {
+            id, name, is_error, ..
+        } => bus.publish(&Event::tool_result_for_turn(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            id.clone(),
+            name.clone(),
+            *is_error,
+        )),
+        RunnerEvent::Usage(usage) => bus.publish(&Event::turn_usage(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+            usage.cost,
+        )),
+        RunnerEvent::Error { message, kind } => bus.publish(&Event::turn_error(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            kind.clone(),
+            message.clone(),
+        )),
+        RunnerEvent::Done { reason, steps } => bus.publish(&Event::turn_done(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            finish_reason_name(reason),
+            *steps,
+        )),
+        RunnerEvent::ToolSetChanged { .. } => {}
+    }
+}
+
+fn finish_reason_name(reason: &llm::FinishReason) -> String {
+    serde_json::to_value(reason)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("{reason:?}"))
+}
 
 async fn wait_for_abort(abort_rx: &mut watch::Receiver<bool>) {
     loop {
@@ -724,6 +868,117 @@ fn validate_model_id(model_id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn permission_engine_for_turn(
+    bus: Arc<EventBus>,
+    session_id: &str,
+    message_id: &str,
+) -> Result<Option<Arc<PermissionEngine>>, ApiError> {
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot load permission configuration context: {err}"),
+        )
+    })?;
+    let mut ruleset = permissions::load_layered(&inputs).map_err(permission_config_error)?;
+    let trust = policy::resolve_trust(&inputs).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot load trust policy: {err}"),
+        )
+    })?;
+    for rule in policy::trust_ruleset(trust).rules() {
+        ruleset.push(rule.clone());
+    }
+    if ruleset.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(
+        PermissionEngine::new(ruleset)
+            .with_bus(bus)
+            .with_event_context(session_id.to_owned(), message_id.to_owned()),
+    )))
+}
+
+fn permission_config_error(err: RuleError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("invalid permission configuration: {err}"),
+    )
+}
+
+struct ServerToolDispatcher {
+    registry: ToolRegistry,
+    context: ToolContext,
+}
+
+impl ServerToolDispatcher {
+    fn for_model(
+        cwd: PathBuf,
+        model_id: &str,
+        session_id: String,
+        db_path: PathBuf,
+        permissions: Option<Arc<PermissionEngine>>,
+    ) -> Self {
+        let registry = match ModelFamily::from_model_id(model_id) {
+            ModelFamily::Gpt | ModelFamily::Codex => ToolRegistry::gpt(),
+            ModelFamily::Anthropic | ModelFamily::Gemini | ModelFamily::Default => {
+                ToolRegistry::builtin()
+            }
+        };
+        let mut context = ToolContext::new(cwd)
+            .with_session(session_id)
+            .with_todo_store(Arc::new(ServerTodoStore { db_path }));
+        if let Some(permissions) = permissions {
+            context = context.with_permissions(permissions);
+        }
+        Self { registry, context }
+    }
+
+    async fn shutdown(&self) {
+        self.context.background_jobs().shutdown().await;
+    }
+}
+
+impl ToolDispatcher for ServerToolDispatcher {
+    fn definitions(&self) -> Vec<ToolDef> {
+        self.registry.definitions()
+    }
+
+    fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+        Box::pin(async move {
+            let output = self
+                .registry
+                .execute(&call.name, &call.arguments, &self.context)
+                .await;
+            ToolDispatchResult {
+                content: output.model_content(),
+                parts: output.parts,
+                is_error: output.is_error,
+            }
+        })
+    }
+}
+
+struct ServerTodoStore {
+    db_path: PathBuf,
+}
+
+impl tools::TodoStore for ServerTodoStore {
+    fn list(&self, session_id: &str) -> Result<Vec<TodoItem>, String> {
+        let db = Database::open(&self.db_path).map_err(|err| err.to_string())?;
+        db.todos()
+            .list_for_session(session_id)
+            .map_err(|err| err.to_string())
+    }
+
+    fn replace(&self, session_id: &str, items: &[TodoItem]) -> Result<(), String> {
+        let db = Database::open(&self.db_path).map_err(|err| err.to_string())?;
+        db.todos()
+            .replace_for_session(session_id, items)
+            .map_err(|err| err.to_string())
+    }
 }
 
 fn non_empty(value: &str) -> Option<String> {

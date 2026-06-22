@@ -3,6 +3,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::Event;
+use tokio::sync::broadcast;
+
+const DEFAULT_BROADCAST_CAPACITY: usize = 1024;
 
 /// A subscriber that observes every event published on the bus after it is attached.
 ///
@@ -28,21 +31,41 @@ where
 /// order. Publishing with no subscribers attached is a clean no-op (it never errors or blocks).
 /// The bus backs in-process subscribers today and is the foundation for the server's SSE stream
 /// in a later milestone.
-#[derive(Default)]
 pub struct EventBus {
     subscribers: Mutex<Vec<Arc<dyn Subscriber>>>,
+    broadcast: broadcast::Sender<Event>,
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventBus {
     /// Create an empty bus with no subscribers.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let (broadcast, _) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
+        Self {
+            subscribers: Mutex::new(Vec::new()),
+            broadcast,
+        }
     }
 
     /// Attach a subscriber. It observes every event published after this call.
     pub fn subscribe(&self, subscriber: Arc<dyn Subscriber>) {
         self.lock().push(subscriber);
+    }
+
+    /// Attach an async subscriber backed by a bounded broadcast channel.
+    ///
+    /// Dropping the returned receiver cleanly detaches the subscriber, so long-lived surfaces such
+    /// as SSE streams can fan out events to many clients without leaking per-connection closures in
+    /// the synchronous subscriber list.
+    #[must_use]
+    pub fn subscribe_stream(&self) -> broadcast::Receiver<Event> {
+        self.broadcast.subscribe()
     }
 
     /// Publish an event to every attached subscriber, exactly once each.
@@ -55,6 +78,7 @@ impl EventBus {
         for subscriber in &subscribers {
             subscriber.on_event(event);
         }
+        let _ = self.broadcast.send(event.clone());
     }
 
     /// The number of currently attached subscribers.

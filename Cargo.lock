@@ -587,6 +587,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2222,12 +2223,17 @@ dependencies = [
  "events",
  "futures-util",
  "llm",
+ "permissions",
+ "policy",
+ "protocol",
  "providers",
  "redaction",
  "serde",
  "serde_json",
+ "settings",
  "thiserror",
  "tokio",
+ "tools",
  "tower",
 ]
 

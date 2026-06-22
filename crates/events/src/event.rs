@@ -113,6 +113,12 @@ impl PermissionDecision {
 /// so a subscriber can surface or audit exactly what is awaiting approval.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PermissionAsked {
+    /// Owning session id when the ask belongs to a user turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Turn/message id that originated the ask when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// The gated tool (e.g. `bash`, `write`).
     pub tool: String,
     /// The pattern that classified the action as `ask` (the action's subject when defaulted).
@@ -124,6 +130,12 @@ pub struct PermissionAsked {
 /// A pending permission ask was answered with a decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PermissionReplied {
+    /// Owning session id when the reply belongs to a user turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Turn/message id that originated the reply when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// The gated tool (e.g. `bash`, `write`).
     pub tool: String,
     /// The pattern that classified the action as `ask` (the action's subject when defaulted).
@@ -166,8 +178,14 @@ pub struct McpPromptsChanged {
 }
 
 /// A model requested a tool call during a turn.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ToolCallEvent {
+    /// Owning session id when the call belongs to a user turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Turn/message id that originated the call when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// Provider-assigned call id.
     pub id: String,
     /// Tool name.
@@ -177,8 +195,14 @@ pub struct ToolCallEvent {
 }
 
 /// A tool call completed and produced a model-visible result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ToolResultEvent {
+    /// Owning session id when the result belongs to a user turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Turn/message id that originated the result when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// Provider-assigned call id.
     pub id: String,
     /// Tool name.
@@ -187,12 +211,87 @@ pub struct ToolResultEvent {
     pub is_error: bool,
 }
 
+/// A server/runner turn started for a session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TurnStartedEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+}
+
+/// A fragment of assistant-visible text for one session turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AssistantTextDeltaEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+    /// Assistant text fragment.
+    pub text: String,
+}
+
+/// A fragment of model reasoning for one session turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AssistantReasoningDeltaEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+    /// Reasoning fragment.
+    pub text: String,
+}
+
+/// Per-turn token usage reported by the model provider.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TurnUsageEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+    /// Prompt/input tokens.
+    pub input_tokens: u32,
+    /// Completion/output tokens.
+    pub output_tokens: u32,
+    /// Total tokens.
+    pub total_tokens: u32,
+    /// Optional provider-reported cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+}
+
+/// A normalized turn failure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TurnErrorEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+    /// Stable error class.
+    pub error_kind: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+/// A turn reached a terminal state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TurnDoneEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// User message id that identifies the turn.
+    pub message_id: String,
+    /// Normalized finish reason (`stop`, `tool_calls`, `aborted`, ...).
+    pub reason: String,
+    /// Provider round-trips completed before the terminal state.
+    pub steps: usize,
+}
+
 /// A typed event delivered on the [`EventBus`](crate::EventBus).
 ///
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
 /// (in-process today, the server SSE stream later) observe named fields rather than opaque
 /// strings. Variants serialize with an internal `kind` tag, making them SSE/JSON ready.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// A process/surface lifecycle transition.
@@ -218,6 +317,24 @@ pub enum Event {
     /// A tool call completed and produced a model-visible result.
     #[serde(rename = "tool.result")]
     ToolResult(ToolResultEvent),
+    /// A server/runner turn started for a session.
+    #[serde(rename = "turn.started")]
+    TurnStarted(TurnStartedEvent),
+    /// A fragment of assistant-visible text for one session turn.
+    #[serde(rename = "assistant.text_delta")]
+    AssistantTextDelta(AssistantTextDeltaEvent),
+    /// A fragment of model reasoning for one session turn.
+    #[serde(rename = "assistant.reasoning_delta")]
+    AssistantReasoningDelta(AssistantReasoningDeltaEvent),
+    /// Per-turn token usage reported by the model provider.
+    #[serde(rename = "turn.usage")]
+    TurnUsage(TurnUsageEvent),
+    /// A normalized turn failure.
+    #[serde(rename = "turn.error")]
+    TurnError(TurnErrorEvent),
+    /// A turn reached a terminal state.
+    #[serde(rename = "turn.done")]
+    TurnDone(TurnDoneEvent),
 }
 
 impl Event {
@@ -233,6 +350,12 @@ impl Event {
             Event::McpPromptsChanged(_) => "mcp.prompts.changed",
             Event::ToolCall(_) => "tool.call",
             Event::ToolResult(_) => "tool.result",
+            Event::TurnStarted(_) => "turn.started",
+            Event::AssistantTextDelta(_) => "assistant.text_delta",
+            Event::AssistantReasoningDelta(_) => "assistant.reasoning_delta",
+            Event::TurnUsage(_) => "turn.usage",
+            Event::TurnError(_) => "turn.error",
+            Event::TurnDone(_) => "turn.done",
         }
     }
 
@@ -255,6 +378,26 @@ impl Event {
         request: impl Into<String>,
     ) -> Self {
         Event::PermissionAsked(PermissionAsked {
+            session_id: None,
+            message_id: None,
+            tool: tool.into(),
+            pattern: pattern.into(),
+            request: request.into(),
+        })
+    }
+
+    /// Construct a session-correlated `permission.asked` event naming the gated action.
+    #[must_use]
+    pub fn permission_asked_for_turn(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        tool: impl Into<String>,
+        pattern: impl Into<String>,
+        request: impl Into<String>,
+    ) -> Self {
+        Event::PermissionAsked(PermissionAsked {
+            session_id: Some(session_id.into()),
+            message_id: Some(message_id.into()),
             tool: tool.into(),
             pattern: pattern.into(),
             request: request.into(),
@@ -270,6 +413,28 @@ impl Event {
         decision: PermissionDecision,
     ) -> Self {
         Event::PermissionReplied(PermissionReplied {
+            session_id: None,
+            message_id: None,
+            tool: tool.into(),
+            pattern: pattern.into(),
+            request: request.into(),
+            decision,
+        })
+    }
+
+    /// Construct a session-correlated `permission.replied` event.
+    #[must_use]
+    pub fn permission_replied_for_turn(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        tool: impl Into<String>,
+        pattern: impl Into<String>,
+        request: impl Into<String>,
+        decision: PermissionDecision,
+    ) -> Self {
+        Event::PermissionReplied(PermissionReplied {
+            session_id: Some(session_id.into()),
+            message_id: Some(message_id.into()),
             tool: tool.into(),
             pattern: pattern.into(),
             request: request.into(),
@@ -312,6 +477,26 @@ impl Event {
         arguments: impl Into<String>,
     ) -> Self {
         Event::ToolCall(ToolCallEvent {
+            session_id: None,
+            message_id: None,
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        })
+    }
+
+    /// Construct a session-correlated `tool.call` event.
+    #[must_use]
+    pub fn tool_call_for_turn(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Event::ToolCall(ToolCallEvent {
+            session_id: Some(session_id.into()),
+            message_id: Some(message_id.into()),
             id: id.into(),
             name: name.into(),
             arguments: arguments.into(),
@@ -322,9 +507,118 @@ impl Event {
     #[must_use]
     pub fn tool_result(id: impl Into<String>, name: impl Into<String>, is_error: bool) -> Self {
         Event::ToolResult(ToolResultEvent {
+            session_id: None,
+            message_id: None,
             id: id.into(),
             name: name.into(),
             is_error,
+        })
+    }
+
+    /// Construct a session-correlated `tool.result` event.
+    #[must_use]
+    pub fn tool_result_for_turn(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Event::ToolResult(ToolResultEvent {
+            session_id: Some(session_id.into()),
+            message_id: Some(message_id.into()),
+            id: id.into(),
+            name: name.into(),
+            is_error,
+        })
+    }
+
+    /// Construct a `turn.started` event.
+    #[must_use]
+    pub fn turn_started(session_id: impl Into<String>, message_id: impl Into<String>) -> Self {
+        Event::TurnStarted(TurnStartedEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+        })
+    }
+
+    /// Construct an `assistant.text_delta` event.
+    #[must_use]
+    pub fn assistant_text_delta(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Event::AssistantTextDelta(AssistantTextDeltaEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+        })
+    }
+
+    /// Construct an `assistant.reasoning_delta` event.
+    #[must_use]
+    pub fn assistant_reasoning_delta(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Event::AssistantReasoningDelta(AssistantReasoningDeltaEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+        })
+    }
+
+    /// Construct a `turn.usage` event.
+    #[must_use]
+    pub fn turn_usage(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        input_tokens: u32,
+        output_tokens: u32,
+        total_tokens: u32,
+        cost: Option<f64>,
+    ) -> Self {
+        Event::TurnUsage(TurnUsageEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+        })
+    }
+
+    /// Construct a `turn.error` event.
+    #[must_use]
+    pub fn turn_error(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        error_kind: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Event::TurnError(TurnErrorEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            error_kind: error_kind.into(),
+            message: message.into(),
+        })
+    }
+
+    /// Construct a `turn.done` event.
+    #[must_use]
+    pub fn turn_done(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        reason: impl Into<String>,
+        steps: usize,
+    ) -> Self {
+        Event::TurnDone(TurnDoneEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            reason: reason.into(),
+            steps,
         })
     }
 }

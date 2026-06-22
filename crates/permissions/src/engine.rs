@@ -189,6 +189,13 @@ pub struct PermissionEngine {
     responder: Option<Arc<dyn Responder>>,
     override_hook: Option<Arc<dyn DecisionOverride>>,
     bus: Option<Arc<EventBus>>,
+    event_context: Option<PermissionEventContext>,
+}
+
+#[derive(Clone)]
+struct PermissionEventContext {
+    session_id: String,
+    message_id: String,
 }
 
 impl PermissionEngine {
@@ -203,6 +210,7 @@ impl PermissionEngine {
             responder: None,
             override_hook: None,
             bus: None,
+            event_context: None,
         }
     }
 
@@ -267,6 +275,24 @@ impl PermissionEngine {
         self
     }
 
+    /// Attach session/turn ids to emitted `permission.asked` and `permission.replied` events.
+    ///
+    /// Surfaces that stream a concrete turn (for example `cortex serve` SSE) use this so remote
+    /// clients can correlate a permission prompt with the originating prompt request. Surfaces that
+    /// do not need turn correlation can omit it and retain the legacy uncorrelated event shape.
+    #[must_use]
+    pub fn with_event_context(
+        mut self,
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+    ) -> Self {
+        self.event_context = Some(PermissionEventContext {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+        });
+        self
+    }
+
     /// The combined ruleset this engine evaluates.
     #[must_use]
     pub fn ruleset(&self) -> &Ruleset {
@@ -303,12 +329,7 @@ impl PermissionEngine {
                 Decision::Allow => PermissionDecision::Allow,
                 Decision::Deny => PermissionDecision::Deny,
             };
-            self.publish(events::Event::permission_replied(
-                &request.tool,
-                &pattern,
-                &request.subject,
-                event_decision,
-            ));
+            self.publish_permission_replied(request, &pattern, event_decision);
             return PermissionEvaluation {
                 action,
                 pattern,
@@ -319,11 +340,7 @@ impl PermissionEngine {
             Action::Allow => Outcome::Allowed,
             Action::Deny => Outcome::Denied,
             Action::Ask => {
-                self.publish(events::Event::permission_asked(
-                    &request.tool,
-                    &pattern,
-                    &request.subject,
-                ));
+                self.publish_permission_asked(request, &pattern);
 
                 // No responder (headless) → fail closed: deny without waiting, and never save.
                 let reply = match &self.responder {
@@ -341,12 +358,7 @@ impl PermissionEngine {
                     Decision::Allow => PermissionDecision::Allow,
                     Decision::Deny => PermissionDecision::Deny,
                 };
-                self.publish(events::Event::permission_replied(
-                    &request.tool,
-                    &pattern,
-                    &request.subject,
-                    outcome_decision,
-                ));
+                self.publish_permission_replied(request, &pattern, outcome_decision);
                 reply.decision.outcome()
             }
         };
@@ -402,6 +414,45 @@ impl PermissionEngine {
         if let Some(bus) = &self.bus {
             bus.publish(&event);
         }
+    }
+
+    fn publish_permission_asked(&self, request: &PermissionRequest, pattern: &str) {
+        let event = match &self.event_context {
+            Some(context) => events::Event::permission_asked_for_turn(
+                &context.session_id,
+                &context.message_id,
+                &request.tool,
+                pattern,
+                &request.subject,
+            ),
+            None => events::Event::permission_asked(&request.tool, pattern, &request.subject),
+        };
+        self.publish(event);
+    }
+
+    fn publish_permission_replied(
+        &self,
+        request: &PermissionRequest,
+        pattern: &str,
+        decision: PermissionDecision,
+    ) {
+        let event = match &self.event_context {
+            Some(context) => events::Event::permission_replied_for_turn(
+                &context.session_id,
+                &context.message_id,
+                &request.tool,
+                pattern,
+                &request.subject,
+                decision,
+            ),
+            None => events::Event::permission_replied(
+                &request.tool,
+                pattern,
+                &request.subject,
+                decision,
+            ),
+        };
+        self.publish(event);
     }
 }
 
