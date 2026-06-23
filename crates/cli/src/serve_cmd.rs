@@ -5,7 +5,7 @@ use events::EventBus;
 
 use crate::cli::ServeArgs;
 
-pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
+pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -20,7 +20,7 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>) -> Exit {
     runtime.block_on(async move {
         let state = match server::ServerState::from_process() {
             Ok(state) => match auth_from_args(&args) {
-                Ok(auth) => state.with_auth(auth),
+                Ok(auth) => state.with_auth(auth).with_pure_plugins(pure_plugins),
                 Err(err) => {
                     eprintln!("cortex serve: {err}");
                     return if err.is_usage_error() {

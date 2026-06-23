@@ -161,6 +161,16 @@ impl ServerState {
         self
     }
 
+    /// Apply the CLI-level plugin pure-mode kill switch captured at server startup.
+    ///
+    /// This is separate from the environment snapshot so `cortex --pure serve` disables plugin
+    /// resolution and hooks without requiring the caller to also export `CORTEX_PURE=1`.
+    #[must_use]
+    pub fn with_pure_plugins(mut self, pure_plugins: bool) -> Self {
+        self.config.cli_pure_plugins = pure_plugins;
+        self
+    }
+
     /// Override the base directory for the shadow checkpoint store.
     ///
     /// The process server path uses the standard data-dir resolution. Tests can inject a hermetic
@@ -318,6 +328,7 @@ struct ConfigContext {
     home: Option<PathBuf>,
     xdg_config_home: Option<PathBuf>,
     env: Vec<(String, String)>,
+    cli_pure_plugins: bool,
 }
 
 impl ConfigContext {
@@ -328,6 +339,7 @@ impl ConfigContext {
                 .map(PathBuf::from)
                 .filter(|path| !path.as_os_str().is_empty()),
             env: std::env::vars().collect(),
+            cli_pure_plugins: false,
         }
     }
 
@@ -346,9 +358,11 @@ impl ConfigContext {
     }
 
     fn pure_plugins(&self) -> bool {
-        self.env
-            .iter()
-            .any(|(name, value)| name == "CORTEX_PURE" && value == "1")
+        self.cli_pure_plugins
+            || self
+                .env
+                .iter()
+                .any(|(name, value)| name == "CORTEX_PURE" && value == "1")
     }
 }
 

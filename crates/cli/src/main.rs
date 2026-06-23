@@ -64,10 +64,15 @@ fn main() -> ExitCode {
     }
 
     match cli.command {
-        None => tui::launch(),
+        None => {
+            let mut options = tui::LaunchOptions::from_env();
+            options.pure_plugins = pure_plugins;
+            tui::launch_with_options(options)
+        }
         Some(Command::Tui(args)) => tui::launch_with_options(tui::LaunchOptions {
             session: args.session,
             server_url: args.server,
+            pure_plugins,
         }),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
@@ -83,7 +88,7 @@ fn main() -> ExitCode {
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
-        Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone()).into(),
+        Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone(), pure_plugins).into(),
     }
 }
 

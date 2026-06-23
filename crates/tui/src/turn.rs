@@ -57,6 +57,7 @@ pub struct SpawnRequest {
     pub history: Vec<Message>,
     pub model: String,
     pub agent: String,
+    pub pure_plugins: bool,
     pub mcp_manager: Option<Arc<mcp::McpManager>>,
     pub remote: Option<RemoteBridge>,
     pub session_id: Option<String>,
@@ -129,13 +130,14 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
             history,
             model,
             agent,
+            pure_plugins,
             mcp_manager,
             remote,
             session_id,
             db_path,
             cancel,
         } = request;
-        match build_turn(&prompt, history, &model, &agent) {
+        match build_turn(&prompt, history, &model, &agent, pure_plugins) {
             Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -390,6 +392,7 @@ fn build_turn(
     history: Vec<Message>,
     active_model: &str,
     active_agent: &str,
+    pure_plugins: bool,
 ) -> Result<TurnSetup, String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
     guard_outbound(OUTBOUND_OPERATION).map_err(|diag| diag.to_string())?;
@@ -412,8 +415,6 @@ fn build_turn(
     let plugin_config =
         plugins::PluginConfig::from_toml_value(effective.get("plugin"), &plugin_cwd)
             .map_err(|message| format!("invalid plugin configuration: {message}"))?;
-    let pure_plugins =
-        std::env::var_os("CORTEX_PURE").is_some_and(|value| value.to_string_lossy() == "1");
     let plugin_hooks =
         plugins::PluginEventHooks::load_or_disabled(&plugin_config, pure_plugins, "tui")
             .map_err(|err| format!("plugin runtime error: {err}"))?;

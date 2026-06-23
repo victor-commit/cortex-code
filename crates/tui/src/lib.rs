@@ -50,6 +50,8 @@ pub struct LaunchOptions {
     pub session: Option<String>,
     /// Loopback `cortex serve` origin used for SSE event publication, share creation, and aborts.
     pub server_url: Option<String>,
+    /// Whether configured plugin resolution/runtime/hook execution is disabled for this TUI.
+    pub pure_plugins: bool,
 }
 
 impl LaunchOptions {
@@ -59,6 +61,7 @@ impl LaunchOptions {
         Self {
             session: env_non_empty("CORTEX_SESSION"),
             server_url: env_non_empty("CORTEX_SERVER_URL"),
+            pure_plugins: env_pure_enabled(),
         }
     }
 }
@@ -141,7 +144,7 @@ fn run(options: LaunchOptions) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let loop_result = event_loop(&mut terminal, &mut app);
+    let loop_result = event_loop(&mut terminal, &mut app, options.pure_plugins);
 
     if let Some((manager, runtime)) = app.take_mcp_runtime() {
         mcp_runtime::shutdown(manager, runtime);
@@ -196,7 +199,11 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn event_loop<B: Backend + Write>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    pure_plugins: bool,
+) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
         if app.should_quit {
@@ -216,6 +223,7 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
                 history: app.history_snapshot(),
                 model: app.active_model(),
                 agent: app.active_agent(),
+                pure_plugins,
                 mcp_manager: app.mcp_manager(),
                 remote,
                 session_id,
@@ -288,6 +296,10 @@ fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+fn env_pure_enabled() -> bool {
+    std::env::var_os("CORTEX_PURE").is_some_and(|value| value.to_string_lossy() == "1")
 }
 
 /// Suspend the TUI, open the user's external editor to compose prompt text, then restore the TUI
