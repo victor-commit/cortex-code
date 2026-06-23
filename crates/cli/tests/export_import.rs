@@ -260,6 +260,101 @@ fn import_round_trip_preserves_message_content_roles_and_order() {
     );
 }
 
+// VAL-FINISH-076: re-importing an existing session is deterministic and keeps DB coherent.
+#[test]
+fn reimport_of_existing_session_is_conflict_and_preserves_integrity() {
+    let source = Sandbox::new("source-reimport");
+    let session_id = new_session(&source);
+    append_message(&source, &session_id, "user", "marker-reimport");
+
+    let export_out = source.run(&["export", &session_id]);
+    assert_eq!(
+        export_out.status.code(),
+        Some(0),
+        "source export failed: {}",
+        stderr_str(&export_out)
+    );
+    let artifact_path = source.path("session-export-reimport.json");
+    fs::write(&artifact_path, &export_out.stdout).expect("write artifact");
+
+    let target = Sandbox::new("target-reimport");
+    let first_import = target.run(&["import", artifact_path.to_str().expect("utf8 path")]);
+    assert_eq!(
+        first_import.status.code(),
+        Some(0),
+        "first import should succeed: {}",
+        stderr_str(&first_import)
+    );
+
+    let second_import = target.run(&["import", artifact_path.to_str().expect("utf8 path")]);
+    assert_ne!(
+        second_import.status.code(),
+        Some(0),
+        "second import should be a deterministic conflict outcome"
+    );
+    let second_stderr = stderr_str(&second_import);
+    assert!(
+        second_stderr.contains("session already exists"),
+        "second import should clearly report existing-session conflict: {second_stderr}"
+    );
+    assert!(
+        !second_stderr.contains("panicked"),
+        "no panic output on re-import conflict: {second_stderr}"
+    );
+
+    let listed = target.run(&["session", "list", "--format", "json"]);
+    assert_eq!(
+        listed.status.code(),
+        Some(0),
+        "session list must still work after re-import conflict: {}",
+        stderr_str(&listed)
+    );
+    let listed_json: Value = serde_json::from_slice(&listed.stdout).expect("list json");
+    let ids: Vec<&str> = listed_json["sessions"]
+        .as_array()
+        .expect("sessions array")
+        .iter()
+        .map(|session| session["id"].as_str().expect("session id"))
+        .collect();
+    let occurrences = ids.iter().filter(|id| **id == session_id).count();
+    assert_eq!(
+        occurrences, 1,
+        "session id should appear exactly once after re-import conflict"
+    );
+
+    let shown = target.run(&["session", "show", &session_id, "--format", "json"]);
+    assert_eq!(
+        shown.status.code(),
+        Some(0),
+        "session show must still work after re-import conflict: {}",
+        stderr_str(&shown)
+    );
+    let shown_json: Value = serde_json::from_slice(&shown.stdout).expect("show json");
+    let marker_count = shown_json["messages"]
+        .as_array()
+        .expect("messages array")
+        .iter()
+        .filter(|message| message["content"] == "marker-reimport")
+        .count();
+    assert_eq!(
+        marker_count, 1,
+        "content must stay intact with no duplicated imported messages"
+    );
+
+    let stats = target.run(&["stats", "--format", "json"]);
+    assert_eq!(
+        stats.status.code(),
+        Some(0),
+        "stats must remain readable after re-import conflict: {}",
+        stderr_str(&stats)
+    );
+    let stats_json: Value = serde_json::from_slice(&stats.stdout).expect("stats json");
+    assert!(
+        stats_json["totals"]["total_tokens"].is_number(),
+        "stats JSON should remain coherent after re-import conflict"
+    );
+}
+
 // VAL-FINISH-029: missing session export fails clearly, no stdout artifact, no panic.
 #[test]
 fn export_of_missing_session_fails_cleanly() {

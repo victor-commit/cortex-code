@@ -419,6 +419,9 @@ pub enum SessionCommand {
     /// Show a session and the messages stored under it.
     Show(SessionShowArgs),
 
+    /// Delete a session and its persisted messages.
+    Delete(SessionDeleteArgs),
+
     /// Append a message to a session (content from an argument or stdin).
     Message(SessionMessageArgs),
 }
@@ -442,6 +445,16 @@ pub struct SessionListArgs {
 #[derive(Debug, Args)]
 pub struct SessionShowArgs {
     /// The id of the session to show.
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionDeleteArgs {
+    /// The id of the session to delete.
     #[arg(value_name = "ID")]
     pub id: String,
 
@@ -885,6 +898,21 @@ mod tests {
                 assert_eq!(args.role, "assistant");
             }
             other => panic!("expected session message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_delete_parses_id_and_format() {
+        let cli = Cli::try_parse_from(["cortex", "session", "delete", "ses_1", "--format", "json"])
+            .expect("parse");
+        match cli.command {
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::Delete(args),
+            })) => {
+                assert_eq!(args.id, "ses_1");
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected session delete, got {other:?}"),
         }
     }
 

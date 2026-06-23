@@ -13,8 +13,8 @@ use errors::Exit;
 use serde::Serialize;
 
 use crate::cli::{
-    OutputFormat, SessionArgs, SessionCommand, SessionListArgs, SessionMessageArgs, SessionNewArgs,
-    SessionShowArgs,
+    OutputFormat, SessionArgs, SessionCommand, SessionDeleteArgs, SessionListArgs,
+    SessionMessageArgs, SessionNewArgs, SessionShowArgs,
 };
 
 /// Dispatch a `cortex session` invocation.
@@ -28,6 +28,7 @@ pub fn run(args: SessionArgs) -> Exit {
         SessionCommand::New(args) => new(&db, args),
         SessionCommand::List(args) => list(&db, args),
         SessionCommand::Show(args) => show(&db, args),
+        SessionCommand::Delete(args) => delete(&db, args),
         SessionCommand::Message(args) => message(&db, args),
     }
 }
@@ -79,6 +80,23 @@ fn show(db: &Database, args: SessionShowArgs) -> Exit {
     match args.format.format {
         OutputFormat::Json | OutputFormat::Jsonl => emit_json(&SessionDetail { session, messages }),
         OutputFormat::Text => emit_text(&render_session_detail(&session, &messages)),
+    }
+}
+
+fn delete(db: &Database, args: SessionDeleteArgs) -> Exit {
+    match db.sessions().delete(&args.id) {
+        Ok(true) => match args.format.format {
+            OutputFormat::Json | OutputFormat::Jsonl => emit_json(&SessionDeleteResult {
+                id: args.id,
+                deleted: true,
+            }),
+            OutputFormat::Text => Exit::Success,
+        },
+        Ok(false) => db_error(&DbError::NotFound {
+            kind: "session",
+            id: args.id,
+        }),
+        Err(err) => db_error(&err),
     }
 }
 
@@ -138,6 +156,13 @@ struct SessionList {
 struct SessionDetail {
     session: Session,
     messages: Vec<Message>,
+}
+
+/// A delete result as a single JSON document.
+#[derive(Serialize)]
+struct SessionDeleteResult {
+    id: String,
+    deleted: bool,
 }
 
 fn render_session_list(sessions: &[Session]) -> String {

@@ -357,6 +357,96 @@ fn show_unknown_session_errors_cleanly() {
     assert!(!stderr.contains("panicked"));
 }
 
+// VAL-FINISH-074: `session list/show/delete` are local persistence operations (offline-capable).
+#[test]
+fn session_list_show_delete_work_offline_and_delete_is_effective() {
+    let scratch = Scratch::new();
+    let db = scratch.path("cortex.db");
+    let env = [
+        ("CORTEX_DB_PATH", db.to_str().unwrap()),
+        ("CORTEX_NO_NET", "1"),
+    ];
+
+    let created = scratch.run(&env, &["new", "--format", "json"]);
+    assert_eq!(created.status.code(), Some(0));
+    let id = serde_json::from_slice::<Value>(&created.stdout).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let marker = "session-cli-marker-offline";
+    let stored = scratch.run(&env, &["message", &id, marker, "--format", "json"]);
+    assert_eq!(
+        stored.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_str(&stored)
+    );
+
+    let listed = scratch.run(&env, &["list", "--format", "json"]);
+    assert_eq!(listed.status.code(), Some(0));
+    let listed_json: Value = serde_json::from_slice(&listed.stdout).expect("list json");
+    let ids: Vec<&str> = listed_json["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&id.as_str()),
+        "session should be listed before delete"
+    );
+
+    let shown = scratch.run(&env, &["show", &id, "--format", "json"]);
+    assert_eq!(shown.status.code(), Some(0));
+    let shown_json: Value = serde_json::from_slice(&shown.stdout).expect("show json");
+    let contains_marker = shown_json["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["content"] == marker);
+    assert!(contains_marker, "show output should include marker message");
+
+    let deleted = scratch.run(&env, &["delete", &id]);
+    assert_eq!(
+        deleted.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_str(&deleted)
+    );
+    assert!(
+        deleted.stderr.is_empty(),
+        "successful delete should not print stderr diagnostics"
+    );
+
+    let listed_after = scratch.run(&env, &["list", "--format", "json"]);
+    assert_eq!(listed_after.status.code(), Some(0));
+    let listed_after_json: Value = serde_json::from_slice(&listed_after.stdout).expect("list json");
+    let ids_after: Vec<&str> = listed_after_json["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids_after.contains(&id.as_str()),
+        "deleted session should not appear in list"
+    );
+
+    let shown_after = scratch.run(&env, &["show", &id]);
+    assert_ne!(
+        shown_after.status.code(),
+        Some(0),
+        "show after delete should fail with not-found"
+    );
+    let stderr = stderr_str(&shown_after);
+    assert!(
+        stderr.contains("no such session"),
+        "show after delete should report not-found: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "no panic output: {stderr}");
+}
+
 // VAL-SKEL-068: several simultaneous first-use processes on one fresh path each create/migrate the
 // DB without corruption, double-applied migrations, or a panic. Using more than two cross-process
 // openers makes the contention on the one-time `journal_mode=WAL` switch (which SQLite returns busy
