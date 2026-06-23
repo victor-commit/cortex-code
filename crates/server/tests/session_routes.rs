@@ -358,9 +358,11 @@ export default async function plugin(input, options) {{
         ),
     )
     .expect("write project config");
+    let audit_path = scratch.dir.join("audit.jsonl");
     let provider = Arc::new(EchoProvider::default());
-    let state =
-        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider.clone())
+        .with_cwd(workspace)
+        .with_audit_path(&audit_path);
     let app = server::app_with_state(state);
     let session = create_session(&app).await;
 
@@ -382,6 +384,33 @@ export default async function plugin(input, options) {{
     assert!(
         marker_text.lines().any(|line| line == "serve:turn.started"),
         "server turns should invoke configured plugin event hooks with serve surface: {marker_text:?}"
+    );
+
+    // The hook side effect is not enough: the shared audit sink must also carry typed,
+    // serve/server-attributed plugin lifecycle/hook records (VAL-CROSS-031).
+    let records = audit::read_jsonl(&audit_path).expect("audit records");
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_load"
+                && record["surface"] == "serve"
+                && record["source"] == "server"
+                && record["session"] == session.id
+                && record["plugin"]
+                    .as_str()
+                    .is_some_and(|plugin| plugin.contains("plugin.mjs"))
+        }),
+        "server audit log should record the plugin load attributed to serve/server: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_hook"
+                && record["hook"] == "event"
+                && record["surface"] == "serve"
+                && record["source"] == "server"
+                && record["session"] == session.id
+                && record["outcome"] == "success"
+        }),
+        "server audit log should record the plugin event hook attributed to serve/server: {records:#?}"
     );
 }
 

@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+audit = { workspace = true }
 redaction = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

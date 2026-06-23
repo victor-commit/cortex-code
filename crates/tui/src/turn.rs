@@ -193,7 +193,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 session_id.clone(),
                                 tx_events.clone(),
                             )
-                            .with_audit(audit_sink)
+                            .with_audit(audit_sink.clone())
                             .with_permissions(engine)
                             .with_hooks(mutation_hooks)
                             .with_lsp_service(lsp_hooks.clone())
@@ -215,7 +215,9 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             if let Some(remote) = &remote {
                                 remote.publish_started();
                             }
-                            let plugin_hooks = setup.plugin_hooks.clone();
+                            // Attach the shared audit sink so the TUI's plugin lifecycle/event-hook
+                            // activity lands in the same sink as headless, attributed to "tui".
+                            let plugin_hooks = setup.plugin_hooks.with_audit(audit_sink);
                             let started_event =
                                 Event::turn_started(session_id.clone(), message_id.clone());
                             plugin_hooks.invoke_event(&started_event);

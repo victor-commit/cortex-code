@@ -726,6 +726,7 @@ pub struct PluginEventHooks {
     host: RuntimeHost,
     surface: Arc<str>,
     disposed: Arc<AtomicBool>,
+    audit: Option<Arc<audit::AuditSink>>,
 }
 
 impl PluginEventHooks {
@@ -737,6 +738,7 @@ impl PluginEventHooks {
             host: RuntimeHost::new(),
             surface: Arc::from(non_empty_surface(surface)),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: None,
         }
     }
 
@@ -750,7 +752,24 @@ impl PluginEventHooks {
             host,
             surface: Arc::from(surface),
             disposed: Arc::new(AtomicBool::new(false)),
+            audit: None,
         })
+    }
+
+    /// Attach the durable audit sink so plugin lifecycle/hook activity on this surface is recorded
+    /// into the same shared sink as headless runs, with the sink's surface/source attribution.
+    ///
+    /// Attaching records one `plugin_load` entry per configured plugin, mirroring the headless
+    /// bridge's `audit_loaded_plugins`, so a configured plugin is attributable even before any
+    /// event fires. Subsequent [`PluginEventHooks::invoke_event`] calls record a typed
+    /// `plugin_hook` entry for each real event-hook invocation.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
+        for loaded in &self.loaded {
+            audit.record_plugin_load(loaded.spec.raw_spec(), &loaded.report.hooks, "success");
+        }
+        self.audit = Some(audit);
+        self
     }
 
     /// Load configured plugins unless pure mode disabled all plugin behavior.
@@ -788,12 +807,20 @@ impl PluginEventHooks {
                 return;
             }
         };
+        let event_kind = value
+            .get("type")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned);
         for loaded in &self.loaded {
             if !loaded.report.hooks.iter().any(|hook| hook == "event") {
                 continue;
             }
-            if let Err(err) = self.host.invoke_event(&loaded.spec, value.clone()) {
-                eprintln!("cortex plugin event: {err}");
+            match self.host.invoke_event(&loaded.spec, value.clone()) {
+                Ok(_) => self.record_hook("event", "success", event_kind.as_deref(), loaded),
+                Err(err) => {
+                    eprintln!("cortex plugin event: {err}");
+                    self.record_hook("event", "error", Some(&err.to_string()), loaded);
+                }
             }
         }
     }
@@ -807,9 +834,21 @@ impl PluginEventHooks {
             if !loaded.report.hooks.iter().any(|hook| hook == "dispose") {
                 continue;
             }
-            if let Err(err) = self.host.invoke_dispose(&loaded.spec) {
-                eprintln!("cortex plugin dispose: {err}");
+            match self.host.invoke_dispose(&loaded.spec) {
+                Ok(_) => self.record_hook("dispose", "success", None, loaded),
+                Err(err) => {
+                    eprintln!("cortex plugin dispose: {err}");
+                    self.record_hook("dispose", "error", Some(&err.to_string()), loaded);
+                }
             }
+        }
+    }
+
+    /// Record a typed `plugin_hook` audit entry for one real hook invocation when an audit sink is
+    /// attached. The sink supplies the surface/source attribution.
+    fn record_hook(&self, hook: &str, outcome: &str, detail: Option<&str>, loaded: &LoadedPlugin) {
+        if let Some(audit) = &self.audit {
+            audit.record_plugin_hook(loaded.spec.raw_spec(), hook, hook, outcome, detail);
         }
     }
 }

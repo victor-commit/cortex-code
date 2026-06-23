@@ -1425,12 +1425,15 @@ async fn run_message_turn(
     let plugin_config =
         plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
             .map_err(plugin_config_error)?;
+    // Attach the shared audit sink so the server's plugin lifecycle/event-hook activity lands in
+    // the same sink as headless and the TUI, attributed to the "serve"/"server" surface.
     let plugin_hooks = plugins::PluginEventHooks::load_or_disabled(
         &plugin_config,
         state.config.pure_plugins(),
         "serve",
     )
-    .map_err(plugin_runtime_error)?;
+    .map_err(plugin_runtime_error)?
+    .with_audit(audit_sink.clone());
     let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
     let history = load_history(&db, &session_id)?;
     let user_message = db
