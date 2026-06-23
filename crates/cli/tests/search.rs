@@ -179,6 +179,75 @@ fn count_connect(trace: &str) -> usize {
     trace.matches("connect(").count()
 }
 
+#[test]
+fn search_returns_session_message_hits_from_the_shared_store() {
+    let sandbox = Sandbox::new("session-hits");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let token = "NEEDLE_M7_SESSION_TOKEN";
+    let (session_id, message_id) = {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("session search"))
+            .expect("session");
+        let message = db
+            .messages()
+            .create(
+                &session.id,
+                "assistant",
+                &format!("Cross-surface marker: {token}"),
+            )
+            .expect("message");
+        (session.id, message.id)
+    };
+    let db_path_text = db_path.to_string_lossy().to_string();
+
+    let text = run(sandbox.command_in_with_env(
+        &project,
+        &[token],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(text.status.code(), Some(0), "stderr: {}", stderr_str(&text));
+    let text_stdout = stdout_str(&text);
+    assert!(
+        text_stdout.contains(&format!("session:{session_id}:")),
+        "text output should include the session match path: {text_stdout}"
+    );
+    assert!(
+        text_stdout.contains(token),
+        "text output should include the matched token: {text_stdout}"
+    );
+
+    let json = run(sandbox.command_in_with_env(
+        &project,
+        &[token, "--format", "json"],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(json.status.code(), Some(0), "stderr: {}", stderr_str(&json));
+    let doc: Value = serde_json::from_slice(&json.stdout).expect("strict JSON");
+    let matches = doc["matches"].as_array().expect("matches array");
+    let session_hit = matches.iter().find(|entry| {
+        entry["source"] == "session"
+            && entry["session_id"] == session_id
+            && entry["message_id"] == message_id
+    });
+    let Some(session_hit) = session_hit else {
+        panic!("expected a session search hit, got: {doc:?}");
+    };
+    assert_eq!(
+        session_hit["path"],
+        format!("session:{session_id}"),
+        "session hit path should encode the owning session id"
+    );
+    assert!(
+        session_hit["matched_text"]
+            .as_str()
+            .is_some_and(|text| text.contains(token)),
+        "session hit should carry the original message content"
+    );
+}
+
 // VAL-FINISH-045 + VAL-FINISH-046.
 #[test]
 fn search_returns_real_matches_with_path_and_line_parity_to_rg() {

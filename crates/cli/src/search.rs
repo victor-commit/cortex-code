@@ -1,12 +1,14 @@
-//! The `cortex search` subcommand: ripgrep-backed, local working-tree search.
+//! The `cortex search` subcommand: ripgrep-backed working-tree search plus persisted-session hits.
 //!
-//! This command is intentionally local-only. It shells out to `rg` in the current working
-//! directory, so it inherits ripgrep defaults for ignore handling and binary-file skipping.
+//! The command remains local-only and shells out to `rg` in the current working directory, so it
+//! inherits ripgrep defaults for ignore handling and binary-file skipping. When a shared session
+//! database already exists, it also scans persisted messages for the query and appends those hits.
 
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 
+use db::{Database, DbPathInputs};
 use errors::Exit;
 use serde::Serialize;
 use serde_json::Value;
@@ -42,7 +44,7 @@ pub fn run(args: SearchArgs) -> Exit {
 
 fn run_text_search(cwd: &Path, query: &str) -> Result<String, SearchError> {
     let output = rg_output(cwd, query, false)?;
-    match output.status.code() {
+    let mut body = match output.status.code() {
         Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
         Some(1) => Ok(String::new()),
         _ if is_no_files_searched(&output.stderr) => Ok(String::new()),
@@ -50,19 +52,23 @@ fn run_text_search(cwd: &Path, query: &str) -> Result<String, SearchError> {
             &output.stderr,
             "ripgrep failed",
         ))),
-    }
+    }?;
+    append_session_text_matches(query, &mut body);
+    Ok(body)
 }
 
 fn run_json_search(cwd: &Path, query: &str) -> Result<Vec<SearchMatch>, SearchError> {
     let output = rg_output(cwd, query, true)?;
-    match output.status.code() {
-        Some(0) | Some(1) => parse_ripgrep_json(&output.stdout),
+    let mut matches = match output.status.code() {
+        Some(0) | Some(1) => Ok(parse_ripgrep_json(&output.stdout)?),
         _ if is_no_files_searched(&output.stderr) => Ok(Vec::new()),
         _ => Err(SearchError::RipgrepFailed(stderr_or_default(
             &output.stderr,
             "ripgrep failed",
         ))),
-    }
+    }?;
+    matches.extend(session_json_matches(query));
+    Ok(matches)
 }
 
 fn rg_output(cwd: &Path, query: &str, json: bool) -> Result<std::process::Output, SearchError> {
@@ -131,9 +137,90 @@ fn parse_ripgrep_json(stdout: &[u8]) -> Result<Vec<SearchMatch>, SearchError> {
             path: path.to_owned(),
             line: line_number,
             matched_text: matched_text.trim_end_matches(['\r', '\n']).to_owned(),
+            source: "workspace".to_owned(),
+            session_id: None,
+            message_id: None,
+            role: None,
         });
     }
     Ok(matches)
+}
+
+#[derive(Debug, Clone)]
+struct SessionSearchMatch {
+    session_id: String,
+    message_id: String,
+    role: String,
+    line: u64,
+    matched_text: String,
+}
+
+fn append_session_text_matches(query: &str, body: &mut String) {
+    for hit in session_matches(query) {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&format!(
+            "session:{}:{}:{}: {}\n",
+            hit.session_id, hit.line, hit.role, hit.matched_text
+        ));
+    }
+}
+
+fn session_json_matches(query: &str) -> Vec<SearchMatch> {
+    session_matches(query)
+        .into_iter()
+        .map(|hit| SearchMatch {
+            path: format!("session:{}", hit.session_id),
+            line: hit.line,
+            matched_text: hit.matched_text,
+            source: "session".to_owned(),
+            session_id: Some(hit.session_id),
+            message_id: Some(hit.message_id),
+            role: Some(hit.role),
+        })
+        .collect()
+}
+
+fn session_matches(query: &str) -> Vec<SessionSearchMatch> {
+    let Some(db) = open_existing_database() else {
+        return Vec::new();
+    };
+    let Ok(sessions) = db.sessions().list() else {
+        return Vec::new();
+    };
+    let mut matches = Vec::new();
+    for session in sessions {
+        let Ok(messages) = db.messages().list_for_session(&session.id) else {
+            continue;
+        };
+        for (index, message) in messages.iter().enumerate() {
+            if !message.content.contains(query) {
+                continue;
+            }
+            matches.push(SessionSearchMatch {
+                session_id: session.id.clone(),
+                message_id: message.id.clone(),
+                role: message.role.clone(),
+                line: (index + 1) as u64,
+                matched_text: message.content.clone(),
+            });
+        }
+    }
+    matches.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    matches
+}
+
+fn open_existing_database() -> Option<Database> {
+    let path = DbPathInputs::from_process().resolve()?;
+    if !path.is_file() {
+        return None;
+    }
+    Database::open(path).ok()
 }
 
 #[derive(Debug)]
@@ -172,6 +259,13 @@ struct SearchMatch {
     path: String,
     line: u64,
     matched_text: String,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
 }
 
 fn emit_json<T: Serialize>(value: &T) -> Exit {
@@ -230,6 +324,8 @@ mod tests {
         assert_eq!(matches[0].path, "src/main.rs");
         assert_eq!(matches[0].line, 12);
         assert_eq!(matches[0].matched_text, "let marker = \"XYZ\";");
+        assert_eq!(matches[0].source, "workspace");
+        assert!(matches[0].session_id.is_none());
     }
 
     #[test]

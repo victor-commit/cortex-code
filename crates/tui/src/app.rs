@@ -259,6 +259,21 @@ impl UsageSummary {
             self.cost = Some(self.cost.unwrap_or(0.0) + cost);
         }
     }
+
+    /// Build footer usage totals from persisted session usage rows.
+    fn from_totals(totals: db::UsageTotals) -> Self {
+        let reported = totals.input_tokens > 0
+            || totals.output_tokens > 0
+            || totals.total_tokens > 0
+            || totals.cost.is_some();
+        Self {
+            reported,
+            input_tokens: totals.input_tokens,
+            output_tokens: totals.output_tokens,
+            total_tokens: totals.total_tokens,
+            cost: totals.cost,
+        }
+    }
 }
 
 /// The interactive TUI application state.
@@ -292,6 +307,8 @@ pub struct App {
     turn_prompt: Option<String>,
     /// Whether the in-flight turn already surfaced an error (so finalization skips the answer).
     turn_errored: bool,
+    /// The latest usage event for the in-flight turn, persisted once the turn settles.
+    turn_usage: Option<Usage>,
     /// Whether the in-flight turn is a compaction (its summary replaces the conversation history
     /// when it finishes). Set from [`App::pending_compaction`] when the turn begins.
     turn_compaction: bool,
@@ -426,6 +443,7 @@ impl App {
             spinner_start: None,
             turn_prompt: None,
             turn_errored: false,
+            turn_usage: None,
             turn_compaction: false,
             answer_redactor: redaction::StreamingRedactor::new(),
             reasoning_redactor: redaction::StreamingRedactor::new(),
@@ -714,6 +732,7 @@ impl App {
         self.transcript
             .push(Entry::Assistant(AssistantTurn::default()));
         self.turn_errored = false;
+        self.turn_usage = None;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
         self.answer_redactor.reset();
         self.reasoning_redactor.reset();
@@ -822,12 +841,17 @@ impl App {
             Ok(Some(loaded)) => loaded,
             _ => return false,
         };
+        let previous_usage = self.usage;
+        self.usage = UsageSummary::from_totals(loaded.usage);
         let mut changed = false;
         for message in loaded.messages {
             if self.seen_message_ids.insert(message.id.clone()) {
                 self.append_loaded_message(&message);
                 changed = true;
             }
+        }
+        if self.usage != previous_usage {
+            changed = true;
         }
         if changed {
             self.pin_to_bottom();
@@ -882,7 +906,10 @@ impl App {
         match event {
             RunnerEvent::TextDelta { text } => self.append_answer(&text),
             RunnerEvent::Reasoning { text } => self.append_reasoning(&text),
-            RunnerEvent::Usage(usage) => self.usage.accumulate(&usage),
+            RunnerEvent::Usage(usage) => {
+                self.turn_usage = Some(usage.clone());
+                self.usage.accumulate(&usage);
+            }
             RunnerEvent::Error { message, .. } => self.set_turn_error(message),
             RunnerEvent::ToolCall {
                 id,
@@ -1015,6 +1042,7 @@ impl App {
         self.spinner_start = None;
         let prompt = self.turn_prompt.take();
         let errored = std::mem::take(&mut self.turn_errored);
+        let turn_usage = self.turn_usage.take();
         let compaction = std::mem::take(&mut self.turn_compaction);
 
         if compaction {
@@ -1026,6 +1054,9 @@ impl App {
                     self.transcript.push(Entry::Notice(
                         "Conversation compacted into a summary.".to_owned(),
                     ));
+                }
+                if let Some(usage) = turn_usage.as_ref() {
+                    self.persist_usage(usage);
                 }
             }
             self.start_next_queued();
@@ -1041,6 +1072,9 @@ impl App {
                     // full exchange. The user message was persisted when the turn began; an errored
                     // turn has no answer to record, matching the headless runner.
                     self.persist_message("assistant", &answer);
+                }
+                if let Some(usage) = turn_usage.as_ref() {
+                    self.persist_usage(usage);
                 }
             }
         }
@@ -1079,6 +1113,7 @@ impl App {
         self.flush_stream_redactors();
         let prompt = self.turn_prompt.take();
         let errored = std::mem::take(&mut self.turn_errored);
+        let _ = self.turn_usage.take();
         let _ = std::mem::take(&mut self.turn_compaction);
         if let Some(prompt) = prompt {
             self.history.push(Message::user(prompt));
@@ -2002,6 +2037,23 @@ impl App {
         }
     }
 
+    /// Persist one turn's usage under the active session so stats and cross-surface usage views
+    /// include TUI-driven turns.
+    fn persist_usage(&mut self, usage: &Usage) {
+        let Some(id) = self.ensure_session_id() else {
+            return;
+        };
+        if let Some(db) = self.open_store() {
+            let _ = db.usage().record(
+                &id,
+                u64::from(usage.input_tokens),
+                u64::from(usage.output_tokens),
+                u64::from(usage.total_tokens),
+                usage.cost,
+            );
+        }
+    }
+
     /// Persist the model chosen for the active session (the durable seam behind the `/models`
     /// picker), creating the session lazily so the choice attaches even before the first turn. This
     /// is what a headless `cortex run --session <id>` resume reads back (VAL-CROSS-006). Best-effort.
@@ -2057,6 +2109,10 @@ impl App {
             .messages()
             .list_for_session(id)
             .map_err(|err| err.to_string())?;
+        let usage = database
+            .usage()
+            .session_totals(id)
+            .map_err(|err| err.to_string())?;
         let todos = database
             .todos()
             .list_for_session(id)
@@ -2064,6 +2120,7 @@ impl App {
         Ok(Some(LoadedSession {
             session,
             messages,
+            usage,
             todos,
         }))
     }
@@ -2192,7 +2249,7 @@ impl App {
         self.transcript.clear();
         self.history.clear();
         self.seen_message_ids.clear();
-        self.usage = UsageSummary::default();
+        self.usage = UsageSummary::from_totals(session.usage);
         for message in &session.messages {
             self.seen_message_ids.insert(message.id.clone());
             self.append_loaded_message(message);
@@ -3201,6 +3258,7 @@ fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> 
 struct LoadedSession {
     session: db::Session,
     messages: Vec<db::Message>,
+    usage: db::UsageTotals,
     todos: Vec<protocol::TodoItem>,
 }
 
@@ -6185,6 +6243,36 @@ mod tests {
         assert_eq!(messages[1].content, "noted: marmalade");
     }
 
+    #[test]
+    fn a_tui_turn_persists_usage_for_stats() {
+        let path = session_store_path("usage");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("usage turn".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "usage answer".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::Usage(usage(
+            7,
+            11,
+            Some(0.0018),
+        ))))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        let id = a.session_id.clone().expect("session created");
+        let db = db::Database::open(&path).expect("reopen store");
+        let totals = db.usage().session_totals(&id).expect("usage totals");
+        assert_eq!(totals.input_tokens, 7);
+        assert_eq!(totals.output_tokens, 11);
+        assert_eq!(totals.total_tokens, 18);
+        assert_eq!(totals.cost, Some(0.0018));
+    }
+
     // A second turn appends to the same session rather than creating a new one, so a multi-turn TUI
     // conversation resumes as a single coherent session headless.
     #[test]
@@ -6334,6 +6422,9 @@ mod tests {
             db.messages()
                 .create(&session.id, "user", "earlier fact")
                 .expect("seed message");
+            db.usage()
+                .record(&session.id, 12, 34, 46, Some(0.0021))
+                .expect("seed usage");
             session.id
         };
 
@@ -6352,6 +6443,14 @@ mod tests {
                 .any(|m| m.content == "earlier fact"),
             "the prior transcript is loaded into history"
         );
+        assert!(
+            a.usage.reported,
+            "persisted usage is hydrated into the footer"
+        );
+        assert_eq!(a.usage.input_tokens, 12);
+        assert_eq!(a.usage.output_tokens, 34);
+        assert_eq!(a.usage.total_tokens, 46);
+        assert_eq!(a.usage.cost, Some(0.0021));
     }
 
     #[test]
