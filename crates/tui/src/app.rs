@@ -295,6 +295,10 @@ pub struct App {
     /// Whether the in-flight turn is a compaction (its summary replaces the conversation history
     /// when it finishes). Set from [`App::pending_compaction`] when the turn begins.
     turn_compaction: bool,
+    /// Streaming redaction state for assistant-visible answer deltas in the active turn.
+    answer_redactor: redaction::StreamingRedactor,
+    /// Streaming redaction state for reasoning deltas in the active turn, independent from answer.
+    reasoning_redactor: redaction::StreamingRedactor,
     /// Whether tool cards are expanded to reveal their full arguments and output. Toggled by the
     /// expand/collapse keybind; applies to every tool card so the detail view is unambiguous.
     pub expand_tools: bool,
@@ -423,6 +427,8 @@ impl App {
             turn_prompt: None,
             turn_errored: false,
             turn_compaction: false,
+            answer_redactor: redaction::StreamingRedactor::new(),
+            reasoning_redactor: redaction::StreamingRedactor::new(),
             expand_tools: false,
             slash_selected: 0,
             dialog: None,
@@ -709,6 +715,8 @@ impl App {
             .push(Entry::Assistant(AssistantTurn::default()));
         self.turn_errored = false;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
+        self.answer_redactor.reset();
+        self.reasoning_redactor.reset();
         // Persist the user message to the durable store so this conversation is resumable from
         // headless `cortex run --session <id>` and the session picker. A compaction turn's internal
         // summarization instruction is not part of the visible conversation, so it is not persisted
@@ -928,7 +936,15 @@ impl App {
         if text.is_empty() {
             return;
         }
-        let text = redaction::redact(text);
+        let text = self.answer_redactor.push(text);
+        self.push_answer_text(text);
+    }
+
+    /// Append already-redacted answer text to the in-progress assistant entry.
+    fn push_answer_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
         match self.transcript.last_mut() {
             Some(Entry::Assistant(turn)) => turn.answer.push_str(&text),
             _ => self.transcript.push(Entry::Assistant(AssistantTurn {
@@ -943,7 +959,15 @@ impl App {
         if text.is_empty() {
             return;
         }
-        let text = redaction::redact(text);
+        let text = self.reasoning_redactor.push(text);
+        self.push_reasoning_text(text);
+    }
+
+    /// Append already-redacted reasoning text to the in-progress assistant entry.
+    fn push_reasoning_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
         match self.transcript.last_mut() {
             Some(Entry::Assistant(turn)) => turn.reasoning.push_str(&text),
             _ => self.transcript.push(Entry::Assistant(AssistantTurn {
@@ -953,8 +977,17 @@ impl App {
         }
     }
 
+    /// Flush any safe text held back for split-secret detection at the active turn boundary.
+    fn flush_stream_redactors(&mut self) {
+        let reasoning = self.reasoning_redactor.finish();
+        self.push_reasoning_text(reasoning);
+        let answer = self.answer_redactor.finish();
+        self.push_answer_text(answer);
+    }
+
     /// Surface a turn error: drop an empty in-progress assistant entry, then record the error.
     fn set_turn_error(&mut self, message: String) {
+        self.flush_stream_redactors();
         let message = redaction::redact(&message);
         if let Some(Entry::Assistant(turn)) = self.transcript.last() {
             if turn.answer.is_empty() && turn.reasoning.is_empty() {
@@ -976,6 +1009,7 @@ impl App {
     /// On the way out it promotes the next queued mid-stream message (if any) into its own turn, so
     /// a message submitted while this turn streamed runs next rather than being dropped.
     fn finish_turn(&mut self) {
+        self.flush_stream_redactors();
         self.turn_rx = None;
         self.cancel_flag = None;
         self.spinner_start = None;
@@ -1042,6 +1076,7 @@ impl App {
         }
         self.turn_rx = None;
         self.spinner_start = None;
+        self.flush_stream_redactors();
         let prompt = self.turn_prompt.take();
         let errored = std::mem::take(&mut self.turn_errored);
         let _ = std::mem::take(&mut self.turn_compaction);
@@ -4014,6 +4049,101 @@ mod tests {
             Some(Entry::Error(message))
                 if !message.contains(&secret) && message.contains(redaction::PLACEHOLDER)
         ));
+    }
+
+    #[test]
+    fn streamed_answer_and_reasoning_redact_secret_split_across_deltas() {
+        let body = "facefeed".repeat(8);
+        let secret = format!("sk-{}-{}", "or-v1", body);
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+
+        for fragment in [
+            "answer before ",
+            "sk-",
+            "or-v1-",
+            &body[..16],
+            &body[16..],
+            " answer after",
+        ] {
+            tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+                text: fragment.to_owned(),
+            }))
+            .unwrap();
+            a.poll_turn();
+        }
+        for fragment in [
+            "reason before ",
+            "sk-",
+            "or-v1-",
+            &body[..24],
+            &body[24..],
+            " reason after",
+        ] {
+            tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
+                text: fragment.to_owned(),
+            }))
+            .unwrap();
+            a.poll_turn();
+        }
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        let turn = last_assistant(&a);
+        assert!(
+            !turn.answer.contains(&secret) && !turn.reasoning.contains(&secret),
+            "split secret leaked in final transcript: {turn:?}"
+        );
+        assert!(
+            turn.answer.contains(redaction::PLACEHOLDER)
+                && turn.reasoning.contains(redaction::PLACEHOLDER),
+            "split secret should be marked with the canonical placeholder: {turn:?}"
+        );
+        assert!(
+            turn.answer.contains("answer before") && turn.answer.contains("answer after"),
+            "non-secret answer text reconstructs: {turn:?}"
+        );
+        assert!(
+            turn.reasoning.contains("reason before") && turn.reasoning.contains("reason after"),
+            "non-secret reasoning text reconstructs: {turn:?}"
+        );
+    }
+
+    #[test]
+    fn streamed_redaction_state_resets_between_turns() {
+        let body = "facefeed".repeat(8);
+        let mut a = app();
+
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        a.begin_turn("first".to_owned(), first_rx, flag());
+        first_tx
+            .send(TurnMessage::Event(RunnerEvent::TextDelta {
+                text: "sk-".to_owned(),
+            }))
+            .unwrap();
+        a.poll_turn();
+        first_tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+        assert_eq!(
+            last_assistant(&a).answer,
+            "sk-",
+            "safe partial key text is flushed at turn end"
+        );
+
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        a.begin_turn("second".to_owned(), second_rx, flag());
+        second_tx
+            .send(TurnMessage::Event(RunnerEvent::TextDelta {
+                text: format!("or-v1-{body}"),
+            }))
+            .unwrap();
+        second_tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+        assert!(
+            last_assistant(&a).answer.contains(&format!("or-v1-{body}")),
+            "a new turn must not inherit the prior turn's partial redaction state"
+        );
     }
 
     #[test]

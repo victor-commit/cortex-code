@@ -52,6 +52,82 @@ async fn event_route_streams_json_sse_frames_from_the_bus() {
 }
 
 #[tokio::test]
+async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery() {
+    let scratch = Scratch::new("server-event-redaction");
+    let bus = Arc::new(EventBus::new());
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path()).with_event_bus(bus.clone()),
+    );
+    let mut stream = subscribe(&app).await;
+    let body = "c0ffee00".repeat(8);
+    let secret = format!("sk-{}-{}", "or-v1", body);
+
+    for fragment in [
+        "text before ",
+        "sk-",
+        "or-v1-",
+        &body[..16],
+        &body[16..],
+        " text after",
+    ] {
+        bus.publish(&Event::assistant_text_delta(
+            "ses_split",
+            "msg_split",
+            fragment,
+        ));
+    }
+    for fragment in [
+        "reason before ",
+        "sk-",
+        "or-v1-",
+        &body[..24],
+        &body[24..],
+        " reason after",
+    ] {
+        bus.publish(&Event::assistant_reasoning_delta(
+            "ses_split",
+            "msg_split",
+            fragment,
+        ));
+    }
+    bus.publish(&Event::turn_done("ses_split", "msg_split", "stop", 1));
+
+    let events = collect_data_events(&mut stream, 7, Duration::from_secs(3)).await;
+    let delivered = serde_json::to_string(&events).expect("events JSON");
+    assert!(
+        !delivered.contains(&secret),
+        "SSE frames leaked split secret: {delivered}"
+    );
+    assert!(
+        delivered.contains(redaction::PLACEHOLDER),
+        "SSE frames should include canonical placeholder: {delivered}"
+    );
+
+    let text = events
+        .iter()
+        .filter(|event| event["kind"] == "assistant.text_delta")
+        .filter_map(|event| event["text"].as_str())
+        .collect::<String>();
+    assert_eq!(
+        text,
+        format!("text before {} text after", redaction::PLACEHOLDER)
+    );
+    let reasoning = events
+        .iter()
+        .filter(|event| event["kind"] == "assistant.reasoning_delta")
+        .filter_map(|event| event["text"].as_str())
+        .collect::<String>();
+    assert_eq!(
+        reasoning,
+        format!("reason before {} reason after", redaction::PLACEHOLDER)
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "turn.done"),
+        "terminal event is still delivered after redactor flush: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn prompt_turn_fans_out_correlated_text_deltas_to_multiple_subscribers() {
     let scratch = Scratch::new("server-event-fanout");
     let bus = Arc::new(EventBus::new());

@@ -4,7 +4,7 @@
 //! turns are backed by the shared SQLite repositories and the core durable runner so the server
 //! remains a thin surface over the engine and store.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -731,21 +731,16 @@ fn is_loopback_origin(origin: &str) -> bool {
 async fn event_stream(
     State(state): State<ServerState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
-    let receiver = state.event_bus.subscribe_stream();
-    let stream = stream::unfold(receiver, |mut receiver| async move {
+    let stream_state = EventStreamState::new(state.event_bus.subscribe_stream());
+    let stream = stream::unfold(stream_state, |mut stream_state| async move {
         loop {
-            match receiver.recv().await {
+            if let Some(frame) = stream_state.pending_frames.pop_front() {
+                return Some((Ok(frame), stream_state));
+            }
+
+            match stream_state.receiver.recv().await {
                 Ok(event) => {
-                    let data = serde_json::to_string(&event).unwrap_or_else(|err| {
-                        serde_json::json!({
-                            "kind": "event.serialization_error",
-                            "message": err.to_string(),
-                        })
-                        .to_string()
-                    });
-                    let data = redaction::redact(&data);
-                    let frame = SseEvent::default().event(event.kind()).data(data);
-                    return Some((Ok(frame), receiver));
+                    stream_state.enqueue(event);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -754,6 +749,130 @@ async fn event_stream(
     });
 
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+struct EventStreamState {
+    receiver: broadcast::Receiver<Event>,
+    redactors: HashMap<StreamRedactionKey, redaction::StreamingRedactor>,
+    pending_frames: VecDeque<SseEvent>,
+}
+
+impl EventStreamState {
+    fn new(receiver: broadcast::Receiver<Event>) -> Self {
+        Self {
+            receiver,
+            redactors: HashMap::new(),
+            pending_frames: VecDeque::new(),
+        }
+    }
+
+    fn enqueue(&mut self, event: Event) {
+        match event {
+            Event::TurnStarted(payload) => {
+                self.clear_message(&payload.session_id, &payload.message_id);
+                self.pending_frames
+                    .push_back(redacted_sse_frame(Event::TurnStarted(payload)));
+            }
+            Event::AssistantTextDelta(mut payload) => {
+                let key = StreamRedactionKey::text(&payload.session_id, &payload.message_id);
+                payload.text = self.redactors.entry(key).or_default().push(&payload.text);
+                if !payload.text.is_empty() {
+                    self.pending_frames
+                        .push_back(redacted_sse_frame(Event::AssistantTextDelta(payload)));
+                }
+            }
+            Event::AssistantReasoningDelta(mut payload) => {
+                let key = StreamRedactionKey::reasoning(&payload.session_id, &payload.message_id);
+                payload.text = self.redactors.entry(key).or_default().push(&payload.text);
+                if !payload.text.is_empty() {
+                    self.pending_frames
+                        .push_back(redacted_sse_frame(Event::AssistantReasoningDelta(payload)));
+                }
+            }
+            Event::TurnError(payload) => {
+                self.flush_message(&payload.session_id, &payload.message_id);
+                self.pending_frames
+                    .push_back(redacted_sse_frame(Event::TurnError(payload)));
+            }
+            Event::TurnDone(payload) => {
+                self.flush_message(&payload.session_id, &payload.message_id);
+                self.pending_frames
+                    .push_back(redacted_sse_frame(Event::TurnDone(payload)));
+            }
+            other => self.pending_frames.push_back(redacted_sse_frame(other)),
+        }
+    }
+
+    fn flush_message(&mut self, session_id: &str, message_id: &str) {
+        for channel in [StreamChannel::Text, StreamChannel::Reasoning] {
+            let key = StreamRedactionKey::new(session_id, message_id, channel);
+            let Some(mut redactor) = self.redactors.remove(&key) else {
+                continue;
+            };
+            let text = redactor.finish();
+            if text.is_empty() {
+                continue;
+            }
+            let event = match channel {
+                StreamChannel::Text => Event::assistant_text_delta(session_id, message_id, text),
+                StreamChannel::Reasoning => {
+                    Event::assistant_reasoning_delta(session_id, message_id, text)
+                }
+            };
+            self.pending_frames.push_back(redacted_sse_frame(event));
+        }
+    }
+
+    fn clear_message(&mut self, session_id: &str, message_id: &str) {
+        for channel in [StreamChannel::Text, StreamChannel::Reasoning] {
+            let key = StreamRedactionKey::new(session_id, message_id, channel);
+            self.redactors.remove(&key);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct StreamRedactionKey {
+    session_id: String,
+    message_id: String,
+    channel: StreamChannel,
+}
+
+impl StreamRedactionKey {
+    fn new(session_id: &str, message_id: &str, channel: StreamChannel) -> Self {
+        Self {
+            session_id: session_id.to_owned(),
+            message_id: message_id.to_owned(),
+            channel,
+        }
+    }
+
+    fn text(session_id: &str, message_id: &str) -> Self {
+        Self::new(session_id, message_id, StreamChannel::Text)
+    }
+
+    fn reasoning(session_id: &str, message_id: &str) -> Self {
+        Self::new(session_id, message_id, StreamChannel::Reasoning)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum StreamChannel {
+    Text,
+    Reasoning,
+}
+
+fn redacted_sse_frame(event: Event) -> SseEvent {
+    let kind = event.kind();
+    let data = serde_json::to_string(&event).unwrap_or_else(|err| {
+        serde_json::json!({
+            "kind": "event.serialization_error",
+            "message": err.to_string(),
+        })
+        .to_string()
+    });
+    let data = redaction::redact(&data);
+    SseEvent::default().event(kind).data(data)
 }
 
 async fn publish_event(

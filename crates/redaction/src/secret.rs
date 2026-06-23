@@ -59,6 +59,135 @@ pub fn redact(input: &str) -> String {
     out
 }
 
+/// Stateful redactor for chunked sinks such as terminal transcript updates, JSONL, and SSE.
+///
+/// Calling [`redact`] on each streamed fragment independently is not enough: a key-shaped token can
+/// be split as `sk-`, `or-v1-`, and the body across provider deltas, then become recoverable by
+/// concatenating the rendered fragments. `StreamingRedactor` carries the possible key prefix across
+/// calls, emits safe text as soon as it can, emits [`PLACEHOLDER`] once a token is recognized as a
+/// secret, and suppresses the rest of that token until a non-key byte terminates it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamingRedactor {
+    state: StreamState,
+    previous_is_alnum: bool,
+}
+
+impl StreamingRedactor {
+    /// Create an empty streaming redactor.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: StreamState::Clear,
+            previous_is_alnum: false,
+        }
+    }
+
+    /// Reset all carried context, starting a fresh logical stream.
+    pub fn reset(&mut self) {
+        self.state = StreamState::Clear;
+        self.previous_is_alnum = false;
+    }
+
+    /// Process one streamed fragment and return the safe text that can be delivered immediately.
+    ///
+    /// The returned string may be empty when the fragment is a possible partial secret prefix. Call
+    /// [`finish`](Self::finish) at the end of the logical stream to flush any safe pending text.
+    #[must_use]
+    pub fn push(&mut self, fragment: &str) -> String {
+        let mut out = String::with_capacity(fragment.len());
+        for ch in fragment.chars() {
+            self.process_char(ch, &mut out);
+        }
+        out
+    }
+
+    /// Finish the logical stream, flushing any pending non-secret prefix and clearing state.
+    #[must_use]
+    pub fn finish(&mut self) -> String {
+        let mut out = String::new();
+        match std::mem::replace(&mut self.state, StreamState::Clear) {
+            StreamState::Clear | StreamState::Redacting => {}
+            StreamState::Candidate(candidate) => {
+                if is_secret(&candidate) {
+                    out.push_str(PLACEHOLDER);
+                } else {
+                    out.push_str(&candidate);
+                }
+            }
+        }
+        self.previous_is_alnum = false;
+        out
+    }
+
+    fn process_char(&mut self, ch: char, out: &mut String) {
+        let mut current = Some(ch);
+        while let Some(ch) = current.take() {
+            match std::mem::replace(&mut self.state, StreamState::Clear) {
+                StreamState::Clear => {
+                    if ch == 's' && !self.previous_is_alnum {
+                        self.state = StreamState::Candidate("s".to_owned());
+                    } else {
+                        out.push(ch);
+                        self.previous_is_alnum = ch.is_ascii_alphanumeric();
+                    }
+                }
+                StreamState::Candidate(mut candidate) => {
+                    if candidate.len() < KEY_PREFIX.len() {
+                        let expected = KEY_PREFIX.as_bytes()[candidate.len()] as char;
+                        if ch == expected {
+                            candidate.push(ch);
+                            self.state = StreamState::Candidate(candidate);
+                        } else {
+                            out.push_str(&candidate);
+                            self.previous_is_alnum = last_is_alnum(&candidate);
+                            current = Some(ch);
+                        }
+                    } else if is_body_char(ch) {
+                        candidate.push(ch);
+                        if is_secret(&candidate) {
+                            out.push_str(PLACEHOLDER);
+                            self.state = StreamState::Redacting;
+                        } else {
+                            self.state = StreamState::Candidate(candidate);
+                        }
+                    } else {
+                        if is_secret(&candidate) {
+                            out.push_str(PLACEHOLDER);
+                        } else {
+                            out.push_str(&candidate);
+                        }
+                        self.previous_is_alnum = last_is_alnum(&candidate);
+                        current = Some(ch);
+                    }
+                }
+                StreamState::Redacting => {
+                    if is_body_char(ch) {
+                        self.state = StreamState::Redacting;
+                    } else {
+                        // The suppressed token ended immediately before `ch`. Reprocess the
+                        // delimiter normally so it is preserved and future boundary checks use it.
+                        self.previous_is_alnum = true;
+                        current = Some(ch);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Default for StreamingRedactor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StreamState {
+    Clear,
+    Candidate(String),
+    Redacting,
+}
+
 /// Whether a candidate secret token may begin at byte `i`: the `sk-` lead-in must be present and
 /// sit on a token boundary, so `sk-` embedded inside a larger word (`task-`, `risk-`) is ignored.
 fn is_candidate_start(bytes: &[u8], i: usize) -> bool {
@@ -80,6 +209,17 @@ fn token_end(bytes: &[u8], start: usize) -> usize {
 /// Bytes that may appear in an API key body: alphanumerics plus the `-`/`_` separators vendors use.
 fn is_body_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+fn is_body_char(ch: char) -> bool {
+    ch.is_ascii() && is_body_byte(ch as u8)
+}
+
+fn last_is_alnum(value: &str) -> bool {
+    value
+        .as_bytes()
+        .last()
+        .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 /// Whether `token` (which always starts with `sk-`) is an API-key-shaped secret.
@@ -187,5 +327,59 @@ mod tests {
         let json = format!(r#"{{"key":"{}","model":"gemini"}}"#, openrouter_key());
         let masked = redact(&json);
         assert_eq!(masked, r#"{"key":"[REDACTED]","model":"gemini"}"#);
+    }
+
+    #[test]
+    fn streaming_redactor_masks_secret_split_across_fragments() {
+        let key = openrouter_key();
+        let body = "deadbeef".repeat(8);
+        let mut redactor = StreamingRedactor::new();
+        let mut rendered = String::new();
+
+        for fragment in [
+            "prefix ",
+            "sk-",
+            "or-v1-",
+            &body[..16],
+            &body[16..],
+            " suffix",
+        ] {
+            rendered.push_str(&redactor.push(fragment));
+        }
+        rendered.push_str(&redactor.finish());
+
+        assert_eq!(rendered, format!("prefix {PLACEHOLDER} suffix"));
+        assert!(
+            !rendered.contains(&key),
+            "concatenated streamed output leaked: {rendered}"
+        );
+    }
+
+    #[test]
+    fn streaming_redactor_reconstructs_non_secret_text_after_finish() {
+        let mut redactor = StreamingRedactor::new();
+        let mut rendered = String::new();
+
+        for fragment in ["ordinary ", "sk-", "learn", " text"] {
+            rendered.push_str(&redactor.push(fragment));
+        }
+        rendered.push_str(&redactor.finish());
+
+        assert_eq!(rendered, "ordinary sk-learn text");
+    }
+
+    #[test]
+    fn streaming_redactor_keeps_independent_state_per_instance() {
+        let body = "deadbeef".repeat(8);
+        let mut answer = StreamingRedactor::new();
+        let mut reasoning = StreamingRedactor::new();
+
+        assert_eq!(answer.push("visible sk-"), "visible ");
+        assert_eq!(reasoning.push("thinking "), "thinking ");
+        assert_eq!(reasoning.push("plain"), "plain");
+        assert_eq!(answer.push("or-v1-"), "");
+        assert_eq!(answer.push(&body), PLACEHOLDER);
+        assert_eq!(answer.finish(), "");
+        assert_eq!(reasoning.finish(), "");
     }
 }
