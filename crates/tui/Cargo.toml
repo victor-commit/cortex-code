@@ -24,6 +24,7 @@ tools = { workspace = true }
 permissions = { workspace = true }
 policy = { workspace = true }
 checkpoints = { workspace = true }
+plugins = { workspace = true }
 format = { workspace = true }
 lsp = { workspace = true }
 mcp = { workspace = true }

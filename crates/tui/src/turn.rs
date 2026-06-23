@@ -153,6 +153,10 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 .map(|remote| remote.session_id.clone())
                                 .or(session_id)
                                 .unwrap_or_else(ephemeral_session_id);
+                            let message_id = remote
+                                .as_ref()
+                                .map(|remote| remote.message_id.clone())
+                                .unwrap_or_else(remote_message_id);
                             let audit_sink = Arc::new(
                                 audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
                                     .with_surface("tui"),
@@ -209,6 +213,10 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             if let Some(remote) = &remote {
                                 remote.publish_started();
                             }
+                            let plugin_hooks = setup.plugin_hooks.clone();
+                            let started_event =
+                                Event::turn_started(session_id.clone(), message_id.clone());
+                            plugin_hooks.invoke_event(&started_event);
                             // Race the streaming turn against the interrupt signal: if the UI asks
                             // to cancel, the runner future is dropped here (closing the upstream
                             // stream) and the turn stops streaming at a safe boundary.
@@ -225,6 +233,14 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 && let Some(remote) = &remote
                             {
                                 remote.publish_aborted();
+                            }
+                            if cancelled {
+                                plugin_hooks.invoke_event(&Event::turn_done(
+                                    session_id.clone(),
+                                    message_id.clone(),
+                                    "aborted",
+                                    0,
+                                ));
                             }
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
                             // orphan process outlives the turn (even after an interrupt).
@@ -366,6 +382,7 @@ struct TurnSetup {
     agent: Agent,
     formatter_config: format::FormatterConfig,
     skills: Vec<skills::Skill>,
+    plugin_hooks: plugins::PluginEventHooks,
 }
 
 fn build_turn(
@@ -388,9 +405,18 @@ fn build_turn(
         eprintln!("cortex tui: {warning}");
     }
     let discovered_skill_list = discovered_skills.ordered_skills();
+    let plugin_cwd = inputs.cwd.clone();
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
+    let plugin_config =
+        plugins::PluginConfig::from_toml_value(effective.get("plugin"), &plugin_cwd)
+            .map_err(|message| format!("invalid plugin configuration: {message}"))?;
+    let pure_plugins =
+        std::env::var_os("CORTEX_PURE").is_some_and(|value| value.to_string_lossy() == "1");
+    let plugin_hooks =
+        plugins::PluginEventHooks::load_or_disabled(&plugin_config, pure_plugins, "tui")
+            .map_err(|err| format!("plugin runtime error: {err}"))?;
     let agent = Agent::from_name(active_agent).map_err(|err| err.to_string())?;
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
@@ -426,6 +452,7 @@ fn build_turn(
         agent,
         formatter_config,
         skills: discovered_skill_list,
+        plugin_hooks,
     })
 }
 

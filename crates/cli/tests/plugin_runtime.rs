@@ -185,6 +185,80 @@ export default async function plugin(input, options) {
 }
 
 #[test]
+fn cortex_run_fires_plugin_event_hook_for_turn_lifecycle() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("run-turn-event");
+    let marker = sandbox.project.join("turn-events.log");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        r#"
+import { appendFile } from "node:fs/promises";
+
+export default async function plugin(input, options) {
+  return {
+    async event(event) {
+      if (event.kind === "turn.started") {
+        await appendFile(options.marker, `${event.surface}:${event.kind}\n`);
+      }
+    },
+    async provider() {
+      return {
+        id: "plugin-lifecycle",
+        name: "Plugin Lifecycle",
+        models: [{ id: "plugin/lifecycle-model", name: "Lifecycle Model", tool_call: false }],
+        async complete(request) {
+          return `PLUGIN_LIFECYCLE:${request.model}`;
+        }
+      };
+    }
+  };
+}
+"#,
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        format!(
+            "plugin = [[\"./plugin.mjs\", {{ marker = \"{}\" }}]]\n",
+            marker.display()
+        ),
+    )
+    .expect("write config");
+
+    let output = run(
+        cortex(
+            &sandbox,
+            &[
+                "run",
+                "--model",
+                "plugin/lifecycle-model",
+                "--format",
+                "json",
+                "trigger the plugin lifecycle event",
+            ],
+        ),
+        Duration::from_secs(30),
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("run json parses");
+    assert!(
+        json["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("PLUGIN_LIFECYCLE:plugin/lifecycle-model"),
+        "plugin provider should produce the answer: {json}"
+    );
+    let marker_text = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        marker_text.lines().any(|line| line == "run:turn.started"),
+        "headless turns should invoke plugin event hooks with run surface: {marker_text:?}"
+    );
+}
+
+#[test]
 fn cortex_run_fails_closed_when_configured_plugin_has_no_runtime() {
     let sandbox = Sandbox::new("no-runtime");
     let empty_path = sandbox.home.join("empty-path");

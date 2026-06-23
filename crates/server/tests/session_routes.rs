@@ -280,6 +280,112 @@ async fn message_route_uses_project_default_agent_for_system_context_and_respons
 }
 
 #[tokio::test]
+async fn message_route_injects_instruction_glob_memory_into_system_context() {
+    let scratch = Scratch::new("server-message-instructions-memory");
+    let workspace = scratch.dir.join("workspace");
+    let rules_dir = workspace.join("rules");
+    std::fs::create_dir_all(&rules_dir).expect("rules dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"instructions = ["rules/*.md"]"#,
+    )
+    .expect("write project config");
+    std::fs::write(
+        rules_dir.join("server-style.md"),
+        "For validation, include the exact token SERVER-INSTRUCTIONS-GLOB in every reply.\n",
+    )
+    .expect("write rules file");
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"reply briefly"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        provider
+            .seen_systems()
+            .iter()
+            .any(|system| system.contains("SERVER-INSTRUCTIONS-GLOB")),
+        "server system context should include instructions[] glob memory, got {:?}",
+        provider.seen_systems()
+    );
+}
+
+#[tokio::test]
+async fn message_route_fires_plugin_event_hook_with_serve_surface() {
+    let scratch = Scratch::new("server-message-plugin-event");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let marker = workspace.join("plugin-events.log");
+    std::fs::write(
+        workspace.join("plugin.mjs"),
+        format!(
+            r#"
+import {{ appendFile }} from "node:fs/promises";
+
+export default async function plugin(input, options) {{
+  return {{
+    async event(event) {{
+      if (event.kind === "turn.started") {{
+        await appendFile(options.marker, `${{event.surface}}:${{event.kind}}\n`);
+      }}
+    }}
+  }};
+}}
+"#,
+        ),
+    )
+    .expect("write plugin");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        format!(
+            "plugin = [[\"./plugin.mjs\", {{ marker = \"{}\" }}]]\n",
+            marker.display()
+        ),
+    )
+    .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"trigger plugin event"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let marker_text = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        marker_text.lines().any(|line| line == "serve:turn.started"),
+        "server turns should invoke configured plugin event hooks with serve surface: {marker_text:?}"
+    );
+}
+
+#[tokio::test]
 async fn message_route_project_permission_deny_blocks_bash_tool_without_side_effect() {
     let scratch = Scratch::new("server-message-project-permission");
     let workspace = scratch.dir.join("workspace");

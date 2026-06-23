@@ -375,10 +375,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Ok(history) => history,
         Err(exit) => return exit,
     };
-    if let Err(err) = db.messages().create(&session_id, "user", &prompt) {
-        eprintln!("cortex run: failed to persist the prompt: {err}");
-        return Exit::Failure;
-    }
+    let user_message = match db.messages().create(&session_id, "user", &prompt) {
+        Ok(message) => message,
+        Err(err) => {
+            eprintln!("cortex run: failed to persist the prompt: {err}");
+            return Exit::Failure;
+        }
+    };
+    bus.publish(&Event::turn_started(&session_id, &user_message.id));
 
     // The configured MCP servers for this run, taken before the model id is moved out of the config.
     let mcp_servers = std::mem::take(&mut run_config.mcp_servers);

@@ -344,6 +344,12 @@ impl ConfigContext {
             cli_overrides,
         }
     }
+
+    fn pure_plugins(&self) -> bool {
+        self.env
+            .iter()
+            .any(|(name, value)| name == "CORTEX_PURE" && value == "1")
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1247,6 +1253,10 @@ async fn run_message_turn(
         .map_err(ApiError::from_db)?;
     let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
     let effective_config = settings::load(config_inputs.clone()).map_err(config_api_error)?;
+    let project_memory = memory::discover(&config_inputs);
+    for warning in project_memory.warnings() {
+        eprintln!("cortex serve: {warning}");
+    }
     let selected_model = select_turn_model(
         request_model.as_deref(),
         session.model.as_deref(),
@@ -1279,15 +1289,24 @@ async fn run_message_turn(
         ));
     }
 
+    let plugin_config =
+        plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
+            .map_err(plugin_config_error)?;
+    let plugin_hooks = plugins::PluginEventHooks::load_or_disabled(
+        &plugin_config,
+        state.config.pure_plugins(),
+        "serve",
+    )
+    .map_err(plugin_runtime_error)?;
     let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
     let history = load_history(&db, &session_id)?;
     let user_message = db
         .messages()
         .create(&session_id, "user", &prompt)
         .map_err(ApiError::from_db)?;
-    state
-        .event_bus
-        .publish(&Event::turn_started(&session_id, &user_message.id));
+    let started_event = Event::turn_started(&session_id, &user_message.id);
+    state.event_bus.publish(&started_event);
+    plugin_hooks.invoke_event(&started_event);
     let (abort_tx, abort_rx) = watch::channel(false);
     let _active = state
         .active_turns
@@ -1295,6 +1314,7 @@ async fn run_message_turn(
         .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
 
     let system = SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory.render())
         .with_agent(selected_agent)
         .render();
     let turn = Turn::new(&resolved.model_id, system, prompt)
@@ -1568,6 +1588,20 @@ fn config_api_error(err: settings::ConfigError) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("invalid server configuration: {err}"),
+    )
+}
+
+fn plugin_config_error(message: String) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("invalid plugin configuration: {message}"),
+    )
+}
+
+fn plugin_runtime_error(err: plugins::PluginRuntimeError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("plugin runtime error: {err}"),
     )
 }
 

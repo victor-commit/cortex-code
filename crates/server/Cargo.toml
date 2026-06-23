@@ -17,7 +17,9 @@ errors = { workspace = true }
 events = { workspace = true }
 futures-util = { workspace = true }
 llm = { workspace = true }
+memory = { workspace = true }
 permissions = { workspace = true }
+plugins = { workspace = true }
 policy = { workspace = true }
 protocol = { workspace = true }
 providers = { workspace = true }

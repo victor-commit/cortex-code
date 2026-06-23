@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -66,8 +68,21 @@ impl RuntimeHost {
         &self,
         config: &PluginConfig,
     ) -> Result<Vec<PluginLoadReport>, PluginRuntimeError> {
+        self.load_config_for_surface(config, "run")
+    }
+
+    /// Load configured plugins for a named surface and return only their observable reports.
+    ///
+    /// The surface name is included in the synthetic lifecycle event delivered to plugin `event`
+    /// hooks while loading. Existing callers that do not care about a specific surface use
+    /// [`RuntimeHost::load_config`], which preserves the headless `run` default.
+    pub fn load_config_for_surface(
+        &self,
+        config: &PluginConfig,
+        surface: &str,
+    ) -> Result<Vec<PluginLoadReport>, PluginRuntimeError> {
         Ok(self
-            .load_plugins(config)?
+            .load_plugins_for_surface(config, surface)?
             .into_iter()
             .map(|loaded| loaded.report)
             .collect())
@@ -79,17 +94,28 @@ impl RuntimeHost {
         &self,
         config: &PluginConfig,
     ) -> Result<Vec<LoadedPlugin>, PluginRuntimeError> {
+        self.load_plugins_for_surface(config, "run")
+    }
+
+    /// Load every configured plugin in order for a named surface, preserving the original spec next
+    /// to the report so callers can invoke later hooks or execute plugin-contributed tools.
+    pub fn load_plugins_for_surface(
+        &self,
+        config: &PluginConfig,
+        surface: &str,
+    ) -> Result<Vec<LoadedPlugin>, PluginRuntimeError> {
         if config.is_empty() {
             return Ok(Vec::new());
         }
 
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let surface = non_empty_surface(surface);
         config
             .entries()
             .iter()
             .map(|plugin| {
                 let plugin = self.resolve_plugin(plugin, &runtime)?;
-                self.load_plugin(&plugin, &runtime)
+                self.load_plugin(&plugin, &runtime, &surface)
             })
             .collect()
     }
@@ -588,12 +614,14 @@ impl RuntimeHost {
         &self,
         plugin: &PluginSpec,
         runtime: &RuntimeSelection,
+        surface: &str,
     ) -> Result<LoadedPlugin, PluginRuntimeError> {
         let (result, output) = self.invoke_plugin(
             plugin,
             runtime,
             BridgeOperation::Load {
                 config: JsonValue::Object(Default::default()),
+                surface: surface.to_owned(),
             },
         )?;
 
@@ -685,6 +713,117 @@ pub struct LoadedPlugin {
     pub spec: PluginSpec,
     /// Observable facts and registrations from loading the plugin.
     pub report: PluginLoadReport,
+}
+
+/// Lightweight event-hook host for surfaces that only need lifecycle/event plugin callbacks.
+///
+/// This intentionally does not expose model/tool/provider registration. It gives non-headless
+/// surfaces a narrow, reusable bridge for configured plugin `event` hooks without duplicating the
+/// external-runtime contract.
+#[derive(Clone, Debug)]
+pub struct PluginEventHooks {
+    loaded: Vec<LoadedPlugin>,
+    host: RuntimeHost,
+    surface: Arc<str>,
+    disposed: Arc<AtomicBool>,
+}
+
+impl PluginEventHooks {
+    /// A disabled event-hook state used when pure mode suppresses plugins.
+    #[must_use]
+    pub fn disabled(surface: &str) -> Self {
+        Self {
+            loaded: Vec::new(),
+            host: RuntimeHost::new(),
+            surface: Arc::from(non_empty_surface(surface)),
+            disposed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Load configured plugins for `surface` through the real external runtime.
+    pub fn load(config: &PluginConfig, surface: &str) -> Result<Self, PluginRuntimeError> {
+        let host = RuntimeHost::new();
+        let surface = non_empty_surface(surface);
+        let loaded = host.load_plugins_for_surface(config, &surface)?;
+        Ok(Self {
+            loaded,
+            host,
+            surface: Arc::from(surface),
+            disposed: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Load configured plugins unless pure mode disabled all plugin behavior.
+    pub fn load_or_disabled(
+        config: &PluginConfig,
+        pure: bool,
+        surface: &str,
+    ) -> Result<Self, PluginRuntimeError> {
+        if pure {
+            Ok(Self::disabled(surface))
+        } else {
+            Self::load(config, surface)
+        }
+    }
+
+    /// Whether this state contains no loaded plugins.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.loaded.is_empty()
+    }
+
+    /// Invoke every loaded plugin's `event` hook with a serializable event payload.
+    ///
+    /// Hook failures are reported on stderr and isolated from the caller's turn. The event payload
+    /// receives a `surface` field when it did not already carry one, and a `type` alias derived from
+    /// `kind`, matching the existing CLI plugin event bridge.
+    pub fn invoke_event<T: Serialize>(&self, event: &T) {
+        if self.loaded.is_empty() {
+            return;
+        }
+        let value = match event_payload_for_surface(event, &self.surface) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("cortex plugin event: failed to serialize event: {err}");
+                return;
+            }
+        };
+        for loaded in &self.loaded {
+            if !loaded.report.hooks.iter().any(|hook| hook == "event") {
+                continue;
+            }
+            if let Err(err) = self.host.invoke_event(&loaded.spec, value.clone()) {
+                eprintln!("cortex plugin event: {err}");
+            }
+        }
+    }
+
+    /// Invoke every loaded plugin's `dispose` hook once.
+    pub fn dispose(&self) {
+        if self.disposed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        for loaded in &self.loaded {
+            if !loaded.report.hooks.iter().any(|hook| hook == "dispose") {
+                continue;
+            }
+            if let Err(err) = self.host.invoke_dispose(&loaded.spec) {
+                eprintln!("cortex plugin dispose: {err}");
+            }
+        }
+    }
+}
+
+impl Default for PluginEventHooks {
+    fn default() -> Self {
+        Self::disabled("run")
+    }
+}
+
+impl Drop for PluginEventHooks {
+    fn drop(&mut self) {
+        self.dispose();
+    }
 }
 
 /// Observable facts from a successful plugin load.
@@ -992,7 +1131,7 @@ struct PackageResolveInput {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeOperation {
-    Load { config: JsonValue },
+    Load { config: JsonValue, surface: String },
     Event { event: JsonValue },
     ChatMessage { message: JsonValue },
     ChatParams { params: JsonValue },
@@ -1520,6 +1659,42 @@ fn default_parameters() -> JsonValue {
     })
 }
 
+fn non_empty_surface(surface: &str) -> String {
+    let surface = surface.trim();
+    if surface.is_empty() {
+        "run".to_owned()
+    } else {
+        surface.to_owned()
+    }
+}
+
+fn event_payload_for_surface<T: Serialize>(
+    event: &T,
+    surface: &str,
+) -> Result<JsonValue, serde_json::Error> {
+    let surface = non_empty_surface(surface);
+    match serde_json::to_value(event)? {
+        JsonValue::Object(mut map) => {
+            map.entry("surface".to_owned())
+                .or_insert_with(|| JsonValue::String(surface));
+            if !map.contains_key("type")
+                && let Some(kind) = map.get("kind").and_then(JsonValue::as_str)
+            {
+                map.insert("type".to_owned(), JsonValue::String(kind.to_owned()));
+            }
+            Ok(JsonValue::Object(map))
+        }
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_owned(), JsonValue::String("event".to_owned()));
+            map.insert("type".to_owned(), JsonValue::String("event".to_owned()));
+            map.insert("surface".to_owned(), JsonValue::String(surface));
+            map.insert("payload".to_owned(), other);
+            Ok(JsonValue::Object(map))
+        }
+    }
+}
+
 fn output_content(value: &JsonValue) -> String {
     if let Some(text) = value.as_str() {
         return text.to_owned();
@@ -1999,11 +2174,12 @@ try {
     const eventHook = getHook(hooks, "event");
     if (typeof eventHook === "function") {
       activeHook = "event";
+      const surface = String(operation.surface ?? "run").trim() || "run";
       await eventHook({
         kind: "lifecycle",
         type: "lifecycle",
         phase: "startup",
-        surface: "run",
+        surface,
         directory
       });
       invokedHooks.push("event");

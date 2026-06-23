@@ -27,28 +27,63 @@ use tools::{Tool, ToolContext, ToolOutput};
 const PURE_ENV: &str = "CORTEX_PURE";
 
 /// Loaded plugin runtime state for one surface invocation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct PluginState {
     loaded: Vec<LoadedPlugin>,
     host: RuntimeHost,
+    surface: Arc<str>,
     disposed: Arc<AtomicBool>,
     audit: Arc<Mutex<Option<Arc<audit::AuditSink>>>>,
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self {
+            loaded: Vec::new(),
+            host: RuntimeHost::new(),
+            surface: Arc::from("run"),
+            disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl PluginState {
     /// A disabled plugin state used by `--pure` and `CORTEX_PURE=1`.
     #[must_use]
     pub(crate) fn disabled() -> Self {
-        Self::default()
+        Self::disabled_for_surface("run")
+    }
+
+    /// A disabled plugin state for a named surface.
+    #[must_use]
+    pub(crate) fn disabled_for_surface(surface: &str) -> Self {
+        Self {
+            loaded: Vec::new(),
+            host: RuntimeHost::new(),
+            surface: Arc::from(non_empty_surface(surface)),
+            disposed: Arc::new(AtomicBool::new(false)),
+            audit: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Load configured plugins using the real external JS runtime.
     pub(crate) fn load(config: &plugins::PluginConfig) -> Result<Self, PluginRuntimeError> {
+        Self::load_for_surface(config, "run")
+    }
+
+    /// Load configured plugins for a named surface using the real external JS runtime.
+    pub(crate) fn load_for_surface(
+        config: &plugins::PluginConfig,
+        surface: &str,
+    ) -> Result<Self, PluginRuntimeError> {
         let host = RuntimeHost::new();
-        let loaded = host.load_plugins(config)?;
+        let surface = non_empty_surface(surface);
+        let loaded = host.load_plugins_for_surface(config, &surface)?;
         Ok(Self {
             loaded,
             host,
+            surface: Arc::from(surface),
             disposed: Arc::new(AtomicBool::new(false)),
             audit: Arc::new(Mutex::new(None)),
         })
@@ -59,10 +94,19 @@ impl PluginState {
         config: &plugins::PluginConfig,
         pure: bool,
     ) -> Result<Self, PluginRuntimeError> {
+        Self::load_or_disabled_for_surface(config, pure, "run")
+    }
+
+    /// Load configured plugins for a named surface unless pure mode disabled all plugin behavior.
+    pub(crate) fn load_or_disabled_for_surface(
+        config: &plugins::PluginConfig,
+        pure: bool,
+        surface: &str,
+    ) -> Result<Self, PluginRuntimeError> {
         if pure {
-            Ok(Self::disabled())
+            Ok(Self::disabled_for_surface(surface))
         } else {
-            Self::load(config)
+            Self::load_for_surface(config, surface)
         }
     }
 
@@ -638,6 +682,7 @@ impl PluginState {
                 Arc::new(PluginEventSubscriber {
                     host: self.host.clone(),
                     loaded: self.loaded.clone(),
+                    surface: self.surface.clone(),
                 }) as Arc<dyn Subscriber>
             })
     }
@@ -1200,6 +1245,7 @@ impl Provider for PluginModelProvider {
 struct PluginEventSubscriber {
     host: RuntimeHost,
     loaded: Vec<LoadedPlugin>,
+    surface: Arc<str>,
 }
 
 impl Subscriber for PluginEventSubscriber {
@@ -1217,6 +1263,9 @@ impl Subscriber for PluginEventSubscriber {
             }
         };
         value
+            .entry("surface".to_owned())
+            .or_insert_with(|| JsonValue::String(self.surface.to_string()));
+        value
             .entry("type".to_owned())
             .or_insert_with(|| JsonValue::String(event.kind().to_owned()));
 
@@ -1231,6 +1280,15 @@ impl Subscriber for PluginEventSubscriber {
                 eprintln!("cortex plugin event: {err}");
             }
         }
+    }
+}
+
+fn non_empty_surface(surface: &str) -> String {
+    let surface = surface.trim();
+    if surface.is_empty() {
+        "run".to_owned()
+    } else {
+        surface.to_owned()
     }
 }
 
@@ -1362,6 +1420,7 @@ export default async function plugin(input, options) {
         let state = PluginState {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            surface: Arc::from("run"),
             disposed: Arc::new(AtomicBool::new(false)),
             audit: Arc::new(Mutex::new(None)),
         };
@@ -1432,6 +1491,7 @@ export default async function plugin() {
         let state = PluginState {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            surface: Arc::from("run"),
             disposed: Arc::new(AtomicBool::new(false)),
             audit: Arc::new(Mutex::new(None)),
         };
@@ -1499,6 +1559,7 @@ export default async function plugin() {
         let state = PluginState {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            surface: Arc::from("run"),
             disposed: Arc::new(AtomicBool::new(false)),
             audit: Arc::new(Mutex::new(None)),
         };
@@ -1594,6 +1655,7 @@ export default async function plugin() {
         let state = PluginState {
             loaded,
             host: RuntimeHost::new().with_timeout(Duration::from_secs(15)),
+            surface: Arc::from("run"),
             disposed: Arc::new(AtomicBool::new(false)),
             audit: Arc::new(Mutex::new(None)),
         };
