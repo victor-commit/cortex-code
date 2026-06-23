@@ -474,6 +474,8 @@ pub fn app_with_state(state: ServerState) -> Router {
             "/session/{id}/message",
             get(list_messages).post(post_message).options(preflight),
         )
+        .route("/session/{id}/todo", get(list_todos).options(preflight))
+        .route("/session/{id}/todos", get(list_todos).options(preflight))
         .route(
             "/session/{id}/prompt",
             get(get_prompt_draft).options(preflight),
@@ -795,6 +797,12 @@ struct MessageListResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TodoListResponse {
+    session: Session,
+    todos: Vec<TodoItem>,
+}
+
+#[derive(Debug, Serialize)]
 struct PromptResponse {
     status: &'static str,
     model: String,
@@ -987,6 +995,19 @@ async fn list_messages(
         messages,
         usage,
     }))
+}
+
+async fn list_todos(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<TodoListResponse>, ApiError> {
+    let db = open_database(&state)?;
+    let session = db.sessions().require(&id).map_err(ApiError::from_db)?;
+    let todos = db
+        .todos()
+        .list_for_session(&id)
+        .map_err(ApiError::from_db)?;
+    Ok(Json(TodoListResponse { session, todos }))
 }
 
 async fn post_message(

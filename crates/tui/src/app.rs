@@ -675,6 +675,18 @@ impl App {
         Some(crate::turn::RemoteBridge::new(server, session_id))
     }
 
+    /// Resolve the durable session id and database path a turn's tools should use.
+    ///
+    /// This is called before the worker thread starts so the `todo` tool is keyed to the same
+    /// session that messages are persisted under. When persistence is disabled or unavailable, the
+    /// worker falls back to its ephemeral in-memory store.
+    #[must_use]
+    pub fn tool_store_context_for_turn(&mut self) -> (Option<String>, Option<PathBuf>) {
+        let session_id = self.ensure_session_id();
+        let db_path = session_id.as_ref().and(self.db_path.clone());
+        (session_id, db_path)
+    }
+
     /// Begin a streaming turn for `prompt`: record the user message, open an in-progress assistant
     /// entry, attach the worker's event channel, and start the busy indicator.
     ///
@@ -1992,8 +2004,8 @@ impl App {
         (items, entries)
     }
 
-    /// Load a persisted session and its messages by id from the bound store, or `None` when the
-    /// session does not exist. Best-effort failures surface as an `Err(String)`.
+    /// Load a persisted session, its messages, and its todos by id from the bound store, or `None`
+    /// when the session does not exist. Best-effort failures surface as an `Err(String)`.
     fn load_persisted_session(&self, id: &str) -> Result<Option<LoadedSession>, String> {
         let database = self
             .open_store()
@@ -2006,7 +2018,15 @@ impl App {
             .messages()
             .list_for_session(id)
             .map_err(|err| err.to_string())?;
-        Ok(Some(LoadedSession { session, messages }))
+        let todos = database
+            .todos()
+            .list_for_session(id)
+            .map_err(|err| err.to_string())?;
+        Ok(Some(LoadedSession {
+            session,
+            messages,
+            todos,
+        }))
     }
 
     /// Rename a persisted session (set or clear its title) by id in the bound store.
@@ -2094,6 +2114,22 @@ impl App {
         }
     }
 
+    fn append_loaded_todos(&mut self, todos: &[protocol::TodoItem]) {
+        if todos.is_empty() {
+            return;
+        }
+        let mut text = String::from("Todos");
+        for (index, item) in todos.iter().enumerate() {
+            text.push_str(&format!(
+                "\n{}. [{}] {}",
+                index + 1,
+                item.status.as_str(),
+                item.content
+            ));
+        }
+        self.transcript.push(Entry::Notice(text));
+    }
+
     /// Load a persisted session's transcript into the view (`Enter` on a session-picker row): the
     /// stored user/assistant messages replace the current transcript and projected history, and the
     /// footer's session label updates. Ignored while a turn streams; a read failure surfaces a
@@ -2139,6 +2175,7 @@ impl App {
         self.status.session = label.clone();
         self.transcript
             .push(Entry::Notice(format!("Switched to session {label}")));
+        self.append_loaded_todos(&session.todos);
     }
 
     /// Begin renaming the highlighted session-picker row, seeding the rename buffer with its current
@@ -3119,10 +3156,12 @@ fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> 
         .collect()
 }
 
-/// A persisted session plus its messages, loaded for switching the active session in the picker.
+/// A persisted session plus its messages and todos, loaded for switching the active session in the
+/// picker or attaching at startup.
 struct LoadedSession {
     session: db::Session,
     messages: Vec<db::Message>,
+    todos: Vec<protocol::TodoItem>,
 }
 
 /// Build the session picker's rows and their backing metadata in lockstep: the synthetic "current
@@ -6098,6 +6137,75 @@ mod tests {
                 .any(|m| m.content == "earlier fact"),
             "the prior transcript is loaded into history"
         );
+    }
+
+    #[test]
+    fn loading_a_session_renders_persisted_todos() {
+        let path = session_store_path("load-todos");
+        let seeded = {
+            let db = db::Database::open(&path).expect("open seed");
+            let session = db.sessions().create(Some("todo seed")).expect("create");
+            db.messages()
+                .create(&session.id, "assistant", "nonce answer")
+                .expect("seed message");
+            db.todos()
+                .replace_for_session(
+                    &session.id,
+                    &[
+                        protocol::TodoItem::new(
+                            "capture message nonce",
+                            protocol::TodoStatus::Completed,
+                        ),
+                        protocol::TodoItem::new(
+                            "verify TUI snapshot",
+                            protocol::TodoStatus::InProgress,
+                        ),
+                        protocol::TodoItem::new(
+                            "verify server response",
+                            protocol::TodoStatus::Pending,
+                        ),
+                    ],
+                )
+                .expect("seed todos");
+            session.id
+        };
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(&seeded);
+
+        let rendered = a.render_session_markdown();
+        assert!(rendered.contains("nonce answer"), "{rendered}");
+        assert!(rendered.contains("Todos"), "{rendered}");
+        assert!(
+            rendered.contains("1. [completed] capture message nonce"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("2. [in_progress] verify TUI snapshot"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("3. [pending] verify server response"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn tool_store_context_uses_the_durable_session_and_database() {
+        let path = session_store_path("tool-store-context");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        let (session_id, db_path) = a.tool_store_context_for_turn();
+
+        let session_id = session_id.expect("session id");
+        assert!(session_id.starts_with("ses_"), "durable id: {session_id}");
+        assert_eq!(db_path.as_deref(), Some(path.as_path()));
+        let db = db::Database::open(&path).expect("reopen");
+        db.sessions()
+            .require(&session_id)
+            .expect("context creates the session row");
     }
 
     // Persistence is gated on a bound store: without one (the unit-test default) a turn never

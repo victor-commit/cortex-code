@@ -176,6 +176,28 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/session/{id}/todo": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "listSessionTodos",
+                    "summary": "List persisted todo items for one session.",
+                    "responses": {
+                        "200": json_response("Todo list.", "TodoListResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/todos": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "listSessionTodosAlias",
+                    "summary": "Alias for listing persisted todo items for one session.",
+                    "responses": {
+                        "200": json_response("Todo list.", "TodoListResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
             "/session/{id}/prompt": {
                 "parameters": [session_id_parameter()],
                 "get": {
@@ -480,6 +502,28 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         }
                     }
                 },
+                "TodoItem": {
+                    "type": "object",
+                    "required": ["content", "status"],
+                    "properties": {
+                        "content": { "type": "string" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed"]
+                        }
+                    }
+                },
+                "TodoListResponse": {
+                    "type": "object",
+                    "required": ["session", "todos"],
+                    "properties": {
+                        "session": { "$ref": "#/components/schemas/Session" },
+                        "todos": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/TodoItem" }
+                        }
+                    }
+                },
                 "Usage": {
                     "type": "object",
                     "required": ["input_tokens", "output_tokens", "total_tokens"],
@@ -512,6 +556,8 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/session", &["get", "post"]),
     ("/session/{id}", &["get", "delete"]),
     ("/session/{id}/message", &["get", "post"]),
+    ("/session/{id}/todo", &["get"]),
+    ("/session/{id}/todos", &["get"]),
     ("/session/{id}/prompt", &["get"]),
     ("/session/{id}/prompt/append", &["post"]),
     ("/session/{id}/prompt/submit", &["post"]),

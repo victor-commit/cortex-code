@@ -209,16 +209,19 @@ fn event_loop<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> 
         // interrupt seam: the UI sets it (Esc) to stop the turn gracefully.
         if let Some(prompt) = app.take_pending_prompt() {
             let cancel = Arc::new(AtomicBool::new(false));
+            let (session_id, db_path) = app.tool_store_context_for_turn();
             let remote = app.remote_bridge_for_turn();
-            let rx = turn::spawn(
-                prompt.clone(),
-                app.history_snapshot(),
-                app.active_model(),
-                app.active_agent(),
-                app.mcp_manager(),
+            let rx = turn::spawn(turn::SpawnRequest {
+                prompt: prompt.clone(),
+                history: app.history_snapshot(),
+                model: app.active_model(),
+                agent: app.active_agent(),
+                mcp_manager: app.mcp_manager(),
                 remote,
-                cancel.clone(),
-            );
+                session_id,
+                db_path,
+                cancel: cancel.clone(),
+            });
             app.begin_turn(prompt, rx, cancel);
             continue;
         }

@@ -20,6 +20,7 @@ mod plugin_bridge;
 mod run;
 mod serve_cmd;
 mod session;
+mod stats;
 mod subagent;
 mod todo_store;
 mod tooling;
@@ -72,6 +73,7 @@ fn main() -> ExitCode {
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
+        Some(Command::Stats(args)) => stats::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
         Some(Command::Auth(args)) => auth_cmd::run(args, pure_plugins).into(),
         Some(Command::Models(args)) => models_cmd::run(args, pure_plugins).into(),
@@ -93,6 +95,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Acp(_)) => Surface::Acp,
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
+        Some(Command::Stats(_)) => Surface::Session,
         Some(Command::Agent(_)) | Some(Command::Generate(_)) => Surface::Agent,
         Some(Command::Auth(_)) => Surface::Auth,
         Some(Command::Models(_)) => Surface::Models,

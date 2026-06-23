@@ -1005,6 +1005,51 @@ async fn messages_survive_app_recreation_on_same_database() {
 }
 
 #[tokio::test]
+async fn todo_route_returns_tool_written_todos_after_app_recreation() {
+    let scratch = Scratch::new("server-todo-durable");
+    let provider = Arc::new(TodoWritingProvider::default());
+    let first_app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&first_app).await;
+
+    let response = first_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"record the validation todos"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let relaunched_app = server::app_with_provider(scratch.db_path(), provider);
+    for path in ["todo", "todos"] {
+        let response = relaunched_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/session/{}/{path}", session.id))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("todo list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_json_content_type(&response);
+        let body: serde_json::Value = json_body(response).await;
+        assert_eq!(body["session"]["id"], session.id);
+        assert_eq!(body["todos"].as_array().expect("todos").len(), 3);
+        assert_eq!(body["todos"][0]["content"], "capture message nonce");
+        assert_eq!(body["todos"][0]["status"], "completed");
+        assert_eq!(body["todos"][1]["status"], "in_progress");
+        assert_eq!(body["todos"][2]["status"], "pending");
+    }
+}
+
+#[tokio::test]
 async fn session_crud_routes_create_list_get_and_delete_with_database_backing() {
     let scratch = Scratch::new("server-session-crud");
     let app = server::app_with_db_path(scratch.db_path());
@@ -1317,6 +1362,11 @@ struct CheckpointEditingProvider {
 }
 
 #[derive(Debug, Default)]
+struct TodoWritingProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
 struct BashRmProvider {
     calls: AtomicUsize,
 }
@@ -1389,6 +1439,48 @@ impl Provider for BashRmProvider {
                 _ => vec![
                     LlmEvent::TextDelta {
                         text: "bash attempt finished".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 13,
+                        output_tokens: 5,
+                        total_tokens: 18,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for TodoWritingProvider {
+    fn stream<'a>(&'a self, _request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = match call {
+                0 => vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_todo".to_owned(),
+                        name: "todo".to_owned(),
+                        arguments: serde_json::json!({
+                            "todos": [
+                                {"content": "capture message nonce", "status": "completed"},
+                                {"content": "verify TUI snapshot", "status": "in_progress"},
+                                {"content": "verify server response", "status": "pending"}
+                            ]
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ],
+                _ => vec![
+                    LlmEvent::TextDelta {
+                        text: "todos recorded".to_owned(),
                     },
                     LlmEvent::Usage(Usage {
                         input_tokens: 13,

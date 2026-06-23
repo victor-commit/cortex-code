@@ -46,31 +46,45 @@ impl<'a> TodoRepo<'a> {
             });
         }
 
-        self.conn.execute(
-            "DELETE FROM todos WHERE session_id = ?1",
-            params![session_id],
-        )?;
-
-        for (position, item) in items.iter().enumerate() {
-            let id = random_id(self.conn, "tod")?;
-            let content = redaction::redact(&item.content);
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> DbResult<()> {
             self.conn.execute(
-                "INSERT INTO todos (id, session_id, position, content, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-                params![
-                    id,
-                    session_id,
-                    position as i64,
-                    content,
-                    item.status.as_str(),
-                ],
+                "DELETE FROM todos WHERE session_id = ?1",
+                params![session_id],
             )?;
+
+            for (position, item) in items.iter().enumerate() {
+                let id = random_id(self.conn, "tod")?;
+                let content = redaction::redact(&item.content);
+                self.conn.execute(
+                    "INSERT INTO todos (id, session_id, position, content, status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                    params![
+                        id,
+                        session_id,
+                        position as i64,
+                        content,
+                        item.status.as_str(),
+                    ],
+                )?;
+            }
+            self.conn.execute(
+                "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
+                params![session_id],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
         }
-        self.conn.execute(
-            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
     }
 
     /// List a session's todo items in their stored order (position ascending). A session with no

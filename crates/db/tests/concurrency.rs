@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 
 use db::Database;
+use protocol::{TodoItem, TodoStatus};
 
 /// A self-cleaning scratch directory under the system temp dir.
 struct Scratch {
@@ -53,6 +54,21 @@ fn assert_integrity_ok(db_path: &PathBuf) {
         db.integrity_check().expect("integrity check"),
         "ok",
         "the database must remain uncorrupted"
+    );
+}
+
+#[test]
+fn file_databases_use_wal_journal_mode_for_cross_process_sharing() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+    let db = Database::open(&db_path).expect("open fresh db");
+    let journal_mode: String = rusqlite::Connection::open(db.path())
+        .expect("raw connection")
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .expect("journal mode");
+    assert_eq!(
+        journal_mode, "wal",
+        "file-backed shared stores should use WAL for multi-process readers/writers"
     );
 }
 
@@ -215,6 +231,86 @@ fn concurrent_writes_to_one_session_serialize_without_loss() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), WRITERS, "every message id is unique");
+    assert_integrity_ok(db_path.as_ref());
+}
+
+#[test]
+fn concurrent_todo_replacements_are_whole_list_atomic() {
+    let scratch = Scratch::new();
+    let db_path = Arc::new(scratch.path("cortex.db"));
+    let session_id = "ses-todos-shared".to_owned();
+    {
+        let db = Database::open(db_path.as_ref()).expect("create db");
+        db.sessions()
+            .ensure(&session_id, None)
+            .expect("create shared session");
+    }
+
+    const WRITERS: usize = 6;
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let go_rx = Arc::new(std::sync::Mutex::new(go_rx));
+
+    let mut handles = Vec::new();
+    for writer in 0..WRITERS {
+        let path = Arc::clone(&db_path);
+        let session_id = session_id.clone();
+        let ready = ready_tx.clone();
+        let go = Arc::clone(&go_rx);
+        handles.push(std::thread::spawn(move || {
+            let db = Database::open(path.as_ref()).expect("open per-writer connection");
+            let items = (0..3)
+                .map(|item| {
+                    TodoItem::new(
+                        format!("writer-{writer}-item-{item}"),
+                        if item == 0 {
+                            TodoStatus::Completed
+                        } else {
+                            TodoStatus::Pending
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            ready.send(()).expect("signal ready");
+            go.lock().expect("lock").recv().expect("await go");
+            db.todos()
+                .replace_for_session(&session_id, &items)
+                .expect("replace todo list under contention");
+        }));
+    }
+
+    for _ in 0..WRITERS {
+        ready_rx.recv().expect("writer ready");
+    }
+    for _ in 0..WRITERS {
+        go_tx.send(()).expect("release writer");
+    }
+    for handle in handles {
+        handle.join().expect("writer thread");
+    }
+
+    let db = Database::open(db_path.as_ref()).expect("reopen");
+    let todos = db.todos().list_for_session(&session_id).expect("todos");
+    assert_eq!(
+        todos.len(),
+        3,
+        "the final todo list must be one writer's complete replacement, never an interleaved mix"
+    );
+    let writer_prefix = todos[0]
+        .content
+        .split("-item-")
+        .next()
+        .expect("writer prefix")
+        .to_owned();
+    assert!(
+        todos
+            .iter()
+            .all(|todo| todo.content.starts_with(&writer_prefix)),
+        "every final todo should come from the same atomic replacement: {todos:?}"
+    );
+    assert_eq!(todos[0].status, TodoStatus::Completed);
+    assert_eq!(todos[1].status, TodoStatus::Pending);
+    assert_eq!(todos[2].status, TodoStatus::Pending);
     assert_integrity_ok(db_path.as_ref());
 }
 

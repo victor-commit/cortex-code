@@ -53,6 +53,8 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session/{id}", "delete", 204);
     assert_method(paths, "/session/{id}/message", "get", 200);
     assert_method(paths, "/session/{id}/message", "post", 200);
+    assert_method(paths, "/session/{id}/todo", "get", 200);
+    assert_method(paths, "/session/{id}/todos", "get", 200);
     assert_method(paths, "/session/{id}/prompt", "get", 200);
     assert_method(paths, "/session/{id}/prompt/append", "post", 200);
     assert_method(paths, "/session/{id}/prompt/submit", "post", 200);
@@ -102,6 +104,8 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/session"
                     | "/session/{id}"
                     | "/session/{id}/message"
+                    | "/session/{id}/todo"
+                    | "/session/{id}/todos"
                     | "/session/{id}/prompt"
                     | "/session/{id}/prompt/append"
                     | "/session/{id}/prompt/submit"

@@ -13,6 +13,7 @@
 //! instead of hanging.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -49,6 +50,19 @@ pub enum TurnMessage {
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
 const OUTBOUND_OPERATION: &str = "LLM turn";
+
+/// Plain data needed to spawn one TUI turn worker.
+pub struct SpawnRequest {
+    pub prompt: String,
+    pub history: Vec<Message>,
+    pub model: String,
+    pub agent: String,
+    pub mcp_manager: Option<Arc<mcp::McpManager>>,
+    pub remote: Option<RemoteBridge>,
+    pub session_id: Option<String>,
+    pub db_path: Option<PathBuf>,
+    pub cancel: Arc<AtomicBool>,
+}
 
 /// Server bridge used when the TUI is attached to `cortex serve`.
 #[derive(Clone, Debug)]
@@ -106,18 +120,21 @@ impl RemoteBridge {
 /// turn stops streaming gracefully — no orphaned children, no panic. Background `bash` jobs are
 /// still reaped and the checkpoint is still finalized afterward.
 #[must_use]
-pub fn spawn(
-    prompt: String,
-    history: Vec<Message>,
-    model: String,
-    agent: String,
-    mcp_manager: Option<Arc<mcp::McpManager>>,
-    remote: Option<RemoteBridge>,
-    cancel: Arc<AtomicBool>,
-) -> Receiver<TurnMessage> {
+pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
     let (tx, rx) = mpsc::channel();
     let tx_events = tx.clone();
     thread::spawn(move || {
+        let SpawnRequest {
+            prompt,
+            history,
+            model,
+            agent,
+            mcp_manager,
+            remote,
+            session_id,
+            db_path,
+            cancel,
+        } = request;
         match build_turn(&prompt, history, &model, &agent) {
             Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
@@ -134,6 +151,7 @@ pub fn spawn(
                             let session_id = remote
                                 .as_ref()
                                 .map(|remote| remote.session_id.clone())
+                                .or(session_id)
                                 .unwrap_or_else(ephemeral_session_id);
                             let lsp_hooks =
                                 Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
@@ -162,13 +180,18 @@ pub fn spawn(
                             let mut dispatcher = TurnDispatcher::new(
                                 cwd.clone(),
                                 &setup.model_id,
-                                session_id,
+                                session_id.clone(),
                                 tx_events.clone(),
                             )
                             .with_permissions(engine)
                             .with_hooks(mutation_hooks)
                             .with_lsp_service(lsp_hooks.clone())
                             .with_skills(setup.skills.clone());
+                            if let Some(db_path) = db_path {
+                                dispatcher = dispatcher.with_todo_store(Arc::new(
+                                    crate::tooling::DurableTodos::new(db_path),
+                                ));
+                            }
                             if let Some(recorder) = &recorder {
                                 dispatcher = dispatcher.with_checkpoints(Arc::new(
                                     crate::checkpoint::RecorderBridge::new(recorder.clone()),
@@ -307,8 +330,8 @@ fn finish_reason_name(reason: &llm::FinishReason) -> String {
         .unwrap_or_else(|| format!("{reason:?}"))
 }
 
-/// An ephemeral session id scoping this turn's tool context (the TUI does not yet persist sessions;
-/// the id only keys the in-memory per-session todo list for the turn).
+/// An ephemeral session id scoping this turn's tool context when the TUI cannot resolve a durable
+/// session. Normal launches pass the persisted session id so tools share the on-disk store.
 fn ephemeral_session_id() -> String {
     format!("tui-{}-{}", std::process::id(), monotonic_nanos())
 }

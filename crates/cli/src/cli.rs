@@ -70,6 +70,9 @@ pub enum Command {
     /// the data directory; the default location is left untouched when an override is used.
     Session(SessionArgs),
 
+    /// Summarize persisted token usage and cost.
+    Stats(StatsArgs),
+
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
@@ -416,6 +419,12 @@ pub struct SessionMessageArgs {
     pub format: FormatArgs,
 }
 
+#[derive(Debug, Args)]
+pub struct StatsArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
 /// Machine/human output format for headless runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 #[value(rename_all = "lowercase")]
@@ -603,7 +612,7 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
         for sub in [
-            "run", "tui", "serve", "acp", "session", "agent", "auth", "models", "generate",
+            "run", "tui", "serve", "acp", "session", "stats", "agent", "auth", "models", "generate",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }

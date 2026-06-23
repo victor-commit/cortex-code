@@ -101,6 +101,13 @@ impl TurnDispatcher {
         self
     }
 
+    /// Attach the per-session todo store the `todo` tool reads and writes through.
+    #[must_use]
+    pub fn with_todo_store(mut self, store: Arc<dyn TodoStore>) -> Self {
+        self.context = self.context.with_todo_store(store);
+        self
+    }
+
     /// Attach discovered skills to the per-turn registry so the model can engage one through the
     /// `skill` tool. Skill guidance remains inactive until that tool succeeds, matching headless.
     #[must_use]
@@ -373,6 +380,39 @@ impl TodoStore for EphemeralTodos {
     }
 }
 
+/// A durable todo store backed by the shared SQLite database the TUI uses for sessions.
+pub struct DurableTodos {
+    db_path: PathBuf,
+}
+
+impl DurableTodos {
+    /// Create a todo store over a resolved SQLite database path.
+    #[must_use]
+    pub fn new(db_path: PathBuf) -> Self {
+        Self { db_path }
+    }
+
+    fn open(&self) -> Result<db::Database, String> {
+        db::Database::open(&self.db_path).map_err(|err| err.to_string())
+    }
+}
+
+impl TodoStore for DurableTodos {
+    fn list(&self, session_id: &str) -> Result<Vec<TodoItem>, String> {
+        self.open()?
+            .todos()
+            .list_for_session(session_id)
+            .map_err(|err| err.to_string())
+    }
+
+    fn replace(&self, session_id: &str, items: &[TodoItem]) -> Result<(), String> {
+        self.open()?
+            .todos()
+            .replace_for_session(session_id, items)
+            .map_err(|err| err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -590,5 +630,36 @@ mod tests {
             !skill.description.contains("TUI-SKILL-SECRET"),
             "guidance remains isolated until the skill tool is called"
         );
+    }
+
+    #[test]
+    fn durable_todos_write_to_the_shared_database() {
+        let dir = scratch_dir("durable-todos");
+        let db_path = dir.join("cortex.db");
+        let session_id = "ses_tui_todos";
+        {
+            let db = db::Database::open(&db_path).expect("open");
+            db.sessions().ensure(session_id, None).expect("session");
+        }
+        let (tx, _rx) = channel();
+        let dispatcher = TurnDispatcher::new(
+            dir.clone(),
+            "google/gemini-2.5-flash",
+            session_id.to_owned(),
+            tx,
+        )
+        .with_todo_store(Arc::new(DurableTodos::new(db_path.clone())));
+
+        let result = block_on(dispatcher.dispatch(&call(
+            "todo",
+            r#"{"todos":[{"content":"visible in TUI","status":"completed"}]}"#,
+        )));
+        assert!(!result.is_error, "todo should succeed: {}", result.content);
+
+        let db = db::Database::open(&db_path).expect("reopen");
+        let todos = db.todos().list_for_session(session_id).expect("todos");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].content, "visible in TUI");
+        assert_eq!(todos[0].status, protocol::TodoStatus::Completed);
     }
 }

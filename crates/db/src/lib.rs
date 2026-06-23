@@ -65,6 +65,10 @@ impl Database {
         let mut conn = Connection::open(path).map_err(|err| DbError::from_open(path, err))?;
         conn.busy_timeout(BUSY_TIMEOUT)
             .map_err(|err| DbError::from_open(path, err))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|err| DbError::from_open(path, err))?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .map_err(|err| DbError::from_open(path, err))?;
         conn.pragma_update(None, "foreign_keys", true)
             .map_err(|err| DbError::from_open(path, err))?;
 
