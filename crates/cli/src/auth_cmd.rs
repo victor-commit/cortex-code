@@ -6,6 +6,7 @@ use errors::Exit;
 use providers::{
     AuthPathInputs, list_stored_providers, remove_stored_credential, store_credential,
 };
+use redaction::PLACEHOLDER;
 use serde::Serialize;
 
 use crate::cli::{
@@ -40,6 +41,13 @@ fn login(args: AuthLoginArgs) -> Exit {
     };
 
     let source = credential_source(&args, &provider);
+    tracing::debug!(
+        target: "cortex::auth",
+        provider = %provider,
+        source = %source,
+        api_key = PLACEHOLDER,
+        "received credential for auth login"
+    );
     if let Err(error) = store_credential(&path, &provider, &secret) {
         eprintln!(
             "cortex auth login: failed to persist credential for provider `{provider}`: {error}"
