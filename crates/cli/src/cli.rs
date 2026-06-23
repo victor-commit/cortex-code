@@ -85,6 +85,12 @@ pub enum Command {
     /// Reconstruct and print a persisted session transcript.
     Replay(ReplayArgs),
 
+    /// Emit shell-completion scripts for bash, zsh, or fish.
+    Completion(CompletionArgs),
+
+    /// Generate a roff man page for `cortex`.
+    Man(ManArgs),
+
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
@@ -526,6 +532,24 @@ pub struct ReplayArgs {
     pub format: FormatArgs,
 }
 
+#[derive(Debug, Args)]
+pub struct CompletionArgs {
+    /// Shell to generate completions for.
+    #[arg(value_enum, value_name = "SHELL")]
+    pub shell: CompletionShell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+#[derive(Debug, Args)]
+pub struct ManArgs {}
+
 /// Machine/human output format for headless runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 #[value(rename_all = "lowercase")]
@@ -713,8 +737,22 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
         for sub in [
-            "run", "tui", "serve", "acp", "session", "export", "import", "stats", "agent", "auth",
-            "models", "generate", "search",
+            "run",
+            "tui",
+            "serve",
+            "acp",
+            "session",
+            "export",
+            "import",
+            "stats",
+            "agent",
+            "auth",
+            "models",
+            "generate",
+            "search",
+            "replay",
+            "completion",
+            "man",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
@@ -980,6 +1018,34 @@ mod tests {
             }
             other => panic!("expected replay, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn completion_parses_supported_shells() {
+        for shell in ["bash", "zsh", "fish"] {
+            let cli = Cli::try_parse_from(["cortex", "completion", shell]).expect("parse");
+            match cli.command {
+                Some(Command::Completion(args)) => match (shell, args.shell) {
+                    ("bash", CompletionShell::Bash)
+                    | ("zsh", CompletionShell::Zsh)
+                    | ("fish", CompletionShell::Fish) => {}
+                    _ => panic!("shell `{shell}` mapped to wrong enum: {:?}", args.shell),
+                },
+                other => panic!("expected completion, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn completion_rejects_unknown_shell() {
+        let err = Cli::try_parse_from(["cortex", "completion", "powershell-typo"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn man_command_parses() {
+        let cli = Cli::try_parse_from(["cortex", "man"]).expect("parse");
+        assert!(matches!(cli.command, Some(Command::Man(_))));
     }
 
     #[test]
