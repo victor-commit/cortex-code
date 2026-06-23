@@ -79,6 +79,9 @@ pub enum Command {
     /// Summarize persisted token usage and cost.
     Stats(StatsArgs),
 
+    /// Reconstruct and print a persisted session transcript.
+    Replay(ReplayArgs),
+
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
@@ -496,6 +499,16 @@ pub struct ImportArgs {
 
 #[derive(Debug, Args)]
 pub struct StatsArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ReplayArgs {
+    /// The id of the session to replay.
+    #[arg(value_name = "SESSION_ID")]
+    pub id: String,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -940,6 +953,19 @@ mod tests {
         match cli.command {
             Some(Command::Import(args)) => assert_eq!(args.artifact, "artifact.json"),
             other => panic!("expected import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_parses_session_id_and_format() {
+        let cli = Cli::try_parse_from(["cortex", "replay", "ses_123", "--format", "json"])
+            .expect("parse");
+        match cli.command {
+            Some(Command::Replay(args)) => {
+                assert_eq!(args.id, "ses_123");
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected replay, got {other:?}"),
         }
     }
 
