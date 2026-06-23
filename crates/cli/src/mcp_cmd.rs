@@ -170,6 +170,10 @@ fn emit_add(name: &str, status: &str, path: String, format: OutputFormat) -> Exi
 /// Run the OAuth authorization-code flow for a configured remote server and persist the resulting
 /// token to the process-resolved 0600 MCP credential store.
 fn auth_server(args: McpAuthArgs) -> Exit {
+    if !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("mcp auth");
+    }
+
     let inputs = match ConfigInputs::from_process(BTreeMap::new()) {
         Ok(inputs) => inputs,
         Err(err) => {
@@ -397,6 +401,10 @@ struct ListDocument {
 
 /// Connect every configured server, report its status and tools, then shut them all down.
 fn list_servers(args: McpListArgs) -> Exit {
+    if !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("mcp list");
+    }
+
     let inputs = match ConfigInputs::from_process(BTreeMap::new()) {
         Ok(inputs) => inputs,
         Err(err) => {
