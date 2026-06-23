@@ -12,6 +12,7 @@ workspace = true
 errors = { workspace = true }
 redaction = { workspace = true }
 llm = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

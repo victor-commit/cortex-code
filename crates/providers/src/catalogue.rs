@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The default provider used when a model id is not found in the snapshot.
 pub const DEFAULT_PROVIDER: &str = "openrouter";
@@ -27,7 +27,7 @@ pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 const EMBEDDED_SNAPSHOT: &str = include_str!("models_dev.json");
 
 /// Token limits for a model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub struct ModelLimit {
     /// Maximum context window in tokens.
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct ModelLimit {
 }
 
 /// Per-million-token pricing for a model, as published by models.dev.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, Serialize)]
 pub struct ModelCost {
     /// USD per million input/prompt tokens.
     #[serde(default)]
@@ -49,7 +49,7 @@ pub struct ModelCost {
 }
 
 /// Metadata for a single model in the catalogue.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ModelInfo {
     /// The fully-qualified model id (e.g. `google/gemini-2.5-flash`).
     pub id: String,
@@ -73,14 +73,14 @@ pub struct ModelInfo {
 }
 
 /// Metadata for a provider in the catalogue.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ProviderInfo {
     /// The provider id (e.g. `openrouter`).
     pub id: String,
     /// A human-readable display name.
     pub name: String,
     /// The API base URL (no trailing `/chat/completions`), when known.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
     /// Environment variable names that supply this provider's credential, in priority order.
     #[serde(default)]
@@ -124,6 +124,23 @@ impl Catalogue {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let providers: BTreeMap<String, ProviderInfo> = serde_json::from_str(json)?;
         Ok(Self { providers })
+    }
+
+    /// Build a catalogue from an explicit provider map (used by the `models --refresh` path to
+    /// assemble a curated, freshly-fetched snapshot before it is cached or listed).
+    #[must_use]
+    pub(crate) fn from_providers(providers: BTreeMap<String, ProviderInfo>) -> Self {
+        Self { providers }
+    }
+
+    /// Serialize the catalogue back into the models.dev snapshot shape (a provider-id -> provider
+    /// map), so a refreshed catalogue can be written to the on-disk cache in the same shape the
+    /// embedded snapshot uses.
+    ///
+    /// # Errors
+    /// Returns the underlying [`serde_json::Error`] if serialization fails.
+    pub(crate) fn to_snapshot_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.providers)
     }
 
     /// The provider with the given id, if present.

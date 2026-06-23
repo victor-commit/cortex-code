@@ -181,6 +181,11 @@ pub struct AuthListArgs {
 
 #[derive(Debug, Args)]
 pub struct ModelsArgs {
+    /// Refresh the catalog from models.dev over the network before listing. Honors the
+    /// `CORTEX_NO_NET` kill-switch (fails closed); without this flag the listing is fully offline.
+    #[arg(long)]
+    pub refresh: bool,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }

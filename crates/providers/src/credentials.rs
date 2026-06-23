@@ -298,7 +298,7 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 }
 
 /// Read an environment variable as a string, treating unset/empty as absent.
-fn non_empty_env(name: &str) -> Option<String> {
+pub(crate) fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_owned())
@@ -306,7 +306,7 @@ fn non_empty_env(name: &str) -> Option<String> {
 }
 
 /// Read an environment variable as a path, treating unset/empty as absent.
-fn non_empty_env_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn non_empty_env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

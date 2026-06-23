@@ -19,6 +19,7 @@
 mod catalogue;
 mod credentials;
 mod openrouter;
+mod refresh;
 
 pub use catalogue::{
     Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelInfo, ModelLimit, ProviderInfo,
@@ -32,4 +33,8 @@ pub use openrouter::{
     OPENROUTER_DEFAULT_MODEL, OPENROUTER_ID, openrouter_base_url, openrouter_provider,
     openrouter_provider_with_base_url, openrouter_provider_with_options, resolve_openrouter,
     resolve_openrouter_with, resolve_openrouter_with_options,
+};
+pub use refresh::{
+    ENV_MODELS_DEV_URL, MODELS_CACHE_FILE, MODELS_DEV_URL, load_cached_catalogue,
+    models_cache_path, models_dev_url, refresh_openrouter_catalogue, write_models_cache,
 };
