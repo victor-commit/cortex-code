@@ -20,6 +20,7 @@ mod permission_store;
 mod plugin_bridge;
 mod replay;
 mod run;
+mod search;
 mod serve_cmd;
 mod session;
 mod stats;
@@ -83,6 +84,7 @@ fn main() -> ExitCode {
         Some(Command::Export(args)) => export_import::run_export(args).into(),
         Some(Command::Import(args)) => export_import::run_import(args).into(),
         Some(Command::Stats(args)) => stats::run(args).into(),
+        Some(Command::Search(args)) => search::run(args).into(),
         Some(Command::Replay(args)) => replay::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
         Some(Command::Auth(args)) => auth_cmd::run(args, pure_plugins).into(),
@@ -107,6 +109,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Session(_)) => Surface::Session,
         Some(Command::Export(_)) | Some(Command::Import(_)) => Surface::Session,
         Some(Command::Stats(_)) => Surface::Session,
+        Some(Command::Search(_)) => Surface::Session,
         Some(Command::Replay(_)) => Surface::Session,
         Some(Command::Agent(_)) | Some(Command::Generate(_)) => Surface::Agent,
         Some(Command::Auth(_)) => Surface::Auth,

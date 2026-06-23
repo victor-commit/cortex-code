@@ -79,6 +79,9 @@ pub enum Command {
     /// Summarize persisted token usage and cost.
     Stats(StatsArgs),
 
+    /// Search the working tree for text matches (ripgrep-backed, local-only).
+    Search(SearchArgs),
+
     /// Reconstruct and print a persisted session transcript.
     Replay(ReplayArgs),
 
@@ -504,6 +507,16 @@ pub struct StatsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct SearchArgs {
+    /// Query to search for (ripgrep regex syntax).
+    #[arg(value_name = "QUERY")]
+    pub query: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
 pub struct ReplayArgs {
     /// The id of the session to replay.
     #[arg(value_name = "SESSION_ID")]
@@ -701,7 +714,7 @@ mod tests {
         let help = cmd.render_help().to_string();
         for sub in [
             "run", "tui", "serve", "acp", "session", "export", "import", "stats", "agent", "auth",
-            "models", "generate",
+            "models", "generate", "search",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
@@ -966,6 +979,19 @@ mod tests {
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_parses_query_and_format() {
+        let cli = Cli::try_parse_from(["cortex", "search", "UNIQUE-NEEDLE", "--format", "json"])
+            .expect("parse");
+        match cli.command {
+            Some(Command::Search(args)) => {
+                assert_eq!(args.query, "UNIQUE-NEEDLE");
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected search, got {other:?}"),
         }
     }
 
