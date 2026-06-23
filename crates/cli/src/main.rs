@@ -5,6 +5,7 @@ mod checkpoint;
 mod cli;
 mod config;
 mod custom_agents;
+mod export_import;
 mod format_bridge;
 mod generate_cmd;
 mod lsp_bridge;
@@ -78,6 +79,8 @@ fn main() -> ExitCode {
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
+        Some(Command::Export(args)) => export_import::run_export(args).into(),
+        Some(Command::Import(args)) => export_import::run_import(args).into(),
         Some(Command::Stats(args)) => stats::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
         Some(Command::Auth(args)) => auth_cmd::run(args, pure_plugins).into(),
@@ -100,6 +103,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Acp(_)) => Surface::Acp,
         Some(Command::Config(_)) => Surface::Config,
         Some(Command::Session(_)) => Surface::Session,
+        Some(Command::Export(_)) | Some(Command::Import(_)) => Surface::Session,
         Some(Command::Stats(_)) => Surface::Session,
         Some(Command::Agent(_)) | Some(Command::Generate(_)) => Surface::Agent,
         Some(Command::Auth(_)) => Surface::Auth,

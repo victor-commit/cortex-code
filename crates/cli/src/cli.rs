@@ -70,6 +70,12 @@ pub enum Command {
     /// the data directory; the default location is left untouched when an override is used.
     Session(SessionArgs),
 
+    /// Export one persisted session as a portable JSON artifact.
+    Export(ExportArgs),
+
+    /// Import a previously exported JSON artifact into persistence.
+    Import(ImportArgs),
+
     /// Summarize persisted token usage and cost.
     Stats(StatsArgs),
 
@@ -462,6 +468,20 @@ pub struct SessionMessageArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// The session id to export.
+    #[arg(value_name = "SESSION_ID")]
+    pub session_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Path to a JSON artifact produced by `cortex export` (use `-` for stdin).
+    #[arg(value_name = "ARTIFACT")]
+    pub artifact: String,
+}
+
+#[derive(Debug, Args)]
 pub struct StatsArgs {
     #[command(flatten)]
     pub format: FormatArgs,
@@ -654,7 +674,8 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
         for sub in [
-            "run", "tui", "serve", "acp", "session", "stats", "agent", "auth", "models", "generate",
+            "run", "tui", "serve", "acp", "session", "export", "import", "stats", "agent", "auth",
+            "models", "generate",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
@@ -874,6 +895,24 @@ mod tests {
             err.kind(),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
+    }
+
+    #[test]
+    fn export_parses_session_id() {
+        let cli = Cli::try_parse_from(["cortex", "export", "ses_123"]).expect("parse");
+        match cli.command {
+            Some(Command::Export(args)) => assert_eq!(args.session_id, "ses_123"),
+            other => panic!("expected export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_parses_artifact_path() {
+        let cli = Cli::try_parse_from(["cortex", "import", "artifact.json"]).expect("parse");
+        match cli.command {
+            Some(Command::Import(args)) => assert_eq!(args.artifact, "artifact.json"),
+            other => panic!("expected import, got {other:?}"),
+        }
     }
 
     #[test]
