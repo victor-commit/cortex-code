@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
+use std::sync::{Barrier, mpsc};
 
 use db::Database;
 use protocol::{TodoItem, TodoStatus};
@@ -70,6 +70,60 @@ fn file_databases_use_wal_journal_mode_for_cross_process_sharing() {
         journal_mode, "wal",
         "file-backed shared stores should use WAL for multi-process readers/writers"
     );
+}
+
+// Concurrent FIRST-USE: several connections open the SAME brand-new path at the same instant (no
+// pre-materialization), so they genuinely race on the initial `journal_mode=WAL` switch and the
+// first migration — the exact contention that backs the CLI `concurrent_first_use_is_safe` and the
+// distinct-session `cortex run` tests. SQLite does NOT route the brief EXCLUSIVE lock the WAL
+// switch needs through the busy handler, so a plain busy timeout cannot absorb it; `Database::open`
+// must instead succeed via its bounded open retry. Every open must return `Ok` (never a
+// `Busy`/locked error), and the resulting single shared file must be uncorrupted. Repeated rounds
+// amplify the race so the guarantee is not luck.
+#[test]
+fn concurrent_first_use_open_never_returns_busy() {
+    const ROUNDS: usize = 24;
+    const OPENERS: usize = 6;
+    for round in 0..ROUNDS {
+        let scratch = Scratch::new();
+        let db_path = Arc::new(scratch.path("cortex.db"));
+        // A barrier releases every opener together, so they hit the WAL switch simultaneously.
+        let barrier = Arc::new(Barrier::new(OPENERS));
+        let mut handles = Vec::new();
+        for _ in 0..OPENERS {
+            let path = Arc::clone(&db_path);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                Database::open(path.as_ref()).map(|_| ())
+            }));
+        }
+        for handle in handles {
+            let result = handle.join().expect("opener thread");
+            assert!(
+                result.is_ok(),
+                "round {round}: concurrent first-use open must not fail with busy/locked \
+                 contention, got: {:?}",
+                result.err()
+            );
+        }
+        // The shared file ends up valid WAL-mode SQLite with the schema fully applied exactly once.
+        let db = Database::open(db_path.as_ref()).expect("reopen migrated db");
+        assert_eq!(db.integrity_check().expect("integrity"), "ok");
+        assert_eq!(
+            db.schema_version().expect("schema version"),
+            db::latest_version(),
+            "round {round}: the racing opens converge on a single fully-migrated schema"
+        );
+        let journal_mode: String = rusqlite::Connection::open(db.path())
+            .expect("raw connection")
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(
+            journal_mode, "wal",
+            "round {round}: WAL behavior is preserved after the contended first use"
+        );
+    }
 }
 
 // `integrity_check` reports `ok` for a freshly migrated database and for one carrying real rows.

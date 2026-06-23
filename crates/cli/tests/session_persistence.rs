@@ -357,36 +357,45 @@ fn show_unknown_session_errors_cleanly() {
     assert!(!stderr.contains("panicked"));
 }
 
-// VAL-SKEL-068: two simultaneous first-use processes on one fresh path each create/migrate the
-// DB without corruption, double-applied migrations, or a panic.
+// VAL-SKEL-068: several simultaneous first-use processes on one fresh path each create/migrate the
+// DB without corruption, double-applied migrations, or a panic. Using more than two cross-process
+// openers makes the contention on the one-time `journal_mode=WAL` switch (which SQLite returns busy
+// for immediately, bypassing the busy timeout) likely rather than rare, so this is a real
+// regression guard for the bounded open-retry hardening: a transient SQLite busy must not surface
+// as a "database is busy" failure.
 #[test]
 fn concurrent_first_use_is_safe() {
+    const PROCESSES: usize = 5;
     let scratch = Scratch::new();
     let db = scratch.path("cortex.db");
     assert!(!db.exists(), "precondition: fresh path");
     let db_str = db.to_str().unwrap();
 
-    // Spawn both processes before draining either, so their first-use migrations race.
-    let a = spawn(scratch.command(&[("CORTEX_DB_PATH", db_str)], &["new"]));
-    let b = spawn(scratch.command(&[("CORTEX_DB_PATH", db_str)], &["new"]));
-    let out_a = collect(a);
-    let out_b = collect(b);
+    // Spawn every process before draining any, so their first-use migrations genuinely race.
+    let children: Vec<Child> = (0..PROCESSES)
+        .map(|_| spawn(scratch.command(&[("CORTEX_DB_PATH", db_str)], &["new"])))
+        .collect();
+    let outputs: Vec<Output> = children.into_iter().map(collect).collect();
 
-    for (label, out) in [("A", &out_a), ("B", &out_b)] {
+    for (index, out) in outputs.iter().enumerate() {
         assert_eq!(
             out.status.code(),
             Some(0),
-            "process {label} must exit 0; stderr: {}",
+            "process {index} must exit 0 (no transient SQLite-busy failure); stderr: {}",
             stderr_str(out)
         );
+        let stderr = stderr_str(out);
         assert!(
-            !stderr_str(out).contains("panicked"),
-            "process {label} must not panic: {}",
-            stderr_str(out)
+            !stderr.contains("panicked"),
+            "process {index} must not panic: {stderr}"
+        );
+        assert!(
+            !stderr.contains("database is busy"),
+            "process {index} must not fail with a transient busy error: {stderr}"
         );
     }
 
-    // After both exit: a single valid DB at the expected version with intact schema.
+    // After all exit: a single valid DB at the expected version with intact schema.
     assert!(integrity_ok(&db), "DB passes integrity_check");
     assert_eq!(
         migration_row_count(&db),
@@ -402,7 +411,7 @@ fn concurrent_first_use_is_safe() {
     let listed_json: Value = serde_json::from_slice(&listed.stdout).expect("json");
     assert_eq!(
         listed_json["sessions"].as_array().unwrap().len(),
-        2,
-        "both concurrent sessions are present, none lost"
+        PROCESSES,
+        "every concurrent session is present, none lost"
     );
 }
