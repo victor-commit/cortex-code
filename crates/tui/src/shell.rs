@@ -39,12 +39,12 @@ pub fn run(command: &str, cwd: &Path) -> ShellOutcome {
 
     match result {
         Ok(output) => ShellOutcome {
-            command,
+            command: redaction::redact(&command),
             output: render(&output),
             success: output.status.success(),
         },
         Err(err) => ShellOutcome {
-            command,
+            command: redaction::redact(&command),
             output: format!("failed to run command: {err}"),
             success: false,
         },

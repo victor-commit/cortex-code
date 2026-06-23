@@ -178,7 +178,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Err(exit) => return exit,
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let audit_sink = Arc::new(audit::AuditSink::from_env_or_cwd(&session_id, &cwd));
+    let audit_sink = Arc::new(
+        audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
+            .with_surface_and_source("run", "headless"),
+    );
 
     // Fail closed on the network kill-switch before resolving a credential or opening any socket,
     // so a refusal never touches the network even when a key is present. The refusal itself is a
@@ -1004,6 +1007,7 @@ async fn stream_text(
         publish_runner_event(&bus, &event);
         if let RunnerEvent::TextDelta { text } = event {
             if !text.is_empty() {
+                let text = redaction::redact(&text);
                 let _ = handle.write_all(text.as_bytes());
                 let _ = handle.flush();
                 wrote_any = true;
@@ -1311,7 +1315,7 @@ fn render_json_document(
         tool_results,
     ))?;
     line.push('\n');
-    Ok(line)
+    Ok(redaction::redact(&line))
 }
 
 /// Render the leading `--jsonl` session event (without the trailing newline). It announces the
@@ -1329,6 +1333,7 @@ fn render_session_line(
         tools: tool_names,
         tool_definitions,
     })
+    .map(|line| redaction::redact(&line))
 }
 
 /// Project a full tool-definition snapshot to its advertised names, preserving order.
@@ -1342,7 +1347,7 @@ fn tool_names_from(tool_definitions: &[ToolDef]) -> Vec<String> {
 /// Render one normalized runner event as a single JSONL line (without the trailing newline). Every
 /// event serializes to an object carrying a stable `type` discriminator.
 fn render_event_line(event: &RunnerEvent) -> Result<String, serde_json::Error> {
-    serde_json::to_string(event)
+    serde_json::to_string(event).map(|line| redaction::redact(&line))
 }
 
 /// Publish runner tool events onto the typed event bus so plugin `event` hooks and future audit

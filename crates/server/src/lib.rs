@@ -73,6 +73,7 @@ pub struct HealthResponse {
 pub struct ServerState {
     db_path: PathBuf,
     cwd: PathBuf,
+    audit_path: Option<PathBuf>,
     checkpoint_base: Option<PathBuf>,
     config: ConfigContext,
     provider: ProviderSource,
@@ -91,6 +92,7 @@ impl ServerState {
         Self {
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            audit_path: None,
             checkpoint_base: None,
             config: ConfigContext::from_process(),
             provider: ProviderSource::OpenRouter,
@@ -109,6 +111,7 @@ impl ServerState {
         Self {
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            audit_path: None,
             checkpoint_base: None,
             config: ConfigContext::from_process(),
             provider: ProviderSource::Fixed { provider },
@@ -135,6 +138,16 @@ impl ServerState {
     #[must_use]
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = cwd.into();
+        self
+    }
+
+    /// Override the audit JSONL path used by server-originated turns and commands.
+    ///
+    /// The process path normally resolves `CORTEX_AUDIT_LOG` on demand; tests inject a path to avoid
+    /// mutating global environment while still proving the same durable sink behavior.
+    #[must_use]
+    pub fn with_audit_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.audit_path = Some(path.into());
         self
     }
 
@@ -189,6 +202,7 @@ impl std::fmt::Debug for ServerState {
         f.debug_struct("ServerState")
             .field("db_path", &self.db_path)
             .field("cwd", &self.cwd)
+            .field("audit_path", &self.audit_path)
             .field("auth", &self.auth)
             .field("event_subscribers", &self.event_bus.subscriber_count())
             .field("prompt_buffers", &self.prompt_buffers.len())
@@ -709,6 +723,7 @@ async fn event_stream(
                         })
                         .to_string()
                     });
+                    let data = redaction::redact(&data);
                     let frame = SseEvent::default().event(event.kind()).data(data);
                     return Some((Ok(frame), receiver));
                 }
@@ -1107,11 +1122,13 @@ async fn execute_command(
         &config_inputs,
         selected_agent,
     )?;
+    let audit_sink = audit_sink_for(&state, &id);
     let mut context = ToolContext::new(state.cwd.clone())
         .with_session(id.clone())
         .with_todo_store(Arc::new(ServerTodoStore {
             db_path: state.db_path.clone(),
-        }));
+        }))
+        .with_audit(audit_sink);
     if let Some(permission_engine) = permission_engine {
         context = context.with_permissions(permission_engine);
     }
@@ -1129,8 +1146,8 @@ async fn execute_command(
     let is_error = output.is_error;
     Ok(Json(CommandResponse {
         status: if is_error { "error" } else { "completed" },
-        command,
-        output: output.model_content(),
+        command: redaction::redact(&command),
+        output: redaction::redact(&output.model_content()),
         is_error,
     }))
 }
@@ -1204,6 +1221,14 @@ fn open_database(state: &ServerState) -> Result<Database, ApiError> {
     Database::open(state.db_path()).map_err(ApiError::from_db)
 }
 
+fn audit_sink_for(state: &ServerState, session_id: &str) -> Arc<audit::AuditSink> {
+    let sink = match &state.audit_path {
+        Some(path) => audit::AuditSink::new(path, session_id),
+        None => audit::AuditSink::from_env_or_cwd(session_id, &state.cwd),
+    };
+    Arc::new(sink.with_surface_and_source("serve", "server"))
+}
+
 fn require_session(state: &ServerState, id: &str) -> Result<Session, ApiError> {
     let db = open_database(state)?;
     db.sessions().require(id).map_err(ApiError::from_db)
@@ -1230,10 +1255,24 @@ async fn run_message_turn(
     .map_err(ApiError::bad_request)?;
     let selected_agent =
         select_turn_agent(effective_config.agent()).map_err(ApiError::bad_request)?;
+    let audit_sink = audit_sink_for(&state, &session_id);
 
     // The kill-switch wins before credential resolution, prompt persistence, or any outbound
     // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
     if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
+        let endpoint =
+            openrouter_chat_endpoint(openrouter_base_url_override(&effective_config).as_deref());
+        let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
+        audit_sink.record_network_call(
+            "llm",
+            Some(providers::OPENROUTER_ID),
+            Some(&selected_model),
+            "POST",
+            &host,
+            &endpoint,
+            None,
+            diagnostic.kind(),
+        );
         return Err(ApiError::diagnostic(
             StatusCode::SERVICE_UNAVAILABLE,
             diagnostic,
@@ -1275,6 +1314,7 @@ async fn run_message_turn(
         state.db_path.clone(),
         state.checkpoint_base.clone(),
         permission_engine,
+        audit_sink,
     );
     let outcome = run_cancellable_turn(
         resolved.provider.as_ref(),
@@ -1316,13 +1356,14 @@ async fn run_message_turn(
         .messages()
         .create(&session_id, "assistant", outcome.answer())
         .map_err(ApiError::from_db)?;
+    let content = redaction::redact(outcome.answer());
 
     Ok(PromptResponse {
         status: "completed",
         model: resolved.model_id,
         agent: selected_agent.name().to_owned(),
         role: Some("assistant"),
-        content: Some(outcome.answer().to_owned()),
+        content: Some(content),
         message: Some(assistant),
         usage: outcome.usage,
         finish_reason: Some(outcome.finish_reason),
@@ -1535,6 +1576,15 @@ fn openrouter_base_url_override(effective: &settings::EffectiveConfig) -> Option
         .or_else(|| provider_openrouter_string(effective, "base_url"))
 }
 
+fn openrouter_chat_endpoint(base_url_override: Option<&str>) -> String {
+    let base = base_url_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(providers::openrouter_base_url);
+    format!("{}/chat/completions", base.trim_end_matches('/'))
+}
+
 fn openrouter_api_key(effective: &settings::EffectiveConfig) -> Option<String> {
     provider_openrouter_string(effective, "api_key")
         .or_else(|| top_level_string(effective, "api_key"))
@@ -1635,6 +1685,7 @@ impl ServerToolDispatcher {
         db_path: PathBuf,
         checkpoint_base: Option<PathBuf>,
         permissions: Option<Arc<PermissionEngine>>,
+        audit: Arc<audit::AuditSink>,
     ) -> Self {
         let registry = match ModelFamily::from_model_id(model_id) {
             ModelFamily::Gpt | ModelFamily::Codex => ToolRegistry::gpt(),
@@ -1645,7 +1696,8 @@ impl ServerToolDispatcher {
         let checkpoint_recorder = open_checkpoint_recorder(&cwd, checkpoint_base, &session_id);
         let mut context = ToolContext::new(cwd)
             .with_session(session_id)
-            .with_todo_store(Arc::new(ServerTodoStore { db_path }));
+            .with_todo_store(Arc::new(ServerTodoStore { db_path }))
+            .with_audit(audit);
         if let Some(permissions) = permissions {
             context = context.with_permissions(permissions);
         }

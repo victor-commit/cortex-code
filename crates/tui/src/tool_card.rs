@@ -44,10 +44,11 @@ impl ToolCard {
     #[must_use]
     pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: &str) -> Self {
         let name = name.into();
+        let arguments = redaction::redact(arguments);
         Self {
             id: id.into(),
-            summary: summarize_args(&name, arguments),
-            args_detail: pretty_args(arguments),
+            summary: redaction::redact(&summarize_args(&name, &arguments)),
+            args_detail: redaction::redact(&pretty_args(&arguments)),
             name,
             output: String::new(),
             status: ToolStatus::Running,
@@ -59,7 +60,7 @@ impl ToolCard {
     /// `is_error` selects [`ToolStatus::Failed`] (a distinct error state) over
     /// [`ToolStatus::Completed`]; `parts` are flattened to the text shown in the expanded view.
     pub fn complete(&mut self, parts: &[ToolResultPart], is_error: bool) {
-        self.output = text_from_parts(parts);
+        self.output = redaction::redact(&text_from_parts(parts));
         self.status = if is_error {
             ToolStatus::Failed
         } else {

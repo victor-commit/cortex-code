@@ -21,6 +21,8 @@ pub struct AuditSink {
     path: PathBuf,
     session: String,
     turn_id: String,
+    surface: String,
+    source: String,
     parent_session: Option<String>,
     sequence: Arc<AtomicU64>,
     write_lock: Arc<Mutex<()>>,
@@ -35,6 +37,8 @@ impl AuditSink {
             path: path.into(),
             session: session.into(),
             turn_id: new_turn_id(),
+            surface: "unknown".to_owned(),
+            source: "unknown".to_owned(),
             parent_session: None,
             sequence: Arc::new(AtomicU64::new(0)),
             write_lock: Arc::new(Mutex::new(())),
@@ -50,6 +54,27 @@ impl AuditSink {
             .map(PathBuf::from)
             .unwrap_or_else(|| cwd.join(".cortex").join("audit.jsonl"));
         Self::new(path, session)
+    }
+
+    /// Attribute every record emitted by this sink to a concrete surface/source.
+    #[must_use]
+    pub fn with_surface(mut self, surface: impl Into<String>) -> Self {
+        let surface = normalize_attribution(surface.into());
+        self.source = surface.clone();
+        self.surface = surface;
+        self
+    }
+
+    /// Attribute records to a stable surface id plus a human-readable source label.
+    #[must_use]
+    pub fn with_surface_and_source(
+        mut self,
+        surface: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Self {
+        self.surface = normalize_attribution(surface.into());
+        self.source = normalize_attribution(source.into());
+        self
     }
 
     /// The JSONL path this sink appends to.
@@ -70,6 +95,12 @@ impl AuditSink {
         &self.turn_id
     }
 
+    /// The surface id carried on every record written by this sink.
+    #[must_use]
+    pub fn surface(&self) -> &str {
+        &self.surface
+    }
+
     /// Build a child sink for a subagent session using the same path and monotonic sequence as
     /// the parent, while attributing records to the child session and linking back to the parent.
     #[must_use]
@@ -78,6 +109,8 @@ impl AuditSink {
             path: self.path.clone(),
             session: session.into(),
             turn_id: new_turn_id(),
+            surface: self.surface.clone(),
+            source: self.source.clone(),
             parent_session: Some(self.session.clone()),
             sequence: self.sequence.clone(),
             write_lock: self.write_lock.clone(),
@@ -367,6 +400,8 @@ impl AuditSink {
         insert_str(&mut record, "session", &self.session);
         insert_str(&mut record, "session_id", &self.session);
         insert_str(&mut record, "turn_id", &self.turn_id);
+        insert_str(&mut record, "surface", &self.surface);
+        insert_str(&mut record, "source", &self.source);
         if let Some(parent_session) = &self.parent_session {
             insert_str(&mut record, "parent_session", parent_session);
             insert_str(&mut record, "parent_session_id", parent_session);
@@ -523,6 +558,15 @@ fn normalize_secret_literal(value: &str) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
+}
+
+fn normalize_attribution(value: String) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "unknown".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn redact_object(map: Map<String, Value>, secrets: &[String]) -> Map<String, Value> {
@@ -767,6 +811,26 @@ mod tests {
         assert_eq!(record["headers"]["authorization"], redaction::PLACEHOLDER);
         assert_eq!(record["headers"]["X-Trace"], "abc");
         assert_eq!(record["headers"]["X-Secret-Token"], redaction::PLACEHOLDER);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn records_surface_and_source_attribution() {
+        let path = temp_log("surface");
+        let sink = AuditSink::new(&path, "ses_surface").with_surface("tui");
+
+        sink.record_shell_execution(
+            "echo from-tui",
+            Path::new("/tmp/project"),
+            Some(0),
+            "success",
+        );
+
+        let records = read_jsonl(&path).expect("records");
+        let record = &records[0];
+        assert_eq!(record["surface"], "tui");
+        assert_eq!(record["source"], "tui");
+        assert_eq!(record["type"], "shell_execution");
         let _ = std::fs::remove_file(path);
     }
 

@@ -703,7 +703,8 @@ impl App {
         cancel: Arc<AtomicBool>,
     ) {
         let header = self.pending_header.take().unwrap_or_else(|| prompt.clone());
-        self.transcript.push(Entry::User(header));
+        self.transcript
+            .push(Entry::User(redaction::redact(&header)));
         self.transcript
             .push(Entry::Assistant(AssistantTurn::default()));
         self.turn_errored = false;
@@ -927,11 +928,12 @@ impl App {
         if text.is_empty() {
             return;
         }
+        let text = redaction::redact(text);
         match self.transcript.last_mut() {
-            Some(Entry::Assistant(turn)) => turn.answer.push_str(text),
+            Some(Entry::Assistant(turn)) => turn.answer.push_str(&text),
             _ => self.transcript.push(Entry::Assistant(AssistantTurn {
                 reasoning: String::new(),
-                answer: text.to_owned(),
+                answer: text,
             })),
         }
     }
@@ -941,10 +943,11 @@ impl App {
         if text.is_empty() {
             return;
         }
+        let text = redaction::redact(text);
         match self.transcript.last_mut() {
-            Some(Entry::Assistant(turn)) => turn.reasoning.push_str(text),
+            Some(Entry::Assistant(turn)) => turn.reasoning.push_str(&text),
             _ => self.transcript.push(Entry::Assistant(AssistantTurn {
-                reasoning: text.to_owned(),
+                reasoning: text,
                 answer: String::new(),
             })),
         }
@@ -952,6 +955,7 @@ impl App {
 
     /// Surface a turn error: drop an empty in-progress assistant entry, then record the error.
     fn set_turn_error(&mut self, message: String) {
+        let message = redaction::redact(&message);
         if let Some(Entry::Assistant(turn)) = self.transcript.last() {
             if turn.answer.is_empty() && turn.reasoning.is_empty() {
                 self.transcript.pop();
@@ -2276,6 +2280,7 @@ impl App {
     /// Surface a transient error in the transcript and as a distinct error toast (used when the
     /// external editor fails, a session action fails, or `/export` cannot write).
     pub fn note_error(&mut self, message: String) {
+        let message = redaction::redact(&message);
         self.push_toast(ToastLevel::Error, message.clone());
         self.transcript.push(Entry::Error(message));
     }
@@ -3312,6 +3317,10 @@ mod tests {
         Arc::new(AtomicBool::new(false))
     }
 
+    fn fake_secret() -> String {
+        format!("sk-{}-{}", "or-v1", "facefeed".repeat(8))
+    }
+
     /// Deliver a permission ask to the app (as the worker would), returning the receiver the test
     /// reads the answered decision from.
     fn deliver_permission(
@@ -3964,6 +3973,50 @@ mod tests {
     }
 
     #[test]
+    fn transcript_redacts_user_answer_reasoning_and_errors() {
+        let secret = fake_secret();
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(format!("prompt carries {secret}"), rx, flag());
+
+        tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
+            text: format!("reasoning mentions {secret}"),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: format!("answer mentions {secret}"),
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        match &a.transcript[0] {
+            Entry::User(text) => {
+                assert!(!text.contains(&secret), "user entry leaked: {text}");
+                assert!(text.contains(redaction::PLACEHOLDER), "user entry: {text}");
+            }
+            other => panic!("expected user entry, got {other:?}"),
+        }
+        let turn = last_assistant(&a);
+        assert!(
+            !turn.reasoning.contains(&secret) && !turn.answer.contains(&secret),
+            "assistant entry leaked: {turn:?}"
+        );
+        assert!(turn.reasoning.contains(redaction::PLACEHOLDER), "{turn:?}");
+        assert!(turn.answer.contains(redaction::PLACEHOLDER), "{turn:?}");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("second".to_owned(), rx, flag());
+        tx.send(TurnMessage::SetupError(format!("setup mentions {secret}")))
+            .unwrap();
+        a.poll_turn();
+        assert!(matches!(
+            a.transcript.last(),
+            Some(Entry::Error(message))
+                if !message.contains(&secret) && message.contains(redaction::PLACEHOLDER)
+        ));
+    }
+
+    #[test]
     fn no_reasoning_leaves_an_empty_region() {
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4155,6 +4208,38 @@ mod tests {
         let card = last_tool(&a);
         assert_eq!(card.status, ToolStatus::Completed);
         assert!(card.output.contains("fn main"));
+    }
+
+    #[test]
+    fn tool_cards_redact_secret_arguments_and_outputs() {
+        let secret = fake_secret();
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("run a tool".to_owned(), rx, flag());
+
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "call_secret".to_owned(),
+            name: "bash".to_owned(),
+            arguments: serde_json::json!({ "command": format!("echo {secret}") }).to_string(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "call_secret".to_owned(),
+            name: "bash".to_owned(),
+            parts: vec![tool_part(&format!("stdout: {secret}"))],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        let card = last_tool(&a);
+        for rendered in [&card.summary, &card.args_detail, &card.output] {
+            assert!(!rendered.contains(&secret), "tool card leaked: {rendered}");
+            assert!(
+                rendered.contains(redaction::PLACEHOLDER),
+                "tool card should show placeholder: {rendered}"
+            );
+        }
     }
 
     #[test]

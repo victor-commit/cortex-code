@@ -78,6 +78,13 @@ impl TurnDispatcher {
         self
     }
 
+    /// Attach the durable audit sink used to record real TUI tool effects.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
+        self.context = self.context.with_audit(audit);
+        self
+    }
+
     /// Attach the pre-mutation checkpoint recorder so each mutating tool snapshots a file's prior
     /// state before it changes it (builder style). Without this the TUI turn records no checkpoints,
     /// so `/undo` would have nothing to restore.
@@ -236,7 +243,7 @@ impl ToolDispatcher for TurnDispatcher {
                             is_error: true,
                         };
                     }
-                    return dispatch_mcp(manager, call).await;
+                    return dispatch_mcp(manager, call, &self.context).await;
                 }
             }
 
@@ -272,7 +279,12 @@ impl ToolDispatcher for TurnDispatcher {
 /// Execute one MCP tool call through the manager and convert the relayed result into the runner's
 /// [`ToolDispatchResult`]. A non-object/unparseable arguments string or a transport error resolves
 /// to an error result so the turn continues and the model can recover.
-async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResult {
+async fn dispatch_mcp(
+    manager: &McpManager,
+    call: &ToolCall,
+    ctx: &ToolContext,
+) -> ToolDispatchResult {
+    let audit_tool = manager.tool_info(&call.name);
     let arguments = if call.arguments.trim().is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
     } else {
@@ -298,6 +310,16 @@ async fn dispatch_mcp(manager: &McpManager, call: &ToolCall) -> ToolDispatchResu
     } else {
         manager.call(&call.name, arguments).await
     };
+
+    if let Some(tool) = audit_tool
+        && let Some(audit) = ctx.audit_sink()
+    {
+        let outcome = match &result {
+            Ok(relayed) if !relayed.is_error => "success",
+            Ok(_) | Err(_) => "error",
+        };
+        audit.record_mcp_tool_call(&tool.server, &tool.tool, &tool.id, &call.arguments, outcome);
+    }
 
     match result {
         Ok(relayed) => ToolDispatchResult {
@@ -661,5 +683,30 @@ mod tests {
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].content, "visible in TUI");
         assert_eq!(todos[0].status, protocol::TodoStatus::Completed);
+    }
+
+    #[test]
+    fn tui_dispatcher_audits_shell_execution_with_surface() {
+        let dir = scratch_dir("audit");
+        let audit = Arc::new(
+            audit::AuditSink::new(dir.join("audit.jsonl"), "ses_tui_audit").with_surface("tui"),
+        );
+        let (tx, _rx) = channel();
+        let dispatcher =
+            TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx)
+                .with_audit(audit.clone());
+
+        let result =
+            block_on(dispatcher.dispatch(&call("bash", r#"{"command":"echo tui-audit-marker"}"#)));
+        assert!(!result.is_error, "bash should succeed: {}", result.content);
+
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(records.iter().any(|record| {
+            record["type"] == "shell_execution"
+                && record["surface"] == "tui"
+                && record["source"] == "tui"
+                && record["session"] == "ses_tui_audit"
+                && record["command"] == "echo tui-audit-marker"
+        }));
     }
 }

@@ -27,6 +27,7 @@ checkpoints = { workspace = true }
 format = { workspace = true }
 lsp = { workspace = true }
 mcp = { workspace = true }
+audit = { workspace = true }
 tui-widgets = { workspace = true }
 tui-components = { workspace = true }
 frame = { workspace = true }

@@ -153,6 +153,10 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 .map(|remote| remote.session_id.clone())
                                 .or(session_id)
                                 .unwrap_or_else(ephemeral_session_id);
+                            let audit_sink = Arc::new(
+                                audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
+                                    .with_surface("tui"),
+                            );
                             let lsp_hooks =
                                 Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
                             let mutation_hooks =
@@ -183,6 +187,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 session_id.clone(),
                                 tx_events.clone(),
                             )
+                            .with_audit(audit_sink)
                             .with_permissions(engine)
                             .with_hooks(mutation_hooks)
                             .with_lsp_service(lsp_hooks.clone())
