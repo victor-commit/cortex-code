@@ -18,6 +18,10 @@ const OUTBOUND_OPERATION: &str = "agent generation turn";
 
 /// Dispatch the generator command.
 pub fn run(args: GenerateArgs) -> Exit {
+    if !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("generate");
+    }
+
     if args.description.trim().is_empty() {
         eprintln!("cortex generate: description must not be empty");
         return Exit::Usage;

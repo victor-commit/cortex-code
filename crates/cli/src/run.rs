@@ -64,6 +64,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     if args.command.is_some() {
         return run_command_path(args, bus, pure_plugins);
     }
+    if !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("run");
+    }
 
     let stdin = io::stdin();
     let stdin_is_terminal = stdin.is_terminal();

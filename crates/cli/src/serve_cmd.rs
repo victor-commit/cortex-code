@@ -6,6 +6,10 @@ use events::EventBus;
 use crate::cli::ServeArgs;
 
 pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
+    if !crate::feature_gate::server_enabled() {
+        return crate::feature_gate::server_unavailable("serve");
+    }
+
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

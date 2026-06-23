@@ -13,6 +13,10 @@ use crate::cli::{ModelsArgs, OutputFormat};
 use crate::plugin_bridge::{ModelCostDoc, ModelDoc, PluginState, ProviderDoc};
 
 pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
+    if args.refresh && !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("models --refresh");
+    }
+
     let state = match PluginState::from_process_config(pure_plugins) {
         Ok(state) => state,
         Err(err) => {

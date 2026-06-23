@@ -7,6 +7,7 @@ mod completion_cmd;
 mod config;
 mod custom_agents;
 mod export_import;
+mod feature_gate;
 mod format_bridge;
 mod generate_cmd;
 mod lsp_bridge;

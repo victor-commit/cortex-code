@@ -17,6 +17,10 @@ const DEFAULT_PORT: u16 = 443;
 
 /// Dispatch the `cortex net` subcommands.
 pub fn run(args: NetArgs) -> Exit {
+    if !crate::feature_gate::network_enabled() {
+        return crate::feature_gate::network_unavailable("net check");
+    }
+
     match args.command {
         NetCommand::Check(check) => check_connectivity(check),
     }
