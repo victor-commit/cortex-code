@@ -27,7 +27,8 @@ pub use catalogue::{
 };
 pub use credentials::{
     AUTH_FILE_NAME, AuthPathInputs, Credential, CredentialInputs, CredentialSource, ENV_AUTH_FILE,
-    OPENROUTER_ENV, resolve_credential, store_credential,
+    OPENROUTER_ENV, list_stored_providers, remove_stored_credential, resolve_credential,
+    store_credential,
 };
 pub use openrouter::{
     OPENROUTER_DEFAULT_MODEL, OPENROUTER_ID, openrouter_base_url, openrouter_provider,

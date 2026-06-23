@@ -177,6 +177,45 @@ fn read_stored_key(path: &Path, provider_id: &str) -> Option<String> {
     non_empty(Some(&entry.key))
 }
 
+/// List provider ids that currently have a stored credential in `path`.
+///
+/// Missing/empty files yield an empty list. Invalid JSON yields [`io::ErrorKind::InvalidData`]
+/// so callers can surface a clear diagnostic instead of silently ignoring corruption.
+///
+/// # Errors
+/// Returns an [`io::Error`] when `path` cannot be read or parsed.
+pub fn list_stored_providers(path: &Path) -> io::Result<Vec<String>> {
+    let file = load_auth_file(path)?;
+    Ok(file.entries.into_keys().collect())
+}
+
+/// Remove `provider_id` from the auth store at `path`.
+///
+/// Returns `Ok(true)` when an entry was removed, `Ok(false)` when no entry existed. If the removed
+/// entry was the last one, the store file is deleted.
+///
+/// # Errors
+/// Returns an [`io::Error`] when the store cannot be read, parsed, or rewritten.
+pub fn remove_stored_credential(path: &Path, provider_id: &str) -> io::Result<bool> {
+    let mut file = load_auth_file(path)?;
+    if file.entries.remove(provider_id).is_none() {
+        return Ok(false);
+    }
+
+    if file.entries.is_empty() {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error),
+        }
+    } else {
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        write_private(path, &json)?;
+        Ok(true)
+    }
+}
+
 /// Persist `secret` as `provider_id`'s credential in the 0600 auth store at `path`.
 ///
 /// Existing entries for other providers are preserved. Parent directories are created as needed and
@@ -208,6 +247,16 @@ pub fn store_credential(path: &Path, provider_id: &str, secret: &str) -> io::Res
     let json = serde_json::to_string_pretty(&file)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_private(path, &json)
+}
+
+fn load_auth_file(path: &Path) -> io::Result<AuthFile> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) if contents.trim().is_empty() => Ok(AuthFile::default()),
+        Ok(contents) => serde_json::from_str(&contents)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(AuthFile::default()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Write `contents` to `path`, creating the file owner-only and enforcing 0600 afterward.
@@ -411,6 +460,68 @@ mod tests {
         for (provider, expected) in [("openrouter", "or-key"), ("another", "another-key")] {
             assert_eq!(read_stored_key(&path, provider).as_deref(), Some(expected));
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_stored_providers_is_sorted_and_missing_file_is_empty() {
+        let dir = unique_temp_dir("cred-list");
+        let path = dir.join("auth.json");
+        assert!(
+            list_stored_providers(&path)
+                .expect("missing file should list as empty")
+                .is_empty()
+        );
+
+        store_credential(&path, "zeta", "z").expect("store zeta");
+        store_credential(&path, "alpha", "a").expect("store alpha");
+        assert_eq!(
+            list_stored_providers(&path).expect("list"),
+            vec!["alpha".to_owned(), "zeta".to_owned()]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_stored_credential_removes_the_entry_and_keeps_others() {
+        let dir = unique_temp_dir("cred-remove");
+        let path = dir.join("auth.json");
+        let openrouter_key = fake_key();
+        store_credential(&path, "openrouter", &openrouter_key).expect("store openrouter");
+        store_credential(&path, "another", "another-key").expect("store another");
+
+        assert!(
+            remove_stored_credential(&path, "openrouter").expect("remove openrouter"),
+            "openrouter must be removed"
+        );
+        assert_eq!(
+            list_stored_providers(&path).expect("list after remove"),
+            vec!["another".to_owned()]
+        );
+        let body = std::fs::read_to_string(&path).expect("read auth file");
+        assert!(
+            !body.contains(&openrouter_key),
+            "removed secret must not remain on disk"
+        );
+        assert!(
+            body.contains("another-key"),
+            "other provider must be preserved"
+        );
+
+        assert!(
+            !remove_stored_credential(&path, "openrouter").expect("remove absent entry"),
+            "removing an already-absent provider is a clean no-op"
+        );
+        assert!(
+            remove_stored_credential(&path, "another").expect("remove final provider"),
+            "final provider removal should still report true"
+        );
+        assert!(
+            !path.exists(),
+            "removing the final provider should remove the store file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

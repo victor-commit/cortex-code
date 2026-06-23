@@ -496,7 +496,7 @@ export default async function plugin() {{
 }
 
 #[test]
-fn cortex_pure_env_skips_plugin_registered_auth_and_models() {
+fn cortex_pure_env_skips_plugin_registered_models() {
     if skip_without_runtime() {
         return;
     }
@@ -526,25 +526,6 @@ export default async function plugin() {
         "plugin = [\"./plugin.mjs\"]\n",
     )
     .expect("write config");
-
-    let normal_auth = run(
-        cortex(&sandbox, &["auth", "list", "--format", "json"]),
-        Duration::from_secs(30),
-    );
-    assert_eq!(normal_auth.status.code(), Some(0));
-    assert!(
-        String::from_utf8_lossy(&normal_auth.stdout).contains("plugin-auth"),
-        "normal auth list includes plugin auth"
-    );
-
-    let mut pure_auth = cortex(&sandbox, &["auth", "list", "--format", "json"]);
-    pure_auth.env("CORTEX_PURE", "1");
-    let pure_auth = run(pure_auth, Duration::from_secs(10));
-    assert_eq!(pure_auth.status.code(), Some(0));
-    assert!(
-        !String::from_utf8_lossy(&pure_auth.stdout).contains("plugin-auth"),
-        "CORTEX_PURE removes plugin auth registrations"
-    );
 
     let pure_models = cortex(&sandbox, &["models", "--pure", "--format", "json"]);
     let pure_models = run(pure_models, Duration::from_secs(10));

@@ -15,9 +15,8 @@ use llm::{
 };
 use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
-    LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginModelRegistration,
-    PluginProviderRegistration, PluginRuntimeError, PluginSpec, PluginToolRegistration,
-    RuntimeHost,
+    LoadedPlugin, PluginConfigRule, PluginModelRegistration, PluginProviderRegistration,
+    PluginRuntimeError, PluginSpec, PluginToolRegistration, RuntimeHost,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -180,16 +179,6 @@ impl PluginState {
                     }) as Box<dyn Tool>
                 })
             })
-            .collect()
-    }
-
-    /// Auth methods contributed by plugin `auth` hooks.
-    #[must_use]
-    pub(crate) fn auth_methods(&self) -> Vec<AuthMethodDoc> {
-        self.loaded
-            .iter()
-            .flat_map(|loaded| loaded.report.auth_methods.iter())
-            .map(AuthMethodDoc::from_plugin)
             .collect()
     }
 
@@ -755,40 +744,6 @@ impl CommandInvocation {
 pub(crate) enum CommandBeforeOutcome {
     Run(CommandInvocation),
     Veto { plugin: String, reason: String },
-}
-
-/// One plugin-auth method as emitted by `cortex auth list`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct AuthMethodDoc {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) env: Vec<String>,
-    pub(crate) source: &'static str,
-}
-
-impl AuthMethodDoc {
-    pub(crate) fn openrouter() -> Self {
-        Self {
-            id: providers::OPENROUTER_ID.to_owned(),
-            name: "OpenRouter".to_owned(),
-            description: Some("API key via OPENROUTER_API_KEY or credential store".to_owned()),
-            env: vec![providers::OPENROUTER_ENV.to_owned()],
-            source: "builtin",
-        }
-    }
-
-    fn from_plugin(method: &PluginAuthRegistration) -> Self {
-        Self {
-            id: method.id.clone(),
-            name: non_empty(&method.name).unwrap_or_else(|| method.id.clone()),
-            description: method.description.clone(),
-            env: method.env.clone(),
-            source: "plugin",
-        }
-    }
 }
 
 /// One provider as emitted by `cortex models`.

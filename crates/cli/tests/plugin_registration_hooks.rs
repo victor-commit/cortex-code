@@ -130,7 +130,7 @@ fn run(mut command: Command, timeout: Duration) -> Output {
 }
 
 #[test]
-fn plugin_auth_models_and_provider_surfaces_are_discoverable() {
+fn plugin_models_and_provider_surfaces_are_discoverable() {
     if skip_without_runtime() {
         return;
     }
@@ -142,22 +142,6 @@ fn plugin_auth_models_and_provider_surfaces_are_discoverable() {
         "plugin = [\"./plugin.mjs\"]\n",
     )
     .expect("write config");
-
-    let auth = run(
-        cortex(&sandbox, &["auth", "list", "--format", "json"]),
-        Duration::from_secs(30),
-    );
-    assert_eq!(auth.status.code(), Some(0));
-    let auth_json: serde_json::Value =
-        serde_json::from_slice(&auth.stdout).expect("auth json parses");
-    assert!(
-        auth_json["methods"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|method| method["id"] == "plugin-auth" && method["source"] == "plugin"),
-        "plugin auth method should be listed: {auth_json}"
-    );
 
     let models = run(
         cortex(&sandbox, &["models", "--format", "json"]),
@@ -222,21 +206,6 @@ fn plugin_auth_models_and_provider_surfaces_are_discoverable() {
 #[test]
 fn plugin_registered_surfaces_are_absent_without_the_plugin() {
     let sandbox = Sandbox::new("absent");
-
-    let auth = run(
-        cortex(&sandbox, &["auth", "list", "--format", "json"]),
-        Duration::from_secs(10),
-    );
-    assert_eq!(auth.status.code(), Some(0));
-    let auth_json: serde_json::Value =
-        serde_json::from_slice(&auth.stdout).expect("auth json parses");
-    assert!(
-        !auth_json["methods"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|method| method["id"] == "plugin-auth")
-    );
 
     let models = run(
         cortex(&sandbox, &["models", "--format", "json"]),

@@ -76,7 +76,7 @@ pub enum Command {
     /// List the built-in agent personas selectable with `cortex run --agent`.
     Agent(AgentArgs),
 
-    /// List authentication methods, including methods registered by plugins.
+    /// Manage provider credentials in the local 0600 auth store.
     Auth(AuthArgs),
 
     /// List selectable models, including models registered by plugins.
@@ -169,12 +169,49 @@ pub struct AuthArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// List built-in and plugin-registered authentication methods.
+    /// Store a provider API key non-interactively (flag/env/stdin) in the local 0600 auth store.
+    Login(AuthLoginArgs),
+    /// List providers that currently have a stored credential.
     List(AuthListArgs),
+    /// Remove a stored credential for one provider.
+    Logout(AuthLogoutArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AuthLoginArgs {
+    /// Provider id to store a credential for (for example: `openrouter`).
+    #[arg(value_name = "PROVIDER")]
+    pub provider: String,
+
+    /// API key value to store.
+    ///
+    /// When omitted, `auth login` falls back to a provider env var (for `openrouter`:
+    /// `OPENROUTER_API_KEY`) and then to piped stdin.
+    #[arg(long = "api-key", value_name = "KEY")]
+    pub api_key: Option<String>,
+
+    /// Explicit environment variable name to read the API key from.
+    ///
+    /// Checked only when `--api-key` is not provided.
+    #[arg(long = "api-key-env", value_name = "ENV")]
+    pub api_key_env: Option<String>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]
 pub struct AuthListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AuthLogoutArgs {
+    /// Provider id to remove from the local auth store.
+    #[arg(value_name = "PROVIDER")]
+    pub provider: String,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -643,6 +680,50 @@ mod tests {
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected auth list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_login_parses_provider_key_and_env() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "auth",
+            "login",
+            "openrouter",
+            "--api-key",
+            "abc",
+            "--api-key-env",
+            "OPENROUTER_API_KEY",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Auth(AuthArgs {
+                command: AuthCommand::Login(args),
+            })) => {
+                assert_eq!(args.provider, "openrouter");
+                assert_eq!(args.api_key.as_deref(), Some("abc"));
+                assert_eq!(args.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected auth login, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_logout_parses_provider_and_format() {
+        let cli =
+            Cli::try_parse_from(["cortex", "auth", "logout", "openrouter", "--format", "json"])
+                .expect("parse");
+        match cli.command {
+            Some(Command::Auth(AuthArgs {
+                command: AuthCommand::Logout(args),
+            })) => {
+                assert_eq!(args.provider, "openrouter");
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected auth logout, got {other:?}"),
         }
     }
 
