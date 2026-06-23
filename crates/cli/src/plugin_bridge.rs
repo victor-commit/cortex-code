@@ -806,9 +806,20 @@ impl ProviderDoc {
             id: provider.id.clone(),
             name: non_empty(&provider.name).unwrap_or_else(|| provider.id.clone()),
             source: "plugin",
-            models: provider.models.iter().map(ModelDoc::from_plugin).collect(),
+            models: provider
+                .models
+                .iter()
+                .map(|model| ModelDoc::from_plugin(&provider.id, model))
+                .collect(),
         }
     }
+}
+
+/// Per-token pricing for a model, in USD per million tokens (the models.dev convention).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub(crate) struct ModelCostDoc {
+    pub(crate) input: f64,
+    pub(crate) output: f64,
 }
 
 /// One model as emitted by `cortex models`.
@@ -816,18 +827,33 @@ impl ProviderDoc {
 pub(crate) struct ModelDoc {
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) provider: String,
+    pub(crate) default: bool,
+    pub(crate) attachment: bool,
     pub(crate) tool_call: bool,
     pub(crate) reasoning: bool,
+    pub(crate) cost: ModelCostDoc,
+    pub(crate) context_length: u64,
+    pub(crate) max_output_tokens: u64,
     pub(crate) source: &'static str,
 }
 
 impl ModelDoc {
-    fn from_plugin(model: &PluginModelRegistration) -> Self {
+    fn from_plugin(provider_id: &str, model: &PluginModelRegistration) -> Self {
         Self {
             id: model.id.clone(),
             name: non_empty(&model.name).unwrap_or_else(|| model.id.clone()),
+            provider: provider_id.to_owned(),
+            default: false,
+            attachment: false,
             tool_call: model.tool_call,
             reasoning: model.reasoning,
+            cost: ModelCostDoc {
+                input: 0.0,
+                output: 0.0,
+            },
+            context_length: model.context,
+            max_output_tokens: model.output,
             source: "plugin",
         }
     }

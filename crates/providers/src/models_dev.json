@@ -2,18 +2,26 @@
   "openrouter": {
     "id": "openrouter",
     "name": "OpenRouter",
-    "doc": "https://openrouter.ai/docs",
+    "doc": "https://openrouter.ai/models",
     "api": "https://openrouter.ai/api/v1",
-    "env": ["OPENROUTER_API_KEY"],
+    "env": [
+      "OPENROUTER_API_KEY"
+    ],
     "models": {
       "google/gemini-2.5-flash": {
         "id": "google/gemini-2.5-flash",
         "name": "Gemini 2.5 Flash",
         "attachment": true,
-        "reasoning": false,
+        "reasoning": true,
         "tool_call": true,
-        "cost": { "input": 0.3, "output": 2.5 },
-        "limit": { "context": 1048576, "output": 65536 }
+        "cost": {
+          "input": 0.3,
+          "output": 2.5
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65535
+        }
       },
       "google/gemini-2.5-pro": {
         "id": "google/gemini-2.5-pro",
@@ -21,17 +29,29 @@
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
-        "cost": { "input": 1.25, "output": 10.0 },
-        "limit": { "context": 1048576, "output": 65536 }
+        "cost": {
+          "input": 1.25,
+          "output": 10
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        }
       },
-      "anthropic/claude-3.5-sonnet": {
-        "id": "anthropic/claude-3.5-sonnet",
-        "name": "Claude 3.5 Sonnet",
+      "google/gemini-2.5-flash-lite": {
+        "id": "google/gemini-2.5-flash-lite",
+        "name": "Gemini 2.5 Flash-Lite",
         "attachment": true,
-        "reasoning": false,
+        "reasoning": true,
         "tool_call": true,
-        "cost": { "input": 3.0, "output": 15.0 },
-        "limit": { "context": 200000, "output": 8192 }
+        "cost": {
+          "input": 0.1,
+          "output": 0.4
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65535
+        }
       },
       "anthropic/claude-sonnet-4": {
         "id": "anthropic/claude-sonnet-4",
@@ -39,8 +59,29 @@
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
-        "cost": { "input": 3.0, "output": 15.0 },
-        "limit": { "context": 1000000, "output": 64000 }
+        "cost": {
+          "input": 3,
+          "output": 15
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 64000
+        }
+      },
+      "anthropic/claude-opus-4.1": {
+        "id": "anthropic/claude-opus-4.1",
+        "name": "Claude Opus 4.1 (latest)",
+        "attachment": true,
+        "reasoning": true,
+        "tool_call": true,
+        "cost": {
+          "input": 15,
+          "output": 75
+        },
+        "limit": {
+          "context": 200000,
+          "output": 32000
+        }
       },
       "openai/gpt-4o": {
         "id": "openai/gpt-4o",
@@ -48,8 +89,14 @@
         "attachment": true,
         "reasoning": false,
         "tool_call": true,
-        "cost": { "input": 2.5, "output": 10.0 },
-        "limit": { "context": 128000, "output": 16384 }
+        "cost": {
+          "input": 2.5,
+          "output": 10
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        }
       },
       "openai/gpt-4o-mini": {
         "id": "openai/gpt-4o-mini",
@@ -57,8 +104,104 @@
         "attachment": true,
         "reasoning": false,
         "tool_call": true,
-        "cost": { "input": 0.15, "output": 0.6 },
-        "limit": { "context": 128000, "output": 16384 }
+        "cost": {
+          "input": 0.15,
+          "output": 0.6
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        }
+      },
+      "openai/gpt-4.1": {
+        "id": "openai/gpt-4.1",
+        "name": "GPT-4.1",
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
+        "cost": {
+          "input": 2,
+          "output": 8
+        },
+        "limit": {
+          "context": 1047576,
+          "output": 32768
+        }
+      },
+      "openai/gpt-4.1-mini": {
+        "id": "openai/gpt-4.1-mini",
+        "name": "GPT-4.1 mini",
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
+        "cost": {
+          "input": 0.4,
+          "output": 1.6
+        },
+        "limit": {
+          "context": 1047576,
+          "output": 32768
+        }
+      },
+      "openai/o3": {
+        "id": "openai/o3",
+        "name": "o3",
+        "attachment": true,
+        "reasoning": true,
+        "tool_call": true,
+        "cost": {
+          "input": 2,
+          "output": 8
+        },
+        "limit": {
+          "context": 200000,
+          "output": 100000
+        }
+      },
+      "openai/gpt-5": {
+        "id": "openai/gpt-5",
+        "name": "GPT-5",
+        "attachment": true,
+        "reasoning": true,
+        "tool_call": true,
+        "cost": {
+          "input": 1.25,
+          "output": 10
+        },
+        "limit": {
+          "context": 400000,
+          "output": 128000
+        }
+      },
+      "meta-llama/llama-3.3-70b-instruct": {
+        "id": "meta-llama/llama-3.3-70b-instruct",
+        "name": "Llama-3.3-70B-Instruct",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "cost": {
+          "input": 0.1,
+          "output": 0.32
+        },
+        "limit": {
+          "context": 131072,
+          "output": 16384
+        }
+      },
+      "deepseek/deepseek-chat-v3.1": {
+        "id": "deepseek/deepseek-chat-v3.1",
+        "name": "DeepSeek V3.1",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "cost": {
+          "input": 0.21,
+          "output": 0.79
+        },
+        "limit": {
+          "context": 163840,
+          "output": 32768
+        }
       }
     }
   }

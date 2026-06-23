@@ -242,12 +242,12 @@ mod tests {
 
     #[test]
     fn known_model_resolves_with_its_provider_and_metadata() {
-        let resolved = resolve_model(Some("anthropic/claude-3.5-sonnet"));
+        let resolved = resolve_model(Some("anthropic/claude-sonnet-4"));
         assert_eq!(resolved.provider_id, "openrouter");
-        assert_eq!(resolved.model_id, "anthropic/claude-3.5-sonnet");
+        assert_eq!(resolved.model_id, "anthropic/claude-sonnet-4");
         assert_eq!(
             resolved.info.expect("metadata present").name,
-            "Claude 3.5 Sonnet"
+            "Claude Sonnet 4"
         );
     }
 
