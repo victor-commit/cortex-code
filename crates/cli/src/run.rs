@@ -369,6 +369,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     };
     let provider = plugin_state.wrap_provider(provider);
 
+    if let Err(err) = db
+        .sessions()
+        .set_model(&session_id, Some(&run_config.model.model_id))
+    {
+        eprintln!("cortex run: failed to persist the session model: {err}");
+        return Exit::Failure;
+    }
+
     // Project the session's prior turns into canonical history BEFORE persisting this prompt, so
     // the new user input is sent once (as the turn's input) and not duplicated into the history.
     let history = match load_history(&db, &session_id) {

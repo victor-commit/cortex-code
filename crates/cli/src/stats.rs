@@ -6,7 +6,9 @@
 
 use std::io::{self, Write};
 
-use db::{Database, DbError, DbPathInputs, Session, UsageTotals};
+use std::collections::BTreeMap;
+
+use db::{Database, DbError, DbPathInputs, UsageTotals};
 use errors::Exit;
 use serde::Serialize;
 
@@ -42,39 +44,84 @@ fn open_database() -> Result<Database, Exit> {
 
 fn build_report(db: &Database) -> Result<StatsReport, DbError> {
     let sessions = db.sessions().list()?;
-    let mut breakdown = Vec::with_capacity(sessions.len());
-    let mut totals = UsageTotals {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-        cost: None,
+    let mut report = StatsReport {
+        totals: StatsTotals::default(),
+        models: Vec::new(),
+        sessions: Vec::new(),
     };
+    let mut by_model: BTreeMap<String, StatsTotals> = BTreeMap::new();
     for session in sessions {
-        let usage = db.usage().session_totals(&session.id)?;
-        totals.input_tokens += usage.input_tokens;
-        totals.output_tokens += usage.output_tokens;
-        totals.total_tokens += usage.total_tokens;
-        if let Some(cost) = usage.cost {
-            totals.cost = Some(totals.cost.unwrap_or(0.0) + cost);
+        let usage = StatsTotals::from_usage(db.usage().session_totals(&session.id)?);
+        report.totals.add(usage);
+        if usage.is_zero() {
+            continue;
         }
-        breakdown.push(SessionStats { session, usage });
+        let model = session.model.unwrap_or_else(|| "unknown".to_owned());
+        by_model.entry(model.clone()).or_default().add(usage);
+        report.sessions.push(SessionStats {
+            session_id: session.id,
+            model,
+            usage,
+        });
     }
-    Ok(StatsReport {
-        totals,
-        sessions: breakdown,
-    })
+    report.models = by_model
+        .into_iter()
+        .map(|(model, usage)| ModelStats { model, usage })
+        .collect();
+    Ok(report)
 }
 
 #[derive(Debug, Serialize)]
 struct StatsReport {
-    totals: UsageTotals,
+    totals: StatsTotals,
+    models: Vec<ModelStats>,
     sessions: Vec<SessionStats>,
 }
 
 #[derive(Debug, Serialize)]
 struct SessionStats {
-    session: Session,
-    usage: UsageTotals,
+    session_id: String,
+    model: String,
+    usage: StatsTotals,
+}
+
+#[derive(Debug, Serialize)]
+struct ModelStats {
+    model: String,
+    usage: StatsTotals,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct StatsTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cost: f64,
+}
+
+impl StatsTotals {
+    fn from_usage(usage: UsageTotals) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            cost: usage.cost.unwrap_or(0.0),
+        }
+    }
+
+    fn add(&mut self, other: Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.total_tokens += other.total_tokens;
+        self.cost += other.cost;
+    }
+
+    fn is_zero(self) -> bool {
+        self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.total_tokens == 0
+            && self.cost == 0.0
+    }
 }
 
 fn render_stats(report: &StatsReport) -> String {
@@ -83,18 +130,26 @@ fn render_stats(report: &StatsReport) -> String {
         "input_tokens\t{}\noutput_tokens\t{}\ntotal_tokens\t{}\n",
         report.totals.input_tokens, report.totals.output_tokens, report.totals.total_tokens
     ));
-    if let Some(cost) = report.totals.cost {
-        out.push_str(&format!("cost\t{cost:.8}\n"));
-    } else {
-        out.push_str("cost\t0\n");
+    out.push_str(&format!("cost\t{:.8}\n", report.totals.cost));
+    for item in &report.models {
+        out.push_str(&format!(
+            "model\t{}\t{}\t{}\t{}\t{:.8}\n",
+            item.model,
+            item.usage.input_tokens,
+            item.usage.output_tokens,
+            item.usage.total_tokens,
+            item.usage.cost
+        ));
     }
     for item in &report.sessions {
-        if item.usage.total_tokens == 0 {
-            continue;
-        }
         out.push_str(&format!(
-            "session\t{}\t{}\t{}\n",
-            item.session.id, item.usage.total_tokens, item.usage.output_tokens
+            "session\t{}\t{}\t{}\t{}\t{}\t{:.8}\n",
+            item.session_id,
+            item.model,
+            item.usage.input_tokens,
+            item.usage.output_tokens,
+            item.usage.total_tokens,
+            item.usage.cost
         ));
     }
     out
@@ -135,32 +190,32 @@ fn db_error(err: &DbError) -> Exit {
 mod tests {
     use super::*;
 
-    fn session(id: &str) -> Session {
-        Session {
-            id: id.to_owned(),
-            title: None,
-            created_at: "2026-01-01 00:00:00".to_owned(),
-            updated_at: "2026-01-01 00:00:00".to_owned(),
-            model: None,
-        }
-    }
-
     #[test]
     fn text_stats_include_totals_and_nonzero_sessions() {
         let report = StatsReport {
-            totals: UsageTotals {
+            totals: StatsTotals {
                 input_tokens: 5,
                 output_tokens: 7,
                 total_tokens: 12,
-                cost: Some(0.25),
+                cost: 0.25,
             },
-            sessions: vec![SessionStats {
-                session: session("ses_a"),
-                usage: UsageTotals {
+            models: vec![ModelStats {
+                model: "google/gemini-2.5-flash".to_owned(),
+                usage: StatsTotals {
                     input_tokens: 5,
                     output_tokens: 7,
                     total_tokens: 12,
-                    cost: Some(0.25),
+                    cost: 0.25,
+                },
+            }],
+            sessions: vec![SessionStats {
+                session_id: "ses_a".to_owned(),
+                model: "google/gemini-2.5-flash".to_owned(),
+                usage: StatsTotals {
+                    input_tokens: 5,
+                    output_tokens: 7,
+                    total_tokens: 12,
+                    cost: 0.25,
                 },
             }],
         };
@@ -168,6 +223,13 @@ mod tests {
         let rendered = render_stats(&report);
         assert!(rendered.contains("input_tokens\t5"), "{rendered}");
         assert!(rendered.contains("cost\t0.25000000"), "{rendered}");
-        assert!(rendered.contains("session\tses_a\t12\t7"), "{rendered}");
+        assert!(
+            rendered.contains("model\tgoogle/gemini-2.5-flash\t5\t7\t12\t0.25000000"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("session\tses_a\tgoogle/gemini-2.5-flash\t5\t7\t12\t0.25000000"),
+            "{rendered}"
+        );
     }
 }
