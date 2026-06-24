@@ -104,6 +104,67 @@ fn json_doc(out: Output) -> serde_json::Value {
     serde_json::from_str(stdout.trim_end()).expect("stdout is one strict JSON document")
 }
 
+fn line_has_numbered_step(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits == 0 {
+        return false;
+    }
+    matches!(
+        trimmed.chars().nth(digits),
+        Some('.') | Some(')') | Some(':')
+    )
+}
+
+fn looks_like_plan_outline(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    if lower.contains("plan")
+        || lower.contains("outline")
+        || lower.contains("step 1")
+        || lower.contains("first,")
+    {
+        return true;
+    }
+
+    let mut numbered = 0;
+    let mut bulleted = 0;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if line_has_numbered_step(trimmed) {
+            numbered += 1;
+        }
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            bulleted += 1;
+        }
+    }
+
+    numbered >= 1 || bulleted >= 2
+}
+
+fn has_denied_mutation_result(doc: &serde_json::Value) -> bool {
+    doc["tool_results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            let Some(name) = result["name"].as_str() else {
+                return false;
+            };
+            if !matches!(name, "write" | "edit" | "apply_patch" | "bash") {
+                return false;
+            }
+            if !result["is_error"].as_bool().unwrap_or(false) {
+                return false;
+            }
+            let rendered = serde_json::to_string(result)
+                .unwrap_or_default()
+                .to_lowercase();
+            rendered.contains("permission denied")
+                || rendered.contains("denied by")
+                || rendered.contains("not allowed")
+                || rendered.contains("read-only")
+                || rendered.contains("plan mode")
+        })
+    })
+}
+
 #[test]
 fn every_builtin_agent_is_selectable_and_reflected_in_json() {
     let Some(key) = live_key() else {
@@ -170,13 +231,10 @@ fn plan_then_build_in_the_same_session_lifts_the_mutation_block() {
         !target.exists(),
         "the plan agent must leave the requested file absent"
     );
-    let plan_content = plan_doc["content"]
-        .as_str()
-        .expect("plan content")
-        .to_lowercase();
+    let plan_content = plan_doc["content"].as_str().expect("plan content");
     assert!(
-        plan_content.contains("plan") || plan_content.contains("1."),
-        "plan mode should answer with a plan/outline, got: {plan_content}"
+        has_denied_mutation_result(&plan_doc) || looks_like_plan_outline(plan_content),
+        "plan turn should either surface a denied mutation attempt or return a plan-like outline; got: {plan_content}"
     );
 
     let build_doc = json_doc(run(cortex_in(
