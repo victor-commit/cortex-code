@@ -2739,6 +2739,7 @@ dependencies = [
  "settings",
  "thiserror",
  "tokio",
+ "toml",
  "tools",
  "tower",
 ]

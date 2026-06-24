@@ -44,6 +44,9 @@ use thiserror::Error;
 use tokio::{net::TcpListener, sync::broadcast, sync::watch};
 use tools::{ToolContext, ToolRegistry};
 
+#[allow(dead_code)]
+#[path = "../../cli/src/custom_agents.rs"]
+mod custom_agents;
 mod openapi;
 
 /// First allowed port for `cortex serve` and server test fixtures.
@@ -1252,14 +1255,14 @@ async fn execute_command(
 
     let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
     let effective_config = settings::load(config_inputs.clone()).map_err(config_api_error)?;
-    let selected_agent =
-        select_turn_agent(effective_config.agent()).map_err(ApiError::bad_request)?;
+    let selected_agent = resolve_turn_agent(&config_inputs, effective_config.agent(), "serve")
+        .map_err(ApiError::bad_request)?;
     let permission_engine = permission_engine_for_turn(
         state.event_bus.clone(),
         &id,
         &call_id,
         &config_inputs,
-        selected_agent,
+        &selected_agent,
     )?;
     let audit_sink = audit_sink_for(&state, &id);
     let mut context = ToolContext::new(state.cwd.clone())
@@ -1299,7 +1302,7 @@ async fn abort_session(
     db.sessions().require(&id).map_err(ApiError::from_db)?;
     let server_active = state.active_turns.abort(&id)?;
     let remote_active = state.remote_turns.is_active(&id)?;
-    if let Err(err) = write_remote_abort_request(&id) {
+    if remote_active && let Err(err) = write_remote_abort_request(&id) {
         eprintln!("cortex serve: failed to write remote abort marker for session {id}: {err}");
     }
     Ok(Json(AbortResponse {
@@ -1390,14 +1393,15 @@ async fn run_message_turn(
     for warning in project_memory.warnings() {
         eprintln!("cortex serve: {warning}");
     }
+    let selected_agent = resolve_turn_agent(&config_inputs, effective_config.agent(), "serve")
+        .map_err(ApiError::bad_request)?;
     let selected_model = select_turn_model(
         request_model.as_deref(),
+        selected_agent.model(),
         session.model.as_deref(),
         effective_config.model(),
     )
     .map_err(ApiError::bad_request)?;
-    let selected_agent =
-        select_turn_agent(effective_config.agent()).map_err(ApiError::bad_request)?;
     let audit_sink = audit_sink_for(&state, &session_id);
 
     // The kill-switch wins before credential resolution, prompt persistence, or any outbound
@@ -1436,6 +1440,11 @@ async fn run_message_turn(
     .with_audit(audit_sink.clone());
     let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
     let history = load_history(&db, &session_id)?;
+    let (abort_tx, abort_rx) = watch::channel(false);
+    let _active = state
+        .active_turns
+        .insert(session_id.clone(), abort_tx)
+        .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
     let user_message = db
         .messages()
         .create(&session_id, "user", &prompt)
@@ -1443,25 +1452,21 @@ async fn run_message_turn(
     let started_event = Event::turn_started(&session_id, &user_message.id);
     state.event_bus.publish(&started_event);
     plugin_hooks.invoke_event(&started_event);
-    let (abort_tx, abort_rx) = watch::channel(false);
-    let _active = state
-        .active_turns
-        .insert(session_id.clone(), abort_tx)
-        .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
 
-    let system = SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process())
-        .with_project_memory(project_memory.render())
-        .with_agent(selected_agent)
-        .render();
-    let turn = Turn::new(&resolved.model_id, system, prompt)
+    let system =
+        render_system_context(&resolved.model_id, &selected_agent, project_memory.render());
+    let mut turn = Turn::new(&resolved.model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction_policy(&resolved.model));
+    if let Some(temperature) = selected_agent.temperature() {
+        turn = turn.with_temperature(temperature);
+    }
     let permission_engine = permission_engine_for_turn(
         state.event_bus.clone(),
         &session_id,
         &user_message.id,
         &config_inputs,
-        selected_agent,
+        &selected_agent,
     )?;
     let dispatcher = ServerToolDispatcher::for_model(
         state.cwd.clone(),
@@ -1574,11 +1579,13 @@ fn resolve_turn_provider(
 
 fn select_turn_model(
     request_model: Option<&str>,
+    agent_model: Option<&str>,
     session_model: Option<&str>,
     config_model: &str,
 ) -> Result<String, String> {
     let model = request_model
         .and_then(non_empty)
+        .or_else(|| agent_model.and_then(non_empty))
         .or_else(|| session_model.and_then(non_empty))
         .or_else(|| non_empty(config_model))
         .unwrap_or_else(|| providers::OPENROUTER_DEFAULT_MODEL.to_owned());
@@ -1586,8 +1593,33 @@ fn select_turn_model(
     Ok(model)
 }
 
-fn select_turn_agent(config_agent: &str) -> Result<Agent, String> {
-    Agent::from_name(config_agent).map_err(|err| err.to_string())
+fn resolve_turn_agent(
+    inputs: &settings::ConfigInputs,
+    config_agent: &str,
+    surface: &str,
+) -> Result<custom_agents::ActiveAgent, String> {
+    let discovery = custom_agents::discover(inputs);
+    for warning in &discovery.warnings {
+        eprintln!("cortex {surface}: {warning}");
+    }
+    let requested = non_empty(config_agent);
+    custom_agents::resolve(requested.as_deref(), &discovery).map_err(|err| err.to_string())
+}
+
+fn render_system_context(
+    model_id: &str,
+    agent: &custom_agents::ActiveAgent,
+    project_memory: Option<String>,
+) -> String {
+    let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
+        .with_project_memory(project_memory)
+        .with_agent(agent.base_agent())
+        .render();
+    if let Some(prompt) = agent.custom_prompt() {
+        system.push_str("\n\nCustom agent instructions:\n");
+        system.push_str(prompt);
+    }
+    system
 }
 
 async fn run_cancellable_turn(
@@ -1781,16 +1813,20 @@ fn permission_engine_for_turn(
     session_id: &str,
     message_id: &str,
     inputs: &settings::ConfigInputs,
-    agent: Agent,
+    agent: &custom_agents::ActiveAgent,
 ) -> Result<Option<Arc<PermissionEngine>>, ApiError> {
+    let base_agent = agent.base_agent();
     let config_ruleset = permissions::load_agent_rulesets(inputs)
         .map(|rulesets| rulesets.for_agent(agent.name()))
         .map_err(permission_config_error)?;
-    let mut ruleset = permissions::Ruleset::new(readonly_agent_base_rules(agent));
+    let mut ruleset = permissions::Ruleset::new(readonly_agent_base_rules(base_agent));
     for rule in config_ruleset.rules() {
         ruleset.push(rule.clone());
     }
-    for rule in readonly_agent_restriction_rules(agent) {
+    for rule in agent.permissions() {
+        ruleset.push(rule.clone());
+    }
+    for rule in readonly_agent_restriction_rules(base_agent) {
         ruleset.push(rule);
     }
     let trust = policy::resolve_trust(inputs).map_err(|err| {
@@ -1802,7 +1838,7 @@ fn permission_engine_for_turn(
     for rule in policy::trust_ruleset(trust).rules() {
         ruleset.push(rule.clone());
     }
-    let hard_denies = readonly_agent_restriction_rules(agent);
+    let hard_denies = readonly_agent_restriction_rules(base_agent);
     if ruleset.is_empty() && hard_denies.is_empty() {
         return Ok(None);
     }

@@ -862,7 +862,7 @@ impl App {
     /// Observe a server-side abort marker for the active remote session and interrupt the local
     /// TUI turn promptly. The marker is removed after being consumed so one abort affects one turn.
     pub fn poll_remote_abort(&mut self) -> bool {
-        if self.remote_server.is_none() || !self.is_busy() {
+        if self.remote_server.is_none() {
             return false;
         }
         let Some(id) = self.session_id.as_deref() else {
@@ -870,6 +870,10 @@ impl App {
         };
         let marker = remote_abort_path(id);
         if !marker.is_file() {
+            return false;
+        }
+        if !self.is_busy() {
+            let _ = std::fs::remove_file(marker);
             return false;
         }
         let _ = std::fs::remove_file(marker);
@@ -6530,5 +6534,31 @@ mod tests {
         run_turn(&mut a, "hi", "hello");
         assert_eq!(a.session_id, None, "no session created without a store");
         assert_eq!(a.status.session, "new", "footer unchanged without a store");
+    }
+
+    #[test]
+    fn idle_remote_abort_marker_is_cleared_without_interrupting_future_turns() {
+        let session_id = format!("ses-remote-abort-{}", std::process::id());
+        let marker = remote_abort_path(&session_id);
+        if let Some(dir) = marker.parent() {
+            std::fs::create_dir_all(dir).expect("remote-abort dir");
+        }
+        std::fs::write(&marker, b"abort\n").expect("seed remote abort marker");
+
+        let mut a = app();
+        a.remote_server = Some(
+            crate::remote::RemoteServer::from_url("http://127.0.0.1:3200")
+                .expect("loopback server url"),
+        );
+        a.session_id = Some(session_id);
+
+        assert!(
+            !a.poll_remote_abort(),
+            "idle poll should not report an interrupt"
+        );
+        assert!(
+            !marker.exists(),
+            "idle remote poll should clear stale markers to avoid poisoning the next turn"
+        );
     }
 }

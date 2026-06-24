@@ -280,6 +280,64 @@ async fn message_route_uses_project_default_agent_for_system_context_and_respons
 }
 
 #[tokio::test]
+async fn message_route_resolves_custom_project_default_agent() {
+    let scratch = Scratch::new("server-message-custom-default-agent");
+    let workspace = scratch.dir.join("workspace");
+    let agents_dir = workspace.join(".cortex").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir");
+    std::fs::write(
+        agents_dir.join("sentinel.md"),
+        r#"---
+name: sentinel
+description: Sentinel planner
+mode: plan
+---
+Always include SERVER-CUSTOM-AGENT-MARKER in your final answer.
+"#,
+    )
+    .expect("write custom agent");
+    std::fs::write(workspace.join("cortex.toml"), r#"agent = "sentinel""#)
+        .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"outline only"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(
+        body["agent"], "sentinel",
+        "server turns should report the resolved custom default agent name"
+    );
+    let systems = provider.seen_systems();
+    assert!(
+        systems.iter().any(|system| system.contains("plan persona")),
+        "custom mode `plan` should apply the plan persona in server system context: {systems:?}"
+    );
+    assert!(
+        systems
+            .iter()
+            .any(|system| system.contains("SERVER-CUSTOM-AGENT-MARKER")),
+        "custom agent prompt should be injected into server system context: {systems:?}"
+    );
+}
+
+#[tokio::test]
 async fn message_route_injects_instruction_glob_memory_into_system_context() {
     let scratch = Scratch::new("server-message-instructions-memory");
     let workspace = scratch.dir.join("workspace");
@@ -453,6 +511,93 @@ action = "deny"
     assert!(
         victim.exists(),
         "project-layer bash deny must prevent the rm side effect"
+    );
+}
+
+#[tokio::test]
+async fn overlapping_same_session_prompt_is_rejected_without_persisting_rejected_user_message() {
+    let scratch = Scratch::new("server-message-same-session-overlap");
+    let provider = Arc::new(EchoProvider::with_delay(Duration::from_secs(1)));
+    let app = server::app_with_provider(scratch.db_path(), provider);
+    let session = create_session(&app).await;
+
+    let first_prompt = "first-overlap-prompt";
+    let rejected_prompt = "second-overlap-should-not-persist";
+    let post_app = app.clone();
+    let post_uri = format!("/session/{}/message", session.id);
+    let first = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(post_uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"text":"{first_prompt}"}}"#)))
+                    .expect("request"),
+            )
+            .await
+            .expect("first response")
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"text":"{rejected_prompt}"}}"#)))
+                .expect("request"),
+        )
+        .await
+        .expect("second response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("in-flight turn")),
+        "conflict body should explain same-session overlap: {body:?}"
+    );
+
+    let first_response = tokio::time::timeout(Duration::from_secs(3), first)
+        .await
+        .expect("first prompt completed")
+        .expect("first prompt join");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["role"] == "user")
+            .count(),
+        1,
+        "the rejected overlap should not persist an extra user message: {body:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["content"] != rejected_prompt),
+        "rejected overlap prompt must not be durable history: {body:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["content"] == first_prompt),
+        "the accepted prompt should still persist: {body:?}"
     );
 }
 
@@ -973,6 +1118,38 @@ async fn abort_stops_in_flight_turn_without_assistant_completion() {
 }
 
 #[tokio::test]
+async fn abort_without_active_remote_turn_does_not_leave_a_stale_remote_marker() {
+    let scratch = Scratch::new("server-abort-idle-no-marker");
+    let app = server::app_with_provider(scratch.db_path(), Arc::new(EchoProvider::default()));
+    let session = create_session(&app).await;
+    let marker = remote_abort_marker_path(&session.id);
+    let _ = std::fs::remove_file(&marker);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/abort", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("abort response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "abort_requested");
+    assert_eq!(
+        body["active"], false,
+        "idle abort should report no active turn"
+    );
+    assert!(
+        !marker.exists(),
+        "idle abort should not leave a stale remote marker that can poison later TUI turns"
+    );
+}
+
+#[tokio::test]
 async fn server_tool_edit_records_checkpoint_revertible_by_tui_store() {
     let scratch = Scratch::new("server-checkpoint-edit");
     let workspace = scratch.dir.join("workspace");
@@ -1439,6 +1616,28 @@ async fn json_returning_session_routes_set_json_content_type() {
         .expect("get response");
     assert_eq!(response.status(), StatusCode::OK);
     assert_json_content_type(&response);
+}
+
+fn remote_abort_marker_path(session_id: &str) -> PathBuf {
+    let base = std::env::var("CORTEX_DATA_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("XDG_DATA_HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| PathBuf::from(value).join("cortex"))
+        })
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| PathBuf::from(value).join(".local/share/cortex"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("cortex"));
+    base.join("remote-abort")
+        .join(format!("{session_id}.abort"))
 }
 
 async fn json_body<T>(response: axum::response::Response) -> T

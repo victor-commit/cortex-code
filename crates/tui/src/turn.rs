@@ -30,6 +30,9 @@ use settings::EffectiveConfig;
 
 use crate::permission::{PermissionAsk, UiResponder};
 use crate::tooling::TurnDispatcher;
+#[allow(dead_code)]
+#[path = "../../cli/src/custom_agents.rs"]
+mod custom_agents;
 
 /// A message published by the turn worker for the UI thread to apply.
 #[derive(Debug)]
@@ -186,7 +189,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             // is recorded and a previously saved decision is honored without
                             // re-asking. `loaded` is the on-disk baseline used to detect new saves.
                             let (engine, saved, loaded) =
-                                build_permission_engine(tx_events.clone(), &cwd, setup.agent);
+                                build_permission_engine(tx_events.clone(), &cwd, &setup.agent);
                             let mut dispatcher = TurnDispatcher::new(
                                 cwd.clone(),
                                 &setup.model_id,
@@ -383,7 +386,7 @@ struct TurnSetup {
     provider: llm::OpenAiCompatible,
     turn: Turn,
     model_id: String,
-    agent: Agent,
+    agent: custom_agents::ActiveAgent,
     formatter_config: format::FormatterConfig,
     skills: Vec<skills::Skill>,
     plugin_hooks: plugins::PluginEventHooks,
@@ -410,6 +413,10 @@ fn build_turn(
         eprintln!("cortex tui: {warning}");
     }
     let discovered_skill_list = discovered_skills.ordered_skills();
+    let discovered_agents = custom_agents::discover(&inputs);
+    for warning in &discovered_agents.warnings {
+        eprintln!("cortex tui: {warning}");
+    }
     let plugin_cwd = inputs.cwd.clone();
     let effective = settings::load(inputs).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
@@ -420,7 +427,10 @@ fn build_turn(
     let plugin_hooks =
         plugins::PluginEventHooks::load_or_disabled(&plugin_config, pure_plugins, "tui")
             .map_err(|err| format!("plugin runtime error: {err}"))?;
-    let agent = Agent::from_name(active_agent).map_err(|err| err.to_string())?;
+    let agent = custom_agents::resolve(non_empty(active_agent).as_deref(), &discovered_agents)
+        .map_err(|err| {
+            format!("{err}; select one with /agents or set a valid `agent` value in cortex.toml")
+        })?;
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
     // so a per-session model choice governs the turn directly rather than via a config round-trip.
@@ -440,13 +450,16 @@ fn build_turn(
     let model_id = model.model_id;
     let system = render_system_context(
         &model_id,
-        agent,
+        &agent,
         project_memory.render(),
         &discovered_skill_list,
     );
-    let turn = Turn::new(&model_id, system, prompt)
+    let mut turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
+    if let Some(temperature) = agent.temperature() {
+        turn = turn.with_temperature(temperature);
+    }
 
     Ok(TurnSetup {
         provider,
@@ -461,14 +474,18 @@ fn build_turn(
 
 fn render_system_context(
     model_id: &str,
-    agent: Agent,
+    agent: &custom_agents::ActiveAgent,
     project_memory: Option<String>,
     skills: &[skills::Skill],
 ) -> String {
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
         .with_project_memory(project_memory)
-        .with_agent(agent)
+        .with_agent(agent.base_agent())
         .render();
+    if let Some(prompt) = agent.custom_prompt() {
+        system.push_str("\n\nCustom agent instructions:\n");
+        system.push_str(prompt);
+    }
     if let Some(hint) = skills::render_system_hint(skills) {
         system.push_str("\n\n");
         system.push_str(&hint);
@@ -492,12 +509,13 @@ fn render_system_context(
 fn build_permission_engine(
     events: Sender<TurnMessage>,
     cwd: &std::path::Path,
-    agent: Agent,
+    agent: &custom_agents::ActiveAgent,
 ) -> (
     Arc<permissions::PermissionEngine>,
     Arc<permissions::SavedDecisions>,
     Vec<permissions::SavedDecision>,
 ) {
+    let base_agent = agent.base_agent();
     let base = default_ruleset();
     let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
         .ok()
@@ -514,11 +532,20 @@ fn build_permission_engine(
         .and_then(|inputs| policy::resolve_trust(inputs).ok())
         .unwrap_or_default();
     let trust_layer = policy::trust_ruleset(trust);
-    let hard_denies = readonly_agent_hard_denies(agent);
+    let hard_denies = readonly_agent_hard_denies(base_agent);
+    let custom_permissions = permissions::Ruleset::new(agent.permissions().to_vec());
     let mode_layer = permissions::Ruleset::new(hard_denies.clone());
     let ruleset = match config {
-        Some(config) => permissions::Ruleset::from_layers([base, config, mode_layer, trust_layer]),
-        None => permissions::Ruleset::from_layers([base, mode_layer, trust_layer]),
+        Some(config) => permissions::Ruleset::from_layers([
+            base,
+            config,
+            custom_permissions,
+            mode_layer,
+            trust_layer,
+        ]),
+        None => {
+            permissions::Ruleset::from_layers([base, custom_permissions, mode_layer, trust_layer])
+        }
     };
 
     // Seed the saved-decisions store from the shared per-project store on disk, keyed by the same
@@ -683,7 +710,7 @@ mod tests {
     fn system_context_advertises_discovered_skills_without_guidance() {
         let system = render_system_context(
             "google/gemini-2.5-flash",
-            Agent::Build,
+            &custom_agents::ActiveAgent::Builtin(Agent::Build),
             None,
             &[skills::Skill {
                 name: "cross-skill".to_owned(),
@@ -704,7 +731,12 @@ mod tests {
 
     #[test]
     fn system_context_uses_the_active_agent_persona() {
-        let system = render_system_context("google/gemini-2.5-flash", Agent::Plan, None, &[]);
+        let system = render_system_context(
+            "google/gemini-2.5-flash",
+            &custom_agents::ActiveAgent::Builtin(Agent::Plan),
+            None,
+            &[],
+        );
         assert!(
             system.contains("plan persona") && system.contains("MUST NOT"),
             "active TUI agent should shape the system context: {system}"
@@ -714,8 +746,11 @@ mod tests {
     #[test]
     fn plan_agent_hard_denies_effectful_tools_before_prompting() {
         let (_tx, rx) = std::sync::mpsc::channel();
-        let (engine, _saved, _loaded) =
-            build_permission_engine(_tx, std::path::Path::new("."), Agent::Plan);
+        let (engine, _saved, _loaded) = build_permission_engine(
+            _tx,
+            std::path::Path::new("."),
+            &custom_agents::ActiveAgent::Builtin(Agent::Plan),
+        );
         assert_eq!(
             engine.classify("bash", "echo hi"),
             permissions::Action::Deny,
@@ -724,6 +759,31 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "a hard deny should not surface a permission prompt"
+        );
+    }
+
+    #[test]
+    fn system_context_includes_custom_agent_prompt() {
+        let agent = custom_agents::parse_custom_agent(
+            r#"---
+name: sentinel
+description: Sentinel
+mode: primary
+---
+Always include SENTINEL-MARKER.
+"#,
+            std::path::PathBuf::from("sentinel.md"),
+        )
+        .expect("valid custom agent");
+        let system = render_system_context(
+            "google/gemini-2.5-flash",
+            &custom_agents::ActiveAgent::Custom(agent),
+            None,
+            &[],
+        );
+        assert!(
+            system.contains("Custom agent instructions") && system.contains("SENTINEL-MARKER"),
+            "custom agent prompts should be injected into TUI system context: {system}"
         );
     }
 }
