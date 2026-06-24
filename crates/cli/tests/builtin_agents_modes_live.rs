@@ -9,10 +9,16 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const MODEL: &str = "google/gemini-2.5-flash";
 const RUN_TIMEOUT: Duration = Duration::from_secs(150);
+const SELECTABLE_AGENT_MAX_ATTEMPTS: usize = 3;
+const SELECTABLE_AGENT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const OUTPUT_EXCERPT_BYTES: usize = 4000;
+
+static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -55,7 +61,22 @@ fn cortex_in(home: &Path, proj: &Path, key: &str, args: &[&str]) -> Command {
     command
 }
 
-fn run(mut command: Command) -> Output {
+struct TimedOutRun {
+    timeout: Duration,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn excerpt(bytes: &[u8]) -> String {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    if text.len() > OUTPUT_EXCERPT_BYTES {
+        text.truncate(OUTPUT_EXCERPT_BYTES);
+        text.push_str("…<truncated>");
+    }
+    text
+}
+
+fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, TimedOutRun> {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -79,19 +100,34 @@ fn run(mut command: Command) -> Output {
         if let Some(status) = child.try_wait().expect("try_wait") {
             break status;
         }
-        if start.elapsed() > RUN_TIMEOUT {
+        if start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("cortex run did not terminate within {RUN_TIMEOUT:?}");
+            return Err(TimedOutRun {
+                timeout,
+                stdout: out_thread.join().expect("join stdout"),
+                stderr: err_thread.join().expect("join stderr"),
+            });
         }
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    Output {
+    Ok(Output {
         status,
         stdout: out_thread.join().expect("join stdout"),
         stderr: err_thread.join().expect("join stderr"),
-    }
+    })
+}
+
+fn run(command: Command) -> Output {
+    run_with_timeout(command, RUN_TIMEOUT).unwrap_or_else(|timed_out| {
+        panic!(
+            "cortex run did not terminate within {:?}; partial stdout: {}; partial stderr: {}",
+            timed_out.timeout,
+            excerpt(&timed_out.stdout),
+            excerpt(&timed_out.stderr)
+        )
+    })
 }
 
 fn json_doc(out: Output) -> serde_json::Value {
@@ -165,19 +201,15 @@ fn has_denied_mutation_result(doc: &serde_json::Value) -> bool {
     })
 }
 
-#[test]
-fn every_builtin_agent_is_selectable_and_reflected_in_json() {
-    let Some(key) = live_key() else {
-        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
-        return;
-    };
-    let (home, proj) = scratch_project("selectable");
+fn run_selectable_probe_with_retries(key: &str, agent: &str) -> serde_json::Value {
+    let mut timeout_failures = Vec::new();
 
-    for agent in ["build", "plan", "general", "explore"] {
-        let doc = json_doc(run(cortex_in(
+    for attempt in 1..=SELECTABLE_AGENT_MAX_ATTEMPTS {
+        let (home, proj) = scratch_project(&format!("selectable-{agent}-attempt-{attempt}"));
+        let command = cortex_in(
             &home,
             &proj,
-            &key,
+            key,
             &[
                 "run",
                 "--agent",
@@ -188,7 +220,57 @@ fn every_builtin_agent_is_selectable_and_reflected_in_json() {
                 "json",
                 "Reply with the single word OK.",
             ],
-        )));
+        );
+
+        let out = match run_with_timeout(command, RUN_TIMEOUT) {
+            Ok(out) => out,
+            Err(timed_out) => {
+                timeout_failures.push(format!(
+                    "attempt {attempt}/{SELECTABLE_AGENT_MAX_ATTEMPTS}: phase=run timed out after {:?}; partial stderr={:?}; partial stdout={:?}",
+                    timed_out.timeout,
+                    excerpt(&timed_out.stderr),
+                    excerpt(&timed_out.stdout)
+                ));
+                if attempt < SELECTABLE_AGENT_MAX_ATTEMPTS {
+                    std::thread::sleep(SELECTABLE_AGENT_RETRY_BACKOFF * attempt as u32);
+                    continue;
+                }
+                panic!(
+                    "builtin agent selectable probe timed out for agent={agent}, model={MODEL}; failures: {}",
+                    timeout_failures.join(" | ")
+                );
+            }
+        };
+
+        assert!(
+            out.status.success(),
+            "builtin agent selectable probe failed for agent={agent}, model={MODEL}, attempt {attempt}/{SELECTABLE_AGENT_MAX_ATTEMPTS}, phase=run-json, status={:?}, stderr={:?}, stdout={:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+
+        let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+        return serde_json::from_str(stdout.trim_end()).unwrap_or_else(|err| {
+            panic!(
+                "builtin agent selectable probe failed for agent={agent}, model={MODEL}, attempt {attempt}/{SELECTABLE_AGENT_MAX_ATTEMPTS}, phase=parse-json, error={err}, raw_stdout={stdout:?}"
+            )
+        });
+    }
+
+    unreachable!("bounded retry loop must either return a JSON document or panic")
+}
+
+#[test]
+fn every_builtin_agent_is_selectable_and_reflected_in_json() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+
+    for agent in ["build", "plan", "general", "explore"] {
+        let doc = run_selectable_probe_with_retries(&key, agent);
         assert_eq!(doc["agent"], agent, "{agent} must be reflected in JSON");
         assert!(
             doc["content"]
@@ -205,6 +287,7 @@ fn plan_then_build_in_the_same_session_lifts_the_mutation_block() {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
     let (home, proj) = scratch_project("switch");
     let session = "builtin-agent-switch";
     let target = proj.join("session_switch.txt");
@@ -269,6 +352,7 @@ fn explore_can_read_and_search_but_leaves_the_working_tree_unchanged() {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
     let (home, proj) = scratch_project("explore");
     fs::write(
         proj.join("README.md"),
