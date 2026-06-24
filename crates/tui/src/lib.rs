@@ -413,6 +413,9 @@ fn event_loop<B: Backend + Write>(
         // Pull in messages appended to the attached session by the server surface.
         app.poll_remote_session();
 
+        // Expire/resolve any Esc-prefix probe so buffered text or inert residues do not linger.
+        app.tick_nav_escape_probe();
+
         // Expire any toasts whose display window has elapsed so they auto-dismiss on a timer.
         app.tick_toasts();
 

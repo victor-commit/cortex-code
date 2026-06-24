@@ -233,6 +233,57 @@ struct NavEscapeProbe {
     chars: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavEscapeProbeState {
+    Candidate,
+    CompleteVerticalArrow,
+    NotCandidate,
+}
+
+fn nav_escape_probe_state(chars: &str) -> NavEscapeProbeState {
+    let bytes = chars.as_bytes();
+    let Some(first) = bytes.first().copied() else {
+        return NavEscapeProbeState::Candidate;
+    };
+    match first {
+        b'[' => {
+            if bytes.len() == 1 {
+                return NavEscapeProbeState::Candidate;
+            }
+            let mut i = 1;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b';') {
+                i += 1;
+            }
+            if i == bytes.len() {
+                return NavEscapeProbeState::Candidate;
+            }
+            if i == bytes.len() - 1 && matches!(bytes[i], b'A' | b'B') {
+                return NavEscapeProbeState::CompleteVerticalArrow;
+            }
+            NavEscapeProbeState::NotCandidate
+        }
+        b'O' => {
+            if bytes.len() == 1 {
+                NavEscapeProbeState::Candidate
+            } else if bytes.len() == 2 && matches!(bytes[1], b'A' | b'B') {
+                NavEscapeProbeState::CompleteVerticalArrow
+            } else {
+                NavEscapeProbeState::NotCandidate
+            }
+        }
+        b'A' | b'B' => {
+            if bytes.len() == 1 {
+                NavEscapeProbeState::Candidate
+            } else if bytes.len() == 2 && matches!(bytes[1], b'[' | b'O') {
+                NavEscapeProbeState::CompleteVerticalArrow
+            } else {
+                NavEscapeProbeState::NotCandidate
+            }
+        }
+        _ => NavEscapeProbeState::NotCandidate,
+    }
+}
+
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
 const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
     important files, then create (or update) an AGENTS.md file at the project root that documents \
@@ -666,6 +717,12 @@ impl App {
     /// auto-dismiss on a timer regardless of whether the user is interacting.
     pub fn tick_toasts(&mut self) {
         self.toasts.retain(|toast| !toast.is_expired());
+    }
+
+    /// Expire or resolve any active Esc-prefix probe on the event-loop tick so buffered text is
+    /// not held indefinitely while idle.
+    pub fn tick_nav_escape_probe(&mut self) {
+        self.expire_nav_escape_probe();
     }
 
     /// The active transient toasts (oldest first), for rendering the overlay.
@@ -2630,6 +2687,35 @@ impl App {
         self.selected_message = None;
     }
 
+    /// Flush any buffered Esc-probe chars back into the prompt so incomplete or unrecognized
+    /// probes never discard typed input.
+    fn flush_nav_escape_probe_text(&mut self) {
+        let Some(mut probe) = self.nav_escape_probe.take() else {
+            return;
+        };
+        if probe.chars.is_empty() {
+            return;
+        }
+        for ch in probe.chars.drain(..) {
+            self.input.insert_char(ch);
+        }
+        self.on_prompt_edited();
+    }
+
+    /// Finalize the active Esc probe: consume genuine vertical-arrow residue as inert, otherwise
+    /// flush the buffered bytes back into the prompt.
+    fn finalize_nav_escape_probe(&mut self) {
+        let state = self
+            .nav_escape_probe
+            .as_ref()
+            .map(|probe| nav_escape_probe_state(&probe.chars));
+        match state {
+            Some(NavEscapeProbeState::CompleteVerticalArrow) => self.restore_nav_escape_selection(),
+            Some(_) => self.flush_nav_escape_probe_text(),
+            None => {}
+        }
+    }
+
     /// Start an Esc-prefix probe in prompt mode. Used to detect noisy Alt+arrow encodings that
     /// arrive as Esc plus stray bytes/arrow keys, so they can be treated as inert.
     fn arm_nav_escape_probe(&mut self) {
@@ -2647,7 +2733,7 @@ impl App {
             .as_ref()
             .is_some_and(|probe| probe.started.elapsed() > NAV_ESCAPE_PROBE_WINDOW)
         {
-            self.nav_escape_probe = None;
+            self.finalize_nav_escape_probe();
         }
     }
 
@@ -2678,18 +2764,16 @@ impl App {
         let Some(probe) = self.nav_escape_probe.as_mut() else {
             return false;
         };
-        let is_fragment = matches!(c, '[' | 'O' | 'A' | 'B' | ';' | '0'..='9');
-        if !is_fragment {
-            self.nav_escape_probe = None;
-            return false;
-        }
         probe.chars.push(c);
-        let has_intro = probe.chars.contains('[') || probe.chars.contains('O');
-        let has_vertical = probe.chars.contains('A') || probe.chars.contains('B');
-        if has_intro && has_vertical {
-            self.restore_nav_escape_selection();
-        } else if probe.chars.len() >= NAV_ESCAPE_PROBE_MAX_CHARS {
-            self.nav_escape_probe = None;
+        let state = nav_escape_probe_state(&probe.chars);
+        let overflow = probe.chars.len() >= NAV_ESCAPE_PROBE_MAX_CHARS;
+        match state {
+            NavEscapeProbeState::Candidate | NavEscapeProbeState::CompleteVerticalArrow => {
+                if overflow {
+                    self.finalize_nav_escape_probe();
+                }
+            }
+            NavEscapeProbeState::NotCandidate => self.flush_nav_escape_probe_text(),
         }
         true
     }
@@ -2811,6 +2895,16 @@ impl App {
         // clear it here; an action below may set a fresh one for this key.
         self.ack = None;
         self.expire_nav_escape_probe();
+        let plain_probe_key =
+            !ctrl && !alt && matches!(key.code, KeyCode::Char(_) | KeyCode::Up | KeyCode::Down);
+        if self
+            .nav_escape_probe
+            .as_ref()
+            .is_some_and(|probe| !probe.chars.is_empty())
+            && !plain_probe_key
+        {
+            self.finalize_nav_escape_probe();
+        }
 
         // An interactive permission prompt is the most modal state: the turn worker is blocked
         // awaiting the decision, so it owns every key until answered. `y` approves once, `a` approves
@@ -3067,13 +3161,17 @@ impl App {
             KeyCode::Up if alt => {}
             KeyCode::Down if alt => {}
             KeyCode::Up => {
-                if self.consume_nav_escape_probe_arrow(KeyCode::Up) {
+                if key.modifiers == KeyModifiers::NONE
+                    && self.consume_nav_escape_probe_arrow(KeyCode::Up)
+                {
                     return;
                 }
                 self.input.handle_key(TextAreaKey::Up, modifiers(shift));
             }
             KeyCode::Down => {
-                if self.consume_nav_escape_probe_arrow(KeyCode::Down) {
+                if key.modifiers == KeyModifiers::NONE
+                    && self.consume_nav_escape_probe_arrow(KeyCode::Down)
+                {
                     return;
                 }
                 self.input.handle_key(TextAreaKey::Down, modifiers(shift));
@@ -5894,6 +5992,7 @@ mod tests {
         );
         a.on_key(key(KeyCode::Char('[')));
         a.on_key(key(KeyCode::Char('A')));
+        a.on_key(key(KeyCode::Left));
         assert_eq!(
             a.selected_message(),
             Some(1),
@@ -5921,6 +6020,85 @@ mod tests {
             "Esc followed by bare Up is treated as inert Alt+Up noise"
         );
         assert_eq!(a.input.value(), "");
+    }
+
+    #[test]
+    fn esc_prefixed_reversed_csi_chars_do_not_clear_or_leak() {
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(a.selected_message(), Some(1));
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Char('A')));
+        a.on_key(key(KeyCode::Char('[')));
+        a.on_key(key(KeyCode::Left));
+        assert_eq!(
+            a.selected_message(),
+            Some(1),
+            "Esc+A[ restores the pre-Esc selection instead of clearing it"
+        );
+        assert_eq!(
+            a.input.value(),
+            "",
+            "reversed CSI fragment bytes are swallowed and never leak into the prompt"
+        );
+    }
+
+    #[test]
+    fn esc_then_fragment_like_text_is_preserved() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Esc));
+        for c in "A[0;9O;B".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            a.input.value(),
+            "A[0;9O;B",
+            "Esc must not swallow normal prompt text, even fragment-like chars"
+        );
+    }
+
+    #[test]
+    fn esc_preserves_each_fragment_like_starter_char() {
+        for sequence in ["Ax", "Bx", "0", ";", "Ox"] {
+            let mut a = app();
+            a.on_key(key(KeyCode::Esc));
+            for c in sequence.chars() {
+                a.on_key(key(KeyCode::Char(c)));
+            }
+            assert_eq!(
+                a.input.value(),
+                sequence,
+                "sequence `{sequence}` is preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn esc_then_bracket_prefixed_text_is_not_discarded() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Char('[')));
+        a.on_key(key(KeyCode::Char('x')));
+        assert_eq!(
+            a.input.value(),
+            "[x",
+            "incomplete/unrecognized probe candidates are flushed back into the prompt"
+        );
+    }
+
+    #[test]
+    fn esc_then_incomplete_probe_text_survives_submit() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Char('[')));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.take_pending_prompt().as_deref(),
+            Some("["),
+            "buffered probe text is preserved before non-char keys like Enter"
+        );
     }
 
     #[test]
