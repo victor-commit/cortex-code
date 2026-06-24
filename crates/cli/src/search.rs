@@ -10,6 +10,7 @@ use std::process::Command;
 
 use db::{Database, DbPathInputs};
 use errors::Exit;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -53,7 +54,7 @@ fn run_text_search(cwd: &Path, query: &str) -> Result<String, SearchError> {
             "ripgrep failed",
         ))),
     }?;
-    append_session_text_matches(query, &mut body);
+    append_session_text_matches(query, &mut body)?;
     Ok(body)
 }
 
@@ -67,7 +68,7 @@ fn run_json_search(cwd: &Path, query: &str) -> Result<Vec<SearchMatch>, SearchEr
             "ripgrep failed",
         ))),
     }?;
-    matches.extend(session_json_matches(query));
+    matches.extend(session_json_matches(query)?);
     Ok(matches)
 }
 
@@ -155,8 +156,8 @@ struct SessionSearchMatch {
     matched_text: String,
 }
 
-fn append_session_text_matches(query: &str, body: &mut String) {
-    for hit in session_matches(query) {
+fn append_session_text_matches(query: &str, body: &mut String) -> Result<(), SearchError> {
+    for hit in session_matches(query)? {
         if !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
@@ -165,10 +166,11 @@ fn append_session_text_matches(query: &str, body: &mut String) {
             hit.session_id, hit.line, hit.role, hit.matched_text
         ));
     }
+    Ok(())
 }
 
-fn session_json_matches(query: &str) -> Vec<SearchMatch> {
-    session_matches(query)
+fn session_json_matches(query: &str) -> Result<Vec<SearchMatch>, SearchError> {
+    Ok(session_matches(query)?
         .into_iter()
         .map(|hit| SearchMatch {
             path: format!("session:{}", hit.session_id),
@@ -179,15 +181,16 @@ fn session_json_matches(query: &str) -> Vec<SearchMatch> {
             message_id: Some(hit.message_id),
             role: Some(hit.role),
         })
-        .collect()
+        .collect())
 }
 
-fn session_matches(query: &str) -> Vec<SessionSearchMatch> {
+fn session_matches(query: &str) -> Result<Vec<SessionSearchMatch>, SearchError> {
+    let regex = session_query_regex(query)?;
     let Some(db) = open_existing_database() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Ok(sessions) = db.sessions().list() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut matches = Vec::new();
     for session in sessions {
@@ -195,7 +198,7 @@ fn session_matches(query: &str) -> Vec<SessionSearchMatch> {
             continue;
         };
         for (index, message) in messages.iter().enumerate() {
-            if !message.content.contains(query) {
+            if !regex.is_match(&message.content) {
                 continue;
             }
             matches.push(SessionSearchMatch {
@@ -212,7 +215,11 @@ fn session_matches(query: &str) -> Vec<SessionSearchMatch> {
             .cmp(&right.session_id)
             .then_with(|| left.line.cmp(&right.line))
     });
-    matches
+    Ok(matches)
+}
+
+fn session_query_regex(query: &str) -> Result<Regex, SearchError> {
+    Regex::new(query).map_err(|err| SearchError::InvalidQuery(err.to_string()))
 }
 
 fn open_existing_database() -> Option<Database> {
@@ -228,6 +235,7 @@ enum SearchError {
     RipgrepNotInstalled,
     RipgrepSpawn(String),
     RipgrepFailed(String),
+    InvalidQuery(String),
     JsonDecode(String),
 }
 
@@ -241,6 +249,9 @@ fn fail(err: SearchError) -> Exit {
         }
         SearchError::RipgrepFailed(detail) => {
             eprintln!("cortex search: {detail}");
+        }
+        SearchError::InvalidQuery(detail) => {
+            eprintln!("cortex search: query is not a valid regex: {detail}");
         }
         SearchError::JsonDecode(detail) => {
             eprintln!("cortex search: failed to decode ripgrep JSON output: {detail}");
@@ -341,5 +352,11 @@ mod tests {
     fn detects_no_files_searched_ripgrep_diagnostic() {
         let stderr = "No files were searched, which means ripgrep probably applied a filter you didn't expect.\nRunning with --debug will show why files are being skipped.\n";
         assert!(is_no_files_searched(stderr.as_bytes()));
+    }
+
+    #[test]
+    fn session_query_regex_rejects_invalid_patterns() {
+        let err = session_query_regex("(").expect_err("invalid regex should error");
+        assert!(matches!(err, SearchError::InvalidQuery(_)));
     }
 }

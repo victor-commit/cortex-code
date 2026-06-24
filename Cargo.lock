@@ -546,6 +546,7 @@ dependencies = [
  "protocol",
  "providers",
  "redaction",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -248,6 +248,159 @@ fn search_returns_session_message_hits_from_the_shared_store() {
     );
 }
 
+#[test]
+fn search_regex_semantics_apply_to_workspace_and_session_sources() {
+    let sandbox = Sandbox::new("regex-parity");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let query = "REGEX_PARITY_[0-9]+";
+    let token = "REGEX_PARITY_42";
+    std::fs::write(
+        project.join("workspace.txt"),
+        format!("workspace source carries {token}\n"),
+    )
+    .expect("write workspace fixture");
+    let db_path_text = db_path.to_string_lossy().to_string();
+
+    let session_id = {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("regex parity"))
+            .expect("create session");
+        db.messages()
+            .create(
+                &session.id,
+                "assistant",
+                &format!("session source carries {token}"),
+            )
+            .expect("create message");
+        session.id
+    };
+
+    let out = run(sandbox.command_in_with_env(
+        &project,
+        &[query, "--format", "json"],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr_str(&out));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("strict JSON");
+    let matches = doc["matches"].as_array().expect("matches array");
+    assert!(
+        matches.iter().any(|entry| {
+            entry["source"] == "workspace"
+                && entry["path"] == "workspace.txt"
+                && entry["matched_text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(token))
+        }),
+        "expected workspace regex hit in output: {doc:?}"
+    );
+    assert!(
+        matches.iter().any(|entry| {
+            entry["source"] == "session"
+                && entry["session_id"] == session_id
+                && entry["matched_text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(token))
+        }),
+        "expected session regex hit in output: {doc:?}"
+    );
+}
+
+#[test]
+fn search_uses_regex_not_literal_substring_for_session_messages() {
+    let sandbox = Sandbox::new("session-regex");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let query = "session-regex-[0-9]+";
+    let token = "session-regex-789";
+    let db_path_text = db_path.to_string_lossy().to_string();
+
+    {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("session regex"))
+            .expect("create session");
+        db.messages()
+            .create(&session.id, "assistant", token)
+            .expect("create message");
+    }
+
+    let out = run(sandbox.command_in_with_env(
+        &project,
+        &[query],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(
+        stdout.contains("session:"),
+        "session regex hit should be emitted: {stdout}"
+    );
+    assert!(
+        stdout.contains(token),
+        "matched session line should include message content: {stdout}"
+    );
+}
+
+#[test]
+fn search_invalid_regex_is_deterministic_with_workspace_and_session_sources() {
+    let sandbox = Sandbox::new("invalid-regex");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let db_path_text = db_path.to_string_lossy().to_string();
+    std::fs::write(project.join("workspace.txt"), "workspace marker\n").expect("write fixture");
+    {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("invalid regex"))
+            .expect("create session");
+        db.messages()
+            .create(&session.id, "assistant", "session marker")
+            .expect("create message");
+    }
+
+    let text = run(sandbox.command_in_with_env(
+        &project,
+        &["("],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    let json = run(sandbox.command_in_with_env(
+        &project,
+        &["(", "--format", "json"],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+
+    assert_ne!(text.status.code(), Some(0), "text mode should fail");
+    assert_ne!(json.status.code(), Some(0), "json mode should fail");
+    assert!(
+        text.stdout.is_empty(),
+        "invalid query should not emit stdout"
+    );
+    assert!(
+        json.stdout.is_empty(),
+        "invalid query should not emit stdout"
+    );
+
+    let text_stderr = stderr_str(&text);
+    let json_stderr = stderr_str(&json);
+    assert!(
+        text_stderr.contains("cortex search:"),
+        "text mode should report a prefixed error: {text_stderr}"
+    );
+    assert!(
+        json_stderr.contains("cortex search:"),
+        "json mode should report a prefixed error: {json_stderr}"
+    );
+    assert_eq!(
+        text_stderr, json_stderr,
+        "invalid-query diagnostics should be stable across output modes"
+    );
+}
+
 // VAL-FINISH-045 + VAL-FINISH-046.
 #[test]
 fn search_returns_real_matches_with_path_and_line_parity_to_rg() {
