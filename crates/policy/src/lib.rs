@@ -12,10 +12,11 @@
 //! [`TrustLevel::Trusted`], preserving the existing ungated behavior.
 //!
 //! This crate stays thin and surface-agnostic: it answers "what trust level does this project
-//! have?" and "what permission rules does that level contribute?". The surfaces fold
-//! [`trust_ruleset`] into their own [`permissions::PermissionEngine`] as the highest-precedence
-//! layer (under last-matching-rule-wins, a trust `deny` overrides any allow/ask the project or CLI
-//! configured), so trust gating is enforced through the one shared engine both surfaces already use.
+//! have?" and "what permission rules does that level contribute?". Surfaces install
+//! [`trust_ruleset`] into the permission engine's hard-deny layer, so trust-deny is consulted
+//! before saved decisions and ordinary rules (trust-deny > saved-decision > ruleset > default-ask).
+//! That keeps untrusted as an absolute safety gate while still letting saved decisions apply when
+//! trusted.
 
 use permissions::{Action, Rule, Ruleset};
 use settings::{ConfigError, ConfigInputs};
@@ -66,12 +67,11 @@ impl TrustLevel {
     }
 }
 
-/// The permission [`Ruleset`] a trust level contributes, applied as the HIGHEST-precedence layer of
-/// the surface's permission engine (so a trust `deny` wins under last-matching-rule-wins).
+/// The permission [`Ruleset`] a trust level contributes.
 ///
 /// An untrusted project denies each [`RESTRICTED_TOOLS`] entry (so the mutating/exec action is
-/// blocked, identically in every surface); a trusted project contributes an empty ruleset,
-/// preserving existing behavior exactly.
+/// blocked, identically in every surface); a trusted project contributes an empty ruleset.
+/// Surfaces install these rules as hard denies.
 #[must_use]
 pub fn trust_ruleset(level: TrustLevel) -> Ruleset {
     match level {
@@ -104,9 +104,13 @@ pub fn resolve_trust(inputs: &ConfigInputs) -> Result<TrustLevel, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use permissions::{
+        Decision, Outcome, PermissionEngine, PermissionRequest, SavedDecision, SavedDecisions,
+    };
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A self-cleaning scratch tree with an isolated HOME and a project dir inside it.
@@ -186,6 +190,42 @@ mod tests {
         let project = Ruleset::new(vec![Rule::new("bash", "*", Action::Allow)]);
         let combined = Ruleset::from_layers([project, trust_ruleset(TrustLevel::Untrusted)]);
         assert_eq!(combined.classify("bash", "echo hi"), Action::Deny);
+    }
+
+    #[test]
+    fn untrusted_trust_denies_outrank_saved_allow_when_installed_as_hard_denies() {
+        let saved = Arc::new(SavedDecisions::from_decisions(vec![SavedDecision::new(
+            "bash",
+            "*",
+            Decision::Allow,
+        )]));
+        let engine = PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Ask)]))
+            .with_saved_decisions(saved)
+            .with_hard_denies(trust_ruleset(TrustLevel::Untrusted));
+
+        assert_eq!(engine.classify("bash", "echo hi"), Action::Deny);
+        assert_eq!(
+            engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
+            Outcome::Denied
+        );
+    }
+
+    #[test]
+    fn trusted_trust_level_keeps_saved_allow_behavior() {
+        let saved = Arc::new(SavedDecisions::from_decisions(vec![SavedDecision::new(
+            "bash",
+            "*",
+            Decision::Allow,
+        )]));
+        let engine = PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Ask)]))
+            .with_saved_decisions(saved)
+            .with_hard_denies(trust_ruleset(TrustLevel::Trusted));
+
+        assert_eq!(engine.classify("bash", "echo hi"), Action::Allow);
+        assert_eq!(
+            engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
+            Outcome::Allowed
+        );
     }
 
     #[test]

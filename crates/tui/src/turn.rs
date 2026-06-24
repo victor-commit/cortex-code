@@ -499,9 +499,9 @@ fn render_system_context(
 ///
 /// The base policy asks before any effectful tool (`write`/`edit`/`apply_patch`/`bash`) and allows
 /// the read-only tools, so an ungoverned mutation surfaces a prompt rather than running silently;
-/// the project's own `[[permission]]` config layers are applied on top (higher precedence), and the
-/// project trust layer is applied last (highest precedence) so an untrusted project denies the
-/// mutating/exec tools identically to headless (VAL-CROSS-030). The engine consults the shared
+/// the project's own `[[permission]]` config layers are applied on top (higher precedence). Project
+/// trust denies are installed as hard denies so an untrusted project blocks mutating/exec tools
+/// before saved decisions are consulted, identically to headless (VAL-CROSS-049). The engine consults the shared
 /// saved-decisions store (seeded from disk) BEFORE the ruleset, so a decision saved earlier — in
 /// this or another surface — is honored without re-asking (VAL-CROSS-028). The [`UiResponder`]
 /// answers each remaining `ask` by forwarding it to the UI thread over `events` and blocking on the
@@ -531,7 +531,15 @@ fn build_permission_engine(
         .as_ref()
         .and_then(|inputs| policy::resolve_trust(inputs).ok())
         .unwrap_or_default();
-    let trust_layer = policy::trust_ruleset(trust);
+    let mut trust_overlay = permissions::Ruleset::empty();
+    let mut trust_hard_denies = Vec::new();
+    for rule in policy::trust_ruleset(trust).rules() {
+        if rule.action == permissions::Action::Deny {
+            trust_hard_denies.push(rule.clone());
+        } else {
+            trust_overlay.push(rule.clone());
+        }
+    }
     let hard_denies = readonly_agent_hard_denies(base_agent);
     let custom_permissions = permissions::Ruleset::new(agent.permissions().to_vec());
     let mode_layer = permissions::Ruleset::new(hard_denies.clone());
@@ -541,12 +549,14 @@ fn build_permission_engine(
             config,
             custom_permissions,
             mode_layer,
-            trust_layer,
+            trust_overlay.clone(),
         ]),
         None => {
-            permissions::Ruleset::from_layers([base, custom_permissions, mode_layer, trust_layer])
+            permissions::Ruleset::from_layers([base, custom_permissions, mode_layer, trust_overlay])
         }
     };
+    let mut effective_hard_denies = hard_denies;
+    effective_hard_denies.extend(trust_hard_denies);
 
     // Seed the saved-decisions store from the shared per-project store on disk, keyed by the same
     // workspace key the checkpoint store uses, so the TUI and headless `cortex run` share one store.
@@ -557,7 +567,7 @@ fn build_permission_engine(
     let engine = Arc::new(
         permissions::PermissionEngine::new(ruleset)
             .with_responder(responder)
-            .with_hard_denies(permissions::Ruleset::new(hard_denies))
+            .with_hard_denies(permissions::Ruleset::new(effective_hard_denies))
             .with_saved_decisions(saved.clone()),
     );
     (engine, saved, loaded)
@@ -665,6 +675,38 @@ fn non_empty(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    struct Scratch {
+        root: PathBuf,
+        project: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "cortex-tui-turn-{tag}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let project = root.join("project");
+            fs::create_dir_all(&project).expect("create project dir");
+            Self { root, project }
+        }
+
+        fn write_project_config(&self, contents: &str) {
+            fs::write(self.project.join("cortex.toml"), contents).expect("write project config");
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn bare_model_id_is_rejected() {
@@ -760,6 +802,94 @@ mod tests {
             rx.try_recv().is_err(),
             "a hard deny should not surface a permission prompt"
         );
+    }
+
+    #[test]
+    fn untrusted_trust_deny_blocks_a_saved_allow_without_prompting() {
+        let scratch = Scratch::new("trust-vs-saved");
+        scratch.write_project_config("trust = \"untrusted\"\n");
+        let workspace_key = checkpoints::workspace_key(&scratch.project);
+        let store_path = permissions::store::store_path_with(
+            &permissions::store::StoreInputs::from_process(),
+            &workspace_key,
+        )
+        .expect("permission store path");
+
+        permissions::store::write(
+            &store_path,
+            &[permissions::SavedDecision::new(
+                "bash",
+                "*",
+                permissions::Decision::Allow,
+            )],
+        )
+        .expect("seed saved decision");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (engine, _saved, _loaded) = build_permission_engine(
+            tx,
+            &scratch.project,
+            &custom_agents::ActiveAgent::Builtin(Agent::Build),
+        );
+
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            permissions::Action::Deny,
+            "trust deny must outrank saved allow in untrusted projects"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::PermissionRequest::new("bash", "echo hi")),
+            permissions::Outcome::Denied
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "trust deny should block with no interactive ask"
+        );
+        let _ = fs::remove_file(store_path);
+    }
+
+    #[test]
+    fn trusted_project_honors_saved_allow_without_reasking() {
+        let scratch = Scratch::new("trusted-saved");
+        scratch.write_project_config("trust = \"trusted\"\n");
+        let workspace_key = checkpoints::workspace_key(&scratch.project);
+        let store_path = permissions::store::store_path_with(
+            &permissions::store::StoreInputs::from_process(),
+            &workspace_key,
+        )
+        .expect("permission store path");
+
+        permissions::store::write(
+            &store_path,
+            &[permissions::SavedDecision::new(
+                "bash",
+                "*",
+                permissions::Decision::Allow,
+            )],
+        )
+        .expect("seed saved decision");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (engine, _saved, _loaded) = build_permission_engine(
+            tx,
+            &scratch.project,
+            &custom_agents::ActiveAgent::Builtin(Agent::Build),
+        );
+
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            permissions::Action::Allow,
+            "trusted contributes no trust deny, so saved allow remains effective"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::PermissionRequest::new("bash", "echo hi")),
+            permissions::Outcome::Allowed
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "saved allow should execute without surfacing an ask"
+        );
+        let _ = fs::remove_file(store_path);
     }
 
     #[test]

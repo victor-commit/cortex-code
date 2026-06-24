@@ -159,10 +159,11 @@ fn mutation_deny_rules() -> Vec<Rule> {
 ///
 /// The combined ordinary ruleset is, in last-matching-rule-wins order: the (agent-scoped) config
 /// base, then the CLI allow rules, then the CLI deny rules, then each `save_specs` pattern as an
-/// `ask` rule (so a matching action is surfaced as an ask — recording a `permission.asked` event —
-/// and the [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern), then the
-/// `trust_rules` project layer. The engine also carries:
-/// - any hard-deny layer supplied by the built-in mode wrapper, checked BEFORE saved decisions;
+/// `ask` rule (so a matching action is surfaced as an ask, recording a `permission.asked` event,
+/// and the [`SaveResponder`] answers "always allow", saving the SPEC's precise pattern). The
+/// `trust_rules` are installed as hard denies (together with any built-in hard denies), so trust
+/// blocks are checked before saved decisions. The engine also carries:
+/// - any hard-deny layer supplied by built-ins and trust, checked BEFORE saved decisions;
 /// - the `saved` store (consulted before the ordinary ruleset, so a previously saved decision is
 ///   honored with no new ask — VAL-CROSS-027), seeded from `loaded`;
 /// - the event `bus`, so `permission.asked`/`permission.replied` are observable;
@@ -204,9 +205,10 @@ pub fn prepare_headless_permissions(
 /// Assemble headless permissions with additional built-in mode rules.
 ///
 /// `builtin_base_rules` are prepended before config/user rules. `post_save_rules` are appended
-/// after config/CLI/save rules and before trust rules. `hard_deny_rules` are also installed in the
-/// engine's hard-deny layer, so read-only built-in modes can block mutations before saved decisions
-/// are considered while preserving the ordinary ruleset for subagent parent caps.
+/// after config/CLI/save rules. `hard_deny_rules` and deny-valued `trust_rules` are installed in
+/// the engine's hard-deny layer, so read-only built-in modes and untrusted projects block
+/// mutations before saved decisions are considered while preserving the ordinary ruleset for
+/// subagent parent caps.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub fn prepare_headless_permissions_with_builtin_rules(
@@ -278,18 +280,22 @@ pub fn prepare_headless_permissions_with_builtin_rules_and_override(
     for rule in post_save_rules {
         ruleset.push(rule);
     }
-    // The project trust layer is appended LAST so it has the highest precedence: an untrusted
-    // project's `deny` for a mutating/exec tool overrides any allow/ask above it, blocking the same
-    // action headless that the TUI also blocks under untrusted (VAL-CROSS-030). A trusted project
-    // contributes no rules, so behavior is unchanged.
+    // Trust denies are absolute policy blocks: install them in the hard-deny layer so they run
+    // before saved "always allow" decisions (VAL-CROSS-049). Any non-deny trust rule is still kept
+    // in the ordinary ruleset for forward-compatibility.
+    let mut effective_hard_deny_rules = hard_deny_rules;
     for rule in trust_rules {
-        ruleset.push(rule);
+        if rule.action == Action::Deny {
+            effective_hard_deny_rules.push(rule);
+        } else {
+            ruleset.push(rule);
+        }
     }
     if override_hook.is_some() && ruleset.is_empty() {
         ruleset.push(Rule::new(ANY_TOOL, "**", Action::Allow));
     }
 
-    let has_hard_denies = !hard_deny_rules.is_empty();
+    let has_hard_denies = !effective_hard_deny_rules.is_empty();
     let saved = Arc::new(SavedDecisions::from_decisions(loaded));
     let persist = !save_specs.is_empty();
 
@@ -304,7 +310,7 @@ pub fn prepare_headless_permissions_with_builtin_rules_and_override(
     }
 
     let mut engine = PermissionEngine::new(ruleset)
-        .with_hard_denies(Ruleset::new(hard_deny_rules))
+        .with_hard_denies(Ruleset::new(effective_hard_deny_rules))
         .with_saved_decisions(saved.clone())
         .with_bus(bus);
     if !save_specs.is_empty() {
@@ -763,9 +769,9 @@ mod tests {
         assert_eq!(engine.classify("read", "secrets/k.txt"), Action::Allow);
     }
 
-    // VAL-CROSS-030 (headless half): the trust layer is appended last, so an untrusted project's
-    // `deny bash` overrides a config-file `allow bash`, blocking the mutating/exec action; a trusted
-    // project contributes no rules so the same action stays allowed.
+    // VAL-CROSS-030 (headless half): trust deny rules are installed as hard denies, so an
+    // untrusted project blocks bash even if config allowed it; a trusted project contributes no
+    // trust denies so the same action stays allowed.
     #[test]
     fn untrusted_trust_layer_denies_a_config_allowed_action() {
         let scratch = Scratch::new("trust-untrusted");
@@ -815,6 +821,64 @@ mod tests {
             engine.classify("bash", "rm x"),
             Action::Allow,
             "a trusted project contributes no trust rules, so the config allow stands"
+        );
+    }
+
+    #[test]
+    fn untrusted_trust_deny_overrides_a_previously_saved_allow() {
+        let scratch = Scratch::new("trust-vs-saved");
+        let trust_rules = policy::trust_ruleset(policy::TrustLevel::Untrusted)
+            .rules()
+            .to_vec();
+        let engine = prepare_headless_permissions(
+            &scratch.inputs(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            trust_rules,
+            vec![SavedDecision::new("bash", "*", Decision::Allow)],
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("trust/saved state attaches an engine");
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            Action::Deny,
+            "untrusted trust deny must outrank a saved allow (VAL-CROSS-049)"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::request_for("bash", "echo hi")),
+            permissions::Outcome::Denied
+        );
+    }
+
+    #[test]
+    fn trusted_project_keeps_saved_allow_behavior() {
+        let scratch = Scratch::new("trusted-saved");
+        let trust_rules = policy::trust_ruleset(policy::TrustLevel::Trusted)
+            .rules()
+            .to_vec();
+        let engine = prepare_headless_permissions(
+            &scratch.inputs(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            trust_rules,
+            vec![SavedDecision::new("bash", "*", Decision::Allow)],
+            Arc::new(EventBus::new()),
+        )
+        .expect("prepare")
+        .engine
+        .expect("saved state attaches an engine");
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            Action::Allow,
+            "with trusted project (no trust deny), saved allow remains honored"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::request_for("bash", "echo hi")),
+            permissions::Outcome::Allowed
         );
     }
 

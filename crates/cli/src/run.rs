@@ -238,10 +238,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let mut post_save_permission_rules = agent.permissions().to_vec();
     post_save_permission_rules.extend(builtin_agent_rules.restriction_rules);
 
-    // Resolve the project's trust level (the layered config's `trust` key) into the highest-
-    // precedence permission layer: an untrusted project denies the mutating/exec tools, so the SAME
-    // action is blocked here that the TUI also blocks under untrusted, and a trusted project
-    // contributes nothing (VAL-CROSS-030). A config error fails fast with the config exit code.
+    // Resolve the project's trust level (the layered config's `trust` key) into trust deny rules.
+    // These are installed as hard denies in the engine, so an untrusted project blocks the
+    // mutating/exec tools before saved decisions are consulted (VAL-CROSS-049). A trusted project
+    // contributes nothing. A config error fails fast with the config exit code.
     let trust_rules = match policy::resolve_trust(&config_inputs) {
         Ok(level) => policy::trust_ruleset(level).rules().to_vec(),
         Err(err) => {

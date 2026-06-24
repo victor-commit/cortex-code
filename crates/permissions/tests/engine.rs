@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use events::{Event, EventBus, PermissionDecision, Subscriber};
 use permissions::{
     Action, Decision, Outcome, PermissionEngine, PermissionRequest, Responder, Rule, Ruleset,
+    SavedDecision, SavedDecisions,
 };
 
 /// Collects every event published on the bus, so a test can assert on what was surfaced.
@@ -211,5 +212,40 @@ fn last_matching_rule_wins_and_reordering_flips_the_decision() {
         deny_then_allow.evaluate(&PermissionRequest::new("bash", "rm x")),
         Outcome::Allowed,
         "broad allow matches last → permitted"
+    );
+}
+
+#[test]
+fn saved_decision_outranks_the_ordinary_ruleset() {
+    let saved = Arc::new(SavedDecisions::from_decisions(vec![SavedDecision::new(
+        "bash",
+        "*",
+        Decision::Allow,
+    )]));
+    let engine = PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Deny)]))
+        .with_saved_decisions(saved);
+
+    assert_eq!(engine.classify("bash", "echo hi"), Action::Allow);
+    assert_eq!(
+        engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
+        Outcome::Allowed
+    );
+}
+
+#[test]
+fn hard_deny_outranks_saved_decisions_and_ruleset() {
+    let saved = Arc::new(SavedDecisions::from_decisions(vec![SavedDecision::new(
+        "bash",
+        "*",
+        Decision::Allow,
+    )]));
+    let engine = PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Allow)]))
+        .with_saved_decisions(saved)
+        .with_hard_denies(Ruleset::new(vec![Rule::new("bash", "*", Action::Deny)]));
+
+    assert_eq!(engine.classify("bash", "echo hi"), Action::Deny);
+    assert_eq!(
+        engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
+        Outcome::Denied
     );
 }
