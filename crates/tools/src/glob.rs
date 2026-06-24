@@ -13,6 +13,7 @@
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 
+use crate::output::{OutputLimits, bound_output};
 use crate::ripgrep::{self, RgError};
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
@@ -103,19 +104,16 @@ fn render(pattern: &str, stdout: &str) -> ToolOutput {
         return ToolOutput::text(format!("No files match the pattern: {pattern}"));
     }
 
-    let total = paths.len();
-    let mut body = paths
-        .iter()
-        .take(MAX_RESULTS)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    if total > MAX_RESULTS {
-        body.push_str(&format!(
-            "\n[truncated: showing {MAX_RESULTS} of {total} matches; narrow the pattern]"
-        ));
-    }
-    ToolOutput::text(body)
+    let full = paths.join("\n");
+    let bounded = bound_output(
+        &full,
+        OutputLimits {
+            max_lines: MAX_RESULTS,
+            max_bytes: usize::MAX,
+        },
+        "glob-matches",
+    );
+    ToolOutput::text(bounded.text)
 }
 
 /// Extract a trimmed string argument from the assembled arguments object.
@@ -193,5 +191,34 @@ mod tests {
         assert!(!output.is_error);
         let got = lines(&output);
         assert_eq!(got, vec!["b.rs".to_owned()]);
+    }
+
+    #[test]
+    fn large_match_set_is_truncated_and_spilled() {
+        let dir = temp_tree("spill");
+        for index in 0..1205 {
+            fs::write(dir.join(format!("many-{index:04}.txt")), "x\n").unwrap();
+        }
+
+        let output = run(&json!({ "pattern": "*.txt" }), &ctx_for(&dir));
+        assert!(!output.is_error);
+        let text = output.model_content();
+        assert!(text.contains("output truncated"), "got: {text}");
+        assert!(
+            text.lines().count() <= MAX_RESULTS + 1,
+            "in-band output must be bounded"
+        );
+
+        let marker = "written to ";
+        let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("the notice closes with ]");
+        let path = &rest[..end];
+        let spilled = fs::read_to_string(path).expect("read spill file");
+        assert!(
+            spilled.lines().count() >= 1205,
+            "spill should include every match"
+        );
+        let _ = fs::remove_file(path);
     }
 }

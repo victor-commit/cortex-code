@@ -406,8 +406,9 @@ impl ToolContext {
     /// post-mutation hooks, no session, no todo store, and a fresh background-job registry.
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
+        let cwd = canonicalize_identity_path(&cwd.into());
         Self {
-            cwd: cwd.into(),
+            cwd,
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             audit: None,
@@ -589,11 +590,12 @@ impl ToolContext {
     #[must_use]
     pub fn resolve(&self, path: &str) -> PathBuf {
         let candidate = Path::new(path);
-        if candidate.is_absolute() {
+        let resolved = if candidate.is_absolute() {
             candidate.to_path_buf()
         } else {
             self.cwd.join(candidate)
-        }
+        };
+        canonicalize_identity_path(&resolved)
     }
 
     /// Report a permission/IO reason when the OS would not accept new content at `resolved`, so a
@@ -628,17 +630,19 @@ impl ToolContext {
 
     /// Record that `path` (a resolved absolute path) has been read this session.
     pub fn record_read(&self, path: impl Into<PathBuf>) {
+        let key = self.identity_key(&path.into());
         if let Ok(mut reads) = self.reads.lock() {
-            reads.insert(path.into());
+            reads.insert(key);
         }
     }
 
     /// Whether `path` (a resolved absolute path) has been read this session.
     #[must_use]
     pub fn was_read(&self, path: &Path) -> bool {
+        let key = self.identity_key(path);
         self.reads
             .lock()
-            .map(|reads| reads.contains(path))
+            .map(|reads| reads.contains(&key))
             .unwrap_or(false)
     }
 
@@ -673,6 +677,44 @@ impl ToolContext {
             .unwrap_or(path)
             .to_string_lossy()
             .to_string()
+    }
+
+    fn identity_key(&self, path: &Path) -> PathBuf {
+        let anchored = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        canonicalize_identity_path(&anchored)
+    }
+}
+
+/// Canonicalize `path` for identity comparisons, falling back to the nearest existing ancestor when
+/// the full path does not yet exist (for example, a future write target).
+fn canonicalize_identity_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let mut probe = path.to_path_buf();
+    let mut suffix = Vec::new();
+    while !probe.exists() {
+        let Some(name) = probe.file_name().map(|name| name.to_os_string()) else {
+            break;
+        };
+        suffix.push(name);
+        if !probe.pop() {
+            break;
+        }
+    }
+
+    if let Ok(mut canonical) = fs::canonicalize(&probe) {
+        for component in suffix.iter().rev() {
+            canonical.push(component);
+        }
+        canonical
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -744,6 +786,47 @@ mod tests {
                 && record["decision"] == "deny"
                 && record["outcome"] == "denied"
         }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_and_read_ledger_use_canonical_identity_for_dot_paths() {
+        let dir = temp_dir("canonical-dot");
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, "content").expect("seed file");
+        let ctx = ToolContext::new(dir.clone());
+
+        let plain = ctx.resolve("sample.txt");
+        let dotted = ctx.resolve("./sample.txt");
+        assert_eq!(plain, dotted, "dot-path aliases resolve identically");
+
+        ctx.record_read(dotted);
+        assert!(
+            ctx.was_read(&plain),
+            "a read recorded via ./path is honored via path"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_and_read_ledger_canonicalize_symlink_aliases() {
+        let dir = temp_dir("canonical-symlink");
+        let target = dir.join("real.txt");
+        let alias = dir.join("alias.txt");
+        std::fs::write(&target, "content").expect("seed file");
+        std::os::unix::fs::symlink(&target, &alias).expect("create symlink");
+        let ctx = ToolContext::new(dir.clone());
+
+        let direct = ctx.resolve("real.txt");
+        let via_alias = ctx.resolve("alias.txt");
+        assert_eq!(direct, via_alias, "symlink aliases resolve identically");
+
+        ctx.record_read(via_alias);
+        assert!(
+            ctx.was_read(&direct),
+            "a read recorded via symlink path is honored via target path"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -260,6 +260,11 @@ fn plan_add(ctx: &ToolContext, path: &str, contents: &str) -> Result<Action, Str
             "apply_patch: cannot add {path}: it already exists (no changes made)"
         ));
     }
+    if let Some(reason) = ctx.writability_error(&resolved) {
+        return Err(format!(
+            "apply_patch: cannot add {path}: {reason} (no changes made)"
+        ));
+    }
     Ok(Action::Create {
         path: resolved,
         contents: contents.to_owned(),
@@ -278,6 +283,13 @@ fn plan_delete(ctx: &ToolContext, path: &str) -> Result<Action, String> {
             if !ctx.was_read(&resolved) {
                 return Err(format!(
                     "apply_patch: cannot delete {path}: it has not been read this session; read it first (no changes made)"
+                ));
+            }
+            if let Some(parent) = resolved.parent()
+                && let Some(reason) = ctx.writability_error(parent)
+            {
+                return Err(format!(
+                    "apply_patch: cannot delete {path}: {reason} (no changes made)"
                 ));
             }
             Ok(Action::Delete { path: resolved })
@@ -772,6 +784,51 @@ mod tests {
         // Restore perms so the temp file content can be read back, then assert it is intact.
         set_readonly(&path, false);
         assert_eq!(fs::read_to_string(&path).unwrap(), "ORIGINAL\n");
+    }
+
+    #[test]
+    fn plan_add_refuses_a_target_under_a_read_only_directory() {
+        let dir = temp_dir("add-ro-dir");
+        let ctx = ctx_for(&dir);
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        set_readonly(&locked, true);
+
+        let planned = plan_add(&ctx, "locked/new.txt", "content");
+
+        set_readonly(&locked, false);
+        let error = match planned {
+            Err(error) => error,
+            Ok(_) => panic!("add under read-only dir should be refused"),
+        };
+        assert!(error.to_lowercase().contains("permission"), "got: {error}");
+        assert!(
+            !locked.join("new.txt").exists(),
+            "no file should be created under a read-only directory"
+        );
+    }
+
+    #[test]
+    fn plan_delete_refuses_a_file_inside_a_read_only_directory() {
+        let dir = temp_dir("delete-ro-dir");
+        let ctx = ctx_for(&dir);
+        let locked = dir.join("locked");
+        let target = locked.join("victim.txt");
+        fs::create_dir(&locked).unwrap();
+        fs::write(&target, "KEEP\n").unwrap();
+        ctx.record_read(&target);
+        set_readonly(&locked, true);
+
+        let planned = plan_delete(&ctx, "locked/victim.txt");
+
+        set_readonly(&locked, false);
+        let error = match planned {
+            Err(error) => error,
+            Ok(_) => panic!("delete in read-only dir should be refused"),
+        };
+        assert!(error.to_lowercase().contains("permission"), "got: {error}");
+        assert!(target.exists(), "the file must remain on disk");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "KEEP\n");
     }
 
     /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.

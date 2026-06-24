@@ -26,6 +26,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SavedDecision;
 
@@ -34,6 +35,7 @@ const ENV_PERMISSION_DIR: &str = "CORTEX_PERMISSION_DIR";
 
 /// The subdirectory (under the resolved data base) holding per-project saved-decision stores.
 const STORE_SUBDIR: &str = "permissions";
+static STORE_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Inputs that determine the saved-decision store base directory, captured explicitly so
 /// resolution is deterministic and unit-testable rather than reading the process environment
@@ -122,7 +124,7 @@ pub fn write(path: &Path, decisions: &[SavedDecision]) -> io::Result<()> {
     }
     let body = serde_json::to_vec_pretty(decisions)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    std::fs::write(path, body)
+    atomic_write(path, &body)
 }
 
 /// Load the saved decisions for `workspace_key` from the process-resolved store, or an empty list
@@ -152,6 +154,38 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// Atomically replace `path` by writing `bytes` to a sibling temp file and renaming it in place.
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_write_with(path, bytes, |temp, payload| std::fs::write(temp, payload))
+}
+
+fn atomic_write_with(
+    path: &Path,
+    bytes: &[u8],
+    write_temp: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "permissions.json".to_owned());
+    let unique = STORE_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        unique
+    ));
+
+    if let Err(err) = write_temp(&temp, bytes) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -276,5 +310,34 @@ mod tests {
         write(&path, &decisions).expect("write store");
         assert!(path.exists(), "write creates the store (and parent dirs)");
         assert_eq!(read(&path), decisions);
+    }
+
+    #[test]
+    fn interrupted_atomic_write_leaves_the_previous_store_unchanged() {
+        let dir = scratch_dir("atomic-fail");
+        let path = dir.join("store.json");
+        let initial = vec![SavedDecision::new("bash", "echo *", Decision::Allow)];
+        write(&path, &initial).expect("seed store");
+        let before = std::fs::read(&path).expect("read seeded bytes");
+
+        let replacement =
+            serde_json::to_vec_pretty(&vec![SavedDecision::new("write", "src/**", Decision::Deny)])
+                .expect("encode replacement");
+        let result = atomic_write_with(&path, &replacement, |temp, bytes| {
+            let partial = &bytes[..bytes.len() / 2];
+            std::fs::write(temp, partial)?;
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "simulated interrupted write",
+            ))
+        });
+
+        assert!(result.is_err(), "the synthetic interruption should fail");
+        assert_eq!(
+            std::fs::read(&path).expect("read bytes after failure"),
+            before,
+            "the existing store file should remain byte-for-byte intact"
+        );
+        assert_eq!(read(&path), initial);
     }
 }

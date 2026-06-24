@@ -115,7 +115,7 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 /// `grep` behaves identically to `bash` for over-limit output and nothing is silently lost).
 fn render(pattern: &str, stdout: &str) -> ToolOutput {
     let mut hits: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-    hits.sort_unstable();
+    hits.sort_unstable_by(|left, right| compare_hit_lines(left, right));
 
     if hits.is_empty() {
         return ToolOutput::text(format!("No matches for pattern: {pattern}"));
@@ -124,6 +124,31 @@ fn render(pattern: &str, stdout: &str) -> ToolOutput {
     let full = hits.join("\n");
     let bounded = bound_output(&full, OutputLimits::default(), "grep-matches");
     ToolOutput::text(bounded.text)
+}
+
+/// Compare two `path:line:text` hit lines by path, numeric line, then text for stable,
+/// human-expected ordering (`2` before `10`).
+fn compare_hit_lines(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_key = parse_hit_key(left);
+    let right_key = parse_hit_key(right);
+    left_key
+        .0
+        .cmp(right_key.0)
+        .then(left_key.1.cmp(&right_key.1))
+        .then(left_key.2.cmp(right_key.2))
+        .then(left.cmp(right))
+}
+
+/// Parse one `path:line:text` hit into sort fields, falling back conservatively when malformed.
+fn parse_hit_key(line: &str) -> (&str, u64, &str) {
+    let mut parts = line.splitn(3, ':');
+    let path = parts.next().unwrap_or(line);
+    let number = parts
+        .next()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    let text = parts.next().unwrap_or("");
+    (path, number, text)
 }
 
 /// Extract a string argument from the assembled arguments object (trimming only surrounding
@@ -272,5 +297,38 @@ mod tests {
         let text = output.model_content();
         assert!(!text.contains("output truncated"), "got: {text}");
         assert!(!text.contains("written to"), "got: {text}");
+    }
+
+    #[test]
+    fn matches_are_sorted_by_numeric_line_number_within_each_file() {
+        let dir = temp_tree("ordering");
+        let ordered = (1..=12)
+            .map(|line| {
+                if line == 2 || line == 10 {
+                    format!("hit {line}")
+                } else {
+                    format!("miss {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.join("order.txt"), format!("{ordered}\n")).unwrap();
+
+        let output = run(
+            &json!({ "pattern": "^hit\\s+\\d+$", "include": "order.txt" }),
+            &ctx_for(&dir),
+        );
+        assert!(!output.is_error, "{}", output.model_content());
+        let rendered = output.model_content();
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 2, "got: {lines:?}");
+        assert!(
+            lines[0].contains("order.txt:2:"),
+            "line 2 should sort before line 10: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("order.txt:10:"),
+            "line 10 should follow line 2: {lines:?}"
+        );
     }
 }
