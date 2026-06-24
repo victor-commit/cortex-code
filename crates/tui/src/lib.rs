@@ -23,7 +23,7 @@ mod tooling;
 mod turn;
 mod ui;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -31,8 +31,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crossterm::event::{
-    self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -199,11 +199,138 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Short probe window used to detect Esc-prefixed arrow sequences emitted by terminals that do not
+/// report modified arrows as a single key event.
+const ESC_SEQUENCE_POLL_WINDOW: Duration = Duration::from_millis(20);
+/// Upper bound for the CSI/SS3 suffix length we sample after `Esc` (`[A`, `[1;3B`, `OA`, ...).
+const ESC_SEQUENCE_MAX_SUFFIX_LEN: usize = 8;
+
+/// Detect whether an Esc-prefixed CSI/SS3 suffix encodes a vertical arrow (`Up`/`Down`).
+fn is_esc_prefixed_vertical_arrow(suffix: &str) -> bool {
+    let bytes = suffix.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let start = bytes[0];
+    if start != b'[' && start != b'O' {
+        return false;
+    }
+    let Some(&end) = bytes.last() else {
+        return false;
+    };
+    if end != b'A' && end != b'B' {
+        return false;
+    }
+    bytes[1..bytes.len() - 1]
+        .iter()
+        .all(|b| b.is_ascii_digit() || *b == b';')
+}
+
+/// Parse one Esc-prefixed key event from crossterm and normalize known noisy alt-arrow encodings.
+///
+/// Returns:
+/// - `Some(key)` for a key that should be delivered to `App::on_key`.
+/// - `None` when an Esc-prefixed vertical-arrow sequence was consumed as inert noise.
+///
+/// Any lookahead keys that are not part of a consumed sequence are queued in `pending_keys` so
+/// they are still delivered in order.
+fn normalize_esc_prefixed_key(
+    key: KeyEvent,
+    pending_keys: &mut VecDeque<KeyEvent>,
+) -> io::Result<Option<KeyEvent>> {
+    if key.code != KeyCode::Esc || key.modifiers != KeyModifiers::NONE {
+        return Ok(Some(key));
+    }
+    if !event::poll(ESC_SEQUENCE_POLL_WINDOW)? {
+        return Ok(Some(key));
+    }
+    let Event::Key(next) = event::read()? else {
+        return Ok(Some(key));
+    };
+    if next.kind == KeyEventKind::Release {
+        pending_keys.push_back(next);
+        return Ok(Some(key));
+    }
+    if next.modifiers != KeyModifiers::NONE {
+        pending_keys.push_back(next);
+        return Ok(Some(key));
+    }
+    match next.code {
+        KeyCode::Up | KeyCode::Down => Ok(None),
+        KeyCode::Char('A') | KeyCode::Char('B') => {
+            if !event::poll(ESC_SEQUENCE_POLL_WINDOW)? {
+                pending_keys.push_back(next);
+                return Ok(Some(key));
+            }
+            let Event::Key(peek) = event::read()? else {
+                pending_keys.push_back(next);
+                return Ok(Some(key));
+            };
+            if peek.kind == KeyEventKind::Release {
+                pending_keys.push_back(next);
+                pending_keys.push_back(peek);
+                return Ok(Some(key));
+            }
+            if peek.modifiers == KeyModifiers::NONE
+                && matches!(peek.code, KeyCode::Char('[') | KeyCode::Char('O'))
+            {
+                return Ok(None);
+            }
+            pending_keys.push_back(next);
+            pending_keys.push_back(peek);
+            Ok(Some(key))
+        }
+        KeyCode::Char('[') | KeyCode::Char('O') => {
+            let mut consumed = vec![next];
+            let mut suffix = match next.code {
+                KeyCode::Char(c) => c.to_string(),
+                _ => String::new(),
+            };
+            while suffix.len() < ESC_SEQUENCE_MAX_SUFFIX_LEN {
+                if !event::poll(ESC_SEQUENCE_POLL_WINDOW)? {
+                    break;
+                }
+                let Event::Key(peek) = event::read()? else {
+                    break;
+                };
+                if peek.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if peek.modifiers != KeyModifiers::NONE {
+                    pending_keys.push_back(peek);
+                    break;
+                }
+                let KeyCode::Char(ch) = peek.code else {
+                    pending_keys.push_back(peek);
+                    break;
+                };
+                suffix.push(ch);
+                consumed.push(peek);
+                if ch.is_ascii_alphabetic() || ch == '~' {
+                    break;
+                }
+            }
+            if is_esc_prefixed_vertical_arrow(&suffix) {
+                return Ok(None);
+            }
+            for key in consumed {
+                pending_keys.push_back(key);
+            }
+            Ok(Some(key))
+        }
+        _ => {
+            pending_keys.push_back(next);
+            Ok(Some(key))
+        }
+    }
+}
+
 fn event_loop<B: Backend + Write>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     pure_plugins: bool,
 ) -> io::Result<()> {
+    let mut pending_keys = VecDeque::new();
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
         if app.should_quit {
@@ -243,13 +370,17 @@ fn event_loop<B: Backend + Write>(
         } else {
             Duration::from_millis(200)
         };
-        if event::poll(timeout)? {
+        if let Some(key) = pending_keys.pop_front() {
+            app.on_key(key);
+        } else if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
-                    app.on_key(key);
+                    if let Some(normalized) = normalize_esc_prefixed_key(key, &mut pending_keys)? {
+                        app.on_key(normalized);
+                    }
                 }
                 // Resize is handled implicitly: the next draw recomputes the layout.
                 Event::Resize(_, _) => {}
@@ -366,5 +497,30 @@ fn initial_status() -> Status {
         agent,
         mode,
         session: "new".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_esc_prefixed_vertical_arrow;
+
+    #[test]
+    fn detects_vertical_arrow_suffixes() {
+        assert!(is_esc_prefixed_vertical_arrow("[A"));
+        assert!(is_esc_prefixed_vertical_arrow("[B"));
+        assert!(is_esc_prefixed_vertical_arrow("OA"));
+        assert!(is_esc_prefixed_vertical_arrow("OB"));
+        assert!(is_esc_prefixed_vertical_arrow("[1;3A"));
+        assert!(is_esc_prefixed_vertical_arrow("[1;9B"));
+    }
+
+    #[test]
+    fn ignores_non_vertical_or_malformed_suffixes() {
+        assert!(!is_esc_prefixed_vertical_arrow(""));
+        assert!(!is_esc_prefixed_vertical_arrow("["));
+        assert!(!is_esc_prefixed_vertical_arrow("[C"));
+        assert!(!is_esc_prefixed_vertical_arrow("[1;3C"));
+        assert!(!is_esc_prefixed_vertical_arrow("[xA"));
+        assert!(!is_esc_prefixed_vertical_arrow("A"));
     }
 }

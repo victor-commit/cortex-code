@@ -43,6 +43,10 @@ const TOAST_DURATION: Duration = Duration::from_millis(2500);
 /// The most toasts kept at once; older toasts are dropped so a burst of notifications cannot grow
 /// without bound (and the overlay never overruns the screen).
 const MAX_TOASTS: usize = 4;
+/// Short window where Esc-prefixed bytes/keys are treated as a possible noisy arrow sequence.
+const NAV_ESCAPE_PROBE_WINDOW: Duration = Duration::from_millis(120);
+/// Maximum buffered chars after Esc while deciding whether they are a noisy arrow sequence.
+const NAV_ESCAPE_PROBE_MAX_CHARS: usize = 6;
 
 /// Status line contents reported in the footer.
 #[derive(Debug, Clone)]
@@ -217,6 +221,18 @@ pub struct FindState {
     pub matches: usize,
 }
 
+/// A short-lived probe for Esc-prefixed noisy arrow sequences (`Esc` + `[A`, `A[`, `Up`, ...).
+///
+/// In prompt mode, Esc normally clears message selection. Some terminals emit Alt+arrow as Esc plus
+/// stray bytes/keys; this probe lets us treat that burst as inert (restoring the prior selection and
+/// swallowing stray bytes) instead of leaking fragments into the prompt.
+#[derive(Debug, Clone)]
+struct NavEscapeProbe {
+    started: Instant,
+    previous_selection: Option<usize>,
+    chars: String,
+}
+
 /// The instruction sent to the model when the `/init` flow runs (project initialization).
 const INIT_PROMPT: &str = "Initialize this project. Analyze the repository structure and the \
     important files, then create (or update) an AGENTS.md file at the project root that documents \
@@ -375,6 +391,9 @@ pub struct App {
     /// The selected transcript message (entry index) for message-level navigation, or `None` when
     /// no message is focused.
     selected_message: Option<usize>,
+    /// Short-lived Esc-prefix probe used to swallow noisy arrow fragments and avoid spuriously
+    /// clearing message selection when terminals emit Alt+arrow as Esc + bytes/arrow.
+    nav_escape_probe: Option<NavEscapeProbe>,
     /// A transient acknowledgement (e.g. a copy confirmation) shown above the prompt, cleared on the
     /// next key press so it reads as a momentary status note.
     ack: Option<String>,
@@ -466,6 +485,7 @@ impl App {
             viewport: Cell::new((80, 24)),
             find: None,
             selected_message: None,
+            nav_escape_probe: None,
             ack: None,
             copy_request: None,
             toasts: Vec::new(),
@@ -2610,6 +2630,70 @@ impl App {
         self.selected_message = None;
     }
 
+    /// Start an Esc-prefix probe in prompt mode. Used to detect noisy Alt+arrow encodings that
+    /// arrive as Esc plus stray bytes/arrow keys, so they can be treated as inert.
+    fn arm_nav_escape_probe(&mut self) {
+        self.nav_escape_probe = Some(NavEscapeProbe {
+            started: Instant::now(),
+            previous_selection: self.selected_message,
+            chars: String::new(),
+        });
+    }
+
+    /// Expire the probe once its short detection window elapses.
+    fn expire_nav_escape_probe(&mut self) {
+        if self
+            .nav_escape_probe
+            .as_ref()
+            .is_some_and(|probe| probe.started.elapsed() > NAV_ESCAPE_PROBE_WINDOW)
+        {
+            self.nav_escape_probe = None;
+        }
+    }
+
+    /// Restore the selection captured before Esc and clear the active probe.
+    fn restore_nav_escape_selection(&mut self) {
+        if let Some(probe) = self.nav_escape_probe.take() {
+            self.selected_message = probe.previous_selection;
+        }
+    }
+
+    /// Consume a possible Esc-prefixed Up/Down key and treat it as inert.
+    fn consume_nav_escape_probe_arrow(&mut self, code: KeyCode) -> bool {
+        if !matches!(code, KeyCode::Up | KeyCode::Down) {
+            return false;
+        }
+        self.expire_nav_escape_probe();
+        if self.nav_escape_probe.is_none() {
+            return false;
+        }
+        self.restore_nav_escape_selection();
+        true
+    }
+
+    /// Consume possible Esc-prefixed CSI fragments and restore selection once the fragment
+    /// identifies a vertical arrow (`[A`, `A[`, `OA`, etc.).
+    fn consume_nav_escape_probe_char(&mut self, c: char) -> bool {
+        self.expire_nav_escape_probe();
+        let Some(probe) = self.nav_escape_probe.as_mut() else {
+            return false;
+        };
+        let is_fragment = matches!(c, '[' | 'O' | 'A' | 'B' | ';' | '0'..='9');
+        if !is_fragment {
+            self.nav_escape_probe = None;
+            return false;
+        }
+        probe.chars.push(c);
+        let has_intro = probe.chars.contains('[') || probe.chars.contains('O');
+        let has_vertical = probe.chars.contains('A') || probe.chars.contains('B');
+        if has_intro && has_vertical {
+            self.restore_nav_escape_selection();
+        } else if probe.chars.len() >= NAV_ESCAPE_PROBE_MAX_CHARS {
+            self.nav_escape_probe = None;
+        }
+        true
+    }
+
     /// Copy the selected message (or, with none selected, the most recent message) to the terminal
     /// clipboard and acknowledge it. The acknowledgement is the user-visible proof; the actual copy
     /// is performed by the event loop via an OSC 52 sequence.
@@ -2726,6 +2810,7 @@ impl App {
         // A transient acknowledgement (e.g. a copy confirmation) lives until the next key press, so
         // clear it here; an action below may set a fresh one for this key.
         self.ack = None;
+        self.expire_nav_escape_probe();
 
         // An interactive permission prompt is the most modal state: the turn worker is blocked
         // awaiting the decision, so it owns every key until answered. `y` approves once, `a` approves
@@ -2954,6 +3039,9 @@ impl App {
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
             // slash menu and the `@`-file picker, so refresh both after the edit.
             KeyCode::Char(c) if !ctrl && !alt => {
+                if self.consume_nav_escape_probe_char(c) {
+                    return;
+                }
                 self.input.insert_char(c);
                 self.on_prompt_edited();
             }
@@ -2974,14 +3062,20 @@ impl App {
             KeyCode::Right => {
                 self.input.handle_key(TextAreaKey::Right, modifiers(shift));
             }
-            // Alt+Up / Alt+Down select the previous / next message (must precede the plain arrows,
-            // which move the prompt caret).
-            KeyCode::Up if alt => self.select_prev_message(),
-            KeyCode::Down if alt => self.select_next_message(),
+            // Alt+Up / Alt+Down are intentionally inert for message navigation. Ctrl+K / Ctrl+N
+            // are the supported, reliable message-nav keys across terminals.
+            KeyCode::Up if alt => {}
+            KeyCode::Down if alt => {}
             KeyCode::Up => {
+                if self.consume_nav_escape_probe_arrow(KeyCode::Up) {
+                    return;
+                }
                 self.input.handle_key(TextAreaKey::Up, modifiers(shift));
             }
             KeyCode::Down => {
+                if self.consume_nav_escape_probe_arrow(KeyCode::Down) {
+                    return;
+                }
                 self.input.handle_key(TextAreaKey::Down, modifiers(shift));
             }
             KeyCode::Home => {
@@ -2999,6 +3093,7 @@ impl App {
                 if self.is_busy() {
                     self.interrupt_turn();
                 } else {
+                    self.arm_nav_escape_probe();
                     self.clear_navigation();
                 }
             }
@@ -5752,38 +5847,80 @@ mod tests {
     }
 
     #[test]
-    fn alt_arrows_navigate_messages() {
+    fn ctrl_k_and_ctrl_n_navigate_messages() {
         // VAL-TUI-079: message navigation moves the selection between messages.
         let mut a = app();
         a.transcript.push(Entry::User("first".to_owned()));
         a.transcript.push(Entry::User("second".to_owned()));
         a.transcript.push(Entry::User("third".to_owned()));
         assert_eq!(a.selected_message(), None);
-        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         assert_eq!(
             a.selected_message(),
             Some(2),
             "first selection is the last message"
         );
-        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         assert_eq!(a.selected_message(), Some(1));
-        a.on_key(key_mod(KeyCode::Down, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('n'), KeyModifiers::CONTROL));
         assert_eq!(a.selected_message(), Some(2));
         a.on_key(key(KeyCode::Esc));
         assert_eq!(a.selected_message(), None, "Esc clears the selection");
     }
 
     #[test]
-    fn ctrl_k_and_ctrl_n_navigate_messages() {
+    fn alt_arrows_are_inert_for_message_navigation() {
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(a.selected_message(), None);
+        a.on_key(key_mod(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(a.selected_message(), None);
+    }
+
+    #[test]
+    fn esc_prefixed_csi_chars_do_not_clear_or_leak() {
         let mut a = app();
         a.transcript.push(Entry::User("first".to_owned()));
         a.transcript.push(Entry::User("second".to_owned()));
         a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         assert_eq!(a.selected_message(), Some(1));
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(
+            a.selected_message(),
+            None,
+            "plain Esc still clears selection"
+        );
+        a.on_key(key(KeyCode::Char('[')));
+        a.on_key(key(KeyCode::Char('A')));
+        assert_eq!(
+            a.selected_message(),
+            Some(1),
+            "Esc+[A restores the pre-Esc selection instead of clearing it"
+        );
+        assert_eq!(
+            a.input.value(),
+            "",
+            "CSI fragment bytes are swallowed and never leak into the prompt"
+        );
+    }
+
+    #[test]
+    fn esc_prefixed_bare_up_is_inert() {
+        let mut a = app();
+        a.transcript.push(Entry::User("first".to_owned()));
+        a.transcript.push(Entry::User("second".to_owned()));
         a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
-        assert_eq!(a.selected_message(), Some(0));
-        a.on_key(key_mod(KeyCode::Char('n'), KeyModifiers::CONTROL));
         assert_eq!(a.selected_message(), Some(1));
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(
+            a.selected_message(),
+            Some(1),
+            "Esc followed by bare Up is treated as inert Alt+Up noise"
+        );
+        assert_eq!(a.input.value(), "");
     }
 
     #[test]
@@ -5814,7 +5951,7 @@ mod tests {
         // VAL-TUI-081: copying a message is acknowledged (and the text is staged for the clipboard).
         let mut a = app();
         a.transcript.push(Entry::User("hello world".to_owned()));
-        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         a.on_key(key_mod(KeyCode::Char('y'), KeyModifiers::CONTROL));
         assert!(a.ack().is_some(), "the copy is acknowledged");
         assert_eq!(
@@ -5921,7 +6058,7 @@ mod tests {
         a.set_viewport(80, 10);
         // Select a message first (which scrolls it into view), then page up so the view is both
         // scrolled away from the bottom and has a selection.
-        a.on_key(key_mod(KeyCode::Up, KeyModifiers::ALT));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         a.on_key(key(KeyCode::PageUp));
         assert!(a.scroll() > 0 && a.selected_message().is_some());
         for c in "hello".chars() {
