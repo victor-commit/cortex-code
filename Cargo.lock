@@ -1619,6 +1619,7 @@ dependencies = [
  "errors",
  "eventsource-stream",
  "futures-util",
+ "httpdate",
  "redaction",
  "reqwest 0.12.28",
  "serde",

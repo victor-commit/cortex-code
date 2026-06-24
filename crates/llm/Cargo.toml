@@ -18,6 +18,7 @@ tokio = { workspace = true }
 eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
 bytes = { workspace = true }
+httpdate = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

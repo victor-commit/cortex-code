@@ -10,14 +10,14 @@
 //! upstream aborts the turn with a transport error instead of hanging forever.
 
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use redaction::guard_outbound;
 use reqwest::StatusCode;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 
 use crate::error::LlmError;
 
@@ -26,6 +26,11 @@ pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, LlmError>> + Send>
 
 /// The outbound operation named in a `net-disabled` refusal raised by the transport.
 const OUTBOUND_OPERATION: &str = "LLM streaming request";
+const RETRY_AFTER_MS_HEADER: &str = "retry-after-ms";
+const MAX_RETRIES: u32 = 2;
+const BASE_DELAY_MS: u64 = 500;
+const MAX_DELAY_MS: u64 = 10_000;
+const JITTER_PERCENT: u64 = 20;
 
 /// Tuning knobs for the transport.
 #[derive(Debug, Clone, Copy)]
@@ -79,8 +84,10 @@ impl HttpTransport {
     ///
     /// The outbound guard is consulted FIRST, before the request is built or sent, so under
     /// `CORTEX_NO_NET=1` this returns [`LlmError::NetDisabled`] without opening any socket. A
-    /// non-success HTTP status is drained and normalized into an upstream error (see
-    /// [`classify_upstream`]); a connection-level failure becomes a transport error.
+    /// retryable non-success HTTP status (`429`, `529`, `5xx`) is retried with jittered
+    /// exponential backoff; `retry-after-ms` / `retry-after` headers override the jittered delay
+    /// (safely capped). Remaining non-success statuses are drained and normalized into an upstream
+    /// error (see [`classify_upstream`]); a connection-level failure becomes a transport error.
     pub async fn open_post_sse(
         &self,
         url: &str,
@@ -91,26 +98,105 @@ impl HttpTransport {
         guard_outbound(OUTBOUND_OPERATION).map_err(LlmError::from_diagnostic)?;
 
         let headers = request_headers(bearer_token, extra_headers)?;
-        let response = self
-            .client
-            .post(url)
-            .headers(headers)
-            .body(body)
-            .send()
-            .await
-            .map_err(|err| LlmError::transport(err.to_string()))?;
+        let mut retries_performed = 0_u32;
+        loop {
+            let response = self
+                .client
+                .post(url)
+                .headers(headers.clone())
+                .body(body.clone())
+                .send()
+                .await
+                .map_err(|err| LlmError::transport(err.to_string()))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
-            return Err(classify_upstream(status, &detail));
+            let status = response.status();
+            if !status.is_success() {
+                let response_headers = response.headers().clone();
+                let detail = response.text().await.unwrap_or_default();
+                if let Some(delay) = next_retry_delay(status, &response_headers, retries_performed)
+                {
+                    retries_performed = retries_performed.saturating_add(1);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(classify_upstream(status, &detail));
+            }
+
+            let bytes = response
+                .bytes_stream()
+                .map_err(|err| LlmError::transport(err.to_string()));
+            return Ok(Box::pin(bytes));
         }
-
-        let bytes = response
-            .bytes_stream()
-            .map_err(|err| LlmError::transport(err.to_string()));
-        Ok(Box::pin(bytes))
     }
+}
+
+fn next_retry_delay(
+    status: StatusCode,
+    headers: &HeaderMap,
+    retries_performed: u32,
+) -> Option<Duration> {
+    if retries_performed >= MAX_RETRIES || !is_retryable_status(status) {
+        return None;
+    }
+    if let Some(delay) = parse_retry_after(headers) {
+        return Some(delay.min(Duration::from_millis(MAX_DELAY_MS)));
+    }
+    Some(jittered_exponential_backoff(retries_performed))
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 529 || status.is_server_error()
+}
+
+fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    if let Some(value) = headers.get(RETRY_AFTER_MS_HEADER)
+        && let Some(delay) = parse_retry_after_ms(value)
+    {
+        return Some(delay);
+    }
+    if let Some(value) = headers.get(RETRY_AFTER) {
+        return parse_retry_after_seconds_or_date(value);
+    }
+    None
+}
+
+fn parse_retry_after_ms(value: &HeaderValue) -> Option<Duration> {
+    value
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_millis)
+}
+
+fn parse_retry_after_seconds_or_date(value: &HeaderValue) -> Option<Duration> {
+    let raw = value.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let when = httpdate::parse_http_date(raw).ok()?;
+    match when.duration_since(SystemTime::now()) {
+        Ok(duration) => Some(duration),
+        Err(_in_past) => Some(Duration::ZERO),
+    }
+}
+
+fn jittered_exponential_backoff(retries_performed: u32) -> Duration {
+    let exponent = retries_performed.min(20);
+    let base = BASE_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(MAX_DELAY_MS);
+    let lower = base.saturating_mul(100 - JITTER_PERCENT) / 100;
+    let upper = base.saturating_mul(100 + JITTER_PERCENT) / 100;
+    let capped_upper = upper.min(MAX_DELAY_MS);
+    let span = capped_upper.saturating_sub(lower);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let jitter = if span == 0 { 0 } else { seed % (span + 1) };
+    Duration::from_millis(lower.saturating_add(jitter).min(MAX_DELAY_MS))
 }
 
 fn request_headers(
@@ -188,7 +274,7 @@ pub fn sse_data_frames(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use bytes::Bytes;
     use futures_util::StreamExt;
@@ -255,6 +341,78 @@ mod tests {
     fn building_a_transport_succeeds_with_rustls() {
         let transport = HttpTransport::new(TransportConfig::default()).expect("rustls client");
         assert_eq!(transport.config().idle_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn retries_cover_429_529_and_5xx_statuses() {
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(
+            StatusCode::from_u16(529).expect("valid status")
+        ));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn retry_after_ms_takes_precedence_over_retry_after() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(RETRY_AFTER_MS_HEADER),
+            HeaderValue::from_static("75"),
+        );
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("5"));
+        let delay = parse_retry_after(&headers).expect("retry-after delay");
+        assert_eq!(delay, Duration::from_millis(75));
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_and_http_date() {
+        let mut second_headers = HeaderMap::new();
+        second_headers.insert(RETRY_AFTER, HeaderValue::from_static("2"));
+        assert_eq!(
+            parse_retry_after(&second_headers),
+            Some(Duration::from_secs(2))
+        );
+
+        let future_date = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(2));
+        let mut date_headers = HeaderMap::new();
+        date_headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_str(&future_date).expect("http-date header"),
+        );
+        let date_delay = parse_retry_after(&date_headers).expect("parsed http-date delay");
+        assert!(
+            date_delay > Duration::from_millis(500),
+            "expected a positive delay for future http-date, got {date_delay:?}"
+        );
+    }
+
+    #[test]
+    fn retry_delay_none_for_non_retryable_or_exhausted_retries() {
+        let headers = HeaderMap::new();
+        assert!(
+            next_retry_delay(StatusCode::BAD_REQUEST, &headers, 0).is_none(),
+            "400 is not retryable"
+        );
+        assert!(
+            next_retry_delay(StatusCode::SERVICE_UNAVAILABLE, &headers, MAX_RETRIES).is_none(),
+            "retry budget exhausted"
+        );
+    }
+
+    #[test]
+    fn jittered_backoff_stays_in_expected_bounds() {
+        let first = jittered_exponential_backoff(0);
+        assert!(
+            (Duration::from_millis(400)..=Duration::from_millis(600)).contains(&first),
+            "first retry delay should be around 500ms ±20%, got {first:?}"
+        );
+
+        let second = jittered_exponential_backoff(1);
+        assert!(
+            (Duration::from_millis(800)..=Duration::from_millis(1_200)).contains(&second),
+            "second retry delay should be around 1000ms ±20%, got {second:?}"
+        );
     }
 
     #[test]
