@@ -41,6 +41,12 @@ const MAX_VISIBLE_TOASTS: usize = 4;
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
+    let theme = style::ThemeColors::from_name(app.theme());
+
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.background)),
+        area,
+    );
 
     // Reserve a left column for the sidebar when it is shown, so the transcript/prompt reflow
     // beside it; otherwise the main column spans the full width.
@@ -60,33 +66,33 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .split(main_area);
 
-    draw_transcript(frame, app, chunks[0]);
-    draw_prompt(frame, app, chunks[1]);
-    draw_footer(frame, app, chunks[2]);
+    draw_transcript(frame, app, chunks[0], &theme);
+    draw_prompt(frame, app, chunks[1], &theme);
+    draw_footer(frame, app, chunks[2], &theme);
     // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
-    draw_slash_menu(frame, app, chunks[1]);
+    draw_slash_menu(frame, app, chunks[1], &theme);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
-    draw_mention_menu(frame, app, chunks[1]);
+    draw_mention_menu(frame, app, chunks[1], &theme);
     // The find-in-chat search bar floats above the prompt while find mode is active.
-    draw_find_bar(frame, app, chunks[1]);
+    draw_find_bar(frame, app, chunks[1], &theme);
     // A transient acknowledgement (e.g. a copy confirmation) shows just above the prompt.
-    draw_ack(frame, app, chunks[1]);
+    draw_ack(frame, app, chunks[1], &theme);
     // The sidebar occupies its reserved column beside the main content.
     if let Some(sidebar) = sidebar_area {
-        draw_sidebar(frame, app, sidebar);
+        draw_sidebar(frame, app, sidebar, &theme);
     }
     // A modal dialog (picker/status view) overlays everything else when open.
-    draw_dialog(frame, app, area);
+    draw_dialog(frame, app, area, &theme);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
-    draw_palette(frame, app, area);
+    draw_palette(frame, app, area, &theme);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
-    draw_which_key(frame, app, area);
+    draw_which_key(frame, app, area, &theme);
     // An interactive permission prompt is modal: it overlays everything (it captures every key
     // while the turn worker is blocked awaiting the decision).
-    draw_permission(frame, app, area);
+    draw_permission(frame, app, area, &theme);
     // Transient toast notifications float above everything else (top-right) so they remain visible
     // over any open dialog/overlay, and auto-dismiss without disturbing the layout beneath them.
-    draw_toasts(frame, app, area);
+    draw_toasts(frame, app, area, &theme);
 }
 
 /// Number of text rows the prompt box should show (clamped to available height).
@@ -101,9 +107,9 @@ fn prompt_rows(app: &App, total_height: u16) -> u16 {
 /// conversation. The view is normally pinned to the latest content, but the message-selection
 /// highlight, find-match highlight, and the scroll offset let the user reach and mark earlier
 /// content; the most-recent content returns into view when the scroll offset is zero.
-fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     if app.transcript.is_empty() && !app.is_busy() {
-        draw_home(frame, app, area);
+        draw_home(frame, app, area, theme);
         return;
     }
 
@@ -121,7 +127,6 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     // Mark the selected message (message-level navigation) with a full-width background band so the
     // focused message is unmistakable across snapshots.
     if let Some(selected) = app.selected_message() {
-        let theme = style::ThemeColors::from_name(app.theme());
         highlight_selected(&mut lines, &entry_starts, selected, width, theme.surface[3]);
     }
 
@@ -133,8 +138,8 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
                 &mut lines,
                 &find.query,
                 find.active,
-                style::INFO,
-                style::WARNING,
+                theme.info,
+                theme.warning,
             );
         }
     }
@@ -145,7 +150,10 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     let start = max_scroll - scroll;
     let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
 
-    frame.render_widget(Paragraph::new(visible), area);
+    frame.render_widget(
+        Paragraph::new(visible).style(Style::default().fg(theme.text).bg(theme.background)),
+        area,
+    );
 }
 
 /// The fully rendered transcript: the pre-wrapped lines plus the first line index of each transcript
@@ -161,14 +169,15 @@ pub struct RenderedTranscript {
 /// entry begins. The in-progress assistant entry grows as deltas arrive, and the busy indicator is
 /// appended while a turn streams.
 pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
+    let theme = style::ThemeColors::from_name(app.theme());
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut entry_starts: Vec<usize> = Vec::with_capacity(app.transcript.len());
     for entry in &app.transcript {
         entry_starts.push(lines.len());
         match entry {
-            Entry::User(text) => push_user(&mut lines, text, width),
-            Entry::Assistant(turn) => push_assistant(&mut lines, turn, width),
-            Entry::Diff(diff) => push_diff(&mut lines, diff),
+            Entry::User(text) => push_user(&mut lines, text, width, &theme),
+            Entry::Assistant(turn) => push_assistant(&mut lines, turn, width, app.theme(), &theme),
+            Entry::Diff(diff) => push_diff(&mut lines, diff, &theme),
             Entry::Tool(card) => {
                 push_tool(
                     &mut lines,
@@ -176,12 +185,13 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                     width,
                     app.expand_tools,
                     app.spinner_glyph(),
+                    &theme,
                 );
             }
-            Entry::Notice(message) => push_notice(&mut lines, message, width),
-            Entry::Shell(outcome) => push_shell(&mut lines, outcome, width),
-            Entry::Help => push_help(&mut lines, app),
-            Entry::Error(message) => push_error(&mut lines, message, width),
+            Entry::Notice(message) => push_notice(&mut lines, message, width, &theme),
+            Entry::Shell(outcome) => push_shell(&mut lines, outcome, width, &theme),
+            Entry::Help => push_help(&mut lines, app, &theme),
+            Entry::Error(message) => push_error(&mut lines, message, width, &theme),
         }
     }
     if let Some(glyph) = app.spinner_glyph() {
@@ -196,7 +206,7 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
         lines.push(Line::from(Span::styled(
             label,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         )));
     }
@@ -374,11 +384,11 @@ fn apply_row_bg(line: &Line<'static>, bg: Color, width: usize) -> Line<'static> 
 }
 
 /// Append a user prompt: a bold marker header followed by the wrapped prompt body.
-fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: usize, theme: &style::ThemeColors) {
     lines.push(Line::from(Span::styled(
         "› you",
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary)
             .add_modifier(Modifier::BOLD),
     )));
     for wrapped in wrap(text, width) {
@@ -388,15 +398,21 @@ fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
 }
 
 /// Append an assistant reply: an optional distinct reasoning region, then the answer body.
-fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: usize) {
+fn push_assistant(
+    lines: &mut Vec<Line<'static>>,
+    turn: &AssistantTurn,
+    width: usize,
+    theme_name: &str,
+    theme: &style::ThemeColors,
+) {
     // Reasoning, when present, renders in a distinct dimmed/labeled region separate from the answer.
     // When absent, nothing is emitted (no empty-reasoning artifact).
     if !turn.reasoning.trim().is_empty() {
         let label = Style::default()
-            .fg(Color::Magenta)
+            .fg(theme.accent)
             .add_modifier(Modifier::ITALIC);
         let body = Style::default()
-            .fg(Color::DarkGray)
+            .fg(theme.text_dim)
             .add_modifier(Modifier::ITALIC);
         lines.push(Line::from(Span::styled("  reasoning", label)));
         // Reserve two columns for the "│ " quote bar when wrapping.
@@ -412,7 +428,7 @@ fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: u
     lines.push(Line::from(Span::styled(
         "• cortex",
         Style::default()
-            .fg(Color::Green)
+            .fg(theme.secondary)
             .add_modifier(Modifier::BOLD),
     )));
     // Render the assistant answer as markdown so headings, emphasis, lists, inline code, fenced
@@ -423,22 +439,24 @@ fn push_assistant(lines: &mut Vec<Line<'static>>, turn: &AssistantTurn, width: u
         lines.push(Line::from(""));
     } else {
         let md_width = width.clamp(1, u16::MAX as usize) as u16;
-        lines.extend(frame::markdown::render_markdown(&turn.answer, md_width));
+        let renderer = frame::markdown::MarkdownRenderer::with_theme(
+            frame::markdown::MarkdownTheme::from_name(theme_name),
+        )
+        .with_width(md_width);
+        lines.extend(renderer.render(&turn.answer));
     }
     lines.push(Line::from(""));
 }
 
 /// Append a file-change diff: a labeled marker line, then the colored unified-diff lines (file-path
 /// header, `@@` hunks, and green `+` / red `-` change lines), then a trailing blank line.
-fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff) {
+fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff, theme: &style::ThemeColors) {
     let verb = if diff.is_new { "created" } else { "edited" };
     lines.push(Line::from(Span::styled(
         format!("✎ {verb} ({}+ {}-)", diff.additions, diff.removals),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
     )));
-    lines.extend(diff.render());
+    lines.extend(diff.render_with_theme(theme));
     lines.push(Line::from(""));
 }
 
@@ -452,18 +470,19 @@ fn push_tool(
     width: usize,
     expanded: bool,
     spinner: Option<&str>,
+    theme: &style::ThemeColors,
 ) {
     let box_w = width.clamp(8, TOOL_CARD_WIDTH);
     let (accent, glyph, state) = match card.status {
-        ToolStatus::Running => (style::INFO, "⚙", "running"),
-        ToolStatus::Completed => (style::SUCCESS, "✓", "done"),
-        ToolStatus::Failed => (style::ERROR, "✗", "error"),
+        ToolStatus::Running => (theme.info, "⚙", "running"),
+        ToolStatus::Completed => (theme.success, "✓", "done"),
+        ToolStatus::Failed => (theme.error, "✗", "error"),
     };
     let border = Style::default().fg(accent);
     let border_bold = border.add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(style::TEXT);
-    let detail_style = Style::default().fg(style::TEXT_DIM);
-    let error_style = Style::default().fg(style::ERROR);
+    let text_style = Style::default().fg(theme.text);
+    let detail_style = Style::default().fg(theme.text_dim);
+    let error_style = Style::default().fg(theme.error);
 
     // Top border carries the card label: tool name + status (with a spinner while running).
     let mut header = format!("{glyph} {} · {state}", card.name);
@@ -550,8 +569,13 @@ fn push_tool(
 
 /// Append a system notice (e.g. a dispatched slash command or an unknown-command message) as a
 /// distinct, muted line set apart from chat content.
-fn push_notice(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
-    let style = Style::default().fg(style::INFO);
+fn push_notice(
+    lines: &mut Vec<Line<'static>>,
+    message: &str,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    let style = Style::default().fg(theme.info);
     let body: Vec<String> = wrap(message, width.saturating_sub(2).max(1));
     let mut first = true;
     for wrapped in body {
@@ -567,23 +591,26 @@ fn push_notice(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
 
 /// Append a `!` shell-mode command and its output: a `$ command` header (distinct from chat) then
 /// the captured output, dimmed on success and red-styled when the command failed.
-fn push_shell(lines: &mut Vec<Line<'static>>, outcome: &crate::shell::ShellOutcome, width: usize) {
+fn push_shell(
+    lines: &mut Vec<Line<'static>>,
+    outcome: &crate::shell::ShellOutcome,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
     let prompt_style = Style::default()
-        .fg(style::WARNING)
+        .fg(theme.warning)
         .add_modifier(Modifier::BOLD);
     lines.push(Line::from(vec![
         Span::styled("$ ", prompt_style),
         Span::styled(
             outcome.command.clone(),
-            Style::default()
-                .fg(style::TEXT)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]));
     let body = if outcome.success {
-        Style::default().fg(style::TEXT_DIM)
+        Style::default().fg(theme.text_dim)
     } else {
-        Style::default().fg(style::ERROR)
+        Style::default().fg(theme.error)
     };
     for wrapped in wrap(&outcome.output, width) {
         lines.push(Line::from(Span::styled(wrapped, body)));
@@ -611,17 +638,13 @@ const KEYBINDINGS: &[(&str, &str)] = &[
 /// Append the `/help` command reference: a titled panel listing every built-in slash command (from
 /// the registry) with its description, then the keybindings (including the active leader bindings).
 /// This is the visible effect of `/help`.
-fn push_help(lines: &mut Vec<Line<'static>>, app: &App) {
-    let title = Style::default()
-        .fg(style::INFO)
-        .add_modifier(Modifier::BOLD);
+fn push_help(lines: &mut Vec<Line<'static>>, app: &App, theme: &style::ThemeColors) {
+    let title = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
     let section = Style::default()
-        .fg(style::WARNING)
+        .fg(theme.warning)
         .add_modifier(Modifier::BOLD);
-    let name = Style::default()
-        .fg(style::TEXT)
-        .add_modifier(Modifier::BOLD);
-    let desc = Style::default().fg(style::TEXT_DIM);
+    let name = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(theme.text_dim);
 
     lines.push(Line::from(Span::styled(
         "Help — commands & keybindings",
@@ -665,13 +688,20 @@ fn push_help(lines: &mut Vec<Line<'static>>, app: &App) {
 }
 
 /// Append a turn-level error as a distinct, red-styled block.
-fn push_error(lines: &mut Vec<Line<'static>>, message: &str, width: usize) {
-    let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+fn push_error(
+    lines: &mut Vec<Line<'static>>,
+    message: &str,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    let style = Style::default()
+        .fg(theme.error)
+        .add_modifier(Modifier::BOLD);
     lines.push(Line::from(Span::styled("✗ error", style)));
     for wrapped in wrap(message, width) {
         lines.push(Line::from(Span::styled(
             wrapped,
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme.error),
         )));
     }
     lines.push(Line::from(""));
@@ -726,11 +756,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn draw_home(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_home(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let heading_style = Style::default()
-        .fg(Color::Cyan)
+        .fg(theme.primary)
         .add_modifier(Modifier::BOLD);
-    let dim = Style::default().add_modifier(Modifier::DIM);
+    let dim = Style::default()
+        .fg(theme.text_dim)
+        .add_modifier(Modifier::DIM);
 
     let leader = app.keybinds().leader.display();
     let body = Text::from(vec![
@@ -753,9 +785,16 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[0]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(" Cortex Code ");
+        .border_style(Style::default().fg(theme.border))
+        .title(" Cortex Code ")
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let paragraph = Paragraph::new(body)
         .block(block)
@@ -765,23 +804,29 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     // Shell mode wears a distinct title and border color so it is unmistakably set apart from chat.
     let shell = app.shell_mode();
     let mut block = Block::default()
+        .style(Style::default().bg(theme.surface[1]).fg(theme.text))
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border));
     if shell {
         block = block
             .title(" ! shell ")
             .title_style(
                 Style::default()
-                    .fg(style::WARNING)
+                    .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             )
-            .border_style(Style::default().fg(style::WARNING));
+            .border_style(Style::default().fg(theme.warning));
     } else {
-        block = block.title(" Prompt ");
+        block = block.title(" Prompt ").title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        );
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -796,7 +841,9 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 placeholder,
-                Style::default().add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(theme.text_dim)
+                    .add_modifier(Modifier::DIM),
             )),
             inner,
         );
@@ -822,13 +869,14 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
 /// Each row shows `/name  description`; the highlighted row carries a `▸` marker and bold name.
 /// A non-empty query that matches nothing yields a single graceful "no matching commands" row.
 fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+    let theme = style::ThemeColors::from_name(app.theme());
     let _ = app.slash_query()?;
     let matches = app.slash_matches();
     if matches.is_empty() {
         return Some(vec![Line::from(Span::styled(
             "  no matching commands",
             Style::default()
-                .fg(style::TEXT_DIM)
+                .fg(theme.text_dim)
                 .add_modifier(Modifier::ITALIC),
         ))]);
     }
@@ -839,19 +887,17 @@ fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let name_style = if is_selected {
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(style::TEXT)
+            Style::default().fg(theme.text)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(marker, Style::default().fg(theme.info)),
             Span::styled(format!("/{}", command.name), name_style),
             Span::raw("  "),
             Span::styled(
                 command.description.to_owned(),
-                Style::default().fg(style::TEXT_DIM),
+                Style::default().fg(theme.text_dim),
             ),
         ]));
     }
@@ -860,7 +906,7 @@ fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
 
 /// Render the slash-command autocomplete menu as a bordered popup floating directly above the
 /// prompt box. The view scrolls to keep the highlighted row visible when the match list is long.
-fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
+fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
     let Some(rows) = slash_menu_lines(app) else {
         return;
     };
@@ -889,26 +935,27 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
     };
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.info))
         .title(" / commands ")
-        .title_style(
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD),
-        );
+        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// Build the `@`-file picker's rows for the current query, or `None` when the picker is closed.
 /// Each row shows a file path; the highlighted row carries a `▸` marker and bold text. A query that
 /// matches no file yields a single graceful "no matching files" row.
 fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+    let theme = style::ThemeColors::from_name(app.theme());
     if !app.mention_open() {
         return None;
     }
@@ -917,7 +964,7 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
         return Some(vec![Line::from(Span::styled(
             "  no matching files",
             Style::default()
-                .fg(style::TEXT_DIM)
+                .fg(theme.text_dim)
                 .add_modifier(Modifier::ITALIC),
         ))]);
     }
@@ -928,14 +975,12 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let path_style = if is_selected {
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(style::TEXT)
+            Style::default().fg(theme.text)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(marker, Style::default().fg(theme.info)),
             Span::styled(path.clone(), path_style),
         ]));
     }
@@ -944,7 +989,7 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
 
 /// Render the `@`-file picker as a bordered popup floating directly above the prompt box, scrolling
 /// to keep the highlighted row visible when the match list is long.
-fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
+fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
     let Some(rows) = mention_menu_lines(app) else {
         return;
     };
@@ -972,26 +1017,26 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect) {
     };
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.info))
         .title(" @ files ")
-        .title_style(
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD),
-        );
+        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// Render the find-in-chat search bar as a single-row bordered popup floating above the prompt. It
 /// shows the live query and a `match N of M` indicator (or `no matches` / a hint), so the search
 /// affordance and the active-match position are both visible in a snapshot.
-fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect) {
+fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
     let Some(find) = app.find() else {
         return;
     };
@@ -1011,13 +1056,11 @@ fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect) {
     let row = Line::from(vec![
         Span::styled(
             "Find: ",
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(find.query.clone(), Style::default().fg(style::TEXT)),
+        Span::styled(find.query.clone(), Style::default().fg(theme.text)),
         Span::raw("  "),
-        Span::styled(status, Style::default().fg(style::TEXT_DIM)),
+        Span::styled(status, Style::default().fg(theme.text_dim)),
     ]);
 
     let height = 3u16;
@@ -1031,26 +1074,26 @@ fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect) {
     };
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.info))
         .title(" find ")
-        .title_style(
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD),
-        );
+        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(row), inner);
+    frame.render_widget(
+        Paragraph::new(row).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// Render a transient acknowledgement (e.g. a copy confirmation) as a single highlighted row
 /// directly above the prompt. Shown only in ordinary mode (never while the find bar is open) so the
 /// two affordances do not collide.
-fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect) {
+fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
     if app.find().is_some() {
         return;
     }
@@ -1070,22 +1113,25 @@ fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect) {
     let line = Line::from(Span::styled(
         format!("✓ {message}"),
         Style::default()
-            .fg(style::SUCCESS)
+            .fg(theme.success)
             .add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.background)),
+        area,
+    );
 }
 
 /// The fg color and human label for a toast level. Error toasts use the error color (a distinct red)
 /// so an error notification is unmistakable from a success/info one; the level is also encoded in the
 /// ASCII icon and the label text, so the distinction survives a monochrome snapshot.
-fn toast_decor(level: ToastLevel) -> (Color, &'static str) {
+fn toast_decor(level: ToastLevel, theme: &style::ThemeColors) -> (Color, &'static str) {
     match level {
-        ToastLevel::Success => (style::SUCCESS, "Success"),
-        ToastLevel::Info => (style::INFO, "Info"),
-        ToastLevel::Warning => (style::WARNING, "Warning"),
-        ToastLevel::Error => (style::ERROR, "Error"),
+        ToastLevel::Success => (theme.success, "Success"),
+        ToastLevel::Info => (theme.info, "Info"),
+        ToastLevel::Warning => (theme.warning, "Warning"),
+        ToastLevel::Error => (theme.error, "Error"),
     }
 }
 
@@ -1129,13 +1175,12 @@ fn toast_bar(fraction: f32, width: usize) -> String {
 /// it reads clearly as a transient notification, with error toasts styled distinctly (error color +
 /// `[x]` icon + `Error` label). Drawn with `Clear` over the underlying cells, so once a toast expires
 /// the layout beneath is repainted intact.
-fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let toasts = app.toasts();
     if toasts.is_empty() || area.width < 18 || area.height < 4 {
         return;
     }
 
-    let theme = style::ThemeColors::from_name(app.theme());
     let bg = theme.surface[2];
     let max_width = ((area.width as usize) * 2 / 5)
         .clamp(24, 54)
@@ -1148,7 +1193,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
             break;
         }
 
-        let (color, label) = toast_decor(toast.level);
+        let (color, label) = toast_decor(toast.level, theme);
         let header_text = format!(" {} {label}: {} ", toast.level.icon(), toast.message);
         let width = header_text.chars().count().clamp(12, max_width);
         let header = pad_or_truncate(&header_text, width);
@@ -1198,7 +1243,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
 /// Build a modal dialog's item rows: each selectable item with a `▸` marker and bold name on the
 /// highlighted row, or a single italic empty-state row when the list is empty (e.g. the MCP
 /// "no servers configured" view).
-fn dialog_lines(dialog: &Dialog) -> Vec<Line<'static>> {
+fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static>> {
     if dialog.items.is_empty() {
         let message = dialog
             .empty
@@ -1207,7 +1252,7 @@ fn dialog_lines(dialog: &Dialog) -> Vec<Line<'static>> {
         return vec![Line::from(Span::styled(
             format!("  {message}"),
             Style::default()
-                .fg(style::TEXT_DIM)
+                .fg(theme.text_dim)
                 .add_modifier(Modifier::ITALIC),
         ))];
     }
@@ -1218,14 +1263,12 @@ fn dialog_lines(dialog: &Dialog) -> Vec<Line<'static>> {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let item_style = if is_selected {
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(style::TEXT)
+            Style::default().fg(theme.text)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(marker, Style::default().fg(theme.info)),
             Span::styled(item.clone(), item_style),
         ]));
     }
@@ -1234,7 +1277,7 @@ fn dialog_lines(dialog: &Dialog) -> Vec<Line<'static>> {
 
 /// Render the open modal dialog as a centered bordered popup over the whole frame. The list scrolls
 /// to keep the highlighted row visible, and a footer hint reminds the user how to navigate/close.
-fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some(dialog) = app.dialog() else {
         return;
     };
@@ -1242,7 +1285,7 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let rows = dialog_lines(dialog);
+    let rows = dialog_lines(dialog, theme);
     let widest = rows.iter().map(Line::width).max().unwrap_or(0);
     // The session picker, when renaming, shows the in-progress new title above the hint.
     let rename = (dialog.kind == DialogKind::Sessions)
@@ -1267,13 +1310,14 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(width, height, area);
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.border_focus))
         .title(format!(" {} ", dialog.title))
         .title_style(
             Style::default()
-                .fg(style::INFO)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(popup);
@@ -1292,27 +1336,28 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect) {
         shown.push(Line::from(vec![
             Span::styled(
                 "  Rename: ",
-                Style::default()
-                    .fg(style::INFO)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(text.to_owned(), Style::default().fg(style::TEXT)),
-            Span::styled("█", Style::default().fg(style::INFO)),
+            Span::styled(text.to_owned(), Style::default().fg(theme.text)),
+            Span::styled("█", Style::default().fg(theme.info)),
         ]));
     }
     shown.push(Line::from(Span::styled(
         format!("  {hint}"),
-        Style::default().fg(style::TEXT_DIM),
+        Style::default().fg(theme.text_dim),
     )));
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// Render the interactive permission prompt: a centered modal naming the ask-gated tool and its
 /// target with selectable Allow/Deny options, drawn over everything while a decision is pending.
-fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some((tool, subject, selected)) = app.permission_prompt() else {
         return;
     };
@@ -1332,11 +1377,11 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(marked, option_style(color, selected == index))
     };
     let options = Line::from(vec![
-        option("Allow once", 0, style::SUCCESS),
+        option("Allow once", 0, theme.success),
         Span::raw("  "),
-        option("Allow always", 1, style::SUCCESS),
+        option("Allow always", 1, theme.success),
         Span::raw("  "),
-        option("Deny", 2, style::ERROR),
+        option("Deny", 2, theme.error),
     ]);
     let hint = "y once · a always · n deny · ←/→ select · Enter confirm · Esc deny";
 
@@ -1345,23 +1390,21 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 tool.to_owned(),
                 Style::default()
-                    .fg(style::WARNING)
+                    .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " requests permission to act on:",
-                Style::default().fg(style::TEXT),
+                Style::default().fg(theme.text),
             ),
         ]),
         Line::from(Span::styled(
             format!("  {subject}"),
-            Style::default()
-                .fg(style::TEXT)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         options,
-        Line::from(Span::styled(hint, Style::default().fg(style::TEXT_DIM))),
+        Line::from(Span::styled(hint, Style::default().fg(theme.text_dim))),
     ];
 
     let content_w = rows.iter().map(Line::width).max().unwrap_or(0);
@@ -1371,20 +1414,24 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(width, height, area);
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::WARNING))
+        .border_style(Style::default().fg(theme.warning))
         .title(" Permission required ")
         .title_style(
             Style::default()
-                .fg(style::WARNING)
+                .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(rows), inner);
+    frame.render_widget(
+        Paragraph::new(rows).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// The style for a permission option: its semantic color, bold and reversed when it is the
@@ -1414,12 +1461,13 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
 /// `/name  description` with the highlighted row marked, or a single graceful "no matching
 /// commands" row when the query matches nothing.
 fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = style::ThemeColors::from_name(app.theme());
     let matches = app.palette_matches();
     if matches.is_empty() {
         return vec![Line::from(Span::styled(
             "  no matching commands",
             Style::default()
-                .fg(style::TEXT_DIM)
+                .fg(theme.text_dim)
                 .add_modifier(Modifier::ITALIC),
         ))];
     }
@@ -1429,19 +1477,17 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let name_style = if is_selected {
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(style::TEXT)
+            Style::default().fg(theme.text)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(style::INFO)),
+            Span::styled(marker, Style::default().fg(theme.info)),
             Span::styled(format!("/{}", command.name), name_style),
             Span::raw("  "),
             Span::styled(
                 command.description.to_owned(),
-                Style::default().fg(style::TEXT_DIM),
+                Style::default().fg(theme.text_dim),
             ),
         ]));
     }
@@ -1450,7 +1496,7 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
 
 /// Render the command palette as a centered bordered popup: a search line reflecting the typed
 /// query sits atop the filtered command list, which scrolls to keep the highlighted row visible.
-fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some(query) = app.palette_query() else {
         return;
     };
@@ -1463,12 +1509,10 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     let search_line = Line::from(vec![
         Span::styled(
             "› ",
-            Style::default()
-                .fg(style::INFO)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(query.to_owned(), Style::default().fg(style::TEXT)),
-        Span::styled("▏", Style::default().fg(style::INFO)),
+        Span::styled(query.to_owned(), Style::default().fg(theme.text)),
+        Span::styled("▏", Style::default().fg(theme.info)),
     ]);
     let hint = "↑/↓ to move · Enter to run · Esc to close";
 
@@ -1492,13 +1536,14 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(width, height, area);
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.border_focus))
         .title(" Command Palette ")
         .title_style(
             Style::default()
-                .fg(style::INFO)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(popup);
@@ -1517,26 +1562,27 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     shown.extend(command_rows[offset..end].iter().cloned());
     shown.push(Line::from(Span::styled(
         format!("  {hint}"),
-        Style::default().fg(style::TEXT_DIM),
+        Style::default().fg(theme.text_dim),
     )));
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// Render the session sidebar: a bordered panel beside the main content listing the active session
 /// context (model / agent / mode / session) and live counters (transcript messages, token usage),
 /// so its presence is unambiguous in a snapshot.
-fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     if area.width < 4 || area.height < 3 {
         return;
     }
-    let label = Style::default()
-        .fg(style::INFO)
-        .add_modifier(Modifier::BOLD);
-    let value = Style::default().fg(style::TEXT);
-    let dim = Style::default().fg(style::TEXT_DIM);
+    let label = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+    let value = Style::default().fg(theme.text);
+    let dim = Style::default().fg(theme.text_dim);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let field = |lines: &mut Vec<Line<'static>>, name: &str, val: String| {
@@ -1567,25 +1613,31 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     )));
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.border_focus))
         .title(" Session ")
         .title_style(
             Style::default()
-                .fg(style::INFO)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(area);
 
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(theme.text).bg(theme.surface[1]))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 /// Render the which-key overlay while the leader chord is armed: a centered popup listing each
 /// active leader binding (its key and the action it runs) so the bindings are discoverable.
-fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_which_key(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     if !app.leader_pending() {
         return;
     }
@@ -1594,10 +1646,8 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let leader = app.keybinds().leader.display();
-    let key_style = Style::default()
-        .fg(style::INFO)
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(style::TEXT);
+    let key_style = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(theme.text);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     for (chord, action) in app.keybinds().entries() {
@@ -1627,13 +1677,14 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(width, height, area);
 
     let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(style::INFO))
+        .border_style(Style::default().fg(theme.border_focus))
         .title(format!(" Keybindings · leader {leader} "))
         .title_style(
             Style::default()
-                .fg(style::INFO)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(popup);
@@ -1642,12 +1693,15 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
     let mut shown: Vec<Line<'static>> = rows[..end].to_vec();
     shown.push(Line::from(Span::styled(
         format!("  {hint}"),
-        Style::default().fg(style::TEXT_DIM),
+        Style::default().fg(theme.text_dim),
     )));
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
 }
 
 /// A rectangle of the given size centered within `area` (clamped to fit).
@@ -1664,9 +1718,9 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = style::ThemeColors::from_name(app.theme());
-    let footer = Paragraph::new(footer_line(app)).style(Style::default().bg(theme.surface[0]));
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let footer = Paragraph::new(footer_line(app))
+        .style(Style::default().fg(theme.text).bg(theme.surface[0]));
     frame.render_widget(footer, area);
 }
 
@@ -1750,6 +1804,120 @@ mod tests {
     }
 
     #[test]
+    fn transcript_markers_follow_active_theme_palette() {
+        let mut a = app();
+        a.set_theme("light".to_owned());
+        a.transcript.push(Entry::User("hello".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "world".to_owned(),
+        }));
+
+        let lines = transcript_lines(&a, 80);
+        let theme = style::ThemeColors::light();
+        let user = lines
+            .iter()
+            .find(|line| plain(line).starts_with("› you"))
+            .and_then(|line| line.spans.first())
+            .and_then(|span| span.style.fg);
+        let assistant = lines
+            .iter()
+            .find(|line| plain(line).starts_with("• cortex"))
+            .and_then(|line| line.spans.first())
+            .and_then(|span| span.style.fg);
+
+        assert_eq!(user, Some(theme.primary), "user marker uses theme primary");
+        assert_eq!(
+            assistant,
+            Some(theme.secondary),
+            "assistant marker uses theme secondary"
+        );
+    }
+
+    #[test]
+    fn draw_uses_theme_background_layers() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.set_theme("light".to_owned());
+        a.transcript.push(Entry::User("hello".to_owned()));
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let cells = terminal.backend().buffer().content();
+        let theme = style::ThemeColors::light();
+
+        assert!(
+            cells.iter().any(|c| c.bg == theme.background),
+            "transcript background uses the theme background"
+        );
+        assert!(
+            cells.iter().any(|c| c.bg == theme.surface[1]),
+            "prompt/overlay surfaces use themed surface background"
+        );
+        assert!(
+            cells.iter().any(|c| c.bg == theme.surface[0]),
+            "footer uses themed footer background"
+        );
+    }
+
+    #[test]
+    fn slash_palette_and_dialog_rows_use_theme_colors() {
+        let mut a = app();
+        a.set_theme("monokai".to_owned());
+        let theme = style::ThemeColors::monokai();
+
+        a.input.set_value("/");
+        let slash_rows = slash_menu_lines(&a).expect("slash menu open");
+        let slash_marker = slash_rows[0].spans[0].style.fg;
+        let slash_desc = slash_rows[0].spans[3].style.fg;
+        assert_eq!(slash_marker, Some(theme.info));
+        assert_eq!(slash_desc, Some(theme.text_dim));
+
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let palette_rows = palette_command_lines(&a);
+        let palette_marker = palette_rows[0].spans[0].style.fg;
+        assert_eq!(palette_marker, Some(theme.info));
+
+        let dialog = Dialog {
+            kind: DialogKind::Models,
+            title: "Models".to_owned(),
+            items: vec!["alpha".to_owned(), "beta".to_owned()],
+            selected: 0,
+            empty: None,
+        };
+        let dialog_rows = dialog_lines(&dialog, &theme);
+        assert_eq!(dialog_rows[0].spans[0].style.fg, Some(theme.info));
+    }
+
+    #[test]
+    fn tool_card_colors_follow_theme_semantics() {
+        let theme = style::ThemeColors::ocean_dark();
+
+        let running = tool_card("read", r#"{"path":"a.txt"}"#);
+        let mut running_lines = Vec::new();
+        push_tool(&mut running_lines, &running, 80, false, Some("⠋"), &theme);
+        assert_eq!(running_lines[0].spans[0].style.fg, Some(theme.info));
+
+        let mut completed = tool_card("read", r#"{"path":"a.txt"}"#);
+        completed.complete(&[protocol::ToolResultPart::text("ok")], false);
+        let mut completed_lines = Vec::new();
+        push_tool(&mut completed_lines, &completed, 80, false, None, &theme);
+        assert_eq!(completed_lines[0].spans[0].style.fg, Some(theme.success));
+
+        let mut failed = tool_card("read", r#"{"path":"a.txt"}"#);
+        failed.complete(&[protocol::ToolResultPart::text("boom")], true);
+        let mut failed_lines = Vec::new();
+        push_tool(&mut failed_lines, &failed, 80, false, None, &theme);
+        assert_eq!(failed_lines[0].spans[0].style.fg, Some(theme.error));
+    }
+
+    #[test]
     fn wrap_breaks_on_width_and_keeps_words() {
         let wrapped = wrap("the quick brown fox", 9);
         assert_eq!(
@@ -1822,6 +1990,8 @@ mod tests {
                 answer: answer.to_owned(),
             },
             80,
+            "dark",
+            &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);
         // Markers are consumed; structured elements render.
@@ -1851,6 +2021,8 @@ mod tests {
                 answer: "final".to_owned(),
             },
             80,
+            "dark",
+            &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);
         assert!(text.contains("reasoning"), "reasoning labeled:\n{text}");
@@ -1868,6 +2040,8 @@ mod tests {
                 answer: "just the answer".to_owned(),
             },
             80,
+            "dark",
+            &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);
         assert!(
@@ -1956,7 +2130,14 @@ mod tests {
         // shows a running state.
         let card = tool_card("read", r#"{"path":"src/main.rs"}"#);
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 80, false, Some("⠋"));
+        push_tool(
+            &mut lines,
+            &card,
+            80,
+            false,
+            Some("⠋"),
+            &style::ThemeColors::dark(),
+        );
         let text = rendered(&lines);
         assert!(text.contains("read"), "tool name labeled:\n{text}");
         assert!(text.contains("running"), "running status:\n{text}");
@@ -1974,7 +2155,14 @@ mod tests {
         let mut card = tool_card("grep", r#"{"pattern":"TODO","path":"src"}"#);
         card.complete(&[protocol::ToolResultPart::text("src/a.rs:1: TODO")], false);
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 80, false, None);
+        push_tool(
+            &mut lines,
+            &card,
+            80,
+            false,
+            None,
+            &style::ThemeColors::dark(),
+        );
         let text = rendered(&lines);
         assert!(text.contains("grep"), "tool labeled:\n{text}");
         assert!(text.contains("done"), "completed status:\n{text}");
@@ -1991,7 +2179,14 @@ mod tests {
         );
 
         let mut collapsed = Vec::new();
-        push_tool(&mut collapsed, &card, 80, false, None);
+        push_tool(
+            &mut collapsed,
+            &card,
+            80,
+            false,
+            None,
+            &style::ThemeColors::dark(),
+        );
         let collapsed_text = rendered(&collapsed);
         assert!(
             !collapsed_text.contains("secret detail line"),
@@ -2003,7 +2198,14 @@ mod tests {
         );
 
         let mut expanded = Vec::new();
-        push_tool(&mut expanded, &card, 80, true, None);
+        push_tool(
+            &mut expanded,
+            &card,
+            80,
+            true,
+            None,
+            &style::ThemeColors::dark(),
+        );
         let expanded_text = rendered(&expanded);
         assert!(
             expanded_text.contains("secret detail line"),
@@ -2032,7 +2234,14 @@ mod tests {
             true,
         );
         let mut lines = Vec::new();
-        push_tool(&mut lines, &failed, 80, false, None);
+        push_tool(
+            &mut lines,
+            &failed,
+            80,
+            false,
+            None,
+            &style::ThemeColors::dark(),
+        );
         let text = rendered(&lines);
         assert!(text.contains("error"), "error indicator:\n{text}");
         assert!(
@@ -2044,7 +2253,14 @@ mod tests {
         let mut ok = tool_card("read", r#"{"path":"a.txt"}"#);
         ok.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut ok_lines = Vec::new();
-        push_tool(&mut ok_lines, &ok, 80, false, None);
+        push_tool(
+            &mut ok_lines,
+            &ok,
+            80,
+            false,
+            None,
+            &style::ThemeColors::dark(),
+        );
 
         let failed_border = lines[0].spans.first().map(|s| s.style.fg);
         let ok_border = ok_lines[0].spans.first().map(|s| s.style.fg);
@@ -2237,7 +2453,7 @@ mod tests {
             selected: 0,
             empty: None,
         };
-        let text = rendered(&dialog_lines(&dialog));
+        let text = rendered(&dialog_lines(&dialog, &style::ThemeColors::dark()));
         assert!(
             text.contains("google/gemini-2.5-flash"),
             "default model listed:\n{text}"
@@ -2262,7 +2478,7 @@ mod tests {
             selected: 0,
             empty: Some("No MCP servers configured.".to_owned()),
         };
-        let text = rendered(&dialog_lines(&dialog));
+        let text = rendered(&dialog_lines(&dialog, &style::ThemeColors::dark()));
         assert!(
             text.contains("No MCP servers configured."),
             "empty state shown:\n{text}"

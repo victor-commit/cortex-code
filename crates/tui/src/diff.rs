@@ -5,24 +5,16 @@
 //! from the file's before/after content (an LCS line diff trimmed to a few lines of context), and a
 //! newly created file (no prior content) renders as an all-added, new-file-indicated diff.
 //!
-//! Rendering maps each line kind to a distinct color so added and removed lines are visually
-//! separable (architecture §6 / VAL-TUI-021..023): added green, removed red, context dimmed, and
-//! the file-path / hunk headers in an accent color.
+//! Rendering maps each line kind to a distinct semantic color from the active theme palette so
+//! added and removed lines remain visually separable (architecture §6 / VAL-TUI-021..023): added
+//! success color, removed error color, context dimmed text, and headers in the info accent.
 
-use ratatui::style::{Color, Modifier, Style};
+use frame::style::ThemeColors;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Unchanged context lines kept around each change run.
 pub const CONTEXT_LINES: usize = 3;
-
-/// Added-line color (green).
-const DIFF_ADDED: Color = Color::Rgb(63, 185, 80); // #3fb950
-/// Removed-line color (red).
-const DIFF_REMOVED: Color = Color::Rgb(248, 81, 73); // #f85149
-/// Unchanged context-line color (muted gray).
-const DIFF_CONTEXT: Color = Color::Rgb(139, 148, 158); // #8b949e
-/// File-path / hunk header color (accent blue).
-const DIFF_HEADER: Color = Color::Rgb(88, 166, 255); // #58a6ff
 
 /// The visual classification of one rendered diff line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,34 +84,41 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
-    /// Render the diff as colored ratatui lines: a `+`/`-`/space marker per change line, the file
-    /// path and `@@` hunks as accent headers, with added green and removed red so the two are
-    /// visually distinct.
+    /// Render the diff as colored ratatui lines using semantic colors from the active theme: a
+    /// `+`/`-`/space marker per change line, the file path and `@@` hunks as accent headers, with
+    /// added success and removed error colors so the two are visually distinct.
     #[must_use]
     pub fn render(&self) -> Vec<Line<'static>> {
-        self.lines.iter().map(render_line).collect()
+        self.render_with_theme(&ThemeColors::dark())
+    }
+
+    /// Render the diff with an explicit theme palette.
+    #[must_use]
+    pub fn render_with_theme(&self, theme: &ThemeColors) -> Vec<Line<'static>> {
+        self.lines
+            .iter()
+            .map(|line| render_line(line, theme))
+            .collect()
     }
 }
 
-fn render_line(line: &DiffLine) -> Line<'static> {
+fn render_line(line: &DiffLine, theme: &ThemeColors) -> Line<'static> {
     match line.kind {
         DiffLineKind::Header => Line::from(Span::styled(
             line.content.clone(),
-            Style::default()
-                .fg(DIFF_HEADER)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         )),
         DiffLineKind::Added => Line::from(Span::styled(
             format!("+ {}", line.content),
-            Style::default().fg(DIFF_ADDED),
+            Style::default().fg(theme.success),
         )),
         DiffLineKind::Removed => Line::from(Span::styled(
             format!("- {}", line.content),
-            Style::default().fg(DIFF_REMOVED),
+            Style::default().fg(theme.error),
         )),
         DiffLineKind::Context => Line::from(Span::styled(
             format!("  {}", line.content),
-            Style::default().fg(DIFF_CONTEXT),
+            Style::default().fg(theme.text_dim),
         )),
     }
 }
@@ -424,7 +423,8 @@ mod tests {
         let before = "alpha\nbeta\ngamma\n";
         let after = "alpha\nBETA\ngamma\n";
         let diff = compute_file_diff("f.txt", Some(before), Some(after)).expect("a diff");
-        let rendered = diff.render();
+        let theme = ThemeColors::light();
+        let rendered = diff.render_with_theme(&theme);
 
         let mut added_color = None;
         let mut removed_color = None;
@@ -438,8 +438,8 @@ mod tests {
             }
         }
 
-        assert_eq!(added_color, Some(DIFF_ADDED), "added lines are green");
-        assert_eq!(removed_color, Some(DIFF_REMOVED), "removed lines are red");
+        assert_eq!(added_color, Some(theme.success), "added lines use success");
+        assert_eq!(removed_color, Some(theme.error), "removed lines use error");
         assert_ne!(
             added_color, removed_color,
             "added and removed must be distinctly colored"
