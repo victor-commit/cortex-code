@@ -346,6 +346,131 @@ fn search_uses_regex_not_literal_substring_for_session_messages() {
 }
 
 #[test]
+fn search_multiline_session_anchors_match_logical_lines_in_json() {
+    let sandbox = Sandbox::new("session-multiline-anchor-json");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let db_path_text = db_path.to_string_lossy().to_string();
+    let query = "^ANCHOR_TOKEN_[0-9]+$";
+    let token = "ANCHOR_TOKEN_42";
+    let session_before = "session-before-line";
+    let session_after = "session-after-line";
+
+    std::fs::write(
+        project.join("workspace.txt"),
+        format!("workspace-before\n{token}\nworkspace-after\n"),
+    )
+    .expect("write workspace fixture");
+
+    let session_id = {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("multiline anchors"))
+            .expect("create session");
+        db.messages()
+            .create(
+                &session.id,
+                "assistant",
+                &format!("{session_before}\n{token}\n{session_after}"),
+            )
+            .expect("create message");
+        session.id
+    };
+
+    let out = run(sandbox.command_in_with_env(
+        &project,
+        &[query, "--format", "json"],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr_str(&out));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("strict JSON");
+    let matches = doc["matches"].as_array().expect("matches array");
+
+    let workspace_hit = matches
+        .iter()
+        .find(|entry| entry["source"] == "workspace" && entry["path"] == "workspace.txt")
+        .expect("workspace hit");
+    assert_eq!(workspace_hit["matched_text"], token);
+
+    let session_hits: Vec<&Value> = matches
+        .iter()
+        .filter(|entry| entry["source"] == "session" && entry["session_id"] == session_id)
+        .collect();
+    assert_eq!(
+        session_hits.len(),
+        1,
+        "expected one anchored line match in multiline session message: {doc:?}"
+    );
+    assert_eq!(session_hits[0]["matched_text"], token);
+    assert!(
+        !session_hits[0]
+            .get("matched_text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains(session_before) || text.contains(session_after)),
+        "session matched_text should contain only the matched line: {session_hits:?}"
+    );
+}
+
+#[test]
+fn search_multiline_session_text_emits_only_matched_lines() {
+    let sandbox = Sandbox::new("session-multiline-text");
+    let project = sandbox.mkdir("project");
+    let db_path = sandbox.root.join("data/cortex.db");
+    let db_path_text = db_path.to_string_lossy().to_string();
+    let query = "^LINE_MATCH_[0-9]+$";
+
+    let session_id = {
+        let db = db::Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("multiline text match"))
+            .expect("create session");
+        db.messages()
+            .create(
+                &session.id,
+                "assistant",
+                "noise-1\nLINE_MATCH_1\nnoise-2\nLINE_MATCH_2\nnoise-3",
+            )
+            .expect("create message");
+        session.id
+    };
+
+    let out = run(sandbox.command_in_with_env(
+        &project,
+        &[query],
+        &[("CORTEX_DB_PATH", db_path_text.as_str())],
+    ));
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    let session_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with(&format!("session:{session_id}:")))
+        .collect();
+    assert_eq!(
+        session_lines.len(),
+        2,
+        "expected one session output row per matched line: {stdout}"
+    );
+    assert!(
+        session_lines
+            .iter()
+            .any(|line| line.ends_with("LINE_MATCH_1")),
+        "missing first matched line in session output: {stdout}"
+    );
+    assert!(
+        session_lines
+            .iter()
+            .any(|line| line.ends_with("LINE_MATCH_2")),
+        "missing second matched line in session output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("noise-"),
+        "text output should not include non-matching neighboring lines: {stdout}"
+    );
+}
+
+#[test]
 fn search_invalid_regex_is_deterministic_with_workspace_and_session_sources() {
     let sandbox = Sandbox::new("invalid-regex");
     let project = sandbox.mkdir("project");

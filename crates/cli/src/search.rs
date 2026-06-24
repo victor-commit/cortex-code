@@ -198,16 +198,15 @@ fn session_matches(query: &str) -> Result<Vec<SessionSearchMatch>, SearchError> 
             continue;
         };
         for (index, message) in messages.iter().enumerate() {
-            if !regex.is_match(&message.content) {
-                continue;
+            for matched_line in session_message_line_matches(&regex, &message.content) {
+                matches.push(SessionSearchMatch {
+                    session_id: session.id.clone(),
+                    message_id: message.id.clone(),
+                    role: message.role.clone(),
+                    line: (index + 1) as u64,
+                    matched_text: matched_line.to_owned(),
+                });
             }
-            matches.push(SessionSearchMatch {
-                session_id: session.id.clone(),
-                message_id: message.id.clone(),
-                role: message.role.clone(),
-                line: (index + 1) as u64,
-                matched_text: message.content.clone(),
-            });
         }
     }
     matches.sort_by(|left, right| {
@@ -216,6 +215,13 @@ fn session_matches(query: &str) -> Result<Vec<SessionSearchMatch>, SearchError> 
             .then_with(|| left.line.cmp(&right.line))
     });
     Ok(matches)
+}
+
+fn session_message_line_matches<'a>(
+    regex: &'a Regex,
+    message_content: &'a str,
+) -> impl Iterator<Item = &'a str> + 'a {
+    message_content.lines().filter(|line| regex.is_match(line))
 }
 
 fn session_query_regex(query: &str) -> Result<Regex, SearchError> {
@@ -358,5 +364,13 @@ mod tests {
     fn session_query_regex_rejects_invalid_patterns() {
         let err = session_query_regex("(").expect_err("invalid regex should error");
         assert!(matches!(err, SearchError::InvalidQuery(_)));
+    }
+
+    #[test]
+    fn session_message_line_matches_are_line_oriented() {
+        let regex = session_query_regex("^TOKEN_[0-9]+$").expect("valid regex");
+        let message = "before\nTOKEN_1\nafter\nTOKEN_2";
+        let matches: Vec<&str> = session_message_line_matches(&regex, message).collect();
+        assert_eq!(matches, vec!["TOKEN_1", "TOKEN_2"]);
     }
 }
