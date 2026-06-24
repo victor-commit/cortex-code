@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
+const NET_DISABLED_CODE: i32 = 4;
 
 fn cortex_bin() -> String {
     env!("CARGO_BIN_EXE_cortex").to_owned()
@@ -187,6 +188,46 @@ fn mcp_list_json(scratch: &Scratch) -> Value {
     serde_json::from_slice(&output.stdout).expect("mcp list JSON")
 }
 
+/// Whether `strace` can trace this process tree in the current environment.
+fn strace_usable() -> bool {
+    let probe = Command::new("strace")
+        .args([
+            "-f",
+            "-e",
+            "trace=connect",
+            env!("CARGO_BIN_EXE_cortex"),
+            "--version",
+        ])
+        .output();
+    match probe {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            out.status.success() && !stderr.to_lowercase().contains("ptrace")
+        }
+        Err(_) => false,
+    }
+}
+
+fn strace_connect_trace(scratch: &Scratch, args: &[&str], no_net: bool) -> String {
+    let mut command = Command::new("strace");
+    command
+        .args(["-f", "-e", "trace=connect", env!("CARGO_BIN_EXE_cortex")])
+        .args(args)
+        .env_clear()
+        .env("HOME", scratch.home())
+        .env("CORTEX_DATA_DIR", scratch.data())
+        .current_dir(scratch.project());
+    if no_net {
+        command.env("CORTEX_NO_NET", "1");
+    }
+    let output = command.output().expect("spawn strace");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn count_connect(trace: &str) -> usize {
+    trace.matches("connect(").count()
+}
+
 fn pid_alive(pid: u64) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -288,6 +329,91 @@ fn http_get(url: &str) -> HttpResponse {
         status,
         headers,
         body: body.to_owned(),
+    }
+}
+
+#[test]
+fn mcp_list_remote_fails_closed_under_no_net_before_connecting() {
+    let scratch = Scratch::new("list-no-net");
+    scratch.write_project_config(
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3299/mcp"
+"#,
+    );
+
+    let mut command = cortex_command(&scratch, &["mcp", "list", "--format", "json"]);
+    command.env("CORTEX_NO_NET", "1");
+    let output = run_command(command);
+    assert_eq!(
+        output.status.code(),
+        Some(NET_DISABLED_CODE),
+        "mcp list should fail closed with the net-disabled exit code"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a fail-closed refusal keeps stdout empty"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("network disabled") && stderr.contains("CORTEX_NO_NET"),
+        "stderr should report a net-disabled refusal: {stderr}"
+    );
+
+    if strace_usable() {
+        let trace = strace_connect_trace(&scratch, &["mcp", "list", "--format", "json"], true);
+        assert_eq!(
+            count_connect(&trace),
+            0,
+            "mcp list under CORTEX_NO_NET=1 must issue zero connect() syscalls:\n{trace}"
+        );
+    }
+}
+
+#[test]
+fn mcp_auth_remote_fails_closed_under_no_net_before_discovery() {
+    let scratch = Scratch::new("auth-no-net");
+    scratch.write_project_config(
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3299/mcp"
+"#,
+    );
+
+    let mut command = cortex_command(
+        &scratch,
+        &["mcp", "auth", "api", "--format", "json", "--timeout", "1"],
+    );
+    command.env("CORTEX_NO_NET", "1");
+    let output = run_command(command);
+    assert_eq!(
+        output.status.code(),
+        Some(NET_DISABLED_CODE),
+        "mcp auth should fail closed with the net-disabled exit code"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a fail-closed refusal keeps stdout empty"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("network disabled") && stderr.contains("CORTEX_NO_NET"),
+        "stderr should report a net-disabled refusal: {stderr}"
+    );
+
+    if strace_usable() {
+        let trace = strace_connect_trace(
+            &scratch,
+            &["mcp", "auth", "api", "--format", "json", "--timeout", "1"],
+            true,
+        );
+        assert_eq!(
+            count_connect(&trace),
+            0,
+            "mcp auth under CORTEX_NO_NET=1 must issue zero connect() syscalls:\n{trace}"
+        );
     }
 }
 

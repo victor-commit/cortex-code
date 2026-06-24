@@ -446,6 +446,123 @@ async fn tool_definitions_are_refreshed_before_each_provider_request() {
 }
 
 #[tokio::test]
+async fn tool_set_changed_emits_initial_snapshot_and_refreshes() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let mut requests = self.requests.lock().unwrap();
+            let round = requests.len();
+            requests.push(request.tools.iter().map(|tool| tool.name.clone()).collect());
+            drop(requests);
+
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_1".to_owned(),
+                            name: "stable".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "done".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct ChangingDispatcher {
+        definition_calls: Mutex<usize>,
+    }
+
+    impl ToolDispatcher for ChangingDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            let mut calls = self.definition_calls.lock().unwrap();
+            let round = *calls;
+            *calls += 1;
+
+            let mut definitions = vec![ToolDef {
+                name: "stable".to_owned(),
+                description: "Stable tool".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }];
+            if round >= 1 {
+                definitions.push(ToolDef {
+                    name: "runtime_extra".to_owned(),
+                    description: "Runtime-added tool".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                });
+            }
+            definitions
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            Box::pin(async { ToolDispatchResult::text("ok") })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = ChangingDispatcher {
+        definition_calls: Mutex::new(0),
+    };
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "exercise tools"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    let advertised: Vec<Vec<String>> = events
+        .iter()
+        .filter_map(|event| match event {
+            RunnerEvent::ToolSetChanged { tools, .. } => Some(tools.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        advertised,
+        vec![
+            vec!["stable".to_owned()],
+            vec!["stable".to_owned(), "runtime_extra".to_owned()]
+        ],
+        "runner should emit an initial tool snapshot and then each refresh"
+    );
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(
+        *requests,
+        vec![
+            vec!["stable".to_owned()],
+            vec!["stable".to_owned(), "runtime_extra".to_owned()],
+        ],
+        "provider requests must see the same refreshed tool sets"
+    );
+}
+
+#[tokio::test]
 async fn successful_skill_tool_result_is_appended_to_system_context() {
     struct CapturingProvider {
         requests: Mutex<Vec<Vec<llm::Message>>>,

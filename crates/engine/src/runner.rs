@@ -235,9 +235,17 @@ impl SessionRunner {
             let tool_defs: Vec<ToolDef> = dispatcher
                 .map(ToolDispatcher::definitions)
                 .unwrap_or_default();
-            if let Some(previous) = &last_advertised_tool_defs
-                && previous != &tool_defs
-            {
+            if let Some(previous) = &last_advertised_tool_defs {
+                if previous != &tool_defs {
+                    sink(RunnerEvent::ToolSetChanged {
+                        tools: tool_defs.iter().map(|def| def.name.clone()).collect(),
+                        tool_definitions: tool_defs.clone(),
+                    });
+                }
+            } else if dispatcher.is_some() {
+                // Emit an initial snapshot on the first provider request as well. This keeps
+                // machine output accurate when the surface-level pre-turn snapshot races with
+                // MCP live tool-list updates before the first request starts.
                 sink(RunnerEvent::ToolSetChanged {
                     tools: tool_defs.iter().map(|def| def.name.clone()).collect(),
                     tool_definitions: tool_defs.clone(),

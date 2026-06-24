@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use errors::Exit;
+use redaction::guard_outbound;
 use serde::Serialize;
 use settings::{ConfigInputs, McpServerPersist, McpServerSpec, McpServerSpecTransport};
 
@@ -43,6 +44,9 @@ struct AuthDocument<'a> {
     redirect_uri: &'a str,
     store: String,
 }
+
+const MCP_LIST_OUTBOUND_OPERATION: &str = "MCP remote discovery/connect";
+const MCP_AUTH_OUTBOUND_OPERATION: &str = "MCP OAuth discovery/token exchange";
 
 /// Register a new MCP server in the global config file and report the result.
 ///
@@ -214,6 +218,10 @@ fn auth_server(args: McpAuthArgs) -> Exit {
         );
         return Exit::Failure;
     };
+    if let Err(diag) = guard_outbound(MCP_AUTH_OUTBOUND_OPERATION) {
+        eprintln!("cortex mcp auth: {diag}");
+        return diag.exit();
+    }
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -421,6 +429,14 @@ fn list_servers(args: McpListArgs) -> Exit {
     };
 
     let servers = crate::run::mcp_servers_from_config(&effective);
+    if servers
+        .values()
+        .any(|server| server.enabled && server.transport == mcp::McpTransport::Remote)
+        && let Err(diag) = guard_outbound(MCP_LIST_OUTBOUND_OPERATION)
+    {
+        eprintln!("cortex mcp list: {diag}");
+        return diag.exit();
+    }
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -662,18 +662,19 @@ where
     P: Fn(&T) -> bool,
     T: Default,
 {
+    let mut final_quick_retry_used = false;
     loop {
         match request() {
             Ok(result) => {
                 if is_ready(&result) {
                     return Ok(result);
                 }
-                if !sleep_before_navigation_retry(deadline) {
+                if !sleep_before_navigation_retry(deadline, &mut final_quick_retry_used) {
                     return Ok(result);
                 }
             }
             Err(error) if is_retryable_navigation_error(&error) => {
-                if !sleep_before_navigation_retry(deadline) {
+                if !sleep_before_navigation_retry(deadline, &mut final_quick_retry_used) {
                     // rust-analyzer can keep returning cancellation/readiness errors while a
                     // workspace is still loading. Exhausting the bounded retry budget means this
                     // specific query is not ready yet, not that the server is broken.
@@ -685,17 +686,26 @@ where
     }
 }
 
-fn sleep_before_navigation_retry(deadline: Instant) -> bool {
+fn sleep_before_navigation_retry(deadline: Instant, final_quick_retry_used: &mut bool) -> bool {
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_default();
-    if remaining <= NAVIGATION_RETRY_INTERVAL {
+    if remaining.is_zero() {
         return false;
     }
-    std::thread::sleep(NAVIGATION_RETRY_INTERVAL.min(remaining));
+    if remaining <= NAVIGATION_RETRY_INTERVAL {
+        if *final_quick_retry_used {
+            return false;
+        }
+        // When the remaining budget is under the normal retry interval, allow one final quick
+        // retry instead of stopping early.
+        *final_quick_retry_used = true;
+        return true;
+    }
+    std::thread::sleep(NAVIGATION_RETRY_INTERVAL);
     deadline
         .checked_duration_since(Instant::now())
-        .is_some_and(|remaining| remaining > NAVIGATION_RETRY_INTERVAL)
+        .is_some_and(|remaining| !remaining.is_zero())
 }
 
 fn is_retryable_navigation_error(error: &crate::LspError) -> bool {
@@ -870,6 +880,50 @@ mod tests {
 
         assert_eq!(result, vec!["ready"]);
         assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retry_navigation_permits_a_final_quick_retry_for_retryable_errors() {
+        let mut attempts = 0;
+        let result = retry_navigation(
+            Instant::now() + Duration::from_millis(40),
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(crate::LspError::ServerError {
+                        code: LSP_REQUEST_CANCELLED,
+                    })
+                } else {
+                    Ok(vec!["ready"])
+                }
+            },
+            |items| !items.is_empty(),
+        )
+        .expect("a final quick retry should run while budget remains");
+
+        assert_eq!(result, vec!["ready"]);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn retry_navigation_permits_a_final_quick_retry_for_non_ready_results() {
+        let mut attempts = 0;
+        let result = retry_navigation(
+            Instant::now() + Duration::from_millis(40),
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Ok(Vec::<&str>::new())
+                } else {
+                    Ok(vec!["ready"])
+                }
+            },
+            |items| !items.is_empty(),
+        )
+        .expect("a final quick retry should run while budget remains");
+
+        assert_eq!(result, vec!["ready"]);
+        assert_eq!(attempts, 2);
     }
 
     #[test]
