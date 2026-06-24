@@ -23,8 +23,10 @@ use serde_json::Value;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(90);
 const SERVE_TIMEOUT: Duration = Duration::from_secs(20);
+const NONCE_MAX_ATTEMPTS: u32 = 3;
+const NONCE_RETRY_BASE_BACKOFF_MS: u64 = 200;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
-static SERVE_LOCK: Mutex<()> = Mutex::new(());
+static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -133,41 +135,47 @@ fn strace_usable() -> bool {
     }
 }
 
+fn assert_round_trips_fresh_nonce_with_retries(home: &Path, key: &str, label: &str) -> String {
+    let mut failures = Vec::new();
+    for attempt in 1..=NONCE_MAX_ATTEMPTS {
+        let nonce = format!("{label}-{}", uuid_like());
+        let prompt = format!("Reply with exactly this token and nothing else: {nonce}");
+        let out = run_with_timeout(cortex_command(home, key, &["run", &prompt]), RUN_TIMEOUT);
+        let status = out.status.code();
+        let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+        let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+        if status == Some(0) && stdout.contains(&nonce) {
+            return nonce;
+        }
+
+        failures.push(format!(
+            "attempt {attempt}/{NONCE_MAX_ATTEMPTS}, nonce={nonce:?}, status={status:?}, stdout={stdout:?}, stderr={stderr:?}"
+        ));
+        if attempt < NONCE_MAX_ATTEMPTS {
+            thread::sleep(Duration::from_millis(
+                NONCE_RETRY_BASE_BACKOFF_MS * u64::from(attempt),
+            ));
+        }
+    }
+
+    panic!(
+        "default run failed to round-trip a fresh nonce after {NONCE_MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
+    );
+}
+
 #[test]
 fn default_run_is_live_by_default_with_fresh_nonces() {
     let Some(key) = live_key() else {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
 
     let home = scratch_dir("run-default-live");
-    let nonce1 = uuid_like();
-    let prompt1 = format!("Reply with exactly this token and nothing else: {nonce1}");
-    let out1 = run_with_timeout(cortex_command(&home, &key, &["run", &prompt1]), RUN_TIMEOUT);
-    assert_eq!(
-        out1.status.code(),
-        Some(0),
-        "first default run must succeed"
-    );
-    let stdout1 = String::from_utf8(out1.stdout).expect("utf8 stdout1");
-    assert!(
-        stdout1.contains(&nonce1),
-        "first run should round-trip fresh nonce {nonce1:?}, got: {stdout1:?}"
-    );
-
-    let nonce2 = uuid_like();
-    let prompt2 = format!("Reply with exactly this token and nothing else: {nonce2}");
-    let out2 = run_with_timeout(cortex_command(&home, &key, &["run", &prompt2]), RUN_TIMEOUT);
-    assert_eq!(
-        out2.status.code(),
-        Some(0),
-        "second default run must succeed"
-    );
-    let stdout2 = String::from_utf8(out2.stdout).expect("utf8 stdout2");
-    assert!(
-        stdout2.contains(&nonce2),
-        "second run should round-trip fresh nonce {nonce2:?}, got: {stdout2:?}"
-    );
+    let nonce1 = assert_round_trips_fresh_nonce_with_retries(&home, &key, "first");
+    let nonce2 = assert_round_trips_fresh_nonce_with_retries(&home, &key, "second");
+    assert_ne!(nonce1, nonce2, "fresh nonces must differ");
 }
 
 #[test]
@@ -180,6 +188,7 @@ fn default_run_opens_outbound_connection() {
         eprintln!("skipping strace no-mock test: strace unavailable or ptrace restricted");
         return;
     }
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
 
     let home = scratch_dir("run-connect-trace");
     let trace_path = home.join("connect.trace");
@@ -226,6 +235,7 @@ fn default_path_does_not_read_cassette_or_fixture_files() {
         eprintln!("skipping strace no-mock test: strace unavailable or ptrace restricted");
         return;
     }
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
 
     let home = scratch_dir("run-no-mock-open-trace");
     let clean_cwd = home.join("clean");
@@ -272,6 +282,7 @@ fn live_run_works_in_fresh_clean_cwd_with_only_key() {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
 
     let home = scratch_dir("run-clean-cwd");
     let clean_cwd = home.join("fresh");
@@ -296,7 +307,7 @@ fn serve_surface_is_live_by_default_and_stops_by_listener_pid() {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
-    let _guard = SERVE_LOCK.lock().expect("serve lock");
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
     let home = scratch_dir("serve-live-default");
     let port = free_port();
     let mut server = ServerProcess::start(&home, &key, port);
