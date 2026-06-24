@@ -8,6 +8,7 @@
 
 use errors::Exit;
 use serde::Serialize;
+use std::io::{self, Write};
 
 use crate::cli::{ModelsArgs, OutputFormat};
 use crate::plugin_bridge::{ModelCostDoc, ModelDoc, PluginState, ProviderDoc};
@@ -131,11 +132,16 @@ struct ModelsDocument<'a> {
 fn emit(format: OutputFormat, providers: &[ProviderDoc]) -> Exit {
     match format {
         OutputFormat::Text => {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
             for provider in providers {
-                println!("{} ({})", provider.name, provider.id);
+                if let Err(err) = writeln!(handle, "{} ({})", provider.name, provider.id) {
+                    return map_stdout_error(err);
+                }
                 for model in &provider.models {
                     let marker = if model.default { " [default]" } else { "" };
-                    println!(
+                    if let Err(err) = writeln!(
+                        handle,
                         "  {}\t{}{}\tctx={}\tin=${:.2}/Mtok\tout=${:.2}/Mtok",
                         model.id,
                         model.name,
@@ -143,8 +149,13 @@ fn emit(format: OutputFormat, providers: &[ProviderDoc]) -> Exit {
                         model.context_length,
                         model.cost.input,
                         model.cost.output
-                    );
+                    ) {
+                        return map_stdout_error(err);
+                    }
                 }
+            }
+            if let Err(err) = handle.flush() {
+                return map_stdout_error(err);
             }
             Exit::Success
         }
@@ -165,4 +176,13 @@ fn emit(format: OutputFormat, providers: &[ProviderDoc]) -> Exit {
             }
         }
     }
+}
+
+fn map_stdout_error(err: io::Error) -> Exit {
+    if err.kind() == io::ErrorKind::BrokenPipe {
+        return Exit::Success;
+    }
+
+    eprintln!("cortex models: failed to write output: {err}");
+    Exit::Failure
 }

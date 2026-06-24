@@ -3,7 +3,7 @@
 //! >=10 recognizable models that surfaces per-model pricing, context window, and the default model,
 //! plus a strict structured JSON form with no human chatter interleaved on stdout.
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,6 +36,30 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.home);
     }
+}
+
+fn cache_file(sandbox: &Sandbox) -> PathBuf {
+    sandbox.home.join(".local/share/cortex/models.json")
+}
+
+fn write_large_cached_catalogue(sandbox: &Sandbox, models: usize) {
+    let path = cache_file(sandbox);
+    let parent = path.parent().expect("cache parent");
+    std::fs::create_dir_all(parent).expect("create cache directory");
+
+    let mut body = String::new();
+    body.push_str("{\"openrouter\":{\"id\":\"openrouter\",\"name\":\"OpenRouter\",\"models\":{");
+    for idx in 0..models {
+        if idx > 0 {
+            body.push(',');
+        }
+        let id = format!("google/epipe-stress-{idx}");
+        body.push_str(&format!(
+            "\"{id}\":{{\"id\":\"{id}\",\"name\":\"Epipe Stress {idx}\",\"cost\":{{\"input\":0.1,\"output\":0.2}},\"limit\":{{\"context\":8192,\"output\":1024}}}}"
+        ));
+    }
+    body.push_str("}}}");
+    std::fs::write(path, body).expect("write cache file");
 }
 
 /// Build a `cortex` invocation in an isolated HOME/CWD with no ambient credential or config.
@@ -93,6 +117,48 @@ fn run(mut command: Command, timeout: Duration) -> Output {
         stdout: stdout_thread.join().expect("join stdout"),
         stderr: stderr_thread.join().expect("join stderr"),
     }
+}
+
+fn run_with_early_stdout_close(mut command: Command, timeout: Duration) -> (Output, String) {
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn cortex binary");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut first_line = String::new();
+    let _ = reader.read_line(&mut first_line);
+    drop(reader);
+
+    let mut stderr = child.stderr.take().expect("stderr");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try wait") {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("cortex command did not terminate within {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    (
+        Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr_thread.join().expect("join stderr"),
+        },
+        first_line,
+    )
 }
 
 #[test]
@@ -244,5 +310,32 @@ fn models_json_is_strict_structured_and_offline() {
     assert!(
         distinct.len() >= 2,
         "context windows must vary across models: {distinct:?}"
+    );
+}
+
+#[test]
+fn models_text_early_stdout_close_exits_cleanly() {
+    let sandbox = Sandbox::new("early-close");
+    write_large_cached_catalogue(&sandbox, 4_000);
+    let (output, first_line) =
+        run_with_early_stdout_close(cortex(&sandbox, true, &["models"]), Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !first_line.trim().is_empty(),
+        "expected to read at least the first line before closing stdout"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(
+        !stderr.contains("panicked at") && !stderr.contains("rust_backtrace"),
+        "must not panic on early stdout close: {stderr}"
+    );
+    assert!(
+        !stderr.contains("broken pipe"),
+        "must not print broken-pipe diagnostics: {stderr}"
     );
 }

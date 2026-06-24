@@ -7,7 +7,7 @@
 //! so they never depend on external connectivity. A separate, connectivity-gated test exercises the
 //! real models.dev endpoint to prove the live fetch (VAL-FINISH-005).
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -128,6 +128,48 @@ fn run(mut command: Command, timeout: Duration) -> Output {
         stdout: stdout_thread.join().expect("join stdout"),
         stderr: stderr_thread.join().expect("join stderr"),
     }
+}
+
+fn run_with_early_stdout_close(mut command: Command, timeout: Duration) -> (Output, String) {
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn cortex binary");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut first_line = String::new();
+    let _ = reader.read_line(&mut first_line);
+    drop(reader);
+
+    let mut stderr = child.stderr.take().expect("stderr");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try wait") {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("cortex command did not terminate within {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    (
+        Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr_thread.join().expect("join stderr"),
+        },
+        first_line,
+    )
 }
 
 /// Bind a fixture HTTP server on a free port in the mission's 3200-3299 range.
@@ -410,6 +452,39 @@ fn refresh_against_local_endpoint_makes_at_least_one_connect() {
         "the refresh path must reach a real connect() (unlike the plain listing)"
     );
     assert_eq!(code, 0, "the local refresh succeeds");
+}
+
+#[test]
+fn refresh_text_early_stdout_close_exits_cleanly() {
+    let sandbox = Sandbox::new("early-close");
+    let (listener, port) = bind_fixture_port();
+    let server = serve_once(listener, FIXTURE.to_owned());
+    let url = format!("http://127.0.0.1:{port}/api.json");
+
+    let mut command = cortex(&sandbox, &["models", "--refresh"]);
+    command.env("CORTEX_MODELS_DEV_URL", &url);
+    let (output, first_line) = run_with_early_stdout_close(command, Duration::from_secs(30));
+    server.join().ok();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !first_line.trim().is_empty(),
+        "expected to read at least the first line before closing stdout"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(
+        !stderr.contains("panicked at") && !stderr.contains("rust_backtrace"),
+        "must not panic on early stdout close: {stderr}"
+    );
+    assert!(
+        !stderr.contains("broken pipe"),
+        "must not print broken-pipe diagnostics: {stderr}"
+    );
 }
 
 // ---- VAL-FINISH-009: a failed `--refresh` degrades cleanly (no crash, no corruption) -----------
