@@ -62,6 +62,7 @@ enum ProviderScenario {
     McpTool,
     SecretBash,
     BlockedBash,
+    SubagentTask,
 }
 
 impl ScriptedProvider {
@@ -81,13 +82,22 @@ impl ScriptedProvider {
         Self::spawn_scenario(ProviderScenario::BlockedBash)
     }
 
+    fn spawn_subagent_task() -> Self {
+        Self::spawn_scenario(ProviderScenario::SubagentTask)
+    }
+
     fn spawn_scenario(scenario: ProviderScenario) -> Self {
         let (port, listener) = bind_provider_listener();
         listener
             .set_nonblocking(true)
             .expect("set nonblocking listener");
         let thread = thread::spawn(move || {
-            for round in 0..2 {
+            let rounds = if matches!(scenario, ProviderScenario::SubagentTask) {
+                3
+            } else {
+                2
+            };
+            for round in 0..rounds {
                 let mut stream = accept_with_timeout(&listener);
                 let _ = read_http_body(&mut stream);
                 let body = match (scenario, round) {
@@ -95,6 +105,9 @@ impl ScriptedProvider {
                     (ProviderScenario::McpTool, 0) => mcp_tool_call_body(),
                     (ProviderScenario::SecretBash, 0) => secret_bash_tool_call_body(),
                     (ProviderScenario::BlockedBash, 0) => blocked_bash_tool_call_body(),
+                    (ProviderScenario::SubagentTask, 0) => subagent_task_tool_call_body(),
+                    (ProviderScenario::SubagentTask, 1) => subagent_child_final_body(),
+                    (ProviderScenario::SubagentTask, 2) => final_body(),
                     _ => final_body(),
                 };
                 write_sse_response(&mut stream, &body).expect("write provider response");
@@ -507,6 +520,54 @@ fn run_writes_mcp_tool_call_audit_record_with_server_tool_and_arguments() {
 }
 
 #[test]
+fn subagent_provider_requests_are_attributed_to_the_child_session() {
+    let scratch = Scratch::new("subagent-provider-attribution");
+    let provider = ScriptedProvider::spawn_subagent_task();
+
+    let out = run(cortex(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--format",
+            "json",
+            "--permission-allow",
+            "task:explore",
+            "exercise subagent provider attribution",
+        ],
+    ));
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("run JSON");
+    let parent = doc["session"].as_str().expect("parent session");
+    let child = child_session_id(&tool_result_text(&doc, "task"));
+    assert_ne!(child, parent, "task tool should report a child session");
+
+    let records = read_audit(&scratch.audit);
+    assert_schema_and_order(&records, None);
+
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "network_call"
+                && record["kind"] == "provider_request"
+                && record["session"] == parent
+        }),
+        "parent turn should still emit provider_request audit records: {records:#?}"
+    );
+
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "network_call"
+                && record["kind"] == "provider_request"
+                && record["session"] == child
+                && record["parent_session"] == parent
+                && record["parent_session_id"] == parent
+        }),
+        "child turn should emit provider_request records attributed to the child session: {records:#?}"
+    );
+}
+
+#[test]
 fn cross_m5_single_turn_observes_mcp_plugin_permission_and_audit() {
     if plugins::detect_runtime().is_none() {
         eprintln!("skipping cross-M5 proof: no Bun, Node, or Deno on PATH");
@@ -796,6 +857,30 @@ where
     records.iter().filter(|record| predicate(record)).count()
 }
 
+fn tool_result_text(doc: &serde_json::Value, tool_name: &str) -> String {
+    doc["tool_results"]
+        .as_array()
+        .expect("tool results")
+        .iter()
+        .find(|result| result["name"] == tool_name)
+        .expect("target tool result")
+        .get("parts")
+        .and_then(serde_json::Value::as_array)
+        .expect("parts")
+        .iter()
+        .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn child_session_id(task_text: &str) -> String {
+    let (_, rest) = task_text
+        .split_once("completed in session `")
+        .expect("task result names the child session");
+    let (id, _) = rest.split_once('`').expect("session id is backtick-closed");
+    id.to_owned()
+}
+
 fn tool_call_body() -> String {
     let calls = [
         ("call_ask", "bash", json!({ "command": "echo asked-ok" })),
@@ -928,6 +1013,62 @@ fn blocked_bash_tool_call_body() -> String {
                 "delta": {},
                 "finish_reason": "tool_calls"
             }]
+        })
+        .to_string(),
+    ])
+}
+
+fn subagent_task_tool_call_body() -> String {
+    sse_body(&[
+        json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_subagent",
+                        "type": "function",
+                        "function": {
+                            "name": "task",
+                            "arguments": json!({
+                                "agent": "explore",
+                                "prompt": "Reply with CHILD-OK and nothing else."
+                            }).to_string()
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        })
+        .to_string(),
+        json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ])
+}
+
+fn subagent_child_final_body() -> String {
+    sse_body(&[
+        json!({
+            "choices": [{
+                "delta": { "content": "CHILD-OK" },
+                "finish_reason": null
+            }]
+        })
+        .to_string(),
+        json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 1,
+                "total_tokens": 3
+            }
         })
         .to_string(),
     ])

@@ -116,6 +116,22 @@ impl PluginState {
         }
     }
 
+    /// Clone this plugin state while replacing the attached audit sink.
+    ///
+    /// The returned state reuses the same loaded plugins/runtime host and shares dispose
+    /// coordination, but it owns an independent audit slot so nested runs (for example subagents)
+    /// can attribute plugin-initiated records to a different session.
+    #[must_use]
+    pub(crate) fn clone_with_audit(&self, audit: Option<Arc<audit::AuditSink>>) -> Self {
+        Self {
+            loaded: self.loaded.clone(),
+            host: self.host.clone(),
+            surface: self.surface.clone(),
+            disposed: self.disposed.clone(),
+            audit: Arc::new(Mutex::new(audit)),
+        }
+    }
+
     fn audit_sink(&self) -> Option<Arc<audit::AuditSink>> {
         self.audit.lock().ok().and_then(|slot| slot.clone())
     }

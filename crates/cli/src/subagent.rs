@@ -20,6 +20,7 @@ use settings::ConfigInputs;
 use tools::{TaskRequest, TaskRunner, TaskTarget, ToolOutput};
 
 use crate::custom_agents::{self, ActiveAgent};
+use crate::plugin_bridge::PluginState;
 use crate::tooling::RegistryDispatcher;
 
 /// The filtered subagent catalogue attached to one parent turn.
@@ -81,6 +82,8 @@ fn task_allowed(engine: Option<&Arc<PermissionEngine>>, agent_name: &str) -> boo
 /// Runtime configuration captured from the parent turn and reused by child tasks.
 pub(crate) struct CliTaskRunnerConfig {
     pub provider: Arc<dyn llm::Provider>,
+    pub provider_audit: Option<ProviderAuditConfig>,
+    pub plugin_state: PluginState,
     pub audit: Arc<audit::AuditSink>,
     pub db_path: PathBuf,
     pub cwd: PathBuf,
@@ -91,6 +94,24 @@ pub(crate) struct CliTaskRunnerConfig {
     pub config_inputs: ConfigInputs,
     pub project_memory: Option<String>,
     pub bus: Arc<EventBus>,
+}
+
+/// Provider-audit metadata copied from the parent run so child turns can emit their own
+/// `provider_request` records with child-session attribution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProviderAuditConfig {
+    pub provider: String,
+    pub endpoint: String,
+}
+
+impl ProviderAuditConfig {
+    #[must_use]
+    pub(crate) fn new(provider: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            endpoint: endpoint.into(),
+        }
+    }
 }
 
 struct CliTaskRunner {
@@ -128,6 +149,7 @@ impl CliTaskRunner {
             }
         };
         let child_audit = Arc::new(self.config.audit.child_session(child_session.id.clone()));
+        let provider = self.provider_for_child(child_audit.clone());
 
         if let Err(err) = db
             .messages()
@@ -204,7 +226,7 @@ impl CliTaskRunner {
         let mut tool_names = Vec::new();
         let mut tool_details = Vec::new();
         let outcome = SessionRunner::default()
-            .run_with_tools(self.config.provider.as_ref(), turn, &dispatcher, |event| {
+            .run_with_tools(provider.as_ref(), turn, &dispatcher, |event| {
                 if let RunnerEvent::ToolResult { name, parts, .. } = event {
                     let text = parts
                         .iter()
@@ -290,6 +312,22 @@ impl CliTaskRunner {
             engine = engine.with_parent_cap(parent_cap.clone());
         }
         Ok(Some(Arc::new(engine)))
+    }
+
+    fn provider_for_child(&self, child_audit: Arc<audit::AuditSink>) -> Arc<dyn llm::Provider> {
+        let base = match &self.config.provider_audit {
+            Some(config) => Arc::new(crate::run::AuditedProvider::new(
+                self.config.provider.clone(),
+                child_audit.clone(),
+                config.provider.clone(),
+                config.endpoint.clone(),
+            )) as Arc<dyn llm::Provider>,
+            None => self.config.provider.clone(),
+        };
+        self.config
+            .plugin_state
+            .clone_with_audit(Some(child_audit))
+            .wrap_provider(base)
     }
 }
 
@@ -459,6 +497,8 @@ mod tests {
         ]]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            provider_audit: None,
+            plugin_state: PluginState::disabled(),
             audit: Arc::new(audit::AuditSink::new(
                 dir.join("audit.jsonl"),
                 parent.id.clone(),
@@ -549,6 +589,8 @@ mod tests {
         ]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            provider_audit: None,
+            plugin_state: PluginState::disabled(),
             audit: Arc::new(audit::AuditSink::new(
                 dir.join("audit.jsonl"),
                 "parent-session",
@@ -601,6 +643,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn child_provider_requests_are_audited_under_the_child_session() {
+        let (dir, inputs) = scratch("child-provider-audit");
+        let db_path = dir.join("cortex.db");
+        let db = Database::open(&db_path).expect("db");
+        db.sessions()
+            .ensure("parent-session", None)
+            .expect("parent");
+
+        let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta {
+                text: "child provider call".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]]));
+        let runner = catalog.runner(CliTaskRunnerConfig {
+            provider,
+            provider_audit: Some(ProviderAuditConfig::new(
+                "openrouter",
+                "https://openrouter.ai/api/v1/chat/completions",
+            )),
+            plugin_state: PluginState::disabled(),
+            audit: Arc::new(audit::AuditSink::new(
+                dir.join("audit.jsonl"),
+                "parent-session",
+            )),
+            db_path,
+            cwd: dir.clone(),
+            parent_session_id: "parent-session".to_owned(),
+            parent_cap: None,
+            parent_model_id: "google/gemini-2.5-flash".to_owned(),
+            formatter_config: format::FormatterConfig::default(),
+            config_inputs: inputs,
+            project_memory: None,
+            bus: Arc::new(EventBus::new()),
+        });
+
+        let out = runner
+            .run_task(TaskRequest::new("explore", "run a child turn"))
+            .await;
+        assert!(!out.is_error, "got: {}", out.model_content());
+        let output = out.model_content().to_owned();
+        let child_session = output
+            .split_once("completed in session `")
+            .and_then(|(_, rest)| rest.split_once('`').map(|(id, _)| id))
+            .expect("task output exposes child session id");
+
+        let records = audit::read_jsonl(&dir.join("audit.jsonl")).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "network_call"
+                    && record["kind"] == "provider_request"
+                    && record["session"] == child_session
+                    && record["parent_session"] == "parent-session"
+                    && record["parent_session_id"] == "parent-session"
+            }),
+            "{records:#?}"
+        );
+        assert!(
+            !records.iter().any(|record| {
+                record["type"] == "network_call"
+                    && record["kind"] == "provider_request"
+                    && record["session"] == "parent-session"
+            }),
+            "{records:#?}"
+        );
+    }
+
+    #[tokio::test]
     async fn subagent_background_process_is_reaped_after_child_turn() {
         let (dir, inputs) = scratch("background");
         let db_path = dir.join("cortex.db");
@@ -636,6 +749,8 @@ mod tests {
         ]));
         let runner = catalog.runner(CliTaskRunnerConfig {
             provider,
+            provider_audit: None,
+            plugin_state: PluginState::disabled(),
             audit: Arc::new(audit::AuditSink::new(
                 dir.join("audit.jsonl"),
                 "parent-session",

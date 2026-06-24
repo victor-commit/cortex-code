@@ -328,47 +328,54 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // The credential resolves through env > 0600 file > config indirection; an endpoint override
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
-    let (provider, audit_provider_endpoint): (Arc<dyn llm::Provider>, Option<String>) =
-        match plugin_state.provider_for_model(&run_config.model.model_id) {
-            Some(provider) => {
-                eprintln!(
-                    "cortex run: using plugin provider {} for model {}",
-                    provider.provider_id(),
-                    provider.model_id()
-                );
-                (Arc::new(provider), None)
+    let (provider_base, provider_audit): (
+        Arc<dyn llm::Provider>,
+        Option<crate::subagent::ProviderAuditConfig>,
+    ) = match plugin_state.provider_for_model(&run_config.model.model_id) {
+        Some(provider) => {
+            eprintln!(
+                "cortex run: using plugin provider {} for model {}",
+                provider.provider_id(),
+                provider.model_id()
+            );
+            (Arc::new(provider), None)
+        }
+        None => {
+            let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
+            let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
+            match providers::resolve_openrouter_with_options(
+                &inputs,
+                run_config.base_url.as_deref(),
+                stream_idle_timeout(),
+            ) {
+                Ok(provider) => (
+                    Arc::new(provider),
+                    Some(crate::subagent::ProviderAuditConfig::new(
+                        providers::OPENROUTER_ID,
+                        endpoint,
+                    )),
+                ),
+                Err(diag) => return report_setup_diagnostic(&diag),
             }
-            None => {
-                let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
-                let inputs =
-                    providers::CredentialInputs::openrouter_from_process(run_config.api_key);
-                match providers::resolve_openrouter_with_options(
-                    &inputs,
-                    run_config.base_url.as_deref(),
-                    stream_idle_timeout(),
-                ) {
-                    Ok(provider) => (Arc::new(provider), Some(endpoint)),
-                    Err(diag) => return report_setup_diagnostic(&diag),
-                }
-            }
-        };
+        }
+    };
 
     plugin_state.attach_audit(audit_sink.clone());
     plugin_state.audit_loaded_plugins();
     if let Some(subscriber) = plugin_state.event_subscriber() {
         bus.subscribe(subscriber);
     }
-    let provider = match audit_provider_endpoint {
-        Some(endpoint) => {
+    let provider = match &provider_audit {
+        Some(config) => {
             let audited = AuditedProvider::new(
-                provider,
+                provider_base.clone(),
                 audit_sink.clone(),
-                providers::OPENROUTER_ID,
-                endpoint,
+                config.provider.clone(),
+                config.endpoint.clone(),
             );
             Arc::new(audited) as Arc<dyn llm::Provider>
         }
-        None => provider,
+        None => provider_base.clone(),
     };
     let provider = plugin_state.wrap_provider(provider);
 
@@ -517,7 +524,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         dispatcher
     } else {
         let task_runner = task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
-            provider: provider.clone(),
+            provider: provider_base.clone(),
+            provider_audit: provider_audit.clone(),
+            plugin_state: plugin_state.clone(),
             audit: audit_sink.clone(),
             db_path: db_path.clone(),
             cwd: cwd.clone(),
@@ -897,7 +906,7 @@ enum TurnResult {
     Interrupted,
 }
 
-struct AuditedProvider {
+pub(crate) struct AuditedProvider {
     inner: Arc<dyn Provider>,
     audit: Arc<audit::AuditSink>,
     provider: String,
@@ -906,7 +915,7 @@ struct AuditedProvider {
 }
 
 impl AuditedProvider {
-    fn new(
+    pub(crate) fn new(
         inner: Arc<dyn Provider>,
         audit: Arc<audit::AuditSink>,
         provider: impl Into<String>,
