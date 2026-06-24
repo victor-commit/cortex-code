@@ -15,13 +15,13 @@
 //!
 //! Run with: `cargo run -p tui-components --example dump_previews`
 
-use tui_components::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
+use tui_components::prelude::*;
 
 /// Convert a buffer to ASCII art string
 fn buffer_to_ascii(buf: &Buffer, area: Rect) -> String {
@@ -437,7 +437,9 @@ fn main() -> std::io::Result<()> {
     let mut content = String::new();
     content.push_str("# Cortex TUI Components - ASCII Previews\n\n");
     content.push_str("This document contains ASCII art previews of all UI components in the `tui-components` crate.\n\n");
-    content.push_str("> Generated automatically by `cargo run -p tui-components --example dump_previews`\n\n");
+    content.push_str(
+        "> Generated automatically by `cargo run -p tui-components --example dump_previews`\n\n",
+    );
     content.push_str("---\n\n");
     content.push_str("## Table of Contents\n\n");
     content.push_str("- [Card](#card-component)\n");

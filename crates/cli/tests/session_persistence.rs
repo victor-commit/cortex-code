@@ -128,12 +128,11 @@ fn table_names(db_path: &PathBuf) -> Vec<String> {
     let mut statement = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .expect("prepare");
-    let names = statement
+    statement
         .query_map([], |row| row.get::<_, String>(0))
         .expect("query")
         .map(|r| r.expect("row"))
-        .collect();
-    names
+        .collect()
 }
 
 fn integrity_ok(db_path: &PathBuf) -> bool {

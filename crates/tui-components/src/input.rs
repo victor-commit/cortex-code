@@ -14,8 +14,8 @@
 //! Single-line text input with cursor, history, and completion support.
 
 use crate::component::{Component, ComponentResult, FocusState};
-use frame::style::{CYAN_PRIMARY, SURFACE_1, TEXT, TEXT_MUTED};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use frame::style::{CYAN_PRIMARY, SURFACE_1, TEXT, TEXT_MUTED};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;

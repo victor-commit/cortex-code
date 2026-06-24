@@ -180,7 +180,10 @@ mod tests {
         assert_eq!(loaded.access_token, "access-abc");
         assert_eq!(loaded.refresh_token.as_deref(), Some("refresh-xyz"));
 
-        let mode = std::fs::metadata(store.path()).unwrap().permissions().mode();
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "credential file must be 0600");
         let _ = std::fs::remove_dir_all(&dir);
     }

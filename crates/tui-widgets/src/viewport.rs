@@ -12,8 +12,8 @@
 
 //! Viewport management for scrollable content.
 
-pub use tui_core::geometry::Rect;
 use std::ops::Range;
+pub use tui_core::geometry::Rect;
 
 /// Scroll offset in both dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

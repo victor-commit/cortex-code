@@ -108,7 +108,9 @@ impl SseClientTransport {
                             let resolved = base
                                 .join(event.data.trim())
                                 .map(|url| url.to_string())
-                                .map_err(|_| SseTransportError::InvalidEndpoint(event.data.clone()));
+                                .map_err(|_| {
+                                    SseTransportError::InvalidEndpoint(event.data.clone())
+                                });
                             let _ = tx.send(resolved);
                         }
                     }
@@ -157,8 +159,8 @@ impl Transport<RoleClient> for SseClientTransport {
         let url = self.post_url.clone();
         let headers = self.headers.clone();
         async move {
-            let body =
-                serde_json::to_vec(&item).map_err(|err| SseTransportError::Encode(err.to_string()))?;
+            let body = serde_json::to_vec(&item)
+                .map_err(|err| SseTransportError::Encode(err.to_string()))?;
             let response = http
                 .post(&url)
                 .headers(headers)

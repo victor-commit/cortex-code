@@ -15,8 +15,8 @@
 
 use crate::borders::{ROUNDED_BORDER, RoundedBorder};
 use crate::key_hints::KeyHintsBar;
-use frame::style::{CYAN_PRIMARY, SURFACE_0};
 use crossterm::event::KeyEvent;
+use frame::style::{CYAN_PRIMARY, SURFACE_0};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

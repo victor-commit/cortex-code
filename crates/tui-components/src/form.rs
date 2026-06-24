@@ -13,8 +13,8 @@
 
 use crate::component::{Component, ComponentResult, FocusState};
 use crate::focus::FocusManager;
-use frame::style::{CYAN_PRIMARY, SURFACE_0, SURFACE_1, TEXT, TEXT_DIM, TEXT_MUTED};
 use crossterm::event::{KeyCode, KeyEvent};
+use frame::style::{CYAN_PRIMARY, SURFACE_0, SURFACE_1, TEXT, TEXT_DIM, TEXT_MUTED};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

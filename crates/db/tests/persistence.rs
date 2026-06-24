@@ -44,12 +44,11 @@ fn table_names(db: &Database) -> Vec<String> {
     let mut statement = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .expect("prepare table query");
-    let names = statement
+    statement
         .query_map([], |row| row.get::<_, String>(0))
         .expect("query tables")
         .map(|r| r.expect("row"))
-        .collect();
-    names
+        .collect()
 }
 
 // VAL-SKEL-037: a fresh DB is created with migrations applied and the expected tables present.

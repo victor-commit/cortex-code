@@ -22,8 +22,8 @@ use crate::borders::{BorderStyle, RoundedBorder};
 use crate::component::{Component, ComponentResult, FocusState};
 use crate::scroll::{ScrollState, Scrollable, render_scrollbar};
 
-use frame::style::{CYAN_PRIMARY, SURFACE_0, SURFACE_1, TEXT, TEXT_DIM, TEXT_MUTED};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use frame::style::{CYAN_PRIMARY, SURFACE_0, SURFACE_1, TEXT, TEXT_DIM, TEXT_MUTED};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

@@ -304,6 +304,7 @@ pub struct CortexStyle;
 impl CortexStyle {
     /// Default style: primary text on void background.
     #[inline]
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Style {
         Style::default().fg(TEXT).bg(VOID)
     }

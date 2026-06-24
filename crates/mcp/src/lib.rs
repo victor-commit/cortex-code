@@ -40,9 +40,7 @@ pub use client::{DEFAULT_TIMEOUT, McpClient};
 pub use config::{McpConfigError, McpServerConfig, McpTransport, servers_from_value};
 pub use credentials::{CredentialStore, StoredToken, now_secs};
 pub use error::McpError;
-pub use manager::{
-    ConnectionState, McpConnectOptions, McpManager, ServerStatus,
-};
+pub use manager::{ConnectionState, McpConnectOptions, McpManager, ServerStatus};
 pub use process_tree::{pid_alive, process_tree};
 pub use qualify::qualified_id;
 pub use result::{
