@@ -34,6 +34,7 @@ mod message_parts;
 mod runner;
 mod stream_lifecycle;
 mod tools;
+mod turn_queue;
 
 pub use agent::{Agent, UnknownAgent};
 pub use compaction::{
@@ -54,3 +55,4 @@ pub use stream_lifecycle::{
     tool_terminal_part_id, usage_part_id,
 };
 pub use tools::{ToolDispatchResult, ToolDispatcher};
+pub use turn_queue::{TurnLease, TurnQueue};

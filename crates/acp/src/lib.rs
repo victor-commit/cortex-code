@@ -5,7 +5,7 @@
 //! [`engine::SessionRunner`], streams assistant text as ACP `session/update` notifications, and
 //! cancels in-flight turns by dropping the runner future at the stdio boundary.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -21,7 +21,7 @@ use db::{Database, DbPathInputs};
 use engine::{
     CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
     RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher,
-    Turn, build_assistant_message_parts, project_history,
+    Turn, TurnQueue, build_assistant_message_parts, project_history,
 };
 use errors::Exit;
 use events::{Event, EventBus};
@@ -79,7 +79,7 @@ struct AcpState {
     db_path: PathBuf,
     provider: ProviderSource,
     event_bus: Arc<EventBus>,
-    active_turns: ActiveTurns,
+    active_turns: TurnQueue,
     initialized: StdMutex<bool>,
 }
 
@@ -128,7 +128,7 @@ impl AcpService {
                 db_path,
                 provider,
                 event_bus,
-                active_turns: ActiveTurns::default(),
+                active_turns: TurnQueue::default(),
                 initialized: StdMutex::new(false),
             }),
         }
@@ -250,7 +250,10 @@ impl AcpService {
                     Ok(session_id) => session_id,
                     Err(message) => return writer.send_error(id, -32602, message),
                 };
-                let active = self.state.active_turns.abort(&session_id);
+                let active = match self.state.active_turns.abort(&session_id) {
+                    Ok(active) => active,
+                    Err(message) => return writer.send_error(id, -32000, message),
+                };
                 writer.send_result(id, json!({ "cancelled": active, "active": active }))
             }
             _ => writer.send_error(id, -32601, format!("method not found: {method}")),
@@ -270,7 +273,7 @@ impl AcpService {
             && self.is_initialized()
             && let Ok(session_id) = parse_cancel_session_id(params)
         {
-            self.state.active_turns.abort(&session_id);
+            let _ = self.state.active_turns.abort(&session_id);
         }
         Ok(())
     }
@@ -370,23 +373,23 @@ impl AcpService {
             }
         };
 
-        let (abort_tx, abort_rx) = watch::channel(false);
-        let active_guard = match self
+        let active_turn = match self
             .state
             .active_turns
-            .insert(prompt.session_id.clone(), abort_tx)
+            .acquire(prompt.session_id.clone())
+            .await
         {
-            Ok(guard) => guard,
+            Ok(lease) => lease,
             Err(message) => {
                 let _ = writer.send_error(id, -32000, message);
                 return;
             }
         };
+        let queued = active_turn.queued();
 
         let resolved = match self.resolve_turn_provider(session.model.as_deref()) {
             Ok(resolved) => resolved,
             Err(message) => {
-                drop(active_guard);
                 let _ = writer.send_error(id, -32000, message);
                 return;
             }
@@ -394,7 +397,6 @@ impl AcpService {
         let history = match load_history(&db, &prompt.session_id) {
             Ok(history) => history,
             Err(message) => {
-                drop(active_guard);
                 let _ = writer.send_error(id, -32000, message);
                 return;
             }
@@ -407,7 +409,6 @@ impl AcpService {
         ) {
             Ok(message) => message,
             Err(err) => {
-                drop(active_guard);
                 let _ = writer.send_error(id, -32000, err.to_string());
                 return;
             }
@@ -428,7 +429,6 @@ impl AcpService {
         ) {
             Ok(permissions) => permissions,
             Err(message) => {
-                drop(active_guard);
                 let _ = writer.send_error(id, -32000, message);
                 return;
             }
@@ -444,7 +444,7 @@ impl AcpService {
             resolved.provider.as_ref(),
             turn,
             &dispatcher,
-            abort_rx,
+            active_turn.abort_receiver(),
             TurnEventSink {
                 bus: self.state.event_bus.clone(),
                 session_id: prompt.session_id.clone(),
@@ -454,7 +454,6 @@ impl AcpService {
         )
         .await;
         dispatcher.shutdown().await;
-        drop(active_guard);
 
         let Some(result) = result else {
             self.state.event_bus.publish(&Event::turn_done(
@@ -463,11 +462,7 @@ impl AcpService {
                 "cancelled",
                 0,
             ));
-            let response = PromptResponse::new(StopReason::Cancelled);
-            let _ = writer.send_result(
-                id,
-                serde_json::to_value(response).expect("serialize cancel"),
-            );
+            let _ = writer.send_result(id, prompt_response_json(StopReason::Cancelled, queued));
             return;
         };
         let TurnRunResult {
@@ -530,10 +525,9 @@ impl AcpService {
             serde_json::to_value(parts_note).expect("serialize parts update"),
         );
 
-        let response = PromptResponse::new(stop_reason_for_outcome(&outcome));
         let _ = writer.send_result(
             id,
-            serde_json::to_value(response).expect("serialize prompt response"),
+            prompt_response_json(stop_reason_for_outcome(&outcome), queued),
         );
     }
 
@@ -684,57 +678,6 @@ where
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
         }
         return Ok(Some(trimmed.to_owned()));
-    }
-}
-
-#[derive(Clone, Default)]
-struct ActiveTurns {
-    inner: Arc<StdMutex<HashMap<String, watch::Sender<bool>>>>,
-}
-
-impl ActiveTurns {
-    fn insert(
-        &self,
-        session_id: String,
-        abort_tx: watch::Sender<bool>,
-    ) -> Result<ActiveTurnGuard, String> {
-        let mut inner = self.inner.lock().expect("active turns mutex");
-        if inner.contains_key(&session_id) {
-            return Err(format!(
-                "session {session_id} already has an in-flight prompt"
-            ));
-        }
-        inner.insert(session_id.clone(), abort_tx);
-        Ok(ActiveTurnGuard {
-            session_id,
-            active: self.clone(),
-        })
-    }
-
-    fn abort(&self, session_id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("active turns mutex")
-            .get(session_id)
-            .is_some_and(|tx| tx.send(true).is_ok())
-    }
-
-    fn remove(&self, session_id: &str) {
-        self.inner
-            .lock()
-            .expect("active turns mutex")
-            .remove(session_id);
-    }
-}
-
-struct ActiveTurnGuard {
-    session_id: String,
-    active: ActiveTurns,
-}
-
-impl Drop for ActiveTurnGuard {
-    fn drop(&mut self) {
-        self.active.remove(&self.session_id);
     }
 }
 
@@ -1135,6 +1078,15 @@ fn stop_reason_for_outcome(outcome: &RunOutcome) -> StopReason {
             StopReason::EndTurn
         }
     }
+}
+
+fn prompt_response_json(stop_reason: StopReason, queued: bool) -> Value {
+    let mut value =
+        serde_json::to_value(PromptResponse::new(stop_reason)).expect("serialize prompt response");
+    if let Some(object) = value.as_object_mut() {
+        object.insert("queued".to_owned(), Value::Bool(queued));
+    }
+    value
 }
 
 fn permission_engine_for_turn(
@@ -1768,6 +1720,60 @@ mod tests {
             .find(|value| value.get("id") == Some(&json!(3)))
             .expect("final result");
         assert_eq!(final_result["result"]["stopReason"], "end_turn");
+        assert_eq!(final_result["result"]["queued"], false);
+    }
+
+    #[tokio::test]
+    async fn overlapping_session_prompts_are_queued_and_report_queue_state() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::delayed(
+            vec!["slow ".to_owned(), "response".to_owned()],
+            Duration::from_millis(20),
+        )));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+
+        service
+            .handle_value(
+                request(
+                    3,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "first queued prompt" }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("first prompt");
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        service
+            .handle_value(
+                request(
+                    4,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "second queued prompt" }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("second prompt");
+
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(4)))
+        })
+        .await;
+        let first = response_with_id(&values, 3);
+        let second = response_with_id(&values, 4);
+        assert_eq!(first["result"]["stopReason"], "end_turn");
+        assert_eq!(first["result"]["queued"], false);
+        assert_eq!(second["result"]["stopReason"], "end_turn");
+        assert_eq!(second["result"]["queued"], true);
     }
 
     #[tokio::test]

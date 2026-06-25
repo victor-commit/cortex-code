@@ -42,6 +42,7 @@ async fn message_route_runs_turn_persists_assistant_and_usage() {
     assert_json_content_type(&response);
     let body: serde_json::Value = json_body(response).await;
     assert_eq!(body["status"], "completed");
+    assert_eq!(body["queued"], false);
     assert_eq!(body["role"], "assistant");
     assert!(
         body["content"]
@@ -55,6 +56,7 @@ async fn message_route_runs_turn_persists_assistant_and_usage() {
     assert_eq!(provider.calls(), 1);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/session/{}/message", session.id))
@@ -599,14 +601,14 @@ action = "deny"
 }
 
 #[tokio::test]
-async fn overlapping_same_session_prompt_is_rejected_without_persisting_rejected_user_message() {
-    let scratch = Scratch::new("server-message-same-session-overlap");
+async fn overlapping_same_session_prompt_is_queued_and_persists_in_order() {
+    let scratch = Scratch::new("server-message-same-session-queue");
     let provider = Arc::new(EchoProvider::with_delay(Duration::from_secs(1)));
     let app = server::app_with_provider(scratch.db_path(), provider);
     let session = create_session(&app).await;
 
     let first_prompt = "first-overlap-prompt";
-    let rejected_prompt = "second-overlap-should-not-persist";
+    let queued_prompt = "second-overlap-queued";
     let post_app = app.clone();
     let post_uri = format!("/session/{}/message", session.id);
     let first = tokio::spawn(async move {
@@ -631,18 +633,20 @@ async fn overlapping_same_session_prompt_is_rejected_without_persisting_rejected
                 .method("POST")
                 .uri(format!("/session/{}/message", session.id))
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(format!(r#"{{"text":"{rejected_prompt}"}}"#)))
+                .body(Body::from(format!(r#"{{"text":"{queued_prompt}"}}"#)))
                 .expect("request"),
         )
         .await
         .expect("second response");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["queued"], true);
     assert!(
-        body["error"]
+        body["content"]
             .as_str()
-            .is_some_and(|message| message.contains("in-flight turn")),
-        "conflict body should explain same-session overlap: {body:?}"
+            .is_some_and(|text| text.contains(queued_prompt)),
+        "queued prompt should eventually run and complete: {body:?}"
     );
 
     let first_response = tokio::time::timeout(Duration::from_secs(3), first)
@@ -652,6 +656,7 @@ async fn overlapping_same_session_prompt_is_rejected_without_persisting_rejected
     assert_eq!(first_response.status(), StatusCode::OK);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/session/{}/message", session.id))
@@ -668,20 +673,30 @@ async fn overlapping_same_session_prompt_is_rejected_without_persisting_rejected
             .iter()
             .filter(|message| message["role"] == "user")
             .count(),
-        1,
-        "the rejected overlap should not persist an extra user message: {body:?}"
-    );
-    assert!(
-        messages
-            .iter()
-            .all(|message| message["content"] != rejected_prompt),
-        "rejected overlap prompt must not be durable history: {body:?}"
+        2,
+        "both prompts should persist as queued admission: {body:?}"
     );
     assert!(
         messages
             .iter()
             .any(|message| message["content"] == first_prompt),
         "the accepted prompt should still persist: {body:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["content"] == queued_prompt),
+        "the queued prompt should persist after running: {body:?}"
+    );
+    let user_contents: Vec<&str> = messages
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    assert_eq!(
+        user_contents,
+        vec![first_prompt, queued_prompt],
+        "queued prompt should be admitted after the active prompt in submission order"
     );
 }
 
@@ -719,6 +734,7 @@ async fn malformed_message_model_is_rejected_without_persisting_or_calling_provi
     assert_eq!(provider.calls(), 0, "invalid model must not call provider");
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/session/{}/message", session.id))
@@ -1183,6 +1199,7 @@ async fn abort_stops_in_flight_turn_without_assistant_completion() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/session/{}/message", session.id))
@@ -1198,6 +1215,28 @@ async fn abort_stops_in_flight_turn_without_assistant_completion() {
             .iter()
             .all(|message| message["role"] != "assistant"),
         "aborted turn should not persist a completed assistant: {body:?}"
+    );
+
+    let resumed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"resume after abort"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("resumed prompt response");
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let resumed_body: serde_json::Value = json_body(resumed).await;
+    assert_eq!(resumed_body["status"], "completed");
+    assert_eq!(resumed_body["queued"], false);
+    assert!(
+        resumed_body["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("resume after abort")),
+        "session should remain resumable after abort: {resumed_body:?}"
     );
 }
 
@@ -1231,6 +1270,86 @@ async fn abort_without_active_remote_turn_does_not_leave_a_stale_remote_marker()
         !marker.exists(),
         "idle abort should not leave a stale remote marker that can poison later TUI turns"
     );
+}
+
+#[tokio::test]
+async fn abort_during_tool_execution_cleans_up_and_keeps_session_resumable() {
+    let scratch = Scratch::new("server-message-abort-tool");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let marker = workspace.join("tool-orphan-marker.txt");
+    let _ = std::fs::remove_file(&marker);
+
+    let provider = Arc::new(AbortableToolProvider::new(marker.clone()));
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider).with_cwd(&workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let post_app = app.clone();
+    let post_uri = format!("/session/{}/message", session.id);
+    let post = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(post_uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"run a long tool command"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("post response")
+    });
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let abort = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/abort", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("abort response");
+    assert_eq!(abort.status(), StatusCode::OK);
+    let abort_body: serde_json::Value = json_body(abort).await;
+    assert_eq!(abort_body["status"], "abort_requested");
+    assert_eq!(abort_body["active"], true);
+
+    let response = tokio::time::timeout(Duration::from_secs(3), post)
+        .await
+        .expect("prompt stopped promptly")
+        .expect("prompt join");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "aborted");
+    assert_eq!(body["queued"], false);
+
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert!(
+        !marker.exists(),
+        "aborting a tool turn should clean up in-flight tool processes before they finish side effects"
+    );
+
+    let resumed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"resume after tool abort"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("resumed prompt");
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let resumed_body: serde_json::Value = json_body(resumed).await;
+    assert_eq!(resumed_body["status"], "completed");
+    assert_eq!(resumed_body["queued"], false);
+    assert_eq!(resumed_body["role"], "assistant");
 }
 
 #[tokio::test]
@@ -1794,6 +1913,21 @@ struct RichPartsProvider {
     calls: AtomicUsize,
 }
 
+#[derive(Debug)]
+struct AbortableToolProvider {
+    calls: AtomicUsize,
+    marker: PathBuf,
+}
+
+impl AbortableToolProvider {
+    fn new(marker: PathBuf) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            marker,
+        }
+    }
+}
+
 impl Provider for CheckpointEditingProvider {
     fn stream<'a>(&'a self, _request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
         Box::pin(async move {
@@ -1957,6 +2091,52 @@ impl Provider for RichPartsProvider {
                         input_tokens: 12,
                         output_tokens: 4,
                         total_tokens: 16,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for AbortableToolProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if call == 0 && !has_tool_result {
+                let marker = self
+                    .marker
+                    .to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let command = format!("sleep 2; printf orphan > \"{marker}\"");
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_abort_bash".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: serde_json::json!({ "command": command }).to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "tool cleanup complete".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        total_tokens: 15,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {

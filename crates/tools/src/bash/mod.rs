@@ -181,6 +181,41 @@ pub(super) async fn kill_process_group(pid: u32) {
         .await;
 }
 
+/// Best-effort process-group cleanup guard for cancellation paths.
+///
+/// If a foreground bash command future is dropped (for example due to turn abort), this guard's
+/// drop path sends `SIGKILL` to the whole process group so forked grandchildren are not orphaned.
+struct ProcessGroupGuard {
+    pid: u32,
+    armed: bool,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: u32) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg("--")
+            .arg(format!("-{}", self.pid))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 /// The environment passed to a spawned child: the process environment with the agent's secrets
 /// stripped, so no credential reaches the command.
 fn child_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -216,9 +251,13 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
         Err(err) => return ToolOutput::error(format!("bash: failed to start command: {err}")),
     };
     let pid = child.id();
+    let mut process_group_guard = pid.map(ProcessGroupGuard::new);
 
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
+            if let Some(guard) = process_group_guard.as_mut() {
+                guard.disarm();
+            }
             if let Some(audit) = ctx.audit_sink() {
                 let outcome = if output.status.success() {
                     "success"
@@ -230,6 +269,9 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
             render_completed(&output)
         }
         Ok(Err(err)) => {
+            if let Some(guard) = process_group_guard.as_mut() {
+                guard.disarm();
+            }
             if let Some(audit) = ctx.audit_sink() {
                 audit.record_shell_execution(command, ctx.cwd(), None, "error");
             }
@@ -241,6 +283,9 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
             // grandchild (e.g. from a compound command) is not orphaned.
             if let Some(pid) = pid {
                 kill_process_group(pid).await;
+            }
+            if let Some(guard) = process_group_guard.as_mut() {
+                guard.disarm();
             }
             if let Some(audit) = ctx.audit_sink() {
                 audit.record_shell_execution(command, ctx.cwd(), None, "timeout");

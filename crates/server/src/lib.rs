@@ -30,7 +30,7 @@ use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
     RunError, RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult,
-    ToolDispatcher, Turn, build_assistant_message_parts, project_history,
+    ToolDispatcher, Turn, TurnQueue, build_assistant_message_parts, project_history,
 };
 use events::{Event, EventBus, LifecyclePhase, Surface};
 use futures_util::{future::BoxFuture, stream};
@@ -81,7 +81,7 @@ pub struct ServerState {
     config: ConfigContext,
     provider: ProviderSource,
     auth: ServerAuth,
-    active_turns: ActiveTurns,
+    active_turns: TurnQueue,
     remote_turns: RemoteTurns,
     event_bus: Arc<EventBus>,
     prompt_buffers: PromptBuffers,
@@ -100,7 +100,7 @@ impl ServerState {
             config: ConfigContext::from_process(),
             provider: ProviderSource::OpenRouter,
             auth: ServerAuth::trusted_loopback(),
-            active_turns: ActiveTurns::default(),
+            active_turns: TurnQueue::default(),
             remote_turns: RemoteTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
@@ -119,7 +119,7 @@ impl ServerState {
             config: ConfigContext::from_process(),
             provider: ProviderSource::Fixed { provider },
             auth: ServerAuth::trusted_loopback(),
-            active_turns: ActiveTurns::default(),
+            active_turns: TurnQueue::default(),
             remote_turns: RemoteTurns::default(),
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
@@ -367,11 +367,6 @@ impl ConfigContext {
                 .iter()
                 .any(|(name, value)| name == "CORTEX_PURE" && value == "1")
     }
-}
-
-#[derive(Clone, Default)]
-struct ActiveTurns {
-    inner: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
 }
 
 #[derive(Clone, Default)]
@@ -964,6 +959,7 @@ struct PromptResponse {
     status: &'static str,
     model: String,
     agent: String,
+    queued: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1300,7 +1296,10 @@ async fn abort_session(
 ) -> Result<Json<AbortResponse>, ApiError> {
     let db = open_database(&state)?;
     db.sessions().require(&id).map_err(ApiError::from_db)?;
-    let server_active = state.active_turns.abort(&id)?;
+    let server_active = state
+        .active_turns
+        .abort(&id)
+        .map_err(|message| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message))?;
     let remote_active = state.remote_turns.is_active(&id)?;
     if remote_active && let Err(err) = write_remote_abort_request(&id) {
         eprintln!("cortex serve: failed to write remote abort marker for session {id}: {err}");
@@ -1440,11 +1439,12 @@ async fn run_message_turn(
     .with_audit(audit_sink.clone());
     let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
     let history = load_history(&db, &session_id)?;
-    let (abort_tx, abort_rx) = watch::channel(false);
-    let _active = state
+    let active_turn = state
         .active_turns
-        .insert(session_id.clone(), abort_tx)
-        .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
+        .acquire(session_id.clone())
+        .await
+        .map_err(|message| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let queued = active_turn.queued();
     let user_message = db
         .messages()
         .create_with_parts(
@@ -1486,7 +1486,7 @@ async fn run_message_turn(
         resolved.provider.as_ref(),
         turn,
         &dispatcher,
-        abort_rx,
+        active_turn.abort_receiver(),
         state.event_bus.clone(),
         session_id.clone(),
         user_message.id.clone(),
@@ -1505,6 +1505,7 @@ async fn run_message_turn(
             status: "aborted",
             model: resolved.model_id,
             agent: selected_agent.name().to_owned(),
+            queued,
             role: None,
             content: None,
             message: None,
@@ -1550,6 +1551,7 @@ async fn run_message_turn(
         status: "completed",
         model: resolved.model_id,
         agent: selected_agent.name().to_owned(),
+        queued,
         role: Some("assistant"),
         content: Some(content),
         message: Some(assistant),
@@ -2169,54 +2171,6 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-impl ActiveTurns {
-    fn insert(
-        &self,
-        session_id: String,
-        abort: watch::Sender<bool>,
-    ) -> Result<ActiveTurnGuard, String> {
-        let mut active = self
-            .inner
-            .lock()
-            .map_err(|_| "active turn registry is unavailable".to_owned())?;
-        if active.contains_key(&session_id) {
-            return Err(format!(
-                "session {session_id} already has an in-flight turn; abort it before starting another"
-            ));
-        }
-        active.insert(session_id.clone(), abort);
-        Ok(ActiveTurnGuard {
-            active: self.clone(),
-            session_id,
-        })
-    }
-
-    fn abort(&self, session_id: &str) -> Result<bool, ApiError> {
-        let abort = self
-            .inner
-            .lock()
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "active turn registry is unavailable",
-                )
-            })?
-            .get(session_id)
-            .cloned();
-        let Some(abort) = abort else {
-            return Ok(false);
-        };
-        let _ = abort.send(true);
-        Ok(true)
-    }
-
-    fn remove(&self, session_id: &str) {
-        if let Ok(mut active) = self.inner.lock() {
-            active.remove(session_id);
-        }
-    }
-}
-
 impl RemoteTurns {
     fn observe(&self, event: &Event) {
         match event {
@@ -2360,17 +2314,6 @@ impl LocalShares {
         let before = shares.len();
         shares.retain(|_, shared_session| shared_session != session_id);
         Ok(before != shares.len())
-    }
-}
-
-struct ActiveTurnGuard {
-    active: ActiveTurns,
-    session_id: String,
-}
-
-impl Drop for ActiveTurnGuard {
-    fn drop(&mut self) {
-        self.active.remove(&self.session_id);
     }
 }
 

@@ -453,7 +453,7 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 },
                 "PromptResponse": {
                     "type": "object",
-                    "required": ["status", "model", "agent"],
+                    "required": ["status", "model", "agent", "queued"],
                     "properties": {
                         "status": {
                             "type": "string",
@@ -461,6 +461,7 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         },
                         "model": { "type": "string" },
                         "agent": { "type": "string" },
+                        "queued": { "type": "boolean" },
                         "role": { "type": "string" },
                         "content": { "type": "string" },
                         "message": { "$ref": "#/components/schemas/Message" },
