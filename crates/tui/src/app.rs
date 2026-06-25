@@ -2398,10 +2398,11 @@ impl App {
         {
             self.status.model = model.to_owned();
         }
-        let label = session_status_label(&session.session);
-        self.status.session = label.clone();
-        self.transcript
-            .push(Entry::Notice(format!("Switched to session {label}")));
+        self.status.session = session.session.id.clone();
+        self.transcript.push(Entry::Notice(format!(
+            "Switched to session {}",
+            session_picker_label(&session.session)
+        )));
         self.append_loaded_todos(&session.todos);
     }
 
@@ -3530,18 +3531,10 @@ struct LoadedSession {
 /// Build the session picker's rows and their backing metadata in lockstep: the synthetic "current
 /// session" row (no persisted id) followed by every persisted session, newest-first. The labels and
 /// entries share the same order so a highlighted row maps directly to its [`SessionEntry`].
-/// A session picker row label: `id  —  title` when titled, otherwise the bare id.
+/// A session label that preserves the canonical id and shows `id  —  title` when titled.
 fn session_picker_label(session: &db::Session) -> String {
     match &session.title {
         Some(title) if !title.trim().is_empty() => format!("{}  —  {title}", session.id),
-        _ => session.id.clone(),
-    }
-}
-
-/// The footer's session label for a switched-to session: its title when set, otherwise its id.
-fn session_status_label(session: &db::Session) -> String {
-    match &session.title {
-        Some(title) if !title.trim().is_empty() => title.clone(),
         _ => session.id.clone(),
     }
 }
@@ -6865,6 +6858,35 @@ mod tests {
         assert_eq!(a.usage.output_tokens, 34);
         assert_eq!(a.usage.total_tokens, 46);
         assert_eq!(a.usage.cost, Some(0.0021));
+    }
+
+    #[test]
+    fn loading_a_titled_session_keeps_footer_session_as_canonical_id() {
+        let path = session_store_path("load-titled-id");
+        let title = "Reply with exactly this token and nothing else: M7_HEADLESS";
+        let seeded = {
+            let db = db::Database::open(&path).expect("open seed");
+            let session = db.sessions().create(Some(title)).expect("create");
+            db.messages()
+                .create(&session.id, "assistant", "seed answer")
+                .expect("seed message");
+            session.id
+        };
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(&seeded);
+
+        assert_eq!(
+            a.status.session, seeded,
+            "footer/session status must keep the canonical durable id"
+        );
+        let (rows, _entries) = a.session_rows();
+        assert!(
+            rows.iter()
+                .any(|row| row == &format!("{seeded}  —  {title}")),
+            "session picker must continue showing the human title next to the id: {rows:?}"
+        );
     }
 
     #[test]
