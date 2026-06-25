@@ -413,6 +413,16 @@ pub fn file_part_id(turn_id: &str, call_id: &str, ordinal: usize) -> String {
     )
 }
 
+/// Deterministic id for a synthesized patch-summary part.
+#[must_use]
+pub fn patch_part_id(turn_id: &str, call_id: &str, ordinal: usize) -> String {
+    format!(
+        "part_{}_tool_{}_patch_{ordinal}",
+        encode_fragment(turn_id),
+        encode_fragment(call_id)
+    )
+}
+
 fn encode_fragment(raw: &str) -> String {
     let mut encoded = String::with_capacity(raw.len());
     for byte in raw.bytes() {

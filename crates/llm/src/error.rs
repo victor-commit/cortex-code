@@ -86,6 +86,11 @@ impl LlmError {
             // ever reports the raw upstream rejection, which the runner classifies. The lift folds
             // it into the upstream class so it stays total.
             Diagnostic::ContextOverflow(detail) => LlmError::Upstream(detail),
+            // These classes are surface/runner-level outcomes and never originate from the provider;
+            // fold them into upstream so this conversion remains total.
+            Diagnostic::SchemaValidation(detail) | Diagnostic::DoomLoop(detail) => {
+                LlmError::Upstream(detail)
+            }
         }
     }
 

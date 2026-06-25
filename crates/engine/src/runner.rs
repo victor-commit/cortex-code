@@ -50,6 +50,9 @@ const MIN_RECOVERY_BUDGET_TOKENS: usize = 512;
 /// error. This is distinct from transport-level retries inside `llm`.
 const MAX_TRANSIENT_SETUP_RETRIES: usize = 2;
 
+/// Number of identical tool-call rounds allowed before stopping a detected doom-loop.
+const DOOM_LOOP_REPEAT_THRESHOLD: usize = 2;
+
 /// Base delay for runner-level transient setup retries.
 const BASE_TRANSIENT_RETRY_DELAY_MS: u64 = 250;
 
@@ -246,6 +249,7 @@ impl SessionRunner {
         let mut compactions: Vec<CompactionRecord> = Vec::new();
         let mut error = None;
         let mut last_advertised_tool_defs: Option<Vec<ToolDef>> = None;
+        let mut doom_loop_guard = DoomLoopGuard::new(DOOM_LOOP_REPEAT_THRESHOLD);
 
         // Compaction state: the per-request input budget and the number of recent messages kept
         // verbatim. An overflow recovery shrinks both and rebuilds the turn (architecture §4).
@@ -255,7 +259,7 @@ impl SessionRunner {
         let mut overflow_recoveries = 0usize;
         let mut setup_retries = 0usize;
 
-        let finish_reason = loop {
+        let finish_reason = 'turn: loop {
             if steps >= self.max_steps {
                 // The turn still needs another round-trip but the step budget is spent. Surface an
                 // explicit, non-crashing step-limit signal (an Error event + a normalized error)
@@ -458,6 +462,15 @@ impl SessionRunner {
             // path) each call is answered with a clear "unavailable" result so the model recovers.
             match dispatcher {
                 Some(dispatcher) => {
+                    if let Some(detail) = doom_loop_guard.observe(&round.tool_calls) {
+                        sink(RunnerEvent::Error {
+                            message: detail.clone(),
+                            kind: "doom-loop".to_owned(),
+                        });
+                        error = Some(RunError::new(Diagnostic::doom_loop(detail)));
+                        break 'turn llm::FinishReason::Error;
+                    }
+
                     for call in &round.tool_calls {
                         sink(RunnerEvent::ToolCall {
                             id: call.id.clone(),
@@ -871,6 +884,61 @@ fn missing_tool_result(call: &ToolCall) -> ToolDispatchResult {
         content,
         is_error: true,
     }
+}
+
+/// Stateful guard that stops repeated identical tool-call rounds (doom-loop protection).
+#[derive(Debug)]
+struct DoomLoopGuard {
+    threshold: usize,
+    last_signature: Option<u64>,
+    consecutive_rounds: usize,
+}
+
+impl DoomLoopGuard {
+    fn new(threshold: usize) -> Self {
+        Self {
+            threshold: threshold.max(1),
+            last_signature: None,
+            consecutive_rounds: 0,
+        }
+    }
+
+    /// Observe the next tool-call round, returning a stop detail when it exceeds the threshold.
+    fn observe(&mut self, calls: &[ToolCall]) -> Option<String> {
+        if calls.is_empty() {
+            self.last_signature = None;
+            self.consecutive_rounds = 0;
+            return None;
+        }
+
+        let signature = tool_round_signature(calls);
+        if self.last_signature == Some(signature) {
+            self.consecutive_rounds = self.consecutive_rounds.saturating_add(1);
+        } else {
+            self.last_signature = Some(signature);
+            self.consecutive_rounds = 1;
+        }
+
+        if self.consecutive_rounds > self.threshold {
+            let call = &calls[0];
+            Some(format!(
+                "stopped repeated tool round after {} identical attempts (tool `{}` with the same arguments)",
+                self.threshold, call.name
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+fn tool_round_signature(calls: &[ToolCall]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    calls.len().hash(&mut hasher);
+    for call in calls {
+        call.name.hash(&mut hasher);
+        call.arguments.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Mutable per-round-trip accumulation while consuming one provider stream.

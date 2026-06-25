@@ -37,6 +37,12 @@ pub enum Diagnostic {
     /// shrink it enough to proceed, so the durable runner stopped with an explicit, non-crashing
     /// signal rather than hanging or panicking. The payload carries the human-readable detail.
     ContextOverflow(String),
+    /// The final assistant output failed the requested structured-output schema validation. The
+    /// payload carries the validation detail.
+    SchemaValidation(String),
+    /// The runner detected repeated identical tool calls (a doom-loop) and stopped before
+    /// executing further side effects. The payload carries the loop detail.
+    DoomLoop(String),
 }
 
 impl Diagnostic {
@@ -82,6 +88,18 @@ impl Diagnostic {
         Diagnostic::ContextOverflow(detail.into())
     }
 
+    /// Construct a [`Diagnostic::SchemaValidation`] carrying the schema-validation detail.
+    #[must_use]
+    pub fn schema_validation(detail: impl Into<String>) -> Self {
+        Diagnostic::SchemaValidation(detail.into())
+    }
+
+    /// Construct a [`Diagnostic::DoomLoop`] carrying the loop-detection detail.
+    #[must_use]
+    pub fn doom_loop(detail: impl Into<String>) -> Self {
+        Diagnostic::DoomLoop(detail.into())
+    }
+
     /// The stable, machine-comparable identifier for this diagnostic class.
     ///
     /// These strings are part of the contract; do not rename existing values.
@@ -95,6 +113,8 @@ impl Diagnostic {
             Diagnostic::CassetteMissing(_) => "cassette-missing",
             Diagnostic::StepLimitExceeded(_) => "step-limit-exceeded",
             Diagnostic::ContextOverflow(_) => "context-overflow",
+            Diagnostic::SchemaValidation(_) => "schema-validation",
+            Diagnostic::DoomLoop(_) => "doom-loop",
         }
     }
 
@@ -112,7 +132,9 @@ impl Diagnostic {
             | Diagnostic::Upstream(_)
             | Diagnostic::CassetteMissing(_)
             | Diagnostic::StepLimitExceeded(_)
-            | Diagnostic::ContextOverflow(_) => Exit::Failure,
+            | Diagnostic::ContextOverflow(_)
+            | Diagnostic::SchemaValidation(_)
+            | Diagnostic::DoomLoop(_) => Exit::Failure,
         }
     }
 }
@@ -142,6 +164,12 @@ impl fmt::Display for Diagnostic {
             Diagnostic::ContextOverflow(detail) => {
                 write!(f, "context overflow: {detail}")
             }
+            Diagnostic::SchemaValidation(detail) => {
+                write!(f, "schema validation failed: {detail}")
+            }
+            Diagnostic::DoomLoop(detail) => {
+                write!(f, "doom-loop detected: {detail}")
+            }
         }
     }
 }
@@ -167,6 +195,11 @@ mod tests {
             "step-limit-exceeded"
         );
         assert_eq!(Diagnostic::context_overflow("x").kind(), "context-overflow");
+        assert_eq!(
+            Diagnostic::schema_validation("x").kind(),
+            "schema-validation"
+        );
+        assert_eq!(Diagnostic::doom_loop("x").kind(), "doom-loop");
 
         let kinds = [
             Diagnostic::net_disabled("x").kind(),
@@ -176,6 +209,8 @@ mod tests {
             Diagnostic::cassette_missing("x").kind(),
             Diagnostic::step_limit_exceeded("x").kind(),
             Diagnostic::context_overflow("x").kind(),
+            Diagnostic::schema_validation("x").kind(),
+            Diagnostic::doom_loop("x").kind(),
         ];
         let mut unique = kinds.to_vec();
         unique.sort_unstable();
@@ -258,12 +293,27 @@ mod tests {
         let net = Diagnostic::net_disabled("op").to_string();
         let cred = Diagnostic::no_credential("openrouter").to_string();
         let transport = Diagnostic::transport_unavailable("connection refused").to_string();
+        let schema = Diagnostic::schema_validation("expected object").to_string();
+        let doom_loop = Diagnostic::doom_loop("tool bash repeated").to_string();
 
-        assert!(net != cred && net != transport && cred != transport);
+        assert!(
+            net != cred
+                && net != transport
+                && net != schema
+                && net != doom_loop
+                && cred != transport
+                && cred != schema
+                && cred != doom_loop
+                && transport != schema
+                && transport != doom_loop
+                && schema != doom_loop
+        );
         // The net-disabled message must not read like a credential or transport error.
         assert!(!net.contains("missing credential"));
         assert!(!net.contains("transport unavailable"));
         assert!(!transport.contains("network disabled"));
         assert!(!cred.contains("network disabled"));
+        assert!(schema.contains("schema validation failed"));
+        assert!(doom_loop.contains("doom-loop detected"));
     }
 }

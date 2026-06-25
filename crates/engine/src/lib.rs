@@ -50,9 +50,9 @@ pub use message_parts::build_assistant_message_parts;
 pub use runner::{DEFAULT_MAX_STEPS, SessionRunner, Turn};
 pub use stream_lifecycle::{
     PartLifecycleEvent, PartLifecycleKind, PartLifecyclePhase, PartLifecycleTracker, agent_part_id,
-    compaction_part_id, file_part_id, reasoning_part_id, retry_part_id, step_finish_part_id,
-    step_part_id, step_start_part_id, text_part_id, tool_pending_part_id, tool_running_part_id,
-    tool_terminal_part_id, usage_part_id,
+    compaction_part_id, file_part_id, patch_part_id, reasoning_part_id, retry_part_id,
+    step_finish_part_id, step_part_id, step_start_part_id, text_part_id, tool_pending_part_id,
+    tool_running_part_id, tool_terminal_part_id, usage_part_id,
 };
 pub use tools::{ToolDispatchResult, ToolDispatcher};
 pub use turn_queue::{TurnLease, TurnQueue};

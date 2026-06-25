@@ -133,6 +133,8 @@ impl RunError {
             "cassette-missing" => Diagnostic::cassette_missing(message),
             "step-limit-exceeded" => Diagnostic::step_limit_exceeded(message),
             "context-overflow" => Diagnostic::context_overflow(message),
+            "schema-validation" => Diagnostic::schema_validation(message),
+            "doom-loop" => Diagnostic::doom_loop(message),
             _ => Diagnostic::upstream(message),
         };
         Self { diagnostic }
@@ -281,6 +283,14 @@ mod tests {
             RunError::from_kind("anything-else", "boom").kind(),
             "upstream",
             "unknown kinds fold into upstream"
+        );
+        assert_eq!(
+            RunError::from_kind("schema-validation", "mismatch").kind(),
+            "schema-validation"
+        );
+        assert_eq!(
+            RunError::from_kind("doom-loop", "repeated").kind(),
+            "doom-loop"
         );
     }
 

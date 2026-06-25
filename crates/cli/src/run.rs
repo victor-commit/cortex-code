@@ -84,6 +84,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     };
 
     let format = effective_format(args.jsonl, args.format);
+    let structured_schema = match parse_structured_schema(args.schema.as_deref(), format) {
+        Ok(schema) => schema,
+        Err(message) => {
+            eprintln!("cortex run: {message}");
+            return Exit::Usage;
+        }
+    };
 
     // Resolve the local config inputs early: custom agent discovery uses the same working directory
     // and config layers as the eventual run, but it stays local and happens before any network work.
@@ -421,7 +428,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         &discovered_skill_list,
         project_memory_block.clone(),
     );
-    let mut turn = Turn::new(&model_id, system, prompt)
+    let mut turn = Turn::new(&model_id, system, prompt.clone())
         .with_history(history)
         .with_compaction(compaction);
     if let Some(temperature) = agent.temperature() {
@@ -594,6 +601,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     turn,
                     &shaped_dispatcher,
                     bus.clone(),
+                    structured_schema.as_ref(),
                 )
                 .await
             }
@@ -618,6 +626,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         crate::checkpoint::finalize_turn(recorder);
     }
 
+    if exit == Exit::Success {
+        maybe_generate_session_title(&db, &session_id, &prompt);
+    }
+
     // Persist any "always allow/deny" decisions saved this run to the per-project store, so a LATER,
     // fully separate `cortex run` on this project reuses them without re-asking (VAL-CROSS-027). Only
     // a run that could record a decision (`--permission-allow-save`) rewrites the store; a persist
@@ -630,6 +642,41 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
     }
     exit
+}
+
+fn maybe_generate_session_title(db: &Database, session_id: &str, prompt: &str) {
+    let Ok(Some(session)) = db.sessions().get(session_id) else {
+        return;
+    };
+    if session
+        .title
+        .as_deref()
+        .is_some_and(|title| !title.trim().is_empty())
+    {
+        return;
+    }
+    let Some(title) = title_from_prompt(prompt) else {
+        return;
+    };
+    if let Err(err) = db.sessions().set_title(session_id, Some(&title)) {
+        eprintln!("cortex run: failed to persist generated title: {err}");
+    }
+}
+
+fn title_from_prompt(prompt: &str) -> Option<String> {
+    let line = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)?;
+    let words = line.split_whitespace().take(12).collect::<Vec<_>>();
+    if words.is_empty() {
+        return None;
+    }
+    let mut title = words.join(" ");
+    if title.chars().count() > 80 {
+        title = title.chars().take(80).collect();
+    }
+    Some(title)
 }
 
 fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
@@ -1248,6 +1295,9 @@ async fn stream_jsonl(
 struct RunDocument<'a> {
     role: &'a str,
     content: &'a str,
+    /// Parsed assistant output validated against `--schema`, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    structured_output: Option<serde_json::Value>,
     model: &'a str,
     /// The agent persona this turn ran under (the value passed to `--agent`, or the default).
     agent: &'a str,
@@ -1333,6 +1383,7 @@ async fn emit_json(
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
     bus: Arc<EventBus>,
+    schema: Option<&serde_json::Value>,
 ) -> Exit {
     // Collect each tool result as it streams so the completed document can carry the structured
     // tool output (text plus any media attachments) alongside the assistant answer.
@@ -1394,6 +1445,13 @@ async fn emit_json(
         &outcome,
         &part_timestamps,
     );
+    let structured_output = match validate_structured_output(outcome.answer(), schema) {
+        Ok(value) => value,
+        Err(diag) => {
+            eprintln!("cortex run: {}: {diag}", diag.kind());
+            return diag.exit();
+        }
+    };
 
     let line = match render_json_document(
         model_id,
@@ -1405,6 +1463,7 @@ async fn emit_json(
         session_usage,
         tool_results,
         assistant_parts.clone(),
+        structured_output,
     ) {
         Ok(line) => line,
         Err(err) => {
@@ -1447,10 +1506,12 @@ fn build_run_document<'a>(
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
     parts: Vec<MessagePart>,
+    structured_output: Option<serde_json::Value>,
 ) -> RunDocument<'a> {
     RunDocument {
         role: "assistant",
         content: outcome.answer(),
+        structured_output,
         model: model_id,
         agent,
         session: session_id,
@@ -1487,6 +1548,7 @@ fn render_json_document(
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
     parts: Vec<MessagePart>,
+    structured_output: Option<serde_json::Value>,
 ) -> Result<String, serde_json::Error> {
     let mut line = serde_json::to_string(&build_run_document(
         model_id,
@@ -1498,6 +1560,7 @@ fn render_json_document(
         session_usage,
         tool_results,
         parts,
+        structured_output,
     ))?;
     line.push('\n');
     Ok(redaction::redact(&line))
@@ -1565,6 +1628,253 @@ fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
 /// shorthand is mutually exclusive with `--format` at the arg layer, so it wins only when set.
 fn effective_format(jsonl: bool, format: OutputFormat) -> OutputFormat {
     if jsonl { OutputFormat::Jsonl } else { format }
+}
+
+fn parse_structured_schema(
+    raw: Option<&str>,
+    format: OutputFormat,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if format != OutputFormat::Json {
+        return Err("--schema is supported only with --format json".to_owned());
+    }
+    serde_json::from_str::<serde_json::Value>(raw)
+        .map(Some)
+        .map_err(|err| format!("invalid --schema JSON: {err}"))
+}
+
+fn validate_structured_output(
+    answer: &str,
+    schema: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, Diagnostic> {
+    let Some(schema) = schema else {
+        return Ok(None);
+    };
+    let parsed = serde_json::from_str::<serde_json::Value>(answer.trim()).map_err(|err| {
+        Diagnostic::schema_validation(format!("assistant output is not valid JSON: {err}"))
+    })?;
+    if let Err(detail) = validate_schema_value(schema, &parsed, "$") {
+        return Err(Diagnostic::schema_validation(detail));
+    }
+    Ok(Some(parsed))
+}
+
+fn validate_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    if let Some(allow) = schema.as_bool() {
+        return if allow {
+            Ok(())
+        } else {
+            Err(format!("{path}: schema forbids all values"))
+        };
+    }
+
+    let Some(object) = schema.as_object() else {
+        return Ok(());
+    };
+
+    if let Some(constraint) = object.get("const")
+        && value != constraint
+    {
+        return Err(format!("{path}: value does not match const constraint"));
+    }
+    if let Some(options) = object.get("enum").and_then(|v| v.as_array())
+        && !options.iter().any(|candidate| candidate == value)
+    {
+        return Err(format!("{path}: value is not in enum"));
+    }
+
+    if let Some(type_keyword) = object.get("type")
+        && !schema_type_matches(type_keyword, value)
+    {
+        return Err(format!(
+            "{path}: expected type {type_keyword}, got {}",
+            json_type_name(value)
+        ));
+    }
+
+    if let Some(all_of) = object.get("allOf").and_then(|v| v.as_array()) {
+        for sub_schema in all_of {
+            validate_schema_value(sub_schema, value, path)?;
+        }
+    }
+    if let Some(any_of) = object.get("anyOf").and_then(|v| v.as_array()) {
+        let mut matched = false;
+        for sub_schema in any_of {
+            if validate_schema_value(sub_schema, value, path).is_ok() {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Err(format!("{path}: value does not satisfy anyOf"));
+        }
+    }
+    if let Some(one_of) = object.get("oneOf").and_then(|v| v.as_array()) {
+        let matches = one_of
+            .iter()
+            .filter(|sub_schema| validate_schema_value(sub_schema, value, path).is_ok())
+            .count();
+        if matches != 1 {
+            return Err(format!(
+                "{path}: value must satisfy exactly one oneOf branch"
+            ));
+        }
+    }
+
+    if let Some(required) = object.get("required").and_then(|v| v.as_array()) {
+        let Some(map) = value.as_object() else {
+            return Err(format!(
+                "{path}: required fields apply only to object values"
+            ));
+        };
+        for key in required {
+            let Some(field) = key.as_str() else {
+                continue;
+            };
+            if !map.contains_key(field) {
+                return Err(format!("{path}: missing required field `{field}`"));
+            }
+        }
+    }
+
+    if let Some(properties) = object.get("properties").and_then(|v| v.as_object())
+        && let Some(map) = value.as_object()
+    {
+        for (key, sub_schema) in properties {
+            if let Some(child) = map.get(key) {
+                validate_schema_value(sub_schema, child, &json_path(path, key))?;
+            }
+        }
+        if object.get("additionalProperties").and_then(|v| v.as_bool()) == Some(false) {
+            for key in map.keys() {
+                if !properties.contains_key(key) {
+                    return Err(format!("{path}: unexpected property `{key}`"));
+                }
+            }
+        }
+    }
+
+    if let Some(items) = object.get("items")
+        && let Some(array) = value.as_array()
+    {
+        for (index, item) in array.iter().enumerate() {
+            validate_schema_value(items, item, &format!("{path}[{index}]"))?;
+        }
+    }
+
+    if let Some(min_items) = object
+        .get("minItems")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n as usize)
+        && value
+            .as_array()
+            .is_some_and(|array| array.len() < min_items)
+    {
+        return Err(format!("{path}: expected at least {min_items} item(s)"));
+    }
+    if let Some(max_items) = object
+        .get("maxItems")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n as usize)
+        && value
+            .as_array()
+            .is_some_and(|array| array.len() > max_items)
+    {
+        return Err(format!("{path}: expected at most {max_items} item(s)"));
+    }
+
+    if let Some(min_length) = object
+        .get("minLength")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n as usize)
+        && value
+            .as_str()
+            .is_some_and(|text| text.chars().count() < min_length)
+    {
+        return Err(format!("{path}: expected string length >= {min_length}"));
+    }
+    if let Some(max_length) = object
+        .get("maxLength")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n as usize)
+        && value
+            .as_str()
+            .is_some_and(|text| text.chars().count() > max_length)
+    {
+        return Err(format!("{path}: expected string length <= {max_length}"));
+    }
+
+    if let Some(minimum) = object.get("minimum").and_then(serde_json::Value::as_f64)
+        && value.as_f64().is_some_and(|number| number < minimum)
+    {
+        return Err(format!("{path}: expected number >= {minimum}"));
+    }
+    if let Some(maximum) = object.get("maximum").and_then(serde_json::Value::as_f64)
+        && value.as_f64().is_some_and(|number| number > maximum)
+    {
+        return Err(format!("{path}: expected number <= {maximum}"));
+    }
+
+    Ok(())
+}
+
+fn schema_type_matches(type_keyword: &serde_json::Value, value: &serde_json::Value) -> bool {
+    if let Some(kind) = type_keyword.as_str() {
+        return json_type_matches(kind, value);
+    }
+    type_keyword.as_array().is_some_and(|kinds| {
+        kinds
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|kind| json_type_matches(kind, value))
+    })
+}
+
+fn json_type_matches(kind: &str, value: &serde_json::Value) -> bool {
+    match kind {
+        "null" => value.is_null(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "string" => value.is_string(),
+        _ => false,
+    }
+}
+
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    if value.is_null() {
+        "null"
+    } else if value.is_boolean() {
+        "boolean"
+    } else if value.is_object() {
+        "object"
+    } else if value.is_array() {
+        "array"
+    } else if value.as_i64().is_some() || value.as_u64().is_some() {
+        "integer"
+    } else if value.is_number() {
+        "number"
+    } else if value.is_string() {
+        "string"
+    } else {
+        "unknown"
+    }
+}
+
+fn json_path(parent: &str, key: &str) -> String {
+    if parent == "$" {
+        format!("$.{key}")
+    } else {
+        format!("{parent}.{key}")
+    }
 }
 
 /// Build the CLI-layer configuration overrides for the run from the optional `--model` flag.
@@ -2590,6 +2900,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn structured_schema_requires_json_output_format() {
+        let err = parse_structured_schema(Some("{\"type\":\"object\"}"), OutputFormat::Text)
+            .expect_err("non-json format must reject schema");
+        assert!(err.contains("--format json"), "got: {err}");
+        let parsed = parse_structured_schema(
+            Some("{\"type\":\"object\",\"required\":[\"ok\"]}"),
+            OutputFormat::Json,
+        )
+        .expect("schema parses")
+        .expect("schema is present");
+        assert_eq!(parsed["type"], "object");
+    }
+
+    #[test]
+    fn structured_output_validation_is_typed_and_enforced() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["ok"],
+            "properties": { "ok": { "type": "boolean" } },
+            "additionalProperties": false
+        });
+        let parsed = validate_structured_output(r#"{"ok":true}"#, Some(&schema))
+            .expect("valid output")
+            .expect("parsed");
+        assert_eq!(parsed["ok"], true);
+
+        let err = validate_structured_output("not-json", Some(&schema))
+            .expect_err("invalid JSON must fail with schema diagnostic");
+        assert_eq!(err.kind(), "schema-validation");
+
+        let err = validate_structured_output(r#"{"ok":"yes"}"#, Some(&schema))
+            .expect_err("type mismatch must fail");
+        assert_eq!(err.kind(), "schema-validation");
+    }
+
     /// A completed-turn outcome with assistant text and integer usage, mirroring a real turn.
     fn sample_outcome() -> RunOutcome {
         RunOutcome {
@@ -2621,6 +2967,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            None,
         )
         .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
@@ -2649,6 +2996,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2700,6 +3048,7 @@ mod tests {
             Some(session_usage),
             Vec::new(),
             Vec::new(),
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2746,6 +3095,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2803,6 +3153,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2842,6 +3193,7 @@ mod tests {
             None,
             Vec::new(),
             parts,
+            None,
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");

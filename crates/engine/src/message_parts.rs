@@ -6,9 +6,9 @@ use llm::Usage;
 use protocol::{MessagePart, MessagePartBody, StepPartPhase, ToolPartState, ToolResultPart};
 
 use crate::{
-    RunOutcome, RunnerEvent, agent_part_id, compaction_part_id, file_part_id, reasoning_part_id,
-    retry_part_id, step_finish_part_id, step_part_id, text_part_id, tool_pending_part_id,
-    tool_running_part_id, tool_terminal_part_id, usage_part_id,
+    RunOutcome, RunnerEvent, agent_part_id, compaction_part_id, file_part_id, patch_part_id,
+    reasoning_part_id, retry_part_id, step_finish_part_id, step_part_id, text_part_id,
+    tool_pending_part_id, tool_running_part_id, tool_terminal_part_id, usage_part_id,
 };
 
 /// Build rich assistant message parts from streamed runner events and the final turn outcome.
@@ -52,6 +52,7 @@ pub fn build_assistant_message_parts(
     let mut reasoning = String::new();
     let mut usage_count = 0usize;
     let mut retry_count = 0usize;
+    let mut tool_call_arguments: HashMap<String, (String, String)> = HashMap::new();
 
     for event in events {
         match event {
@@ -62,6 +63,7 @@ pub fn build_assistant_message_parts(
                 name,
                 arguments,
             } => {
+                tool_call_arguments.insert(id.clone(), (name.clone(), arguments.clone()));
                 let pending_id = tool_pending_part_id(turn_id, id);
                 parts.push(MessagePart {
                     id: pending_id.clone(),
@@ -134,6 +136,15 @@ pub fn build_assistant_message_parts(
                             )
                         }),
                 );
+                if !is_error && let Some((call_name, arguments)) = tool_call_arguments.get(id) {
+                    parts.extend(patch_parts_from_tool_call(
+                        turn_id,
+                        id,
+                        call_name,
+                        arguments,
+                        part_timestamps,
+                    ));
+                }
             }
             RunnerEvent::Retry {
                 attempt,
@@ -275,6 +286,67 @@ fn file_part_from_tool_attachment(
     }
 }
 
+fn patch_parts_from_tool_call(
+    turn_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &str,
+    part_timestamps: &HashMap<String, String>,
+) -> Vec<MessagePart> {
+    let summaries = match tool_name {
+        "write" | "edit" => json_string_field(arguments, "path")
+            .map(|path| vec![(Some(path.clone()), format!("updated {path}"))])
+            .unwrap_or_default(),
+        "apply_patch" => json_string_field(arguments, "patch")
+            .map(|patch| summarize_apply_patch_targets(&patch))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    summaries
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (path, diff))| {
+            let patch_id = patch_part_id(turn_id, call_id, ordinal + 1);
+            MessagePart {
+                id: patch_id.clone(),
+                created_at: part_timestamps.get(&patch_id).cloned(),
+                body: MessagePartBody::Patch { path, diff },
+            }
+        })
+        .collect()
+}
+
+fn json_string_field(json: &str, field: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|value| value.get(field).and_then(|v| v.as_str()).map(str::to_owned))
+}
+
+fn summarize_apply_patch_targets(patch: &str) -> Vec<(Option<String>, String)> {
+    const ADD_PREFIX: &str = "\u{2a}\u{2a}\u{2a} Add File: ";
+    const UPDATE_PREFIX: &str = "\u{2a}\u{2a}\u{2a} Update File: ";
+    const DELETE_PREFIX: &str = "\u{2a}\u{2a}\u{2a} Delete File: ";
+    let mut summaries = Vec::new();
+    for line in patch.lines() {
+        let line = line.trim();
+        let (action, path) = if let Some(path) = line.strip_prefix(ADD_PREFIX) {
+            ("added", path.trim())
+        } else if let Some(path) = line.strip_prefix(UPDATE_PREFIX) {
+            ("updated", path.trim())
+        } else if let Some(path) = line.strip_prefix(DELETE_PREFIX) {
+            ("deleted", path.trim())
+        } else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        summaries.push((Some(path.to_owned()), format!("{action} {path}")));
+    }
+    summaries
+}
+
 fn finish_reason_name(reason: &llm::FinishReason) -> String {
     serde_json::to_value(reason)
         .ok()
@@ -373,5 +445,45 @@ mod tests {
             parts.iter().all(|part| !part.id.is_empty()),
             "every persisted part has a stable id"
         );
+    }
+
+    #[test]
+    fn successful_file_mutation_tools_emit_patch_summary_parts() {
+        let events = vec![
+            RunnerEvent::ToolCall {
+                id: "call_write".to_owned(),
+                name: "write".to_owned(),
+                arguments: r#"{"path":"src/main.rs","content":"fn main() {}"}"#.to_owned(),
+            },
+            RunnerEvent::ToolResult {
+                id: "call_write".to_owned(),
+                name: "write".to_owned(),
+                parts: vec![ToolResultPart::text("write: created src/main.rs")],
+                is_error: false,
+            },
+        ];
+        let outcome = RunOutcome {
+            message: llm::Message::assistant("done"),
+            usage: None,
+            finish_reason: FinishReason::Stop,
+            steps: 1,
+            compactions: Vec::new(),
+            error: None,
+        };
+
+        let parts = build_assistant_message_parts(
+            "google/gemini-2.5-flash",
+            "build",
+            "msg_turn_patch",
+            &events,
+            &outcome,
+            &HashMap::new(),
+        );
+
+        assert!(parts.iter().any(|part| matches!(
+            &part.body,
+            MessagePartBody::Patch { path, diff }
+                if path.as_deref() == Some("src/main.rs") && diff.contains("src/main.rs")
+        )));
     }
 }

@@ -579,6 +579,14 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "format")]
     pub jsonl: bool,
 
+    /// Validate the final assistant answer against this JSON schema and expose parsed output.
+    ///
+    /// Supported with `--format json`; on success the parsed value is emitted as
+    /// `structured_output`, and on failure the run exits with a typed `schema-validation`
+    /// diagnostic.
+    #[arg(long, value_name = "SCHEMA")]
+    pub schema: Option<String>,
+
     /// Model to use for this turn (overrides config and defaults).
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
@@ -916,7 +924,14 @@ mod tests {
             .find(|sub| sub.get_name() == "run")
             .expect("the `run` subcommand exists");
         let help = run.render_help().to_string();
-        for flag in ["--model", "--agent", "--session", "--format", "--pure"] {
+        for flag in [
+            "--model",
+            "--agent",
+            "--session",
+            "--format",
+            "--schema",
+            "--pure",
+        ] {
             assert!(
                 help.contains(flag),
                 "`run --help` should document `{flag}`:\n{help}"
@@ -1082,6 +1097,7 @@ mod tests {
                 assert_eq!(args.session.as_deref(), Some("abc"));
                 assert_eq!(args.format, OutputFormat::Json);
                 assert!(!args.jsonl);
+                assert_eq!(args.schema, None);
                 assert!(!args.r#continue);
             }
             other => panic!("expected run, got {other:?}"),
@@ -1129,6 +1145,28 @@ mod tests {
                 assert!(args.permission_allow.is_empty());
                 assert!(args.permission_deny.is_empty());
                 assert!(args.permission_allow_save.is_empty());
+                assert_eq!(args.schema, None);
+            }
+            other => panic!("expected run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_parses_structured_schema_flag() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "run",
+            "--format",
+            "json",
+            "--schema",
+            "{\"type\":\"object\"}",
+            "hi",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Run(args)) => {
+                assert_eq!(args.format, OutputFormat::Json);
+                assert_eq!(args.schema.as_deref(), Some("{\"type\":\"object\"}"));
             }
             other => panic!("expected run, got {other:?}"),
         }
