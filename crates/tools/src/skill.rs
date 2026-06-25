@@ -48,25 +48,38 @@ impl Tool for SkillTool {
         let names = self
             .skills
             .iter()
-            .map(|skill| Value::String(skill.name.clone()))
-            .collect::<Vec<_>>();
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         json!({
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "The skill name to engage.",
-                    "enum": names
+                    "description": format!(
+                        "The skill name to engage. Available skills: {names}"
+                    )
+                },
+                "skill": {
+                    "type": "string",
+                    "description": "Compatibility alias for `name`."
                 }
             },
-            "required": ["name"],
+            "anyOf": [
+                { "required": ["name"] },
+                { "required": ["skill"] }
+            ],
             "additionalProperties": false
         })
     }
 
     fn execute<'a>(&'a self, arguments: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(name) = arguments.get("name").and_then(Value::as_str) else {
+            let Some(name) = arguments
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| arguments.get("skill").and_then(Value::as_str))
+            else {
                 return ToolOutput::error("skill: missing required string argument `name`");
             };
             let Some(skill) = self.find(name) else {
@@ -132,7 +145,11 @@ mod tests {
         )]);
 
         let parameters = tool.parameters();
-        assert_eq!(parameters["properties"]["name"]["enum"][0], "date-helper");
+        let description = parameters["properties"]["name"]["description"]
+            .as_str()
+            .expect("name description");
+        assert!(description.contains("date-helper"));
+        assert!(parameters["properties"]["name"]["enum"].is_null());
         assert!(tool.description().contains("Use when formatting dates"));
         assert!(
             !tool.description().contains("SKILL-DATE-OK"),
@@ -157,5 +174,15 @@ mod tests {
             !content.contains("SKILL-BETA"),
             "engaging one skill must not inject another"
         );
+    }
+
+    #[tokio::test]
+    async fn accepts_skill_alias_argument_name() {
+        let tool = SkillTool::new(vec![skill("alpha", "Use alpha", "Append SKILL-ALPHA.")]);
+        let ctx = ToolContext::new(std::env::temp_dir());
+
+        let output = tool.execute(json!({ "skill": "alpha" }), &ctx).await;
+        assert!(!output.is_error);
+        assert!(output.model_content().contains("SKILL-ALPHA"));
     }
 }

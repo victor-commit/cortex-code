@@ -17,8 +17,9 @@ use crate::output::{OutputLimits, bound_output};
 use crate::ripgrep::{self, RgError};
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
-/// The cap on the number of paths returned, so a very broad pattern cannot flood the model. A
-/// truncated result is marked so the model knows to narrow the pattern.
+/// The default compatibility cap on the number of returned paths.
+const DEFAULT_RESULTS: usize = 100;
+/// The hard upper bound on returned paths, even when an explicit `limit` is provided.
 const MAX_RESULTS: usize = 1000;
 
 const DESCRIPTION: &str = "Find files by a shell-style filename pattern (glob). Returns the paths \
@@ -49,6 +50,10 @@ impl Tool for GlobTool {
                 "path": {
                     "type": "string",
                     "description": "The directory to search under (absolute, or relative to the working directory). Defaults to the working directory."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional maximum number of matched paths to return. Defaults to 100 and is capped at 1000."
                 }
             },
             "required": ["pattern"]
@@ -72,6 +77,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     }
 
     let path = string_arg(arguments, "path");
+    let limit = match uint_arg(arguments, "limit").or_else(|| uint_arg(arguments, "count")) {
+        Some(0) => return ToolOutput::error("glob: 'limit' must be at least 1"),
+        Some(limit) => limit.min(MAX_RESULTS),
+        None => DEFAULT_RESULTS,
+    };
     let root_display = path.as_deref().unwrap_or(".");
     if let Err(message) = ctx.ensure_permitted("glob", root_display) {
         return ToolOutput::error(message);
@@ -82,7 +92,7 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     };
 
     match ripgrep::run(&root, ["--files", "--glob", pattern]) {
-        Ok(stdout) => render(pattern, &stdout),
+        Ok(stdout) => render(pattern, &stdout, limit),
         Err(RgError::NotInstalled) => {
             ToolOutput::error("glob: ripgrep (rg) is required but was not found on PATH")
         }
@@ -91,7 +101,7 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 }
 
 /// Render ripgrep's file list into a sorted, capped tool result, or an explicit empty result.
-fn render(pattern: &str, stdout: &str) -> ToolOutput {
+fn render(pattern: &str, stdout: &str, limit: usize) -> ToolOutput {
     let mut paths: Vec<&str> = stdout
         .lines()
         .map(str::trim)
@@ -108,7 +118,7 @@ fn render(pattern: &str, stdout: &str) -> ToolOutput {
     let bounded = bound_output(
         &full,
         OutputLimits {
-            max_lines: MAX_RESULTS,
+            max_lines: limit,
             max_bytes: usize::MAX,
         },
         "glob-matches",
@@ -122,6 +132,13 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+fn uint_arg(arguments: &Value, key: &str) -> Option<usize> {
+    arguments
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|raw| usize::try_from(raw).ok())
 }
 
 #[cfg(test)]
@@ -205,7 +222,7 @@ mod tests {
         let text = output.model_content();
         assert!(text.contains("output truncated"), "got: {text}");
         assert!(
-            text.lines().count() <= MAX_RESULTS + 1,
+            text.lines().count() <= DEFAULT_RESULTS + 1,
             "in-band output must be bounded"
         );
 
@@ -220,5 +237,21 @@ mod tests {
             "spill should include every match"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explicit_limit_overrides_default_cap() {
+        let dir = temp_tree("explicit-limit");
+        for index in 0..20 {
+            fs::write(dir.join(format!("many-{index:04}.txt")), "x\n").unwrap();
+        }
+        let output = run(&json!({ "pattern": "*.txt", "limit": 5 }), &ctx_for(&dir));
+        assert!(!output.is_error, "{}", output.model_content());
+        let listed = output
+            .model_content()
+            .lines()
+            .filter(|line| line.ends_with(".txt"))
+            .count();
+        assert_eq!(listed, 5);
     }
 }

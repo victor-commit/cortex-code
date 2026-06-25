@@ -29,6 +29,7 @@
 mod jobs;
 mod parse;
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -48,10 +49,15 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// The environment variable that overrides the default foreground timeout (milliseconds), so an
 /// operator (or a validator) can bound long commands without editing the call.
 const TIMEOUT_ENV: &str = "CORTEX_BASH_TIMEOUT_MS";
+/// Compatibility cap for in-band bash output lines before truncation + spill.
+const BASH_MAX_LINES: usize = 2000;
+/// Compatibility cap for in-band bash output bytes before truncation + spill.
+const BASH_MAX_BYTES: usize = 50 * 1024;
 
 const DESCRIPTION: &str = "Run a shell command in the session working directory and return its \
 stdout, stderr, and exit code. The command runs via `bash -c`, so pipes, redirection, and `&&`/`||` \
-work. Relative paths and `pwd` resolve against the working directory. Set `background: true` for a \
+work. Relative paths and `pwd` resolve against the working directory. Use `workdir` to run a single \
+command from a different directory without changing the session default cwd. Set `background: true` for a \
 long-running command to return immediately with a job handle (its output is written to a file); the \
 job is terminated when the session ends. A foreground command is terminated if it exceeds the \
 configured timeout. Large output is truncated with a notice and the complete output is written to a \
@@ -85,6 +91,14 @@ impl Tool for BashTool {
                     "type": "number",
                     "description": "Foreground timeout in milliseconds, overriding the default. Ignored for background jobs."
                 },
+                "workdir": {
+                    "type": "string",
+                    "description": "Optional working directory for this command (absolute, or relative to the session working directory)."
+                },
+                "work_dir": {
+                    "type": "string",
+                    "description": "Compatibility alias for `workdir`."
+                },
                 "description": {
                     "type": "string",
                     "description": "A short description of what the command does."
@@ -111,6 +125,10 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(message) = ctx.ensure_not_planning("bash") {
         return ToolOutput::error(message);
     }
+    let working_dir = match resolve_working_dir(&arguments, ctx) {
+        Ok(working_dir) => working_dir,
+        Err(message) => return ToolOutput::error(message),
+    };
 
     // Permission gating by the command's REAL structure: extract each command invocation with
     // tree-sitter and refuse the whole command if any segment is not permitted, before anything
@@ -127,9 +145,9 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
         .unwrap_or(false);
 
     if background {
-        spawn_background(command, ctx)
+        spawn_background(command, &working_dir, ctx)
     } else {
-        run_foreground(command, ctx, timeout_for(&arguments)).await
+        run_foreground(command, &working_dir, ctx, timeout_for(&arguments)).await
     }
 }
 
@@ -147,17 +165,50 @@ fn timeout_for(arguments: &Value) -> Duration {
     Duration::from_millis(from_call.or(from_env).unwrap_or(DEFAULT_TIMEOUT_MS))
 }
 
+/// Extract a string argument from the assembled arguments object.
+fn string_arg(arguments: &Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Resolve the command working directory from `workdir` aliases, validating it exists and is a
+/// directory. When omitted, the session working directory is used.
+fn resolve_working_dir(arguments: &Value, ctx: &ToolContext) -> Result<PathBuf, String> {
+    let Some(workdir) = string_arg(arguments, "workdir")
+        .or_else(|| string_arg(arguments, "work_dir"))
+        .or_else(|| string_arg(arguments, "workingDirectory"))
+        .or_else(|| string_arg(arguments, "working_directory"))
+    else {
+        return Ok(ctx.cwd().to_path_buf());
+    };
+
+    let trimmed = workdir.trim();
+    if trimmed.is_empty() {
+        return Err("bash: the 'workdir' argument must not be empty".to_owned());
+    }
+    let resolved = ctx.resolve(trimmed);
+    let metadata = std::fs::metadata(&resolved).map_err(|err| {
+        format!("bash: workdir {trimmed} does not exist or is inaccessible: {err}")
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!("bash: workdir {trimmed} is not a directory"));
+    }
+    Ok(resolved)
+}
+
 /// Build a `bash -c <command>` command rooted at the working directory with a secret-stripped
 /// environment, so the child cannot read the agent's credentials.
 ///
 /// The child leads its own process group ([`process_group(0)`](Command::process_group)), so reaping
 /// can terminate the whole tree (the `bash` wrapper *and* any commands it spawns) by process group,
 /// leaving no orphaned grandchild — see [`kill_process_group`].
-fn base_command(command: &str, ctx: &ToolContext) -> Command {
+fn base_command(command: &str, working_dir: &Path, ctx: &ToolContext) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(command)
-        .current_dir(ctx.cwd())
+        .current_dir(working_dir)
         .env_clear()
         .envs(child_env())
         .envs(ctx.shell_env().iter().cloned())
@@ -243,8 +294,13 @@ where
 
 /// Run a foreground command bounded by `timeout`, capturing stdout/stderr/exit. On timeout the
 /// child is terminated (and reaped via `kill_on_drop`) and a timeout result is returned.
-async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> ToolOutput {
-    let mut cmd = base_command(command, ctx);
+async fn run_foreground(
+    command: &str,
+    working_dir: &Path,
+    ctx: &ToolContext,
+    timeout: Duration,
+) -> ToolOutput {
+    let mut cmd = base_command(command, working_dir, ctx);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = match cmd.spawn() {
@@ -265,7 +321,7 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
                 } else {
                     "error"
                 };
-                audit.record_shell_execution(command, ctx.cwd(), output.status.code(), outcome);
+                audit.record_shell_execution(command, working_dir, output.status.code(), outcome);
             }
             render_completed(&output)
         }
@@ -274,7 +330,7 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
                 guard.disarm();
             }
             if let Some(audit) = ctx.audit_sink() {
-                audit.record_shell_execution(command, ctx.cwd(), None, "error");
+                audit.record_shell_execution(command, working_dir, None, "error");
             }
             ToolOutput::error(format!("bash: command failed to run: {err}"))
         }
@@ -289,7 +345,7 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
                 guard.disarm();
             }
             if let Some(audit) = ctx.audit_sink() {
-                audit.record_shell_execution(command, ctx.cwd(), None, "timeout");
+                audit.record_shell_execution(command, working_dir, None, "timeout");
             }
             let pid = pid.map_or_else(|| "unknown".to_owned(), |p| p.to_string());
             ToolOutput::error(format!(
@@ -303,7 +359,10 @@ async fn run_foreground(command: &str, ctx: &ToolContext, timeout: Duration) -> 
 /// Render a completed foreground command's captured output and exit status into a tool result,
 /// bounding large stdout/stderr to disk and marking a non-zero exit as an error.
 fn render_completed(output: &std::process::Output) -> ToolOutput {
-    let limits = OutputLimits::default();
+    let limits = OutputLimits {
+        max_lines: BASH_MAX_LINES,
+        max_bytes: BASH_MAX_BYTES,
+    };
     let stdout = redaction::redact(&String::from_utf8_lossy(&output.stdout));
     let stderr = redaction::redact(&String::from_utf8_lossy(&output.stderr));
 
@@ -335,7 +394,7 @@ fn render_completed(output: &std::process::Output) -> ToolOutput {
 
 /// Spawn a background job: return control immediately with a tracked, inspectable job handle while
 /// the process keeps running, its combined output streamed to an on-disk log file.
-fn spawn_background(command: &str, ctx: &ToolContext) -> ToolOutput {
+fn spawn_background(command: &str, working_dir: &Path, ctx: &ToolContext) -> ToolOutput {
     let jobs = ctx.background_jobs();
     let id = format!("bash-{}-{}", std::process::id(), jobs.len() + 1);
 
@@ -360,7 +419,7 @@ fn spawn_background(command: &str, ctx: &ToolContext) -> ToolOutput {
         }
     };
 
-    let mut cmd = base_command(command, ctx);
+    let mut cmd = base_command(command, working_dir, ctx);
     cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
 
     let child = match cmd.spawn() {
@@ -371,7 +430,7 @@ fn spawn_background(command: &str, ctx: &ToolContext) -> ToolOutput {
     };
     let pid = child.id().unwrap_or(0);
     if let Some(audit) = ctx.audit_sink() {
-        audit.record_shell_execution(command, ctx.cwd(), None, "started");
+        audit.record_shell_execution(command, working_dir, None, "started");
     }
 
     jobs.register(BackgroundJob::new(
@@ -386,9 +445,11 @@ fn spawn_background(command: &str, ctx: &ToolContext) -> ToolOutput {
         "[background job started]\n\
          job id: {id}\n\
          pid: {pid}\n\
+         cwd: {}\n\
          output: {}\n\
          The command is running in the background; its output is written to the file above. \
          The job is terminated when the session ends.",
+        working_dir.display(),
         log_path.display()
     ))
 }
@@ -493,6 +554,48 @@ mod tests {
         assert!(
             dir.join("rel.txt").exists(),
             "relative side effect lands in cwd"
+        );
+    }
+
+    #[tokio::test]
+    async fn workdir_alias_runs_in_requested_directory_only_for_that_call() {
+        let dir = temp_dir("workdir");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let ctx = ToolContext::new(dir.clone());
+
+        let scoped = run(
+            json!({
+                "command": "pwd",
+                "workdir": "nested"
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(!scoped.is_error, "{}", scoped.model_content());
+        let nested_canonical = std::fs::canonicalize(&nested).unwrap();
+        assert!(
+            scoped
+                .model_content()
+                .contains(&nested_canonical.display().to_string())
+                || scoped
+                    .model_content()
+                    .contains(&nested.display().to_string()),
+            "pwd should resolve to nested workdir: {}",
+            scoped.model_content()
+        );
+
+        let default_pwd = run(json!({ "command": "pwd" }), &ctx).await;
+        let root_canonical = std::fs::canonicalize(&dir).unwrap();
+        assert!(
+            default_pwd
+                .model_content()
+                .contains(&root_canonical.display().to_string())
+                || default_pwd
+                    .model_content()
+                    .contains(&dir.display().to_string()),
+            "session cwd should remain unchanged: {}",
+            default_pwd.model_content()
         );
     }
 

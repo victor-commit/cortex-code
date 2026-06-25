@@ -637,9 +637,18 @@ mod tests {
             .find(|definition| definition.name == "skill")
             .expect("skill tool is advertised");
 
+        let name_description = skill.parameters["properties"]["name"]["description"]
+            .as_str()
+            .expect("name description");
+        assert!(name_description.contains("cross-skill"));
+        assert!(skill.parameters["properties"]["name"]["enum"].is_null());
         assert_eq!(
-            skill.parameters["properties"]["name"]["enum"],
-            serde_json::json!(["cross-skill"])
+            skill.parameters["anyOf"][0]["required"][0],
+            serde_json::Value::String("name".to_owned())
+        );
+        assert_eq!(
+            skill.parameters["anyOf"][1]["required"][0],
+            serde_json::Value::String("skill".to_owned())
         );
         assert!(
             skill

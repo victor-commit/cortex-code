@@ -62,9 +62,26 @@ impl Tool for ApplyPatchTool {
                 "patch": {
                     "type": "string",
                     "description": "The full patch envelope, beginning with '*** Begin Patch' and ending with '*** End Patch'."
+                },
+                "patchText": {
+                    "type": "string",
+                    "description": "Compatibility alias for `patch`."
+                },
+                "patch_text": {
+                    "type": "string",
+                    "description": "Compatibility alias for `patch`."
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Compatibility alias for `patch`."
                 }
             },
-            "required": ["patch"]
+            "anyOf": [
+                { "required": ["patch"] },
+                { "required": ["patchText"] },
+                { "required": ["patch_text"] },
+                { "required": ["input"] }
+            ]
         })
     }
 
@@ -132,6 +149,7 @@ fn action_detail(action: &Action) -> &'static str {
 /// Execute an apply_patch call against the resolved arguments (synchronous filesystem work).
 fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     let Some(patch) = string_arg(arguments, "patch")
+        .or_else(|| string_arg(arguments, "patchText"))
         .or_else(|| string_arg(arguments, "input"))
         .or_else(|| string_arg(arguments, "patch_text"))
     else {
@@ -457,6 +475,18 @@ mod tests {
 
     fn apply(ctx: &ToolContext, patch: &str) -> ToolOutput {
         run(&json!({ "patch": patch }), ctx)
+    }
+
+    #[test]
+    fn accepts_patch_text_camel_case_alias() {
+        let dir = temp_dir("patch-text-alias");
+        let ctx = ctx_for(&dir);
+        let stars = "*".repeat(3);
+        let patch =
+            format!("{stars} Begin Patch\n{stars} Add File: alias.txt\n+ok\n{stars} End Patch");
+        let output = run(&json!({ "patchText": patch }), &ctx);
+        assert!(!output.is_error, "{}", output.model_content());
+        assert_eq!(fs::read_to_string(dir.join("alias.txt")).unwrap(), "ok\n");
     }
 
     #[test]

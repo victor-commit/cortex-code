@@ -30,6 +30,8 @@ use crate::tool::{Tool, ToolContext, ToolOutput};
 
 /// The default line cap applied to an unbounded read (architecture §3.4 / VAL-TOOLS-003).
 pub const DEFAULT_READ_LIMIT: usize = 2000;
+/// Compatibility byte cap for the in-band rendered view before spill.
+const DEFAULT_READ_MAX_BYTES: usize = 50 * 1024;
 
 /// Bytes sampled from the head of a file to sniff its media type / binary-ness.
 const SNIFF_BYTES: usize = 4096;
@@ -64,6 +66,14 @@ impl Tool for ReadTool {
                     "type": "string",
                     "description": "The file or directory path to read (absolute, or relative to the working directory)."
                 },
+                "filePath": {
+                    "type": "string",
+                    "description": "Compatibility alias for `path`."
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Compatibility alias for `path`."
+                },
                 "offset": {
                     "type": "integer",
                     "description": "1-based line number to start reading from (defaults to 1)."
@@ -73,7 +83,11 @@ impl Tool for ReadTool {
                     "description": "Maximum number of lines to read (defaults to 2000)."
                 }
             },
-            "required": ["path"]
+            "anyOf": [
+                { "required": ["path"] },
+                { "required": ["filePath"] },
+                { "required": ["file_path"] }
+            ]
         })
     }
 
@@ -84,7 +98,9 @@ impl Tool for ReadTool {
 
 /// Execute a read against the resolved arguments (synchronous filesystem work).
 fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
-    let Some(path) = string_arg(arguments, "path").or_else(|| string_arg(arguments, "file_path"))
+    let Some(path) = string_arg(arguments, "path")
+        .or_else(|| string_arg(arguments, "file_path"))
+        .or_else(|| string_arg(arguments, "filePath"))
     else {
         return ToolOutput::error("read: the 'path' argument is required");
     };
@@ -149,7 +165,10 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 /// (VAL-TOOLS-037). Within limits the view is returned verbatim with no notice and no spill.
 fn bounded_read(content: &str, offset: Option<usize>, limit: Option<usize>) -> String {
     let (mut output, truncated) = render_text(content, offset, limit);
-    let limits = OutputLimits::default();
+    let limits = OutputLimits {
+        max_lines: usize::MAX,
+        max_bytes: DEFAULT_READ_MAX_BYTES,
+    };
 
     let over_bytes = output.len() > limits.max_bytes;
     if over_bytes {
@@ -537,7 +556,7 @@ mod tests {
         let text = text_of(&output);
 
         assert!(
-            text.len() <= OutputLimits::default().max_bytes + 256,
+            text.len() <= DEFAULT_READ_MAX_BYTES + 256,
             "in-band bounded to the byte budget, got {} bytes",
             text.len()
         );
@@ -650,6 +669,20 @@ mod tests {
         fs::write(dir.join("sub/x.txt"), "hi\n").unwrap();
         let output = run(&read_args("sub/x.txt"), &ctx_for(&dir));
         assert_eq!(text_of(&output), "1: hi");
+    }
+
+    #[test]
+    fn file_path_aliases_resolve_like_path() {
+        let dir = temp_dir("aliases");
+        fs::write(dir.join("a.txt"), "ok\n").unwrap();
+
+        let via_camel = run(&json!({ "filePath": "a.txt" }), &ctx_for(&dir));
+        assert!(!via_camel.is_error);
+        assert_eq!(text_of(&via_camel), "1: ok");
+
+        let via_snake = run(&json!({ "file_path": "a.txt" }), &ctx_for(&dir));
+        assert!(!via_snake.is_error);
+        assert_eq!(text_of(&via_snake), "1: ok");
     }
 
     #[test]

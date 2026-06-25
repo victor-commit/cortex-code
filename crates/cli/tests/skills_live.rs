@@ -139,18 +139,25 @@ fn jsonl(out: Output) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn skill_enum(doc: &serde_json::Value) -> Vec<String> {
+fn skill_names(doc: &serde_json::Value) -> Vec<String> {
     let definition = doc["tool_definitions"]
         .as_array()
         .expect("tool definitions")
         .iter()
         .find(|definition| definition["name"] == "skill")
         .expect("skill tool definition");
-    definition["parameters"]["properties"]["name"]["enum"]
-        .as_array()
-        .expect("skill enum")
-        .iter()
-        .filter_map(|value| value.as_str().map(str::to_owned))
+    let description = definition["parameters"]["properties"]["name"]["description"]
+        .as_str()
+        .expect("skill name description");
+    let marker = "Available skills:";
+    let Some(index) = description.find(marker) else {
+        return Vec::new();
+    };
+    description[index + marker.len()..]
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -205,7 +212,7 @@ fn discovers_valid_skills_skips_malformed_and_keeps_guidance_isolated() {
         ],
     )));
 
-    let skills = skill_enum(&doc);
+    let skills = skill_names(&doc);
     assert!(skills.contains(&"skill-ok".to_owned()));
     assert!(skills.contains(&"date-helper".to_owned()));
     assert!(

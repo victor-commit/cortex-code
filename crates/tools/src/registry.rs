@@ -289,13 +289,19 @@ mod tests {
             .into_iter()
             .find(|def| def.name == "skill")
             .expect("skill definition");
-        let enum_values: Vec<&str> = skill.parameters["properties"]["name"]["enum"]
-            .as_array()
-            .expect("enum")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect();
-        assert_eq!(enum_values, vec!["date-helper"]);
+        let name_description = skill.parameters["properties"]["name"]["description"]
+            .as_str()
+            .expect("name description");
+        assert!(name_description.contains("date-helper"));
+        assert!(skill.parameters["properties"]["name"]["enum"].is_null());
+        assert_eq!(
+            skill.parameters["anyOf"][0]["required"][0],
+            serde_json::Value::String("name".to_owned())
+        );
+        assert_eq!(
+            skill.parameters["anyOf"][1]["required"][0],
+            serde_json::Value::String("skill".to_owned())
+        );
         assert!(
             !skill.description.contains("SKILL-DATE-OK"),
             "skill guidance must not leak through the tool definition"

@@ -17,6 +17,10 @@ use crate::output::{OutputLimits, bound_output};
 use crate::ripgrep::{self, RgError};
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
+const DEFAULT_MATCH_LIMIT: usize = 100;
+const MAX_MATCH_LIMIT: usize = 1000;
+const GREP_MAX_BYTES: usize = 50 * 1024;
+
 const DESCRIPTION: &str = "Search file contents with a regular expression (ripgrep). Returns the \
 matching lines as `path:line:text`, one per line. Use `include` to restrict the search to files \
 matching a glob (for example `*.rs`). Use `path` to search under a specific directory. A pattern \
@@ -50,6 +54,10 @@ impl Tool for GrepTool {
                 "include": {
                     "type": "string",
                     "description": "A glob restricting the search to matching files only (e.g. `*.rs`)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional maximum number of matches to return. Defaults to 100 and is capped at 1000."
                 }
             },
             "required": ["pattern"]
@@ -73,7 +81,18 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     let path = string_arg(arguments, "path");
     let include = string_arg(arguments, "include")
         .or_else(|| string_arg(arguments, "type"))
+        .or_else(|| string_arg(arguments, "globPattern"))
+        .or_else(|| string_arg(arguments, "glob_pattern"))
         .filter(|value| !value.trim().is_empty());
+    let limit = match uint_arg(arguments, "limit")
+        .or_else(|| uint_arg(arguments, "count"))
+        .or_else(|| uint_arg(arguments, "head_limit"))
+        .or_else(|| uint_arg(arguments, "headLimit"))
+    {
+        Some(0) => return ToolOutput::error("grep: 'limit' must be at least 1"),
+        Some(limit) => limit.min(MAX_MATCH_LIMIT),
+        None => DEFAULT_MATCH_LIMIT,
+    };
 
     let root_display = path.as_deref().unwrap_or(".");
     if let Err(message) = ctx.ensure_permitted("grep", root_display) {
@@ -100,7 +119,7 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     }
 
     match ripgrep::run(&root, &args) {
-        Ok(stdout) => render(&pattern, &stdout),
+        Ok(stdout) => render(&pattern, &stdout, limit),
         Err(RgError::NotInstalled) => {
             ToolOutput::error("grep: ripgrep (rg) is required but was not found on PATH")
         }
@@ -113,7 +132,7 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 /// A large match set is bounded to the configured limits with a truncation notice while the
 /// complete set is spilled to disk and named in the result (the shared [`bound_output`] path, so
 /// `grep` behaves identically to `bash` for over-limit output and nothing is silently lost).
-fn render(pattern: &str, stdout: &str) -> ToolOutput {
+fn render(pattern: &str, stdout: &str, limit: usize) -> ToolOutput {
     let mut hits: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     hits.sort_unstable_by(|left, right| compare_hit_lines(left, right));
 
@@ -122,7 +141,14 @@ fn render(pattern: &str, stdout: &str) -> ToolOutput {
     }
 
     let full = hits.join("\n");
-    let bounded = bound_output(&full, OutputLimits::default(), "grep-matches");
+    let bounded = bound_output(
+        &full,
+        OutputLimits {
+            max_lines: limit,
+            max_bytes: GREP_MAX_BYTES,
+        },
+        "grep-matches",
+    );
     ToolOutput::text(bounded.text)
 }
 
@@ -158,6 +184,13 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+fn uint_arg(arguments: &Value, key: &str) -> Option<usize> {
+    arguments
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|raw| usize::try_from(raw).ok())
 }
 
 #[cfg(test)]
@@ -297,6 +330,24 @@ mod tests {
         let text = output.model_content();
         assert!(!text.contains("output truncated"), "got: {text}");
         assert!(!text.contains("written to"), "got: {text}");
+    }
+
+    #[test]
+    fn explicit_limit_overrides_default_match_cap() {
+        let dir = temp_tree("limit");
+        let body: String = (1..=50).map(|n| format!("hit {n}\n")).collect();
+        fs::write(dir.join("hits.txt"), body).unwrap();
+        let output = run(
+            &json!({ "pattern": "^hit\\s+\\d+$", "include": "hits.txt", "limit": 7 }),
+            &ctx_for(&dir),
+        );
+        assert!(!output.is_error, "{}", output.model_content());
+        let matches = output
+            .model_content()
+            .lines()
+            .filter(|line| line.contains("hits.txt:"))
+            .count();
+        assert_eq!(matches, 7);
     }
 
     #[test]
