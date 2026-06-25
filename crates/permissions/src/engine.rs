@@ -428,11 +428,7 @@ impl PermissionEngine {
             action,
             pattern,
             outcome,
-            feedback: if outcome == Outcome::Denied {
-                feedback
-            } else {
-                None
-            },
+            feedback,
         }
     }
 

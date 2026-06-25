@@ -152,6 +152,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
             "apply_patch: the patch contains no file sections (no changes made)",
         );
     }
+    if let Err(message) = ctx.ensure_not_planning("apply_patch") {
+        return ToolOutput::error(message);
+    }
 
     // Plan phase: resolve and validate every section against the filesystem WITHOUT writing. Any
     // failure here aborts with zero on-disk changes (atomicity, VAL-TOOLS-024/026). The original

@@ -2354,7 +2354,8 @@ impl ServerToolDispatcher {
         let mut context = ToolContext::new(cwd)
             .with_session(session_id)
             .with_todo_store(Arc::new(ServerTodoStore { db_path }))
-            .with_audit(audit);
+            .with_audit(audit)
+            .with_interactive_questions(true);
         if let Some(permissions) = permissions {
             context = context.with_permissions(permissions);
         }

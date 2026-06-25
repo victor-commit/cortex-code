@@ -112,6 +112,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(message) = ctx.ensure_permitted("edit", &path) {
         return ToolOutput::error(message);
     }
+    if let Err(message) = ctx.ensure_not_planning("edit") {
+        return ToolOutput::error(message);
+    }
 
     let resolved = ctx.resolve(&path);
 

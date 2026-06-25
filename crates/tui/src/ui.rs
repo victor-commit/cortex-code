@@ -1376,19 +1376,39 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
         };
         Span::styled(marked, option_style(color, selected == index))
     };
+    let is_question = tool == "question";
+    let allow_once_label = if is_question {
+        "Submit once"
+    } else {
+        "Allow once"
+    };
+    let allow_always_label = if is_question {
+        "Submit always"
+    } else {
+        "Allow always"
+    };
+    let deny_label = if is_question { "Cancel" } else { "Deny" };
     let options = Line::from(vec![
-        option("Allow once", 0, theme.success),
+        option(allow_once_label, 0, theme.success),
         Span::raw("  "),
-        option("Allow always", 1, theme.success),
+        option(allow_always_label, 1, theme.success),
         Span::raw("  "),
-        option("Deny", 2, theme.error),
+        option(deny_label, 2, theme.error),
     ]);
-    let hint = "y once · a always · n deny · ←/→ select · type feedback on Deny · Enter confirm · Esc deny";
+    let hint = if is_question {
+        "type answer · ←/→ select · Enter confirm · Esc cancel"
+    } else {
+        "y once · a always · n deny · ←/→ select · type feedback on Deny · Enter confirm · Esc deny"
+    };
 
-    let feedback_line = if selected == 2 || !feedback.is_empty() {
+    let feedback_line = if is_question || selected == 2 || !feedback.is_empty() {
         Some(Line::from(vec![
             Span::styled(
-                "Feedback: ",
+                if is_question {
+                    "Answer: "
+                } else {
+                    "Feedback: "
+                },
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),

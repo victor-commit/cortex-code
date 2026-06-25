@@ -5,6 +5,7 @@ use crate::{Action, Rule};
 pub fn default_external_and_env_rules() -> Vec<Rule> {
     vec![
         Rule::new("external_directory", "*", Action::Ask),
+        Rule::new("question", "*", Action::Ask),
         Rule::new("read", "*.env", Action::Ask),
         Rule::new("read", "*.env.*", Action::Ask),
         Rule::new("read", "*.env.example", Action::Allow),
@@ -31,6 +32,11 @@ mod tests {
             rules
                 .iter()
                 .any(|rule| rule.tool == "external_directory" && rule.action == Action::Ask)
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.tool == "question" && rule.action == Action::Ask)
         );
         assert!(
             rules

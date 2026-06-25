@@ -1221,6 +1221,12 @@ impl App {
         self.pending_permission.is_some()
     }
 
+    fn permission_is_question(&self) -> bool {
+        self.pending_permission
+            .as_ref()
+            .is_some_and(|pending| pending.ask.tool == "question")
+    }
+
     /// The number of selectable options in the permission prompt: Allow once, Allow always, Deny.
     const PERMISSION_OPTIONS: usize = 3;
 
@@ -1265,39 +1271,55 @@ impl App {
     /// Confirm the highlighted permission option (Enter), answering with the matching scoped
     /// decision: Allow once, Allow always (remembered), or Deny.
     fn confirm_permission(&mut self) {
-        let (selected, feedback) = self
-            .pending_permission
-            .as_ref()
-            .map_or((0, String::new()), |pending| {
-                (pending.selected, pending.feedback.clone())
-            });
+        let (selected, feedback, is_question) =
+            self.pending_permission
+                .as_ref()
+                .map_or((0, String::new(), false), |pending| {
+                    (
+                        pending.selected,
+                        pending.feedback.clone(),
+                        pending.ask.tool == "question",
+                    )
+                });
+        let feedback = feedback.trim().to_owned();
         self.answer_permission(match selected {
-            1 => ScopedDecision::always(Decision::Allow),
+            1 => {
+                if is_question && !feedback.is_empty() {
+                    ScopedDecision::always(Decision::Allow).with_feedback(feedback)
+                } else {
+                    ScopedDecision::always(Decision::Allow)
+                }
+            }
             2 => {
-                let feedback = feedback.trim();
                 if feedback.is_empty() {
                     ScopedDecision::once(Decision::Deny)
                 } else {
                     ScopedDecision::once(Decision::Deny).with_feedback(feedback)
                 }
             }
-            _ => ScopedDecision::once(Decision::Allow),
+            _ => {
+                if is_question && !feedback.is_empty() {
+                    ScopedDecision::once(Decision::Allow).with_feedback(feedback)
+                } else {
+                    ScopedDecision::once(Decision::Allow)
+                }
+            }
         });
     }
 
-    /// Append one feedback character while the Deny option is selected.
+    /// Append one feedback character while feedback capture is active.
     fn permission_feedback_input(&mut self, ch: char) {
         if let Some(pending) = self.pending_permission.as_mut()
-            && pending.selected == 2
+            && (pending.selected == 2 || pending.ask.tool == "question")
         {
             pending.feedback.push(ch);
         }
     }
 
-    /// Remove one feedback character while the Deny option is selected.
+    /// Remove one feedback character while feedback capture is active.
     fn permission_feedback_backspace(&mut self) {
         if let Some(pending) = self.pending_permission.as_mut()
-            && pending.selected == 2
+            && (pending.selected == 2 || pending.ask.tool == "question")
         {
             pending.feedback.pop();
         }
@@ -2964,25 +2986,25 @@ impl App {
         // highlight, Enter confirms, and Esc denies (the turn then continues gracefully). Ctrl+C
         // still quits so the user is never trapped.
         if self.permission_open() {
+            let is_question = self.permission_is_question();
             match key.code {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
                 KeyCode::Char(ch)
                     if !ctrl
                         && !alt
-                        && self
-                            .pending_permission
-                            .as_ref()
-                            .is_some_and(|pending| pending.selected == 2) =>
+                        && self.pending_permission.as_ref().is_some_and(|pending| {
+                            pending.selected == 2 || pending.ask.tool == "question"
+                        }) =>
                 {
                     self.permission_feedback_input(ch);
                 }
-                KeyCode::Char('y') if !ctrl && !alt => {
+                KeyCode::Char('y') if !ctrl && !alt && !is_question => {
                     self.answer_permission(ScopedDecision::once(Decision::Allow));
                 }
-                KeyCode::Char('a') if !ctrl && !alt => {
+                KeyCode::Char('a') if !ctrl && !alt && !is_question => {
                     self.answer_permission(ScopedDecision::always(Decision::Allow));
                 }
-                KeyCode::Char('n' | 'd') if !ctrl && !alt => {
+                KeyCode::Char('n' | 'd') if !ctrl && !alt && !is_question => {
                     self.answer_permission(ScopedDecision::once(Decision::Deny));
                 }
                 KeyCode::Backspace => self.permission_feedback_backspace(),
@@ -3792,6 +3814,33 @@ mod tests {
             wait.recv().unwrap(),
             ScopedDecision::once(Decision::Deny).with_feedback("ya")
         );
+    }
+
+    // Question asks capture typed answer text even when Allow is selected and submit it as
+    // approval feedback so the turn can resume with the user's answer.
+    #[test]
+    fn question_prompt_submits_typed_answer_with_allow() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "question", "Q1: Which option?");
+        assert_eq!(
+            a.permission_prompt(),
+            Some(("question", "Q1: Which option?", 0, ""))
+        );
+
+        for ch in "Use option B".chars() {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.permission_prompt(),
+            Some(("question", "Q1: Which option?", 0, "Use option B"))
+        );
+
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            wait.recv().unwrap(),
+            ScopedDecision::once(Decision::Allow).with_feedback("Use option B")
+        );
+        assert!(!a.permission_open());
     }
 
     // Esc denies the ask (so the turn continues gracefully rather than the dialog lingering).

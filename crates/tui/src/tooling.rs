@@ -51,7 +51,8 @@ impl TurnDispatcher {
         let todos: Arc<dyn TodoStore> = Arc::new(EphemeralTodos::default());
         let context = ToolContext::new(cwd)
             .with_session(session_id)
-            .with_todo_store(todos);
+            .with_todo_store(todos)
+            .with_interactive_questions(true);
         Self {
             registry,
             context,

@@ -108,6 +108,9 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     if command.is_empty() {
         return ToolOutput::error("bash: the 'command' argument must not be empty");
     }
+    if let Err(message) = ctx.ensure_not_planning("bash") {
+        return ToolOutput::error(message);
+    }
 
     // Permission gating by the command's REAL structure: extract each command invocation with
     // tree-sitter and refuse the whole command if any segment is not permitted, before anything

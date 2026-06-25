@@ -394,10 +394,17 @@ pub struct PermissionCheck {
 impl PermissionCheck {
     #[must_use]
     fn allowed() -> Self {
+        Self::allowed_with_feedback(None)
+    }
+
+    #[must_use]
+    fn allowed_with_feedback(feedback: Option<String>) -> Self {
         Self {
             allowed: true,
             message: None,
-            feedback: None,
+            feedback: feedback
+                .map(|text| redaction::redact(&text))
+                .filter(|text| !text.is_empty()),
         }
     }
 
@@ -417,6 +424,11 @@ impl PermissionCheck {
             feedback,
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct PlanningState {
+    active: bool,
 }
 
 /// The per-session execution context shared across every tool call in a turn.
@@ -439,6 +451,8 @@ pub struct ToolContext {
     task_runner: Option<Arc<dyn TaskRunner>>,
     background_jobs: Arc<BackgroundJobs>,
     shell_env: Arc<Vec<(OsString, OsString)>>,
+    planning: Arc<Mutex<PlanningState>>,
+    interactive_questions: bool,
 }
 
 impl ToolContext {
@@ -462,6 +476,8 @@ impl ToolContext {
             task_runner: None,
             background_jobs: Arc::new(BackgroundJobs::new()),
             shell_env: Arc::new(Vec::new()),
+            planning: Arc::new(Mutex::new(PlanningState::default())),
+            interactive_questions: false,
         }
     }
 
@@ -513,6 +529,16 @@ impl ToolContext {
         self
     }
 
+    /// Enable or disable interactive question flows for this surface (builder style).
+    ///
+    /// Headless runs keep this disabled and fail closed; interactive surfaces (TUI/server) enable
+    /// it so the `question` tool can request user input.
+    #[must_use]
+    pub fn with_interactive_questions(mut self, interactive: bool) -> Self {
+        self.interactive_questions = interactive;
+        self
+    }
+
     /// The session id tool calls are scoped to, if one was set.
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
@@ -542,6 +568,16 @@ impl ToolContext {
     #[must_use]
     pub fn shell_env(&self) -> &[(OsString, OsString)] {
         self.shell_env.as_slice()
+    }
+
+    /// Whether this context represents an interactive surface that can ask user questions.
+    #[must_use]
+    pub fn interactive_questions_enabled(&self) -> bool {
+        self.interactive_questions
+            && self
+                .permissions
+                .as_ref()
+                .is_some_and(|engine| engine.has_responder())
     }
 
     /// The attached audit sink, if the current surface records audit events.
@@ -608,6 +644,45 @@ impl ToolContext {
     #[must_use]
     pub fn diagnostics_after_write(&self, path: &Path) -> Vec<Diagnostic> {
         self.diagnostic_feedback_after_write(path).diagnostics
+    }
+
+    /// Enter model-visible planning mode for this turn/session context.
+    pub fn enter_planning_mode(&self) {
+        if let Ok(mut planning) = self.planning.lock() {
+            planning.active = true;
+        }
+    }
+
+    /// Exit planning mode. Returns an error when an approval flag is required but missing.
+    pub fn exit_planning_mode(&self, approved: bool) -> Result<(), String> {
+        if !approved {
+            return Err(
+                "plan-exit: set `approved` to true after the user accepts the plan".to_owned(),
+            );
+        }
+        if let Ok(mut planning) = self.planning.lock() {
+            planning.active = false;
+        }
+        Ok(())
+    }
+
+    /// Whether planning mode is currently active.
+    #[must_use]
+    pub fn planning_mode_active(&self) -> bool {
+        self.planning
+            .lock()
+            .map(|planning| planning.active)
+            .unwrap_or(false)
+    }
+
+    /// Refuse mutating actions while planning mode is active.
+    pub fn ensure_not_planning(&self, tool: &str) -> Result<(), String> {
+        if self.planning_mode_active() {
+            return Err(format!(
+                "{tool}: planning mode is active, call `plan-exit` or `plan_exit` with approved=true before mutating"
+            ));
+        }
+        Ok(())
     }
 
     /// Record the pre-mutation snapshot of `path` (a resolved absolute path) through the attached
@@ -740,13 +815,13 @@ impl ToolContext {
             let request = request_for(tool, &scoped_target);
             let evaluation = self.evaluate_permission(engine, request);
             if evaluation.outcome.is_allowed() {
-                return PermissionCheck::allowed();
+                return PermissionCheck::allowed_with_feedback(evaluation.feedback);
             }
             return PermissionCheck::denied(tool, target, evaluation.feedback);
         }
         let evaluation = self.evaluate_permission(engine, request_for(tool, target));
         if evaluation.outcome.is_allowed() {
-            PermissionCheck::allowed()
+            PermissionCheck::allowed_with_feedback(evaluation.feedback)
         } else {
             PermissionCheck::denied(tool, target, evaluation.feedback)
         }

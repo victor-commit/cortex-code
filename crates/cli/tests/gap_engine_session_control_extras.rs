@@ -435,12 +435,23 @@ fn advisory_question_and_plan_tools_are_permission_gated_deterministically() {
             "question",
             serde_json::json!({"questions":[{"prompt":"Which option?"}]}),
             "question:*",
+            "non-interactive surface",
         ),
-        ("plan-enter", serde_json::json!({}), "plan-enter:*"),
-        ("plan-exit", serde_json::json!({}), "plan-exit:*"),
+        (
+            "plan-enter",
+            serde_json::json!({}),
+            "plan-enter:*",
+            "permission denied",
+        ),
+        (
+            "plan-exit",
+            serde_json::json!({}),
+            "plan-exit:*",
+            "permission denied",
+        ),
     ];
 
-    for (tool_name, args, deny_rule) in cases {
+    for (tool_name, args, deny_rule, expected) in cases {
         let home = scratch_home(&format!("perm004-{tool_name}-deny"));
         let fixture = Fixture::start(vec![
             ScriptedResponse::success(&[
@@ -459,7 +470,7 @@ fn advisory_question_and_plan_tools_are_permission_gated_deterministically() {
 
         let text = tool_result_text(&doc, tool_name).to_ascii_lowercase();
         assert!(
-            text.contains("permission denied"),
+            text.contains(expected),
             "{tool_name} deny should be surfaced deterministically: {text}"
         );
     }

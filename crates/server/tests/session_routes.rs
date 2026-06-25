@@ -789,6 +789,92 @@ action = "ask"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn question_tool_uses_pending_permission_flow_and_resumes_with_feedback() {
+    let scratch = Scratch::new("server-question-pending-flow");
+    let provider = Arc::new(QuestionPendingProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider);
+    let session = create_session(&app).await;
+
+    let post_app = app.clone();
+    let session_id = session.id.clone();
+    let turn = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{session_id}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"ask question"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("question turn response")
+    });
+
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/session/{}/permission/pending", session.id))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !pending.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        pending.len(),
+        1,
+        "question tool should block on one pending ask"
+    );
+    assert_eq!(pending[0]["tool"], "question");
+    let pending_id = pending[0]["id"].as_str().expect("pending id");
+
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/permission/reply", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{pending_id}","decision":"allow","feedback":"Choose option B"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("reply response");
+    assert_eq!(reply.status(), StatusCode::OK);
+
+    let response = tokio::time::timeout(Duration::from_secs(3), turn)
+        .await
+        .expect("question turn completed")
+        .expect("question turn join");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert!(
+        body["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("Choose option B")),
+        "final assistant content should include the supplied answer text: {body:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn permission_reply_always_scopes_to_matching_pattern_only() {
     let scratch = Scratch::new("server-permission-always-scope");
     let workspace = scratch.dir.join("workspace");
@@ -2732,6 +2818,11 @@ struct PermissionPendingProvider {
 }
 
 #[derive(Debug, Default)]
+struct QuestionPendingProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
 struct ScopedPermissionPendingProvider {
     calls: AtomicUsize,
 }
@@ -2869,6 +2960,62 @@ impl Provider for PermissionPendingProvider {
                         input_tokens: 9,
                         output_tokens: 4,
                         total_tokens: 13,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for QuestionPendingProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request.messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message.tool_call_id.as_deref() == Some("call_question")
+            });
+            let events = if !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_question".to_owned(),
+                        name: "question".to_owned(),
+                        arguments: serde_json::json!({
+                            "questions": [{
+                                "prompt": "Pick deployment strategy",
+                                "options": ["A", "B"]
+                            }]
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                let answer = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| {
+                        message.role == Role::Tool
+                            && message.tool_call_id.as_deref() == Some("call_question")
+                    })
+                    .map(|message| message.content.clone())
+                    .unwrap_or_else(|| "no answer".to_owned());
+                vec![
+                    LlmEvent::TextDelta {
+                        text: format!("question answered: {answer}"),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 9,
+                        output_tokens: 6,
+                        total_tokens: 15,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {

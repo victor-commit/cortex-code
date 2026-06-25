@@ -83,6 +83,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(message) = ctx.ensure_permitted("write", &path) {
         return ToolOutput::error(message);
     }
+    if let Err(message) = ctx.ensure_not_planning("write") {
+        return ToolOutput::error(message);
+    }
 
     let resolved = ctx.resolve(&path);
 

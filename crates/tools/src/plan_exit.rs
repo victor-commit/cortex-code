@@ -1,7 +1,4 @@
-//! The `plan-exit` tool: advisory planning-mode exit hook.
-//!
-//! The full planning workflow is owned by surface-specific mode integrations. This tool provides
-//! a real permission-gated hook for advisory capability policies.
+//! The `plan-exit` tool: leave planning mode after approval.
 
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
@@ -17,25 +14,38 @@ impl Tool for PlanExitTool {
     }
 
     fn description(&self) -> &str {
-        "Request exit from planning mode after the plan is complete."
+        "Exit planning mode after the plan is approved. Requires `approved=true`."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "approved": {
+                    "type": "boolean",
+                    "description": "Set true after the user approves the plan to re-enable mutations."
+                }
+            },
             "additionalProperties": false
         })
     }
 
-    fn execute<'a>(&'a self, _arguments: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+    fn execute<'a>(&'a self, arguments: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
         Box::pin(async move {
             if let Err(message) = ctx.ensure_permitted("plan-exit", "planning-mode") {
                 return ToolOutput::error(message);
             }
 
-            ToolOutput::error(
-                "plan-exit: planning mode transitions are not available in this surface",
+            let approved = arguments
+                .get("approved")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if let Err(message) = ctx.exit_planning_mode(approved) {
+                return ToolOutput::error(message);
+            }
+
+            ToolOutput::text(
+                "plan-exit: planning mode disabled, mutating tools are available again",
             )
         })
     }

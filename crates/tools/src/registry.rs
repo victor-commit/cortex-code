@@ -13,10 +13,13 @@ use crate::bash::BashTool;
 use crate::edit::EditTool;
 use crate::glob::GlobTool;
 use crate::grep::GrepTool;
+use crate::invalid::{InvalidTool, invalid_arguments_output, unknown_tool_output};
 use crate::loop_safeguard::LoopSafeguardTool;
 use crate::lsp::LspTool;
+use crate::plan::PlanTool;
 use crate::plan_enter::PlanEnterTool;
 use crate::plan_exit::PlanExitTool;
+use crate::plan_exit_compat::PlanExitCompatTool;
 use crate::question::QuestionTool;
 use crate::read::ReadTool;
 use crate::skill::SkillTool;
@@ -56,7 +59,8 @@ impl ToolRegistry {
 
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
     /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch` and
-    /// advisory tools `question`/`plan-enter`/`plan-exit`/`loop-safeguard`. GPT-family
+    /// advisory tools `question`/`plan`/`plan-enter`/`plan-exit`/`plan_exit`/`invalid`/
+    /// `loop-safeguard`. GPT-family
     /// models edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately
     /// swapped out (architecture §3.4, model-aware tool materialization); the shell/code-search/LSP/
     /// todo utilities are model-agnostic and present for every family. `websearch` is deliberately
@@ -71,8 +75,8 @@ impl ToolRegistry {
     }
 
     /// Register the utility tools shared by every model family (`bash`, `glob`, `grep`, `lsp`,
-    /// `todo`, `webfetch`) plus advisory capability hooks (`question`, `plan-enter`,
-    /// `plan-exit`, `loop-safeguard`).
+    /// `todo`, `webfetch`) plus advisory capability hooks (`question`, `plan`, `plan-enter`,
+    /// `plan-exit`, `plan_exit`, `invalid`, `loop-safeguard`).
     fn register_utility_tools(&mut self) {
         self.register(Box::new(BashTool));
         self.register(Box::new(GlobTool));
@@ -81,8 +85,11 @@ impl ToolRegistry {
         self.register(Box::new(TodoTool));
         self.register(Box::new(WebFetchTool));
         self.register(Box::new(QuestionTool));
+        self.register(Box::new(PlanTool));
         self.register(Box::new(PlanEnterTool));
         self.register(Box::new(PlanExitTool));
+        self.register(Box::new(PlanExitCompatTool));
+        self.register(Box::new(InvalidTool));
         self.register(Box::new(LoopSafeguardTool));
     }
 
@@ -161,7 +168,7 @@ impl ToolRegistry {
     /// object so a no-argument tool call still dispatches.
     pub async fn execute(&self, name: &str, arguments: &str, ctx: &ToolContext) -> ToolOutput {
         let Some(tool) = self.get(name) else {
-            return ToolOutput::error(format!("unknown tool: {name}"));
+            return unknown_tool_output(name);
         };
         let parsed = if arguments.trim().is_empty() {
             serde_json::Value::Object(serde_json::Map::new())
@@ -169,7 +176,7 @@ impl ToolRegistry {
             match serde_json::from_str(arguments) {
                 Ok(value) => value,
                 Err(err) => {
-                    return ToolOutput::error(format!("{name}: invalid arguments JSON: {err}"));
+                    return invalid_arguments_output(name, arguments, &err);
                 }
             }
         };
@@ -204,8 +211,11 @@ mod tests {
                 "todo",
                 "webfetch",
                 "question",
+                "plan",
                 "plan-enter",
                 "plan-exit",
+                "plan_exit",
+                "invalid",
                 "loop-safeguard",
             ] {
                 assert!(
