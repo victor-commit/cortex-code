@@ -348,6 +348,7 @@ fn event_for_runner(session_id: &str, message_id: &str, event: &RunnerEvent) -> 
             *steps,
         )),
         RunnerEvent::ToolSetChanged { .. } => None,
+        RunnerEvent::Retry { .. } => None,
     }
 }
 

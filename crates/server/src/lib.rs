@@ -1693,6 +1693,7 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             *steps,
         )),
         RunnerEvent::ToolSetChanged { .. } => {}
+        RunnerEvent::Retry { .. } => {}
     }
 }
 

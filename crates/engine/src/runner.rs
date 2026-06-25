@@ -39,6 +39,16 @@ const MAX_OVERFLOW_RECOVERIES: usize = 4;
 /// The smallest input budget an overflow recovery will shrink to before giving up.
 const MIN_RECOVERY_BUDGET_TOKENS: usize = 512;
 
+/// Maximum number of transient setup retries for one provider request before surfacing a terminal
+/// error. This is distinct from transport-level retries inside `llm`.
+const MAX_TRANSIENT_SETUP_RETRIES: usize = 2;
+
+/// Base delay for runner-level transient setup retries.
+const BASE_TRANSIENT_RETRY_DELAY_MS: u64 = 250;
+
+/// Upper bound for runner-level transient retry delay.
+const MAX_TRANSIENT_RETRY_DELAY_MS: u64 = 2_000;
+
 /// The placeholder result injected for a tool call when no tool registry is available (M1).
 const TOOL_UNAVAILABLE: &str =
     "Tool execution is not available in this build; answer directly without using tools.";
@@ -203,6 +213,7 @@ impl SessionRunner {
         let mut input_budget = policy.input_budget();
         let mut tail_messages = policy.tail_messages;
         let mut overflow_recoveries = 0usize;
+        let mut setup_retries = 0usize;
 
         let finish_reason = loop {
             if steps >= self.max_steps {
@@ -255,7 +266,12 @@ impl SessionRunner {
 
             let request = self.build_request(&turn, &messages, &tool_defs);
             let mut stream = match provider.stream(request).await {
-                Ok(stream) => stream,
+                Ok(stream) => {
+                    // A successful stream open resets transient setup retries for subsequent
+                    // continuation requests in the same turn.
+                    setup_retries = 0;
+                    stream
+                }
                 Err(err) => {
                     // compactAfterOverflow then rebuild: a context-overflow provider error before
                     // any assistant text shrinks the budget, re-compacts, and retries the turn
@@ -278,6 +294,36 @@ impl SessionRunner {
                     } else {
                         err.to_diagnostic()
                     };
+                    if let Some(classification) =
+                        classify_retryable_setup_error(diagnostic.kind(), err.detail())
+                    {
+                        if setup_retries < MAX_TRANSIENT_SETUP_RETRIES {
+                            setup_retries += 1;
+                            let delay = transient_retry_delay(setup_retries);
+                            sink(RunnerEvent::Retry {
+                                attempt: setup_retries,
+                                max_attempts: MAX_TRANSIENT_SETUP_RETRIES,
+                                delay_ms: delay.as_millis() as u64,
+                                error_kind: diagnostic.kind().to_owned(),
+                                classification: classification.as_str().to_owned(),
+                                message: diagnostic.to_string(),
+                            });
+                            std::thread::sleep(delay);
+                            steps -= 1;
+                            continue;
+                        }
+
+                        let exhausted = format!(
+                            "retry exhausted after {} attempt(s): {diagnostic}",
+                            MAX_TRANSIENT_SETUP_RETRIES
+                        );
+                        sink(RunnerEvent::Error {
+                            message: exhausted.clone(),
+                            kind: diagnostic.kind().to_owned(),
+                        });
+                        error = Some(RunError::from_kind(diagnostic.kind(), exhausted));
+                        break llm::FinishReason::Error;
+                    }
                     sink(RunnerEvent::Error {
                         message: diagnostic.to_string(),
                         kind: diagnostic.kind().to_owned(),
@@ -441,4 +487,86 @@ impl RoundState {
             reason: llm::FinishReason::Stop,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryableSetupClassification {
+    RateLimit,
+    ServiceUnavailable,
+    TransientServerError,
+    TransportUnavailable,
+}
+
+impl RetryableSetupClassification {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate_limit",
+            Self::ServiceUnavailable => "service_unavailable",
+            Self::TransientServerError => "transient_server_error",
+            Self::TransportUnavailable => "transport_unavailable",
+        }
+    }
+}
+
+fn classify_retryable_setup_error(
+    kind: &str,
+    detail: &str,
+) -> Option<RetryableSetupClassification> {
+    match kind {
+        "transport-unavailable" => Some(RetryableSetupClassification::TransportUnavailable),
+        "upstream" => {
+            if compaction::is_context_overflow(detail) {
+                return None;
+            }
+
+            if let Some(status) = parse_http_status(detail) {
+                if status == 429 {
+                    return Some(RetryableSetupClassification::RateLimit);
+                }
+                if status == 503 || status == 529 {
+                    return Some(RetryableSetupClassification::ServiceUnavailable);
+                }
+                if (500..=599).contains(&status) {
+                    return Some(RetryableSetupClassification::TransientServerError);
+                }
+                return None;
+            }
+
+            let lower = detail.to_ascii_lowercase();
+            if lower.contains("rate limit") || lower.contains("too many requests") {
+                return Some(RetryableSetupClassification::RateLimit);
+            }
+            if lower.contains("service unavailable")
+                || lower.contains("temporarily unavailable")
+                || lower.contains("provider unavailable")
+                || lower.contains("overloaded")
+            {
+                return Some(RetryableSetupClassification::ServiceUnavailable);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn parse_http_status(detail: &str) -> Option<u16> {
+    let lower = detail.to_ascii_lowercase();
+    let (_, tail) = lower.split_once("http ")?;
+    let digits: String = tail
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.len() < 3 {
+        return None;
+    }
+    digits.parse::<u16>().ok()
+}
+
+fn transient_retry_delay(attempt: usize) -> std::time::Duration {
+    let exponent = attempt.saturating_sub(1).min(5) as u32;
+    let factor = 1_u64 << exponent;
+    let ms = (BASE_TRANSIENT_RETRY_DELAY_MS.saturating_mul(factor))
+        .clamp(BASE_TRANSIENT_RETRY_DELAY_MS, MAX_TRANSIENT_RETRY_DELAY_MS);
+    std::time::Duration::from_millis(ms)
 }

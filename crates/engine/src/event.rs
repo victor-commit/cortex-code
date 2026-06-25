@@ -61,6 +61,22 @@ pub enum RunnerEvent {
     },
     /// The per-turn token usage, summed across every provider round-trip in the turn.
     Usage(Usage),
+    /// A retry lifecycle event emitted when the runner classifies a setup failure as transient
+    /// and schedules another full-turn attempt after a bounded delay.
+    Retry {
+        /// 1-based retry attempt number about to run.
+        attempt: usize,
+        /// The configured maximum number of retry attempts.
+        max_attempts: usize,
+        /// Delay before the next attempt, in milliseconds.
+        delay_ms: u64,
+        /// The stable error class that triggered the retry (for example `upstream`).
+        error_kind: String,
+        /// Stable retry classification (`rate_limit`, `service_unavailable`, ...).
+        classification: String,
+        /// Human-readable, secret-scrubbed detail from the triggering failure.
+        message: String,
+    },
     /// A normalized error surfaced during the turn (setup failure or mid-stream provider error).
     Error {
         /// Human-readable, secret-scrubbed detail.
@@ -219,6 +235,22 @@ mod tests {
         assert_eq!(tools["type"], "tool_set_changed");
         assert_eq!(tools["tools"], serde_json::json!(["read", "api_extra"]));
         assert_eq!(tools["tool_definitions"][0]["name"], "api_extra");
+
+        let retry = serde_json::to_value(RunnerEvent::Retry {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 250,
+            error_kind: "upstream".to_owned(),
+            classification: "service_unavailable".to_owned(),
+            message: "upstream failure".to_owned(),
+        })
+        .expect("serialize");
+        assert_eq!(retry["type"], "retry");
+        assert_eq!(retry["attempt"], 1);
+        assert_eq!(retry["max_attempts"], 3);
+        assert_eq!(retry["delay_ms"], 250);
+        assert_eq!(retry["error_kind"], "upstream");
+        assert_eq!(retry["classification"], "service_unavailable");
     }
 
     #[test]

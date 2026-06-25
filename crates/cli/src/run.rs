@@ -1390,6 +1390,7 @@ fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
         RunnerEvent::ToolResult {
             id, name, is_error, ..
         } => bus.publish(&Event::tool_result(id.clone(), name.clone(), *is_error)),
+        RunnerEvent::Retry { .. } => {}
         _ => {}
     }
 }

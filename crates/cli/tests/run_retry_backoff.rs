@@ -236,6 +236,26 @@ fn cortex_command(home: &Path, base_url: &str) -> Command {
     command
 }
 
+fn cortex_jsonl_command(home: &Path, base_url: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+    command
+        .current_dir(home)
+        .args(["run", "--jsonl", "Reply with exactly RECOVERED"])
+        .env("HOME", home)
+        .env("OPENROUTER_API_KEY", "test-openrouter-key")
+        .env("CORTEX_OPENROUTER_BASE_URL", base_url)
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CORTEX_DATA_DIR")
+        .env_remove("CORTEX_DB_PATH")
+        .env_remove("CORTEX_AUTH_FILE")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE")
+        .env_remove("NO_COLOR");
+    command
+}
+
 fn run(mut command: Command) -> Output {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
@@ -273,6 +293,14 @@ fn run(mut command: Command) -> Output {
         stdout: out_thread.join().expect("join stdout reader"),
         stderr: err_thread.join().expect("join stderr reader"),
     }
+}
+
+fn parse_jsonl(stdout: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl line"))
+        .collect()
 }
 
 #[test]
@@ -378,5 +406,117 @@ fn retry_after_headers_control_retry_delay() {
     assert!(
         sec_delay <= Duration::from_secs(4),
         "retry-after seconds delay should remain bounded, got {sec_delay:?}"
+    );
+}
+
+#[test]
+fn runner_retry_events_are_visible_in_jsonl_and_recover_the_turn() {
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::success("RECOVERED"),
+    ]);
+    let home = scratch_home();
+    let out = run(cortex_jsonl_command(&home, &fixture.base_url));
+    let (attempts, _accepted_at) = fixture.finish();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        attempts, 4,
+        "expected one exhausted transport attempt (3 HTTP tries) then one runner retry"
+    );
+
+    let lines = parse_jsonl(&out.stdout);
+    assert!(!lines.is_empty(), "jsonl output must contain events");
+    let retry = lines
+        .iter()
+        .find(|line| line.get("type") == Some(&serde_json::Value::String("retry".to_owned())))
+        .expect("runner retry lifecycle event in jsonl");
+    assert_eq!(retry["attempt"], 1);
+    assert_eq!(retry["max_attempts"], 2);
+    assert_eq!(retry["error_kind"], "upstream");
+    assert_eq!(retry["classification"], "service_unavailable");
+    assert_eq!(
+        lines
+            .last()
+            .and_then(|line| line.get("type"))
+            .and_then(|value| value.as_str()),
+        Some("done"),
+        "jsonl stream must terminate with done"
+    );
+}
+
+#[test]
+fn persistent_retryable_failures_are_bounded_and_report_retry_exhaustion() {
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+        ScriptedResponse::retryable_error("HTTP/1.1 503 Service Unavailable", vec![]),
+    ]);
+    let home = scratch_home();
+    let started = Instant::now();
+    let out = run(cortex_jsonl_command(&home, &fixture.base_url));
+    let elapsed = started.elapsed();
+    let (attempts, _accepted_at) = fixture.finish();
+
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "run should fail after bounded retries"
+    );
+    assert_eq!(
+        attempts, 9,
+        "runner retries must be bounded (3 stream attempts x 3 HTTP attempts each)"
+    );
+    assert!(
+        elapsed < Duration::from_secs(12),
+        "retry exhaustion should be bounded in time, got {elapsed:?}"
+    );
+
+    let lines = parse_jsonl(&out.stdout);
+    let retry_count = lines
+        .iter()
+        .filter(|line| line.get("type") == Some(&serde_json::Value::String("retry".to_owned())))
+        .count();
+    assert_eq!(retry_count, 2, "runner retry event count should be bounded");
+
+    let error = lines
+        .iter()
+        .find(|line| line.get("type") == Some(&serde_json::Value::String("error".to_owned())))
+        .expect("terminal error event");
+    let error_message = error["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(
+        error_message.contains("retry exhausted"),
+        "error event should report retry exhaustion, got: {}",
+        error["message"]
+    );
+    assert_eq!(
+        lines
+            .last()
+            .and_then(|line| line.get("type"))
+            .and_then(|value| value.as_str()),
+        Some("done"),
+        "jsonl stream must terminate with done even on retry exhaustion"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("retry exhausted"),
+        "stderr should include retry exhaustion diagnostics, got: {stderr}"
     );
 }

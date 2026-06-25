@@ -96,6 +96,10 @@ fn usage() -> LlmEvent {
     })
 }
 
+fn upstream_503_error() -> llm::LlmError {
+    llm::LlmError::upstream("provider returned HTTP 503: temporary outage")
+}
+
 /// Collect the runner's emitted events plus the outcome for a turn.
 async fn run(provider: &dyn Provider, turn: Turn) -> (Vec<RunnerEvent>, engine::RunOutcome) {
     let mut events = Vec::new();
@@ -749,6 +753,95 @@ async fn setup_error_emits_error_then_one_done_and_fails_cleanly() {
         outcome.finish_reason,
         FinishReason::Error,
         "the turn ends in an error finish reason"
+    );
+}
+
+#[tokio::test]
+async fn retryable_setup_error_emits_retry_event_and_recovers() {
+    let provider = RecordingProvider::new(vec![
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Emit(vec![
+            LlmEvent::TextDelta {
+                text: "RECOVERED".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+    ]);
+
+    let (events, outcome) = run(&provider, Turn::new("google/gemini-2.5-flash", "", "hi")).await;
+
+    assert!(
+        outcome.is_success(),
+        "runner should recover from one transient setup failure"
+    );
+    assert_eq!(outcome.answer(), "RECOVERED");
+
+    let retries: Vec<&RunnerEvent> = events
+        .iter()
+        .filter(|event| matches!(event, RunnerEvent::Retry { .. }))
+        .collect();
+    assert_eq!(retries.len(), 1, "exactly one retry lifecycle event");
+    match retries[0] {
+        RunnerEvent::Retry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_kind,
+            classification,
+            ..
+        } => {
+            assert_eq!(*attempt, 1);
+            assert_eq!(*max_attempts, 2);
+            assert!(
+                *delay_ms >= 200,
+                "retry delay should be non-zero and bounded"
+            );
+            assert_eq!(error_kind, "upstream");
+            assert_eq!(classification, "service_unavailable");
+        }
+        _ => unreachable!("filtered to retry events"),
+    }
+}
+
+#[tokio::test]
+async fn persistent_retryable_setup_error_is_bounded_and_exhausts() {
+    let provider = RecordingProvider::new(vec![
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+        Behavior::Fail(upstream_503_error()),
+    ]);
+
+    let started = std::time::Instant::now();
+    let (events, outcome) = run(&provider, Turn::new("google/gemini-2.5-flash", "", "hi")).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        !outcome.is_success(),
+        "persistent transient setup failure must terminate"
+    );
+    let error = outcome.error.as_ref().expect("a normalized error");
+    assert_eq!(error.kind(), "upstream");
+    assert!(
+        error.to_string().contains("retry exhausted"),
+        "final error should report retry exhaustion, got: {error}"
+    );
+
+    let retry_count = events
+        .iter()
+        .filter(|event| matches!(event, RunnerEvent::Retry { .. }))
+        .count();
+    assert_eq!(retry_count, 2, "runner-level retries stay bounded");
+    assert_eq!(done_count(&events), 1, "exactly one terminal Done");
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
+        "bounded retries should terminate quickly, got {elapsed:?}"
     );
 }
 
