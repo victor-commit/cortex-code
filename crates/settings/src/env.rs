@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 /// `CORTEX_*` suffixes that are operational controls, not config keys.
 const RESERVED_SUFFIXES: &[&str] = &[
     "NO_NET",
+    // Permission env payloads are parsed by the permissions loader, not as raw settings strings.
+    "PERMISSION",
     "CONFIG_FILE",
     "CONFIG_DIR",
     "CONFIG_CONTENT",
@@ -76,6 +78,7 @@ mod tests {
         let overrides = overrides_from(vars(&[
             ("PATH", "/usr/bin"),
             ("CORTEX_NO_NET", "1"),
+            ("CORTEX_PERMISSION", r#"{"bash":"deny"}"#),
             ("CORTEX_PURE", "1"),
             ("CORTEX_CONFIG_FILE", "/x"),
             ("CORTEX_CONFIG_CONTENT", "model = \"x\""),

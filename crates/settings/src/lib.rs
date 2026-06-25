@@ -1192,3 +1192,52 @@ mod persist_mcp_tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+#[cfg(test)]
+mod permission_env_override_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-settings-permission-env-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn permission_env_payload_is_not_loaded_as_raw_settings_permission_key() {
+        let cwd = scratch_dir("no-raw-permission-key");
+        let inputs = ConfigInputs {
+            home: Some(cwd.clone()),
+            xdg_config_home: None,
+            cwd: cwd.clone(),
+            env: vec![
+                (
+                    "CORTEX_MODEL".to_owned(),
+                    "google/gemini-2.5-flash".to_owned(),
+                ),
+                (
+                    "CORTEX_PERMISSION".to_owned(),
+                    r#"{"bash":"deny"}"#.to_owned(),
+                ),
+            ],
+            cli_overrides: BTreeMap::new(),
+        };
+
+        let config =
+            load(inputs).expect("settings load should not treat CORTEX_PERMISSION as raw settings");
+        assert_eq!(config.model(), "google/gemini-2.5-flash");
+        assert!(
+            config.get("permission").is_none(),
+            "permission env payload must be parsed by the permission env parser, not settings overrides"
+        );
+        let _ = std::fs::remove_dir_all(cwd);
+    }
+}

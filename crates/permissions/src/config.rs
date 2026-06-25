@@ -35,6 +35,7 @@ const PERMISSION_KEY: &str = "permission";
 const AGENT_KEY: &str = "agent";
 const LEGACY_ENV_PERMISSION: &str = concat!("OPEN", "CODE_PERMISSION");
 const CORTEX_ENV_PERMISSION: &str = "CORTEX_PERMISSION";
+const PERMISSION_ENV_PRECEDENCE: &[&str] = &[LEGACY_ENV_PERMISSION, CORTEX_ENV_PERMISSION];
 
 /// A failure loading or parsing permission rules from configuration.
 #[derive(Debug)]
@@ -250,16 +251,26 @@ pub fn load_agent_rulesets(inputs: &ConfigInputs) -> Result<AgentRulesets, RuleE
 
 fn rules_from_permission_env(inputs: &ConfigInputs) -> Result<Vec<Rule>, RuleError> {
     let mut rules = Vec::new();
-    for (name, value) in &inputs.env {
-        if name != LEGACY_ENV_PERMISSION && name != CORTEX_ENV_PERMISSION {
+    for env_name in PERMISSION_ENV_PRECEDENCE {
+        let Some(value) = env_value(inputs, env_name) else {
             continue;
-        }
+        };
         if value.trim().is_empty() {
             continue;
         }
-        rules.extend(parse_permission_env_value(name, value)?);
+        rules.extend(parse_permission_env_value(env_name, value)?);
     }
     Ok(rules)
+}
+
+fn env_value<'a>(inputs: &'a ConfigInputs, env_name: &str) -> Option<&'a str> {
+    inputs.env.iter().rev().find_map(|(name, value)| {
+        if name == env_name {
+            Some(value.as_str())
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_permission_env_value(env_name: &str, raw: &str) -> Result<Vec<Rule>, RuleError> {
@@ -597,5 +608,39 @@ action = "allow"
         };
         let ruleset = load_layered(&inputs).expect("layered rules");
         assert_eq!(ruleset.classify("bash", "git push origin"), Action::Deny);
+    }
+
+    #[test]
+    fn dual_permission_env_precedence_is_deterministic() {
+        let legacy = (
+            LEGACY_ENV_PERMISSION.to_owned(),
+            r#"{"bash":"allow","read":"deny"}"#.to_owned(),
+        );
+        let cortex = (
+            CORTEX_ENV_PERMISSION.to_owned(),
+            r#"{"bash":"deny"}"#.to_owned(),
+        );
+
+        let ordered =
+            rules_from_permission_env(&inputs_with_env(vec![legacy.clone(), cortex.clone()]))
+                .expect("env parse");
+        let reversed =
+            rules_from_permission_env(&inputs_with_env(vec![cortex, legacy])).expect("env parse");
+        assert_eq!(
+            ordered, reversed,
+            "env ordering should not affect effective legacy/new permission precedence"
+        );
+
+        let ruleset = Ruleset::new(ordered);
+        assert_eq!(
+            ruleset.classify("bash", "echo hi"),
+            Action::Deny,
+            "new permission env should override legacy on conflict"
+        );
+        assert_eq!(
+            ruleset.classify("read", ".env"),
+            Action::Deny,
+            "legacy-only capabilities remain in effect when not overridden"
+        );
     }
 }
