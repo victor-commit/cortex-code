@@ -351,7 +351,7 @@ fn task_supports_documented_parameters_and_task_id_resume() {
                 "call_task_1",
                 "task",
                 serde_json::json!({
-                    "subagent_type":"explore",
+                    "subagentType":"explore",
                     "description":"Inspect fixtures",
                     "command":"scan repo",
                     "prompt":"Reply with FIRST-123"

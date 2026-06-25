@@ -52,7 +52,7 @@ impl Tool for TaskTool {
          subagent runs in its own durable session under that agent's persona and permission rules, \
          and its final result is returned here for you to incorporate into your answer. Use this \
          for read/search/investigation work that benefits from a separate agent. Compatibility \
-         parameters: `subagent_type`/`agent`, optional `task_id` resume, `description`, \
+         parameters: `subagent_type`/`subagentType`/`agent`, optional `task_id` resume, `description`, \
          `command`, and `background`."
     }
 
@@ -100,6 +100,7 @@ impl Tool for TaskTool {
             },
             "anyOf": [
                 { "required": ["subagent_type", "prompt"] },
+                { "required": ["subagentType", "prompt"] },
                 { "required": ["agent", "prompt"] },
                 { "required": ["task_id"] },
                 { "required": ["taskId"] }
@@ -275,6 +276,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_accepts_camel_case_aliases_for_target_and_resume_id() {
+        let runner = Arc::new(RecordingRunner::new());
+        let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner.clone());
+        let out = tool()
+            .execute(
+                json!({
+                    "subagentType":"Explore",
+                    "prompt":"resume context",
+                    "taskId":"ses_child"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!out.is_error, "got: {}", out.model_content());
+        let request = runner.requests.lock().expect("lock")[0].clone();
+        assert_eq!(request.agent.as_deref(), Some("explore"));
+        assert_eq!(request.task_id.as_deref(), Some("ses_child"));
+    }
+
+    #[tokio::test]
     async fn task_rejects_targets_that_were_not_advertised() {
         let runner = Arc::new(RecordingRunner::new());
         let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner);
@@ -359,9 +380,22 @@ mod tests {
                 .unwrap()
                 .contains("explore, general")
         );
+        let any_of = params["anyOf"].as_array().expect("anyOf array");
+        for required in [
+            serde_json::json!(["subagent_type", "prompt"]),
+            serde_json::json!(["subagentType", "prompt"]),
+            serde_json::json!(["agent", "prompt"]),
+            serde_json::json!(["task_id"]),
+            serde_json::json!(["taskId"]),
+        ] {
+            assert!(
+                any_of.iter().any(|entry| entry["required"] == required),
+                "expected anyOf to contain required={required}"
+            );
+        }
         assert_eq!(
-            params["anyOf"][0]["required"],
-            serde_json::json!(["subagent_type", "prompt"])
+            params["properties"]["subagentType"]["description"],
+            serde_json::json!("Compatibility alias for `subagent_type`.")
         );
     }
 }
