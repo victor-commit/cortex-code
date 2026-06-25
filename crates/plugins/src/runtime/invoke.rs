@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -22,10 +25,178 @@ const RUNTIME_REQUIREMENT: &str = "Bun, Node, or Deno";
 const RUNTIME_ORDER: &str = "bun, node, deno";
 
 /// Host for loading configured local plugins through a real external JavaScript runtime.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RuntimeHost {
     timeout: Duration,
     path_override: Option<OsString>,
+    sessions: Arc<Mutex<HashMap<PathBuf, Arc<RuntimeSession>>>>,
+}
+
+impl std::fmt::Debug for RuntimeHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sessions = self.sessions.lock().map(|active| active.len()).unwrap_or(0);
+        f.debug_struct("RuntimeHost")
+            .field("timeout", &self.timeout)
+            .field("path_override", &self.path_override)
+            .field("active_sessions", &sessions)
+            .finish()
+    }
+}
+
+impl Drop for RuntimeHost {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.sessions) != 1 {
+            return;
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            for (_, session) in sessions.drain() {
+                session.shutdown();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeSession {
+    runtime: RuntimeSelection,
+    plugin_path: PathBuf,
+    process: Mutex<RuntimeProcess>,
+}
+
+#[derive(Debug)]
+struct RuntimeProcess {
+    child: Child,
+    stdin: ChildStdin,
+    responses: Receiver<String>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    temp_dir: PathBuf,
+}
+
+impl RuntimeSession {
+    fn invoke(
+        &self,
+        operation: BridgeOperation,
+        timeout: Duration,
+    ) -> Result<(BridgeResult, ChildOutput), PluginRuntimeError> {
+        let mut process = self
+            .process
+            .lock()
+            .map_err(|_| PluginRuntimeError::RuntimeFailed {
+                path: self.plugin_path.clone(),
+                runtime: self.runtime.runtime,
+                status: "session-lock-poisoned".to_owned(),
+                stderr: String::new(),
+            })?;
+
+        let request = serde_json::to_string(&BridgeRequest { operation })?;
+        process
+            .stdin
+            .write_all(request.as_bytes())
+            .map_err(|source| PluginRuntimeError::Spawn {
+                runtime: self.runtime.runtime,
+                executable: self.runtime.executable.clone(),
+                source,
+            })?;
+        process
+            .stdin
+            .write_all(b"\n")
+            .map_err(|source| PluginRuntimeError::Spawn {
+                runtime: self.runtime.runtime,
+                executable: self.runtime.executable.clone(),
+                source,
+            })?;
+        process
+            .stdin
+            .flush()
+            .map_err(|source| PluginRuntimeError::Spawn {
+                runtime: self.runtime.runtime,
+                executable: self.runtime.executable.clone(),
+                source,
+            })?;
+
+        let line = match process.responses.recv_timeout(timeout) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => {
+                let pid = process.child.id();
+                shutdown_process(&mut process);
+                return Err(PluginRuntimeError::Timeout {
+                    path: self.plugin_path.clone(),
+                    runtime: self.runtime.runtime,
+                    pid,
+                    timeout_ms: timeout.as_millis(),
+                });
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = process
+                    .child
+                    .try_wait()
+                    .ok()
+                    .and_then(|status| status)
+                    .map(status_text)
+                    .unwrap_or_else(|| "terminated".to_owned());
+                let stderr = process
+                    .stderr
+                    .lock()
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                    .unwrap_or_default();
+                shutdown_process(&mut process);
+                return Err(PluginRuntimeError::RuntimeFailed {
+                    path: self.plugin_path.clone(),
+                    runtime: self.runtime.runtime,
+                    status,
+                    stderr: redaction::redact(&stderr),
+                });
+            }
+        };
+
+        let result: BridgeResult = match serde_json::from_str(&line) {
+            Ok(result) => result,
+            Err(_) => {
+                let stderr = process
+                    .stderr
+                    .lock()
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                    .unwrap_or_default();
+                return Err(PluginRuntimeError::RuntimeFailed {
+                    path: self.plugin_path.clone(),
+                    runtime: self.runtime.runtime,
+                    status: "protocol-parse-error".to_owned(),
+                    stderr: redaction::redact(&stderr),
+                });
+            }
+        };
+
+        let stderr = process
+            .stderr
+            .lock()
+            .ok()
+            .map(|bytes| bytes.clone())
+            .unwrap_or_default();
+        Ok((
+            result,
+            ChildOutput {
+                status: success_status(),
+                stdout: Vec::new(),
+                stderr,
+            },
+        ))
+    }
+
+    fn shutdown(&self) {
+        if let Ok(mut process) = self.process.lock() {
+            shutdown_process(&mut process);
+        }
+    }
+}
+
+fn shutdown_process(process: &mut RuntimeProcess) {
+    let pid = process.child.id();
+    kill_runtime_process_group(pid);
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    let _ = std::fs::remove_dir_all(&process.temp_dir);
 }
 
 impl Default for RuntimeHost {
@@ -33,6 +204,7 @@ impl Default for RuntimeHost {
         Self {
             timeout: DEFAULT_TIMEOUT,
             path_override: None,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -266,7 +438,9 @@ impl RuntimeHost {
         plugin: &PluginSpec,
     ) -> Result<PluginHookReport, PluginRuntimeError> {
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
-        let (result, output) = self.invoke_plugin(plugin, &runtime, BridgeOperation::Dispose)?;
+        let result = self.invoke_plugin(plugin, &runtime, BridgeOperation::Dispose);
+        self.remove_session(plugin.path());
+        let (result, output) = result?;
         if result.ok {
             Ok(PluginHookReport {
                 plugin_path: plugin.path().to_path_buf(),
@@ -668,41 +842,174 @@ impl RuntimeHost {
             });
         }
 
+        let session = self.session_for(plugin, runtime)?;
+        match session.invoke(operation, self.timeout) {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                self.remove_session(plugin.path());
+                Err(err)
+            }
+        }
+    }
+
+    fn session_for(
+        &self,
+        plugin: &PluginSpec,
+        runtime: &RuntimeSelection,
+    ) -> Result<Arc<RuntimeSession>, PluginRuntimeError> {
+        if let Ok(sessions) = self.sessions.lock()
+            && let Some(existing) = sessions.get(plugin.path())
+        {
+            return Ok(existing.clone());
+        }
+
+        let created = Arc::new(self.start_session(plugin, runtime)?);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| PluginRuntimeError::RuntimeFailed {
+                path: plugin.path().to_path_buf(),
+                runtime: runtime.runtime,
+                status: "session-lock-poisoned".to_owned(),
+                stderr: String::new(),
+            })?;
+        Ok(sessions
+            .entry(plugin.path().to_path_buf())
+            .or_insert_with(|| created.clone())
+            .clone())
+    }
+
+    fn remove_session(&self, plugin_path: &Path) {
+        if let Ok(mut sessions) = self.sessions.lock()
+            && let Some(session) = sessions.remove(plugin_path)
+        {
+            session.shutdown();
+        }
+    }
+
+    fn start_session(
+        &self,
+        plugin: &PluginSpec,
+        runtime: &RuntimeSelection,
+    ) -> Result<RuntimeSession, PluginRuntimeError> {
         let temp = InvocationTemp::create()?;
         let bridge_path = temp.path.join("plugin_bridge.mjs");
-        let input_path = temp.path.join("input.json");
-        let result_path = temp.path.join("result.json");
+        let init_path = temp.path.join("init.json");
         std::fs::write(&bridge_path, BRIDGE_SCRIPT).map_err(|source| PluginRuntimeError::Io {
             action: "write plugin bridge",
             path: bridge_path.clone(),
             source,
         })?;
+
+        let context = PluginRuntimeContext::resolve(plugin.directory());
         std::fs::write(
-            &input_path,
+            &init_path,
             serde_json::to_vec(&BridgeInput {
                 plugin_path: plugin.path().to_string_lossy().into_owned(),
                 directory: plugin.directory().to_string_lossy().into_owned(),
+                root: context.root.to_string_lossy().into_owned(),
+                worktree: context.worktree,
+                server_url: context.server_url,
                 options: plugin.options().clone(),
-                operation,
             })?,
         )
         .map_err(|source| PluginRuntimeError::Io {
-            action: "write plugin input",
-            path: input_path.clone(),
+            action: "write plugin init input",
+            path: init_path.clone(),
             source,
         })?;
 
-        let output = run_child(
-            runtime,
-            plugin.path(),
-            &bridge_path,
-            &input_path,
-            &result_path,
-            self.timeout,
-        )?;
-        let result = read_bridge_result(plugin.path(), runtime, &result_path, &output)?;
-        let _ = std::fs::remove_dir_all(&temp.path);
-        Ok((result, output))
+        let mut command = Command::new(&runtime.executable);
+        match runtime.runtime {
+            JsRuntime::Bun | JsRuntime::Node => {
+                command.arg(&bridge_path);
+            }
+            JsRuntime::Deno => {
+                command.args([
+                    "run",
+                    "--allow-read",
+                    "--allow-write",
+                    "--allow-run",
+                    "--allow-net",
+                    "--allow-env",
+                ]);
+                command.arg(&bridge_path);
+            }
+        }
+        command
+            .arg(&init_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear()
+            .envs(secret_stripped_env());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+
+        let mut child = command
+            .spawn()
+            .map_err(|source| PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: runtime.executable.clone(),
+                source,
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: runtime.executable.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "plugin runtime stdin unavailable",
+                ),
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: runtime.executable.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "plugin runtime stdout unavailable",
+                ),
+            })?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| PluginRuntimeError::Spawn {
+                runtime: runtime.runtime,
+                executable: runtime.executable.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "plugin runtime stderr unavailable",
+                ),
+            })?;
+
+        let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+        std::thread::spawn(move || runtime_stdout_loop(stdout, tx));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        {
+            let stderr_target = stderr.clone();
+            std::thread::spawn(move || runtime_stderr_loop(stderr_pipe, stderr_target));
+        }
+
+        Ok(RuntimeSession {
+            runtime: runtime.clone(),
+            plugin_path: plugin.path().to_path_buf(),
+            process: Mutex::new(RuntimeProcess {
+                child,
+                stdin,
+                responses: rx,
+                stderr,
+                temp_dir: temp.path,
+            }),
+        })
     }
 }
 
@@ -1156,7 +1463,14 @@ pub enum PluginRuntimeError {
 struct BridgeInput {
     plugin_path: String,
     directory: String,
+    root: String,
+    worktree: String,
+    server_url: Option<String>,
     options: JsonValue,
+}
+
+#[derive(Serialize)]
+struct BridgeRequest {
     operation: BridgeOperation,
 }
 
@@ -1167,7 +1481,7 @@ struct PackageResolveInput {
     base_directory: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeOperation {
     Load { config: JsonValue, surface: String },
@@ -1259,92 +1573,6 @@ impl InvocationTemp {
         })?;
         Ok(Self { path })
     }
-}
-
-fn run_child(
-    runtime: &RuntimeSelection,
-    plugin_path: &Path,
-    bridge_path: &Path,
-    input_path: &Path,
-    result_path: &Path,
-    timeout: Duration,
-) -> Result<ChildOutput, PluginRuntimeError> {
-    let mut command = Command::new(&runtime.executable);
-    match runtime.runtime {
-        JsRuntime::Bun | JsRuntime::Node => {
-            command.arg(bridge_path);
-        }
-        JsRuntime::Deno => {
-            command.args([
-                "run",
-                "--allow-read",
-                "--allow-write",
-                "--allow-run",
-                "--allow-net",
-                "--allow-env",
-            ]);
-            command.arg(bridge_path);
-        }
-    }
-    command
-        .arg(input_path)
-        .arg(result_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear()
-        .envs(secret_stripped_env());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
-    let mut child = command
-        .spawn()
-        .map_err(|source| PluginRuntimeError::Spawn {
-            runtime: runtime.runtime,
-            executable: runtime.executable.clone(),
-            source,
-        })?;
-    let pid = child.id();
-    let stdout = child.stdout.take().map(read_pipe);
-    let stderr = child.stderr.take().map(read_pipe);
-    let started = Instant::now();
-
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|source| PluginRuntimeError::Spawn {
-                runtime: runtime.runtime,
-                executable: runtime.executable.clone(),
-                source,
-            })?
-        {
-            break status;
-        }
-        if started.elapsed() > timeout {
-            kill_runtime_process_group(pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(PluginRuntimeError::Timeout {
-                path: plugin_path.to_path_buf(),
-                runtime: runtime.runtime,
-                pid,
-                timeout_ms: timeout.as_millis(),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = join_pipe(stdout);
-    let stderr = join_pipe(stderr);
-    Ok(ChildOutput {
-        status,
-        stdout,
-        stderr,
-    })
 }
 
 fn run_package_child(
@@ -1499,6 +1727,19 @@ fn timeout_status() -> ExitStatus {
         .unwrap_or_else(|_| panic!("failed to synthesize timeout exit status"))
 }
 
+#[cfg(unix)]
+fn success_status() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    ExitStatus::from_raw(0)
+}
+
+#[cfg(not(unix))]
+fn success_status() -> ExitStatus {
+    Command::new("true")
+        .status()
+        .unwrap_or_else(|_| panic!("failed to synthesize success exit status"))
+}
+
 fn read_pipe<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
@@ -1511,6 +1752,35 @@ fn join_pipe(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
     handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default()
+}
+
+fn runtime_stdout_loop<R: Read>(stdout: R, tx: Sender<String>) {
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if tx.send(trimmed.to_owned()).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn runtime_stderr_loop<R: Read>(mut stderr_pipe: R, target: Arc<Mutex<Vec<u8>>>) {
+    let mut buffer = Vec::new();
+    let _ = stderr_pipe.read_to_end(&mut buffer);
+    if let Ok(mut stderr) = target.lock() {
+        stderr.extend(buffer);
+    }
 }
 
 fn kill_runtime_process_group(pid: u32) {
@@ -1531,42 +1801,6 @@ struct ChildOutput {
     status: ExitStatus,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-}
-
-fn read_bridge_result(
-    plugin_path: &Path,
-    runtime: &RuntimeSelection,
-    result_path: &Path,
-    output: &ChildOutput,
-) -> Result<BridgeResult, PluginRuntimeError> {
-    let result = match std::fs::read_to_string(result_path) {
-        Ok(result) => result,
-        Err(_) if !output.status.success() => {
-            return Err(PluginRuntimeError::RuntimeFailed {
-                path: plugin_path.to_path_buf(),
-                runtime: runtime.runtime,
-                status: status_text(output.status),
-                stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
-            });
-        }
-        Err(source) => {
-            return Err(PluginRuntimeError::Io {
-                action: "read plugin bridge result",
-                path: result_path.to_path_buf(),
-                source,
-            });
-        }
-    };
-    let parsed: BridgeResult = serde_json::from_str(&result)?;
-    if !output.status.success() && parsed.ok {
-        return Err(PluginRuntimeError::RuntimeFailed {
-            path: plugin_path.to_path_buf(),
-            runtime: runtime.runtime,
-            status: status_text(output.status),
-            stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
-        });
-    }
-    Ok(parsed)
 }
 
 fn read_package_resolve_result(
@@ -1696,6 +1930,104 @@ fn default_parameters() -> JsonValue {
         "properties": {},
         "additionalProperties": true
     })
+}
+
+#[derive(Clone, Debug)]
+struct PluginRuntimeContext {
+    root: PathBuf,
+    worktree: String,
+    server_url: Option<String>,
+}
+
+impl PluginRuntimeContext {
+    fn resolve(directory: &Path) -> Self {
+        let root = git_output(directory, &["rev-parse", "--show-toplevel"])
+            .map(PathBuf::from)
+            .unwrap_or_else(|| directory.to_path_buf());
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let worktree = git_output(directory, &["rev-parse", "--absolute-git-dir"])
+            .map(|path| {
+                std::fs::canonicalize(Path::new(&path))
+                    .unwrap_or_else(|_| PathBuf::from(path))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+
+        let server_url = std::env::var("CORTEX_SERVER_URL")
+            .ok()
+            .and_then(|raw| normalize_server_url(&raw))
+            .or_else(discover_loopback_server_url);
+
+        Self {
+            root,
+            worktree,
+            server_url,
+        }
+    }
+}
+
+fn git_output(directory: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn normalize_server_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let authority = trimmed.strip_prefix("http://")?.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    if !(3200..=3299).contains(&port) {
+        return None;
+    }
+    if host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost") {
+        Some(format!("http://127.0.0.1:{port}"))
+    } else {
+        None
+    }
+}
+
+fn discover_loopback_server_url() -> Option<String> {
+    for port in 3200..=3299 {
+        if loopback_healthcheck(port) {
+            return Some(format!("http://127.0.0.1:{port}"));
+        }
+    }
+    None
+}
+
+fn loopback_healthcheck(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(10)) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(30)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(30)));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buffer = [0_u8; 256];
+    let Ok(read) = stream.read(&mut buffer) else {
+        return false;
+    };
+    if read == 0 {
+        return false;
+    }
+    let response = String::from_utf8_lossy(&buffer[..read]);
+    response.contains(" 200 ") && response.contains("\"status\":\"ok\"")
 }
 
 fn non_empty_surface(surface: &str) -> String {
@@ -1836,12 +2168,12 @@ try {
 const BRIDGE_SCRIPT: &str = r#"
 import processModule from "node:process";
 import { pathToFileURL } from "node:url";
-import { writeFile, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createInterface } from "node:readline";
 
 const proc = globalThis.process ?? processModule;
 const inputPath = proc.argv[2];
-const resultPath = proc.argv[3];
 
 let activeHook = "load";
 
@@ -1858,8 +2190,32 @@ function runtimeInfo() {
   return { name: "javascript", version: "unknown" };
 }
 
-async function writeResult(result) {
-  await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
+function stringifyValue(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (_error) {
+    return String(value);
+  }
+}
+
+function writeStderr(...values) {
+  try {
+    proc.stderr.write(`${values.map(stringifyValue).join(" ")}\n`);
+  } catch (_error) {
+    // ignore logging failures
+  }
+}
+
+if (globalThis.console) {
+  globalThis.console.log = (...values) => writeStderr(...values);
+  globalThis.console.info = (...values) => writeStderr(...values);
+  globalThis.console.warn = (...values) => writeStderr(...values);
+  globalThis.console.error = (...values) => writeStderr(...values);
+}
+
+async function writeResultLine(result) {
+  proc.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 function errorToJson(error) {
@@ -1933,8 +2289,56 @@ function resolvePluginFunction(module) {
   return candidate;
 }
 
+function normalizeServerUrl(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildClient(serverUrl) {
+  const available = Boolean(serverUrl);
+  async function request(path, init = {}) {
+    if (!available) {
+      throw new Error("plugin client unavailable: no local server URL was resolved");
+    }
+    const target = new URL(String(path), `${serverUrl}/`).toString();
+    const response = await fetch(target, init);
+    const bodyText = await response.text();
+    let body;
+    try {
+      body = bodyText.length > 0 ? JSON.parse(bodyText) : null;
+    } catch (_error) {
+      body = bodyText;
+    }
+    if (!response.ok) {
+      throw new Error(`plugin client request failed (${response.status} ${response.statusText})`);
+    }
+    return body;
+  }
+  const session = {
+    list: async () => request("/session"),
+    create: async (payload = {}) => request("/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload ?? {})
+    })
+  };
+  return {
+    kind: available ? "server" : "none",
+    available,
+    serverUrl,
+    request,
+    session,
+    sessions: session
+  };
+}
+
 function createInput(raw, directory) {
   const shell = makeShell(directory);
+  const root = String(raw.root ?? directory);
+  const worktree = String(raw.worktree ?? root);
+  const serverUrl = normalizeServerUrl(raw.server_url);
+  const client = buildClient(serverUrl);
   const registeredTools = [];
   const registeredAuth = [];
   const registeredProviders = [];
@@ -1952,12 +2356,13 @@ function createInput(raw, directory) {
   };
   return {
     input: {
-      project: { directory, root: directory },
+      project: { directory, root, worktree },
       directory,
-      worktree: directory,
-      serverUrl: "local://cortex",
-      server: { kind: "local", url: "local://cortex" },
-      client: { kind: "local", available: true },
+      root,
+      worktree,
+      serverUrl,
+      server: { kind: serverUrl ? "loopback" : "none", url: serverUrl },
+      client,
       shell: shell.run,
       $: shell,
       experimental_workspace: {
@@ -2199,12 +2604,7 @@ async function loadHooks(raw, directory) {
   return { hooks: hooks ?? {}, hookEntries, context };
 }
 
-try {
-  const raw = JSON.parse(await readFile(inputPath, "utf8"));
-  const directory = String(raw.directory);
-  const operation = raw.operation ?? { type: "load" };
-  activeHook = "load";
-  const { hooks, hookEntries, context } = await loadHooks(raw, directory);
+async function runOperation(operation, hooks, context, directory) {
   const invokedHooks = [];
   const registrations = { config_rules: [], tools: [], auth_methods: [], providers: [] };
   let output = undefined;
@@ -2422,17 +2822,68 @@ try {
     throw new Error(`unknown plugin bridge operation: ${operation.type}`);
   }
 
-  await writeResult({
-    ok: true,
-    runtime: runtimeInfo(),
-    pid: typeof proc.pid === "number" ? proc.pid : null,
-    hooks: hookEntries,
-    invoked_hooks: invokedHooks,
-    registrations,
-    output
-  });
+  return { invokedHooks, registrations, output };
+}
+
+async function handleRequest(request, hooks, hookEntries, context, directory) {
+  try {
+    const operation = request?.operation ?? request ?? { type: "load" };
+    const { invokedHooks, registrations, output } = await runOperation(
+      operation,
+      hooks,
+      context,
+      directory
+    );
+    await writeResultLine({
+      ok: true,
+      runtime: runtimeInfo(),
+      pid: typeof proc.pid === "number" ? proc.pid : null,
+      hooks: hookEntries,
+      invoked_hooks: invokedHooks,
+      registrations,
+      output
+    });
+  } catch (error) {
+    await writeResultLine({
+      ok: false,
+      runtime: runtimeInfo(),
+      pid: typeof proc.pid === "number" ? proc.pid : null,
+      hooks: [],
+      invoked_hooks: [],
+      registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
+      error: errorToJson(error)
+    });
+  }
+}
+
+try {
+  const raw = JSON.parse(await readFile(inputPath, "utf8"));
+  const directory = String(raw.directory);
+  activeHook = "load";
+  const { hooks, hookEntries, context } = await loadHooks(raw, directory);
+  const lines = createInterface({ input: proc.stdin, crlfDelay: Infinity, terminal: false });
+  for await (const line of lines) {
+    const trimmed = String(line ?? "").trim();
+    if (!trimmed) continue;
+    let request;
+    try {
+      request = JSON.parse(trimmed);
+    } catch (error) {
+      await writeResultLine({
+        ok: false,
+        runtime: runtimeInfo(),
+        pid: typeof proc.pid === "number" ? proc.pid : null,
+        hooks: [],
+        invoked_hooks: [],
+        registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
+        error: errorToJson(error)
+      });
+      continue;
+    }
+    await handleRequest(request, hooks, hookEntries, context, directory);
+  }
 } catch (error) {
-  await writeResult({
+  await writeResultLine({
     ok: false,
     runtime: runtimeInfo(),
     pid: typeof proc.pid === "number" ? proc.pid : null,
