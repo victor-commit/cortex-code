@@ -2463,8 +2463,11 @@ async fn todo_route_returns_tool_written_todos_after_app_recreation() {
         assert_eq!(body["todos"].as_array().expect("todos").len(), 3);
         assert_eq!(body["todos"][0]["content"], "capture message nonce");
         assert_eq!(body["todos"][0]["status"], "completed");
+        assert_eq!(body["todos"][0]["priority"], "medium");
         assert_eq!(body["todos"][1]["status"], "in_progress");
+        assert_eq!(body["todos"][1]["priority"], "medium");
         assert_eq!(body["todos"][2]["status"], "pending");
+        assert_eq!(body["todos"][2]["priority"], "medium");
     }
 }
 

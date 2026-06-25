@@ -3,24 +3,26 @@
 //! Behavior (architecture §3.4, validation contract VAL-TOOLS-038/039):
 //!
 //! - A call carrying a `todos` array commits the complete list (each item is `content` + a
-//!   `pending`/`in_progress`/`completed` status), replacing the session's prior list wholesale, and
-//!   returns the stored list. Re-committing the full list with one item's status changed is how the
-//!   model updates a single task while the others keep their prior status.
+//!   `pending`/`in_progress`/`completed`/`cancelled` status + optional priority), replacing the
+//!   session's prior list wholesale, and returns the stored list. Re-committing the full list with
+//!   one item's fields changed is how the model updates a single task while the others keep their
+//!   prior values.
 //! - A call with no `todos` reads the current list (useful for confirming state).
 //! - The list is scoped to the active session through the [`TodoStore`](crate::tool::TodoStore)
 //!   seam, so one session never sees another's list and a fresh session starts empty.
 
 use futures_util::future::BoxFuture;
-use protocol::{TodoItem, TodoStatus};
+use protocol::{TodoItem, TodoPriority, TodoStatus};
 use serde_json::{Value, json};
 
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
 const DESCRIPTION: &str = "Maintain a structured task list for the current session. Pass `todos` \
 as the complete array of items you want the list to hold; each item has `content` (the task text) \
-and `status` (one of `pending`, `in_progress`, `completed`). Each call replaces the whole list, so \
-to update a single task, resend the full list with that task's status changed. Call with no `todos` \
-to read the current list. The list is private to this session.";
+and `status` (one of `pending`, `in_progress`, `completed`, `cancelled`). You can also set \
+`priority` (`high`, `medium`, `low`), defaulting to `medium` when omitted. Each call replaces the \
+whole list, so to update a single task, resend the full list with that task's fields changed. Call \
+with no `todos` to read the current list. The list is private to this session.";
 
 /// The `todo` tool.
 pub struct TodoTool;
@@ -50,8 +52,13 @@ impl Tool for TodoTool {
                             },
                             "status": {
                                 "type": "string",
-                                "enum": ["pending", "in_progress", "completed"],
+                                "enum": ["pending", "in_progress", "completed", "cancelled"],
                                 "description": "The task's lifecycle status."
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description": "Optional task priority. Defaults to medium when omitted."
                             }
                         },
                         "required": ["content", "status"]
@@ -96,7 +103,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 }
 
 /// Parse the raw `todos` array into typed items: each needs a non-empty `content` (or `text`) and a
-/// recognized `status` (defaulting to `pending` when absent).
+/// recognized `status` (defaulting to `pending` when absent). `priority` is optional and defaults to
+/// `medium`.
 fn parse_items(raw: &[Value]) -> Result<Vec<TodoItem>, String> {
     let mut items = Vec::with_capacity(raw.len());
     for (index, value) in raw.iter().enumerate() {
@@ -111,13 +119,22 @@ fn parse_items(raw: &[Value]) -> Result<Vec<TodoItem>, String> {
         let status = match value.get("status").and_then(Value::as_str) {
             Some(token) => TodoStatus::parse(token).ok_or_else(|| {
                 format!(
-                    "item {} has an invalid status '{token}' (use pending, in_progress, or completed)",
+                    "item {} has an invalid status '{token}' (use pending, in_progress, completed, or cancelled)",
                     index + 1
                 )
             })?,
             None => TodoStatus::Pending,
         };
-        items.push(TodoItem::new(content, status));
+        let priority = match value.get("priority").and_then(Value::as_str) {
+            Some(token) => TodoPriority::parse(token).ok_or_else(|| {
+                format!(
+                    "item {} has an invalid priority '{token}' (use high, medium, or low)",
+                    index + 1
+                )
+            })?,
+            None => TodoPriority::Medium,
+        };
+        items.push(TodoItem::new_with_priority(content, status, priority));
     }
     Ok(items)
 }
@@ -138,7 +155,15 @@ fn render_items(items: &[TodoItem]) -> String {
     items
         .iter()
         .enumerate()
-        .map(|(index, item)| format!("{}. [{}] {}", index + 1, item.status.as_str(), item.content))
+        .map(|(index, item)| {
+            format!(
+                "{}. [{}][{}] {}",
+                index + 1,
+                item.status.as_str(),
+                item.priority.as_str(),
+                item.content
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -192,6 +217,16 @@ mod tests {
         json!({ "todos": todos })
     }
 
+    fn write_args_with_priority(items: &[(&str, &str, &str)]) -> Value {
+        let todos: Vec<Value> = items
+            .iter()
+            .map(|(content, status, priority)| {
+                json!({ "content": content, "status": status, "priority": priority })
+            })
+            .collect();
+        json!({ "todos": todos })
+    }
+
     // VAL-TOOLS-038: writing 3 items then updating item 1 to completed leaves item 1 completed and
     // items 2-3 with their prior statuses, persisted for the session.
     #[test]
@@ -224,13 +259,14 @@ mod tests {
         assert_eq!(stored[0].status, TodoStatus::Completed);
         assert_eq!(stored[1].status, TodoStatus::Pending);
         assert_eq!(stored[2].status, TodoStatus::Pending);
+        assert_eq!(stored[0].priority, TodoPriority::Medium);
         let text = updated.model_content();
         assert!(
-            text.contains("1. [completed] design the schema"),
+            text.contains("1. [completed][medium] design the schema"),
             "got: {text}"
         );
         assert!(
-            text.contains("2. [pending] write the parser"),
+            text.contains("2. [pending][medium] write the parser"),
             "got: {text}"
         );
     }
@@ -256,7 +292,7 @@ mod tests {
 
         let read = run(&json!({}), &ctx);
         assert!(!read.is_error);
-        assert_eq!(read.model_content(), "1. [in_progress] task one");
+        assert_eq!(read.model_content(), "1. [in_progress][medium] task one");
     }
 
     #[test]
@@ -266,6 +302,33 @@ mod tests {
         let output = run(&write_args(&[("task", "banana")]), &ctx);
         assert!(output.is_error);
         assert!(output.model_content().contains("invalid status"));
+    }
+
+    #[test]
+    fn cancelled_status_and_priority_round_trip() {
+        let store = Arc::new(MemoryTodoStore::default());
+        let ctx = ctx_with_store("ses_a", store.clone());
+        let output = run(
+            &write_args_with_priority(&[("defer this", "cancelled", "high")]),
+            &ctx,
+        );
+        assert!(!output.is_error, "got: {}", output.model_content());
+        assert_eq!(output.model_content(), "1. [cancelled][high] defer this");
+        let stored = store.list("ses_a").expect("list");
+        assert_eq!(stored[0].status, TodoStatus::Cancelled);
+        assert_eq!(stored[0].priority, TodoPriority::High);
+    }
+
+    #[test]
+    fn an_invalid_priority_is_a_clear_error() {
+        let store = Arc::new(MemoryTodoStore::default());
+        let ctx = ctx_with_store("ses_a", store);
+        let output = run(
+            &json!({ "todos": [{ "content": "task", "status": "pending", "priority": "urgent"}]}),
+            &ctx,
+        );
+        assert!(output.is_error);
+        assert!(output.model_content().contains("invalid priority"));
     }
 
     #[test]

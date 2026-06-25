@@ -262,13 +262,16 @@ mod tests {
             .into_iter()
             .find(|def| def.name == "task")
             .expect("task definition");
-        let enum_values: Vec<&str> = task.parameters["properties"]["agent"]["enum"]
-            .as_array()
-            .expect("enum")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect();
-        assert_eq!(enum_values, vec!["explore"]);
+        assert_eq!(
+            task.parameters["properties"]["subagent_type"]["type"],
+            serde_json::json!("string")
+        );
+        assert!(
+            task.parameters["properties"]["subagent_type"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("explore")
+        );
     }
 
     #[test]

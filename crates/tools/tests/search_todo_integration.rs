@@ -315,8 +315,8 @@ async fn runner_dispatches_todo_write_then_update_persists_per_session() {
     )
     .await;
     assert!(!is_error, "todo succeeded: {text}");
-    assert!(text.contains("1. [completed] one"), "got: {text}");
-    assert!(text.contains("2. [pending] two"), "got: {text}");
+    assert!(text.contains("1. [completed][medium] one"), "got: {text}");
+    assert!(text.contains("2. [pending][medium] two"), "got: {text}");
 
     let stored = store.list("ses_a").unwrap();
     assert_eq!(stored.len(), 3);

@@ -5,7 +5,7 @@
 //! surface-provided [`TaskRunner`](crate::TaskRunner). The CLI runner owns the real durable child
 //! session, provider turn, tool registry, and PID cleanup.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
@@ -15,7 +15,7 @@ use crate::tool::{TaskRequest, TaskTarget, Tool, ToolContext, ToolOutput};
 /// Model-facing task/subagent delegation tool.
 pub struct TaskTool {
     targets: Vec<TaskTarget>,
-    target_names: BTreeSet<String>,
+    target_lookup: BTreeMap<String, String>,
 }
 
 impl TaskTool {
@@ -24,10 +24,13 @@ impl TaskTool {
     /// time so a stale or adversarial model call cannot spawn a hidden target.
     #[must_use]
     pub fn new(targets: Vec<TaskTarget>) -> Self {
-        let target_names = targets.iter().map(|target| target.name.clone()).collect();
+        let target_lookup = targets
+            .iter()
+            .map(|target| (normalize_agent_name(&target.name), target.name.clone()))
+            .collect();
         Self {
             targets,
-            target_names,
+            target_lookup,
         }
     }
 
@@ -36,14 +39,6 @@ impl TaskTool {
             .iter()
             .map(|target| target.name.clone())
             .collect()
-    }
-
-    fn target_listing(&self) -> String {
-        self.targets
-            .iter()
-            .map(|target| format!("{}: {}", target.name, target.description))
-            .collect::<Vec<_>>()
-            .join("; ")
     }
 }
 
@@ -56,55 +51,103 @@ impl Tool for TaskTool {
         "Delegate a focused subtask to one of the permitted non-primary subagent types. The \
          subagent runs in its own durable session under that agent's persona and permission rules, \
          and its final result is returned here for you to incorporate into your answer. Use this \
-         for read/search/investigation work that benefits from a separate agent."
+         for read/search/investigation work that benefits from a separate agent. Compatibility \
+         parameters: `subagent_type`/`agent`, optional `task_id` resume, `description`, \
+         `command`, and `background`."
     }
 
     fn parameters(&self) -> Value {
-        let names = self.target_names();
+        let names = self.target_names().join(", ");
         json!({
             "type": "object",
             "properties": {
+                "subagent_type": {
+                    "type": "string",
+                    "description": format!("The subagent type to run. Available targets in this session: {names}.")
+                },
+                "subagentType": {
+                    "type": "string",
+                    "description": "Compatibility alias for `subagent_type`."
+                },
                 "agent": {
                     "type": "string",
-                    "enum": names,
-                    "description": format!("The permitted subagent type to run. Available targets: {}.", self.target_listing())
+                    "description": "Compatibility alias for `subagent_type`."
                 },
                 "prompt": {
                     "type": "string",
                     "description": "The complete delegated task prompt for the subagent."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "A short (3-5 words) task description used for child-session labeling."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Resume or rejoin a previous task session by id."
+                },
+                "taskId": {
+                    "type": "string",
+                    "description": "Compatibility alias for `task_id`."
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Optional command context that triggered this task."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run asynchronously and return immediately with task state information."
                 }
             },
-            "required": ["agent", "prompt"],
+            "anyOf": [
+                { "required": ["subagent_type", "prompt"] },
+                { "required": ["agent", "prompt"] },
+                { "required": ["task_id"] },
+                { "required": ["taskId"] }
+            ],
             "additionalProperties": false
         })
     }
 
     fn execute<'a>(&'a self, arguments: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(agent) = arguments.get("agent").and_then(Value::as_str) else {
-                return ToolOutput::error("task: the 'agent' argument is required");
+            let task_id = string_arg(&arguments, &["task_id", "taskId"]);
+            let background = arguments
+                .get("background")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let description = string_arg(&arguments, &["description"]);
+            let command = string_arg(&arguments, &["command"]);
+            let prompt = string_arg(&arguments, &["prompt"]);
+
+            let agent_token = string_arg(&arguments, &["subagent_type", "subagentType", "agent"]);
+            let agent = match agent_token {
+                Some(token) => {
+                    let Some(agent) = self.target_lookup.get(&normalize_agent_name(&token)) else {
+                        let available = self.target_names().join(", ");
+                        return ToolOutput::error(format!(
+                            "task: subagent `{token}` is not available; permitted targets are: {available}"
+                        ));
+                    };
+                    Some(agent.clone())
+                }
+                None => None,
             };
-            let agent = agent.trim();
-            if agent.is_empty() {
-                return ToolOutput::error("task: the 'agent' argument must not be empty");
+
+            if task_id.is_none() && prompt.is_none() {
+                return ToolOutput::error(
+                    "task: provide either 'prompt' (for a new task) or 'task_id' (to rejoin/resume)",
+                );
             }
-            if !self.target_names.contains(agent) {
-                let available = self.target_names().join(", ");
-                return ToolOutput::error(format!(
-                    "task: subagent `{agent}` is not available; permitted targets are: {available}"
-                ));
+            if prompt.is_some() && agent.is_none() {
+                return ToolOutput::error(
+                    "task: the 'subagent_type' argument is required when 'prompt' is provided",
+                );
             }
 
-            let Some(prompt) = arguments.get("prompt").and_then(Value::as_str) else {
-                return ToolOutput::error("task: the 'prompt' argument is required");
-            };
-            let prompt = prompt.trim();
-            if prompt.is_empty() {
-                return ToolOutput::error("task: the 'prompt' argument must not be empty");
-            }
-
-            if let Err(message) = ctx.ensure_permitted("task", agent) {
-                return ToolOutput::error(format!("{message} (subagent not spawned)"));
+            if let Some(agent) = agent.as_deref() {
+                if let Err(message) = ctx.ensure_permitted("task", agent) {
+                    return ToolOutput::error(format!("{message} (subagent not spawned)"));
+                }
             }
 
             let Some(runner) = ctx.task_runner() else {
@@ -112,11 +155,38 @@ impl Tool for TaskTool {
                     "task: subagent execution is not available in this surface",
                 );
             };
+
             runner
-                .run_task(TaskRequest::new(agent.to_owned(), prompt.to_owned()))
+                .run_task(TaskRequest {
+                    agent,
+                    prompt,
+                    description,
+                    task_id,
+                    command,
+                    background,
+                })
                 .await
         })
     }
+}
+
+fn string_arg(arguments: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        arguments
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn normalize_agent_name(input: &str) -> String {
+    input
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
 }
 
 #[cfg(test)]
@@ -146,7 +216,8 @@ mod tests {
                 self.requests.lock().expect("lock").push(request.clone());
                 ToolOutput::text(format!(
                     "subagent {} answered {}",
-                    request.agent, request.prompt
+                    request.agent.as_deref().unwrap_or("unknown"),
+                    request.prompt.as_deref().unwrap_or("(no prompt)")
                 ))
             })
         }
@@ -165,7 +236,7 @@ mod tests {
         let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner.clone());
         let out = tool()
             .execute(
-                json!({"agent":"explore","prompt":"find TODO markers"}),
+                json!({"subagent_type":"explore","prompt":"find TODO markers"}),
                 &ctx,
             )
             .await;
@@ -178,11 +249,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_accepts_alias_names_and_resume_fields() {
+        let runner = Arc::new(RecordingRunner::new());
+        let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner.clone());
+        let out = tool()
+            .execute(
+                json!({
+                    "agent":"EXPLORE",
+                    "prompt":"resume context",
+                    "description":"Resume task",
+                    "task_id":"ses_child",
+                    "command":"inspect --deep",
+                    "background":true
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!out.is_error, "got: {}", out.model_content());
+        let request = runner.requests.lock().expect("lock")[0].clone();
+        assert_eq!(request.agent.as_deref(), Some("explore"));
+        assert_eq!(request.task_id.as_deref(), Some("ses_child"));
+        assert_eq!(request.command.as_deref(), Some("inspect --deep"));
+        assert_eq!(request.description.as_deref(), Some("Resume task"));
+        assert!(request.background);
+    }
+
+    #[tokio::test]
     async fn task_rejects_targets_that_were_not_advertised() {
         let runner = Arc::new(RecordingRunner::new());
         let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner);
         let out = tool()
-            .execute(json!({"agent":"build","prompt":"do work"}), &ctx)
+            .execute(json!({"subagent_type":"build","prompt":"do work"}), &ctx)
             .await;
         assert!(out.is_error);
         assert!(out.model_content().contains("not available"));
@@ -200,7 +297,7 @@ mod tests {
             .with_task_runner(runner.clone())
             .with_permissions(Arc::new(engine));
         let out = tool()
-            .execute(json!({"agent":"explore","prompt":"do work"}), &ctx)
+            .execute(json!({"subagent_type":"explore","prompt":"do work"}), &ctx)
             .await;
         assert!(out.is_error);
         assert!(out.model_content().contains("permission denied"));
@@ -223,7 +320,7 @@ mod tests {
             .with_task_runner(runner.clone())
             .with_permissions(Arc::new(engine));
         let out = tool()
-            .execute(json!({"agent":"explore","prompt":"do work"}), &ctx)
+            .execute(json!({"subagent_type":"explore","prompt":"do work"}), &ctx)
             .await;
         assert!(out.is_error);
         assert!(out.model_content().contains("permission denied"));
@@ -233,21 +330,38 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn task_allows_rejoin_queries_with_task_id_only() {
+        let runner = Arc::new(RecordingRunner::new());
+        let ctx = ToolContext::new(std::env::temp_dir()).with_task_runner(runner.clone());
+        let out = tool().execute(json!({"task_id":"ses_child"}), &ctx).await;
+        assert!(!out.is_error, "got: {}", out.model_content());
+        let request = runner.requests.lock().expect("lock")[0].clone();
+        assert_eq!(request.task_id.as_deref(), Some("ses_child"));
+        assert!(request.prompt.is_none());
+        assert!(request.agent.is_none());
+    }
+
     #[test]
-    fn parameters_advertise_exactly_the_permitted_target_enum() {
+    fn parameters_advertise_compatibility_fields() {
         let params = tool().parameters();
-        let targets: Vec<&str> = params["properties"]["agent"]["enum"]
-            .as_array()
-            .expect("enum array")
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        assert_eq!(targets, vec!["explore", "general"]);
+        assert_eq!(
+            params["properties"]["subagent_type"]["type"],
+            serde_json::json!("string")
+        );
+        assert_eq!(
+            params["properties"]["background"]["type"],
+            serde_json::json!("boolean")
+        );
         assert!(
-            params["properties"]["agent"]["description"]
+            params["properties"]["subagent_type"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("explore: Read-only exploration")
+                .contains("explore, general")
+        );
+        assert_eq!(
+            params["anyOf"][0]["required"],
+            serde_json::json!(["subagent_type", "prompt"])
         );
     }
 }

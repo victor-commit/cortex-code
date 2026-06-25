@@ -18,16 +18,20 @@ pub enum TodoStatus {
     InProgress,
     /// Finished.
     Completed,
+    /// Intentionally canceled and no longer actionable.
+    Cancelled,
 }
 
 impl TodoStatus {
-    /// The canonical wire token for this status (`pending` / `in_progress` / `completed`).
+    /// The canonical wire token for this status (`pending` / `in_progress` / `completed` /
+    /// `cancelled`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             TodoStatus::Pending => "pending",
             TodoStatus::InProgress => "in_progress",
             TodoStatus::Completed => "completed",
+            TodoStatus::Cancelled => "cancelled",
         }
     }
 
@@ -45,6 +49,43 @@ impl TodoStatus {
             "pending" => Some(TodoStatus::Pending),
             "in_progress" | "inprogress" => Some(TodoStatus::InProgress),
             "completed" | "complete" | "done" => Some(TodoStatus::Completed),
+            "cancelled" | "canceled" | "cancel" => Some(TodoStatus::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// Priority level of a todo item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoPriority {
+    /// Urgent item.
+    High,
+    /// Default priority.
+    #[default]
+    Medium,
+    /// Nice-to-have item.
+    Low,
+}
+
+impl TodoPriority {
+    /// The canonical wire token for this priority (`high` / `medium` / `low`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TodoPriority::High => "high",
+            TodoPriority::Medium => "medium",
+            TodoPriority::Low => "low",
+        }
+    }
+
+    /// Parse a priority token leniently, returning `None` for unknown values.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "high" => Some(TodoPriority::High),
+            "medium" | "med" | "normal" => Some(TodoPriority::Medium),
+            "low" => Some(TodoPriority::Low),
             _ => None,
         }
     }
@@ -57,15 +98,33 @@ pub struct TodoItem {
     pub content: String,
     /// The lifecycle status of the task.
     pub status: TodoStatus,
+    /// Priority level.
+    #[serde(default)]
+    pub priority: TodoPriority,
 }
 
 impl TodoItem {
-    /// Build a todo item with `content` and `status`.
+    /// Build a todo item with `content` and `status` using the default priority (`medium`).
     #[must_use]
     pub fn new(content: impl Into<String>, status: TodoStatus) -> Self {
         Self {
             content: content.into(),
             status,
+            priority: TodoPriority::default(),
+        }
+    }
+
+    /// Build a todo item with explicit priority.
+    #[must_use]
+    pub fn new_with_priority(
+        content: impl Into<String>,
+        status: TodoStatus,
+        priority: TodoPriority,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            status,
+            priority,
         }
     }
 }
@@ -80,6 +139,7 @@ mod tests {
             TodoStatus::Pending,
             TodoStatus::InProgress,
             TodoStatus::Completed,
+            TodoStatus::Cancelled,
         ] {
             assert_eq!(TodoStatus::parse(status.as_str()), Some(status));
         }
@@ -101,6 +161,7 @@ mod tests {
             Some(TodoStatus::Completed)
         );
         assert_eq!(TodoStatus::parse("done"), Some(TodoStatus::Completed));
+        assert_eq!(TodoStatus::parse("canceled"), Some(TodoStatus::Cancelled));
         assert_eq!(TodoStatus::parse("bogus"), None);
     }
 
@@ -111,10 +172,37 @@ mod tests {
     }
 
     #[test]
+    fn priority_round_trips_through_its_wire_token() {
+        for priority in [TodoPriority::High, TodoPriority::Medium, TodoPriority::Low] {
+            assert_eq!(TodoPriority::parse(priority.as_str()), Some(priority));
+        }
+    }
+
+    #[test]
+    fn priority_serializes_to_snake_case() {
+        let value = serde_json::to_value(TodoPriority::Medium).expect("serialize");
+        assert_eq!(value, serde_json::json!("medium"));
+    }
+
+    #[test]
     fn item_round_trips_through_json() {
-        let item = TodoItem::new("write the parser", TodoStatus::Completed);
+        let item = TodoItem::new_with_priority(
+            "write the parser",
+            TodoStatus::Completed,
+            TodoPriority::High,
+        );
         let json = serde_json::to_string(&item).expect("serialize");
         let back: TodoItem = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(item, back);
+    }
+
+    #[test]
+    fn item_without_priority_defaults_to_medium() {
+        let value = serde_json::json!({
+            "content": "keep compatibility",
+            "status": "pending"
+        });
+        let item: TodoItem = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(item.priority, TodoPriority::Medium);
     }
 }

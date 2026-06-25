@@ -40,6 +40,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         sql: include_str!("migrations/0005_message_parts.sql"),
     },
+    Migration {
+        version: 6,
+        sql: include_str!("migrations/0006_todo_priority.sql"),
+    },
 ];
 
 /// The highest migration version known to this build.

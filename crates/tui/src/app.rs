@@ -2370,9 +2370,10 @@ impl App {
         let mut text = String::from("Todos");
         for (index, item) in todos.iter().enumerate() {
             text.push_str(&format!(
-                "\n{}. [{}] {}",
+                "\n{}. [{}][{}] {}",
                 index + 1,
                 item.status.as_str(),
+                item.priority.as_str(),
                 item.content
             ));
         }
@@ -6997,15 +6998,15 @@ mod tests {
         assert!(rendered.contains("nonce answer"), "{rendered}");
         assert!(rendered.contains("Todos"), "{rendered}");
         assert!(
-            rendered.contains("1. [completed] capture message nonce"),
+            rendered.contains("1. [completed][medium] capture message nonce"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("2. [in_progress] verify TUI snapshot"),
+            rendered.contains("2. [in_progress][medium] verify TUI snapshot"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("3. [pending] verify server response"),
+            rendered.contains("3. [pending][medium] verify server response"),
             "{rendered}"
         );
     }

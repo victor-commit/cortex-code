@@ -353,10 +353,18 @@ impl TaskTarget {
 /// A subagent invocation requested by the `task` tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRequest {
-    /// The target subagent type to run.
-    pub agent: String,
-    /// The work delegated to the child session.
-    pub prompt: String,
+    /// Target subagent type (`subagent_type` / `agent`) for a new or resumed run.
+    pub agent: Option<String>,
+    /// Work delegated to the child session. Optional for `task_id` status/rejoin checks.
+    pub prompt: Option<String>,
+    /// Human-facing subtask description.
+    pub description: Option<String>,
+    /// Resume/session identifier (`task_id`) for rejoin/continuation.
+    pub task_id: Option<String>,
+    /// Optional command context that triggered the task.
+    pub command: Option<String>,
+    /// Whether to start/continue asynchronously.
+    pub background: bool,
 }
 
 impl TaskRequest {
@@ -364,8 +372,12 @@ impl TaskRequest {
     #[must_use]
     pub fn new(agent: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
-            agent: agent.into(),
-            prompt: prompt.into(),
+            agent: Some(agent.into()),
+            prompt: Some(prompt.into()),
+            description: None,
+            task_id: None,
+            command: None,
+            background: false,
         }
     }
 }
@@ -785,6 +797,37 @@ impl ToolContext {
                 .message
                 .unwrap_or_else(|| format!("{tool}: permission denied for {target}")))
         }
+    }
+
+    /// Require permission to access `resolved` as a working directory for command tools.
+    ///
+    /// This applies the same external-directory boundary check used by path-scoped file tools while
+    /// keeping command permission matching (`bash` patterns) separate from path permissions.
+    pub fn ensure_workdir_permitted(&self, resolved: &Path) -> Result<(), String> {
+        let Some(engine) = &self.permissions else {
+            return Ok(());
+        };
+        let Some(denied) = self.permit_external_directory(engine, resolved) else {
+            return Ok(());
+        };
+        let boundary = if resolved.is_dir() {
+            resolved.to_path_buf()
+        } else {
+            resolved
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| resolved.to_path_buf())
+        };
+        let resource = boundary.join("*").to_string_lossy().to_string();
+        let mut message = format!("bash: permission denied for workdir {resource}");
+        if let Some(feedback) = denied.feedback {
+            let feedback = redaction::redact(&feedback);
+            if !feedback.is_empty() {
+                message.push_str("\nCorrection from user: ");
+                message.push_str(&feedback);
+            }
+        }
+        Err(message)
     }
 
     /// Resolve permission for one action and return both the decision and any corrective feedback.

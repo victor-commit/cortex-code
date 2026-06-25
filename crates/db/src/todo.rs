@@ -7,7 +7,7 @@
 //! their session, so one session never sees another's list and a fresh session reports an empty
 //! list.
 
-use protocol::{TodoItem, TodoStatus};
+use protocol::{TodoItem, TodoPriority, TodoStatus};
 use rusqlite::{Connection, Row, params};
 
 use crate::error::{DbError, DbResult};
@@ -57,14 +57,15 @@ impl<'a> TodoRepo<'a> {
                 let id = random_id(self.conn, "tod")?;
                 let content = redaction::redact(&item.content);
                 self.conn.execute(
-                    "INSERT INTO todos (id, session_id, position, content, status, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                    "INSERT INTO todos (id, session_id, position, content, status, priority, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                     params![
                         id,
                         session_id,
                         position as i64,
                         content,
                         item.status.as_str(),
+                        item.priority.as_str(),
                     ],
                 )?;
             }
@@ -91,7 +92,7 @@ impl<'a> TodoRepo<'a> {
     /// todos returns an empty list (not an error).
     pub fn list_for_session(&self, session_id: &str) -> DbResult<Vec<TodoItem>> {
         let mut statement = self.conn.prepare(
-            "SELECT content, status FROM todos WHERE session_id = ?1 ORDER BY position ASC, rowid ASC",
+            "SELECT content, status, priority FROM todos WHERE session_id = ?1 ORDER BY position ASC, rowid ASC",
         )?;
         let rows = statement.query_map(params![session_id], todo_from_row)?;
         let mut items = Vec::new();
@@ -102,24 +103,31 @@ impl<'a> TodoRepo<'a> {
     }
 }
 
-/// Build a [`TodoItem`] from a `(content, status)` row, defaulting an unrecognized stored status to
-/// [`TodoStatus::Pending`] rather than failing the read.
+/// Build a [`TodoItem`] from a `(content, status, priority)` row, defaulting an unrecognized stored
+/// status/priority rather than failing the read.
 fn todo_from_row(row: &Row<'_>) -> rusqlite::Result<TodoItem> {
     let content: String = row.get("content")?;
     let status: String = row.get("status")?;
-    Ok(TodoItem::new(
+    let priority: String = row.get("priority")?;
+    Ok(TodoItem::new_with_priority(
         content,
         TodoStatus::parse(&status).unwrap_or(TodoStatus::Pending),
+        TodoPriority::parse(&priority).unwrap_or_default(),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::Database;
-    use protocol::{TodoItem, TodoStatus};
+    use protocol::{TodoItem, TodoPriority, TodoStatus};
+    use rusqlite::params;
 
     fn item(content: &str, status: TodoStatus) -> TodoItem {
         TodoItem::new(content, status)
+    }
+
+    fn item_with_priority(content: &str, status: TodoStatus, priority: TodoPriority) -> TodoItem {
+        TodoItem::new_with_priority(content, status, priority)
     }
 
     #[test]
@@ -130,7 +138,7 @@ mod tests {
         let items = vec![
             item("first", TodoStatus::Pending),
             item("second", TodoStatus::InProgress),
-            item("third", TodoStatus::Pending),
+            item_with_priority("third", TodoStatus::Pending, TodoPriority::High),
         ];
         db.todos()
             .replace_for_session(&session.id, &items)
@@ -170,6 +178,7 @@ mod tests {
         assert_eq!(stored[0].status, TodoStatus::Completed);
         assert_eq!(stored[1].status, TodoStatus::Pending);
         assert_eq!(stored[2].status, TodoStatus::Pending);
+        assert_eq!(stored[2].priority, TodoPriority::Medium);
     }
 
     #[test]
@@ -248,5 +257,43 @@ mod tests {
             !stored[0].content.contains(&secret),
             "the raw secret must not be persisted"
         );
+    }
+
+    #[test]
+    fn unknown_stored_priority_defaults_to_medium() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-db-todo-priority-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db_path = dir.join("cortex.db");
+        let db = Database::open(&db_path).expect("open");
+        let session = db.sessions().create(None).expect("session");
+        db.todos()
+            .replace_for_session(
+                &session.id,
+                &[item_with_priority(
+                    "legacy",
+                    TodoStatus::Pending,
+                    TodoPriority::Medium,
+                )],
+            )
+            .expect("replace");
+        drop(db);
+        let conn = rusqlite::Connection::open(&db_path).expect("open raw sqlite");
+        conn.execute(
+            "UPDATE todos SET priority = 'urgent' WHERE session_id = ?1",
+            params![session.id],
+        )
+        .expect("inject unknown priority");
+
+        let db = Database::open(&db_path).expect("reopen");
+        let stored = db.todos().list_for_session(&session.id).expect("list");
+        assert_eq!(stored[0].priority, TodoPriority::Medium);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

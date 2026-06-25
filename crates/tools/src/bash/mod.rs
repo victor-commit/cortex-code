@@ -195,6 +195,7 @@ fn resolve_working_dir(arguments: &Value, ctx: &ToolContext) -> Result<PathBuf, 
     if !metadata.is_dir() {
         return Err(format!("bash: workdir {trimmed} is not a directory"));
     }
+    ctx.ensure_workdir_permitted(&resolved)?;
     Ok(resolved)
 }
 
@@ -597,6 +598,43 @@ mod tests {
             "session cwd should remain unchanged: {}",
             default_pwd.model_content()
         );
+    }
+
+    #[tokio::test]
+    async fn workdir_requires_external_directory_permission_for_outside_paths() {
+        let dir = temp_dir("workdir-external-deny");
+        let outside = std::env::current_dir()
+            .expect("cwd")
+            .join("target")
+            .join(format!(
+                "cortex-bash-workdir-ext-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&outside).expect("outside dir");
+
+        let engine = PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("bash", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Deny),
+        ]));
+        let ctx = ToolContext::new(dir.clone()).with_permissions(Arc::new(engine));
+
+        let out = run(
+            json!({
+                "command": "pwd",
+                "workdir": outside.to_string_lossy(),
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(out.is_error, "outside workdir should be denied");
+        assert!(
+            out.model_content()
+                .contains("permission denied for workdir"),
+            "got: {}",
+            out.model_content()
+        );
+        let _ = std::fs::remove_dir_all(outside);
     }
 
     // VAL-TOOLS-036: secret env is stripped from the child (pure filter — the process env is not

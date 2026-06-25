@@ -621,13 +621,17 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 },
                 "TodoItem": {
                     "type": "object",
-                    "required": ["content", "status"],
+                    "required": ["content", "status", "priority"],
                     "properties": {
                         "content": { "type": "string" },
                         "status": {
                             "type": "string",
-                            "enum": ["pending", "in_progress", "completed"]
-                        }
+                            "enum": ["pending", "in_progress", "completed", "cancelled"]
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["high", "medium", "low"]
+                        },
                     }
                 },
                 "TodoListResponse": {
