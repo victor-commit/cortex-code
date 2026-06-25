@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -598,6 +598,152 @@ action = "deny"
         victim.exists(),
         "project-layer bash deny must prevent the rm side effect"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permission_routes_list_and_reply_resume_pending_turns() {
+    let scratch = Scratch::new("server-permission-pending-routes");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "bash"
+pattern = "*"
+action = "ask"
+"#,
+    )
+    .expect("write project config");
+    let provider = Arc::new(PermissionPendingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_cwd(workspace)
+        .with_config_env(Vec::new());
+    let app = server::app_with_state(state);
+    let session_a = create_session(&app).await;
+    let session_b = create_session(&app).await;
+
+    let app_a = app.clone();
+    let first = tokio::spawn(async move {
+        app_a
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{}/message", session_a.id))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"first pending permission"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("first response")
+    });
+    let app_b = app.clone();
+    let second = tokio::spawn(async move {
+        app_b
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{}/message", session_b.id))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"second pending permission"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("second response")
+    });
+
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/permission/pending")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if pending.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(pending.len(), 2, "both turns should be awaiting permission");
+
+    let first_id = pending[0]["id"].as_str().expect("first id").to_owned();
+    let second_id = pending[1]["id"].as_str().expect("second id").to_owned();
+
+    let first_reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{first_id}","decision":"allow"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("first reply");
+    assert_eq!(first_reply.status(), StatusCode::OK);
+
+    let pending_after_first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/permission/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("pending response");
+    let pending_after_first_body: serde_json::Value = json_body(pending_after_first).await;
+    let pending_after_first = pending_after_first_body["pending"]
+        .as_array()
+        .expect("pending array");
+    assert_eq!(
+        pending_after_first.len(),
+        1,
+        "replying one id should leave the other pending"
+    );
+    assert_eq!(pending_after_first[0]["id"], second_id);
+
+    let second_reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{second_id}","decision":"allow"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("second reply");
+    assert_eq!(second_reply.status(), StatusCode::OK);
+
+    let first_response = tokio::time::timeout(Duration::from_secs(3), first)
+        .await
+        .expect("first turn completed")
+        .expect("first join");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let second_response = tokio::time::timeout(Duration::from_secs(3), second)
+        .await
+        .expect("second turn completed")
+        .expect("second join");
+    assert_eq!(second_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1909,6 +2055,11 @@ struct BashRmProvider {
 }
 
 #[derive(Debug, Default)]
+struct PermissionPendingProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
 struct RichPartsProvider {
     calls: AtomicUsize,
 }
@@ -2007,6 +2158,46 @@ impl Provider for BashRmProvider {
                         reason: FinishReason::Stop,
                     },
                 ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for PermissionPendingProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_permission".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: r#"{"command":"echo permission-check"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "permission resolved".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 9,
+                        output_tokens: 4,
+                        total_tokens: 13,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
             };
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })

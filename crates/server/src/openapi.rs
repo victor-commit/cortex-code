@@ -273,6 +273,65 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/permission/pending": {
+                "get": {
+                    "operationId": "listPendingPermissions",
+                    "summary": "List all currently pending permission requests.",
+                    "responses": {
+                        "200": json_response("Pending permissions.", "PendingPermissionResponse")
+                    }
+                }
+            },
+            "/permission/reply": {
+                "post": {
+                    "operationId": "replyPendingPermission",
+                    "summary": "Resolve one pending permission request, optionally cascading to related requests.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/PermissionReplyRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Pending permission resolved.", "PermissionReplyResponse"),
+                        "400": json_response("Permission reply body was invalid.", "ErrorResponse"),
+                        "404": json_response("Pending permission request was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/permission/pending": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "listSessionPendingPermissions",
+                    "summary": "List pending permission requests for one session.",
+                    "responses": {
+                        "200": json_response("Pending permissions.", "PendingPermissionResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/permission/reply": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "replySessionPendingPermission",
+                    "summary": "Resolve one pending permission request scoped to a session.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/PermissionReplyRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Pending permission resolved.", "PermissionReplyResponse"),
+                        "400": json_response("Permission reply body was invalid.", "ErrorResponse"),
+                        "404": json_response("Session or pending permission was not found.", "ErrorResponse")
+                    }
+                }
+            },
             "/session/{id}/abort": {
                 "parameters": [session_id_parameter()],
                 "post": {
@@ -480,6 +539,49 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "text": { "type": "string" }
                     }
                 },
+                "PendingPermissionItem": {
+                    "type": "object",
+                    "required": ["id", "sessionId", "messageId", "tool", "subject", "waitedMs"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "messageId": { "type": "string" },
+                        "tool": { "type": "string" },
+                        "subject": { "type": "string" },
+                        "waitedMs": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "PendingPermissionResponse": {
+                    "type": "object",
+                    "required": ["pending"],
+                    "properties": {
+                        "pending": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/PendingPermissionItem" }
+                        }
+                    }
+                },
+                "PermissionReplyRequest": {
+                    "type": "object",
+                    "required": ["id", "decision"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "decision": { "type": "string", "enum": ["allow", "deny"] },
+                        "always": { "type": "boolean", "default": false },
+                        "cascade": { "type": "boolean", "default": false },
+                        "feedback": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                },
+                "PermissionReplyResponse": {
+                    "type": "object",
+                    "required": ["status", "id", "resolved"],
+                    "properties": {
+                        "status": { "type": "string", "const": "resolved" },
+                        "id": { "type": "string" },
+                        "resolved": { "type": "integer", "minimum": 0 }
+                    }
+                },
                 "Session": {
                     "type": "object",
                     "required": ["id", "created_at", "updated_at"],
@@ -578,6 +680,10 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/session/{id}/prompt/submit", &["post"]),
     ("/session/{id}/prompt/clear", &["post"]),
     ("/session/{id}/command", &["post"]),
+    ("/permission/pending", &["get"]),
+    ("/permission/reply", &["post"]),
+    ("/session/{id}/permission/pending", &["get"]),
+    ("/session/{id}/permission/reply", &["post"]),
     ("/session/{id}/abort", &["post"]),
     ("/session/{id}/share", &["post"]),
     ("/session/{id}/unshare", &["post"]),

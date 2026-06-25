@@ -64,6 +64,10 @@ pub use rule::{ANY_TOOL, Rule};
 pub use ruleset::Ruleset;
 pub use saved::{SavedDecision, SavedDecisions};
 pub use scope::{
-    ToolScope, classify_command, command_subject, file_subject, is_command_tool, is_file_tool,
+    CAPABILITY_BASH, CAPABILITY_DOOM_LOOP, CAPABILITY_EDIT, CAPABILITY_EXTERNAL_DIRECTORY,
+    CAPABILITY_LSP, CAPABILITY_PLAN_ENTER, CAPABILITY_PLAN_EXIT, CAPABILITY_QUESTION,
+    CAPABILITY_READ, CAPABILITY_SKILL, CAPABILITY_TASK, CAPABILITY_TODO, ToolScope,
+    canonical_tool_name, capability_for_tool, classify_command, command_match_candidates,
+    command_subject, expand_home_tokens_in_command, file_subject, is_command_tool, is_file_tool,
     normalize_path, request_for, scope_of, split_bash_commands,
 };

@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use serde_json::Value as JsonValue;
 use settings::{ConfigError, ConfigInputs};
 use toml::Value;
 use toml::value::Table;
@@ -32,6 +33,8 @@ const PERMISSION_KEY: &str = "permission";
 
 /// The config key holding the per-agent permission override tables.
 const AGENT_KEY: &str = "agent";
+const LEGACY_ENV_PERMISSION: &str = "OPENCODE_PERMISSION";
+const CORTEX_ENV_PERMISSION: &str = "CORTEX_PERMISSION";
 
 /// A failure loading or parsing permission rules from configuration.
 #[derive(Debug)]
@@ -179,6 +182,10 @@ pub fn load_layered(inputs: &ConfigInputs) -> Result<Ruleset, RuleError> {
         let rules = rules_from_table(&layer.table, Some(&layer.source))?;
         layers.push(Ruleset::new(rules));
     }
+    let env_rules = rules_from_permission_env(inputs)?;
+    if !env_rules.is_empty() {
+        layers.push(Ruleset::new(env_rules));
+    }
     Ok(Ruleset::from_layers(layers))
 }
 
@@ -228,6 +235,10 @@ pub fn load_agent_rulesets(inputs: &ConfigInputs) -> Result<AgentRulesets, RuleE
             }
         }
     }
+    let env_rules = rules_from_permission_env(inputs)?;
+    if !env_rules.is_empty() {
+        base_layers.push(Ruleset::new(env_rules));
+    }
 
     let base = Ruleset::from_layers(base_layers);
     let per_agent = agent_layers
@@ -237,12 +248,147 @@ pub fn load_agent_rulesets(inputs: &ConfigInputs) -> Result<AgentRulesets, RuleE
     Ok(AgentRulesets::new(base, per_agent))
 }
 
+fn rules_from_permission_env(inputs: &ConfigInputs) -> Result<Vec<Rule>, RuleError> {
+    let mut rules = Vec::new();
+    for (name, value) in &inputs.env {
+        if name != LEGACY_ENV_PERMISSION && name != CORTEX_ENV_PERMISSION {
+            continue;
+        }
+        if value.trim().is_empty() {
+            continue;
+        }
+        rules.extend(parse_permission_env_value(name, value)?);
+    }
+    Ok(rules)
+}
+
+fn parse_permission_env_value(env_name: &str, raw: &str) -> Result<Vec<Rule>, RuleError> {
+    if let Ok(parsed) = serde_json::from_str::<JsonValue>(raw) {
+        return parse_legacy_permission_json(env_name, &parsed);
+    }
+    if let Ok(table) = toml::from_str::<Table>(raw) {
+        if table.contains_key(PERMISSION_KEY) {
+            return rules_from_table(&table, None);
+        }
+    }
+    Err(RuleError::malformed(
+        None,
+        format!(
+            "{env_name} must be JSON permission object/map or TOML containing `[[permission]]`"
+        ),
+    ))
+}
+
+fn parse_legacy_permission_json(env_name: &str, value: &JsonValue) -> Result<Vec<Rule>, RuleError> {
+    let map = value.as_object().ok_or_else(|| {
+        RuleError::malformed(
+            None,
+            format!("{env_name} must decode to a JSON object at the top level"),
+        )
+    })?;
+    let mut rules = Vec::new();
+    for (key, entry) in map {
+        if key == "tools" {
+            let tool_map = entry.as_object().ok_or_else(|| {
+                RuleError::malformed(
+                    None,
+                    format!("{env_name}.tools must be a JSON object of bool values"),
+                )
+            })?;
+            for (tool, enabled) in tool_map {
+                let enabled = enabled.as_bool().ok_or_else(|| {
+                    RuleError::malformed(None, format!("{env_name}.tools.{tool} must be a boolean"))
+                })?;
+                rules.push(Rule::new(
+                    tool.clone(),
+                    "*",
+                    if enabled { Action::Allow } else { Action::Deny },
+                ));
+            }
+            continue;
+        }
+        parse_legacy_capability_entry(env_name, key, entry, &mut rules)?;
+    }
+    Ok(rules)
+}
+
+fn parse_legacy_capability_entry(
+    env_name: &str,
+    capability: &str,
+    entry: &JsonValue,
+    rules: &mut Vec<Rule>,
+) -> Result<(), RuleError> {
+    if let Some(action) = parse_action_json(entry)? {
+        rules.push(Rule::new(capability, "*", action));
+        return Ok(());
+    }
+    let Some(map) = entry.as_object() else {
+        return Err(RuleError::malformed(
+            None,
+            format!(
+                "{env_name}.{capability} must be an action (allow/ask/deny), bool, or object map"
+            ),
+        ));
+    };
+    for (pattern, value) in map {
+        let action = parse_action_json(value)?.ok_or_else(|| {
+            RuleError::malformed(
+                None,
+                format!("{env_name}.{capability}.{pattern} must be allow/ask/deny or bool"),
+            )
+        })?;
+        rules.push(Rule::new(capability, pattern, action));
+    }
+    Ok(())
+}
+
+fn parse_action_json(value: &JsonValue) -> Result<Option<Action>, RuleError> {
+    if let Some(enabled) = value.as_bool() {
+        return Ok(Some(if enabled { Action::Allow } else { Action::Deny }));
+    }
+    if let Some(text) = value.as_str() {
+        let action = Action::parse(text).ok_or_else(|| {
+            RuleError::malformed(
+                None,
+                format!("invalid action `{text}` (expected allow, ask, deny, or bool)"),
+            )
+        })?;
+        return Ok(Some(action));
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn table(toml: &str) -> Table {
         toml::from_str(toml).expect("valid toml fixture")
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-perm-config-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn inputs_with_env(env: Vec<(String, String)>) -> ConfigInputs {
+        let cwd = scratch_dir("env");
+        ConfigInputs {
+            home: Some(cwd.clone()),
+            xdg_config_home: None,
+            cwd,
+            env,
+            cli_overrides: BTreeMap::new(),
+        }
     }
 
     #[test]
@@ -331,5 +477,103 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("must be a string"), "{err}");
+    }
+
+    #[test]
+    fn permission_env_json_supports_capabilities_and_tools_bool_map() {
+        let inputs = inputs_with_env(vec![(
+            "OPENCODE_PERMISSION".to_owned(),
+            r#"{
+              "edit": {"src/**":"allow","secrets/**":"deny"},
+              "bash": "deny",
+              "tools": {"question": false, "skill": true}
+            }"#
+            .to_owned(),
+        )]);
+        let rules = rules_from_permission_env(&inputs).expect("env parse");
+        assert_eq!(
+            rules,
+            vec![
+                Rule::new("bash", "*", Action::Deny),
+                Rule::new("edit", "secrets/**", Action::Deny),
+                Rule::new("edit", "src/**", Action::Allow),
+                Rule::new("question", "*", Action::Deny),
+                Rule::new("skill", "*", Action::Allow),
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_env_toml_supports_permission_array() {
+        let inputs = inputs_with_env(vec![(
+            "CORTEX_PERMISSION".to_owned(),
+            r#"
+[[permission]]
+tool = "bash"
+pattern = "git push*"
+action = "deny"
+
+[[permission]]
+tool = "edit"
+pattern = "src/**"
+action = "allow"
+"#
+            .to_owned(),
+        )]);
+        let rules = rules_from_permission_env(&inputs).expect("env parse");
+        assert_eq!(
+            rules,
+            vec![
+                Rule::new("bash", "git push*", Action::Deny),
+                Rule::new("edit", "src/**", Action::Allow),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_permission_env_errors_without_echoing_secret_payload() {
+        let secret = "dont-leak-this-token";
+        let inputs = inputs_with_env(vec![(
+            "CORTEX_PERMISSION".to_owned(),
+            format!(r#"not-valid-json-{secret}"#),
+        )]);
+        let err = rules_from_permission_env(&inputs).expect_err("invalid env should fail");
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "error should not echo secret-bearing payload: {message}"
+        );
+        assert!(message.contains("CORTEX_PERMISSION"), "{message}");
+    }
+
+    #[test]
+    fn env_rules_are_loaded_as_highest_precedence_layer() {
+        let root = scratch_dir("precedence");
+        let home = root.join("home");
+        let project = home.join("project");
+        fs::create_dir_all(project.join(".config/cortex")).expect("dirs");
+        fs::create_dir_all(&project).expect("project dir");
+        fs::write(
+            project.join("cortex.toml"),
+            r#"
+[[permission]]
+tool = "bash"
+pattern = "git push*"
+action = "allow"
+"#,
+        )
+        .expect("project config");
+        let inputs = ConfigInputs {
+            home: Some(home.clone()),
+            xdg_config_home: None,
+            cwd: project,
+            env: vec![(
+                "CORTEX_PERMISSION".to_owned(),
+                r#"{"bash":"deny"}"#.to_owned(),
+            )],
+            cli_overrides: BTreeMap::new(),
+        };
+        let ruleset = load_layered(&inputs).expect("layered rules");
+        assert_eq!(ruleset.classify("bash", "git push origin"), Action::Deny);
     }
 }

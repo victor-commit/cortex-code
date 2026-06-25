@@ -71,6 +71,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     let Some(session_id) = ctx.session_id() else {
         return ToolOutput::error("todo: no active session; the todo list requires a session");
     };
+    if let Err(message) = ctx.ensure_permitted("todo", session_id) {
+        return ToolOutput::error(format!("todo: {message}"));
+    }
     let Some(store) = ctx.todo_store() else {
         return ToolOutput::error("todo: no todo store is configured for this session");
     };
@@ -143,6 +146,7 @@ fn render_items(items: &[TodoItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use permissions::{Action, PermissionEngine, Rule, Ruleset};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -279,6 +283,30 @@ mod tests {
         let output = run(&json!({}), &ctx);
         assert!(output.is_error);
         assert!(output.model_content().contains("todo store"));
+    }
+
+    #[test]
+    fn permission_deny_blocks_todo_reads_and_writes() {
+        let store = Arc::new(MemoryTodoStore::default());
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "todo",
+            "*",
+            Action::Deny,
+        )])));
+        let ctx = ToolContext::new(std::env::temp_dir())
+            .with_session("ses_a")
+            .with_todo_store(store.clone())
+            .with_permissions(engine);
+        let write = run(&write_args(&[("task one", "pending")]), &ctx);
+        assert!(write.is_error);
+        assert_eq!(store.list("ses_a").expect("list").len(), 0);
+        let read = run(&json!({}), &ctx);
+        assert!(read.is_error);
+        assert!(
+            read.model_content()
+                .to_ascii_lowercase()
+                .contains("permission")
+        );
     }
 
     #[test]

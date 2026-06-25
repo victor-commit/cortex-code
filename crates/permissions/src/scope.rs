@@ -26,6 +26,31 @@ use crate::Ruleset;
 use crate::action::Action;
 use crate::engine::PermissionRequest;
 
+/// Canonical capability name for file-mutating tools.
+pub const CAPABILITY_EDIT: &str = "edit";
+/// Canonical capability name for read/search tools.
+pub const CAPABILITY_READ: &str = "read";
+/// Canonical capability name for shell execution.
+pub const CAPABILITY_BASH: &str = "bash";
+/// Canonical capability name for subagent delegation.
+pub const CAPABILITY_TASK: &str = "task";
+/// Canonical capability name for todo planning updates.
+pub const CAPABILITY_TODO: &str = "todo";
+/// Canonical capability name for skill activation.
+pub const CAPABILITY_SKILL: &str = "skill";
+/// Canonical capability name for language-server queries.
+pub const CAPABILITY_LSP: &str = "lsp";
+/// Canonical capability name for interactive question asks.
+pub const CAPABILITY_QUESTION: &str = "question";
+/// Canonical capability name for entering plan mode.
+pub const CAPABILITY_PLAN_ENTER: &str = "plan_enter";
+/// Canonical capability name for leaving plan mode.
+pub const CAPABILITY_PLAN_EXIT: &str = "plan_exit";
+/// Canonical capability name for repeated-call loop safeguards.
+pub const CAPABILITY_DOOM_LOOP: &str = "doom_loop";
+/// Canonical capability name for outside-workspace path access.
+pub const CAPABILITY_EXTERNAL_DIRECTORY: &str = "external_directory";
+
 /// The two ways a gated tool derives the subject its permission rules match against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolScope {
@@ -46,18 +71,74 @@ const PATH_TOOLS: [&str; 8] = [
     "glob",
     "grep",
     "format",
-    "external_directory",
+    CAPABILITY_EXTERNAL_DIRECTORY,
 ];
 
 /// The tool whose permission subject is the shell command it runs.
-const COMMAND_TOOL: &str = "bash";
+const COMMAND_TOOL: &str = CAPABILITY_BASH;
 
 /// Tools whose permission subject is the requested target string.
-const TARGET_TOOLS: [&str; 3] = ["task", "webfetch", "websearch"];
+const TARGET_TOOLS: [&str; 12] = [
+    CAPABILITY_TASK,
+    "webfetch",
+    "websearch",
+    CAPABILITY_TODO,
+    CAPABILITY_SKILL,
+    CAPABILITY_LSP,
+    CAPABILITY_QUESTION,
+    CAPABILITY_PLAN_ENTER,
+    CAPABILITY_PLAN_EXIT,
+    CAPABILITY_DOOM_LOOP,
+    "plan",
+    "plan_exit",
+];
+
+/// Canonicalize a permission tool/capability selector token.
+///
+/// Compatibility aliases use hyphenated tokens in some callers (`plan-enter`, `plan-exit`,
+/// `loop-safeguard`) while the Rust side uses snake_case. This canonical form preserves existing
+/// tool names and normalizes only known aliases.
+#[must_use]
+pub fn canonical_tool_name(tool: &str) -> &str {
+    match tool {
+        "plan-enter" => CAPABILITY_PLAN_ENTER,
+        "plan-exit" => CAPABILITY_PLAN_EXIT,
+        "loop-safeguard" => CAPABILITY_DOOM_LOOP,
+        "todowrite" => CAPABILITY_TODO,
+        "plan_enter" => CAPABILITY_PLAN_ENTER,
+        "plan_exit" => CAPABILITY_PLAN_EXIT,
+        "doom_loop" => CAPABILITY_DOOM_LOOP,
+        other => other,
+    }
+}
+
+/// Return the capability namespace token for a concrete tool/capability.
+///
+/// Existing tool-specific rules still work (`write:*`, `apply_patch:*`), and capability rules can
+/// now intentionally fan out (`edit:*` applies to write/edit/apply_patch/format).
+#[must_use]
+pub fn capability_for_tool(tool: &str) -> Option<&'static str> {
+    match canonical_tool_name(tool) {
+        "write" | "edit" | "apply_patch" | "format" => Some(CAPABILITY_EDIT),
+        "read" | "glob" | "grep" => Some(CAPABILITY_READ),
+        CAPABILITY_BASH => Some(CAPABILITY_BASH),
+        CAPABILITY_TASK => Some(CAPABILITY_TASK),
+        CAPABILITY_TODO => Some(CAPABILITY_TODO),
+        CAPABILITY_SKILL => Some(CAPABILITY_SKILL),
+        CAPABILITY_LSP => Some(CAPABILITY_LSP),
+        CAPABILITY_QUESTION => Some(CAPABILITY_QUESTION),
+        CAPABILITY_PLAN_ENTER | "plan" => Some(CAPABILITY_PLAN_ENTER),
+        CAPABILITY_PLAN_EXIT => Some(CAPABILITY_PLAN_EXIT),
+        CAPABILITY_DOOM_LOOP => Some(CAPABILITY_DOOM_LOOP),
+        CAPABILITY_EXTERNAL_DIRECTORY => Some(CAPABILITY_EXTERNAL_DIRECTORY),
+        _ => None,
+    }
+}
 
 /// How `tool` derives its permission subject, or `None` for a tool with no path/command scoping.
 #[must_use]
 pub fn scope_of(tool: &str) -> Option<ToolScope> {
+    let tool = canonical_tool_name(tool);
     if tool == COMMAND_TOOL {
         Some(ToolScope::Command)
     } else if PATH_TOOLS.contains(&tool) {
@@ -132,6 +213,217 @@ fn expand_home_tokens(path: &str) -> String {
         return format!("{home}/{rest}");
     }
     path.to_owned()
+}
+
+/// Expand well-known home aliases inside one shell-like command string.
+///
+/// This keeps command-based permission matching consistent when one side uses `~` or `$HOME`
+/// while the other uses an absolute home path.
+#[must_use]
+pub fn expand_home_tokens_in_command(command: &str) -> String {
+    if std::env::var_os("HOME").is_none() {
+        return command.to_owned();
+    }
+    let mut out = String::new();
+    let mut token = String::new();
+    let mut quote: Option<char> = None;
+
+    for ch in command.chars() {
+        if let Some(open) = quote {
+            token.push(ch);
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                token.push(ch);
+                quote = Some(ch);
+            }
+            ' ' | '\t' => {
+                if !token.is_empty() {
+                    out.push_str(&expand_home_tokens(&token));
+                    token.clear();
+                }
+                out.push(ch);
+            }
+            _ => token.push(ch),
+        }
+    }
+    if !token.is_empty() {
+        out.push_str(&expand_home_tokens(&token));
+    }
+    out
+}
+
+/// Candidate command subjects for permission matching, including arity-normalized families.
+#[must_use]
+pub fn command_match_candidates(command: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let raw = command_subject(command);
+    push_unique(&mut candidates, raw.clone());
+    let expanded = command_subject(&expand_home_tokens_in_command(&raw));
+    push_unique(&mut candidates, expanded.clone());
+    if let Some(normalized) = normalize_bash_command_arity(&raw) {
+        push_unique(&mut candidates, normalized);
+    }
+    if let Some(normalized) = normalize_bash_command_arity(&expanded) {
+        push_unique(&mut candidates, normalized);
+    }
+    candidates
+}
+
+fn push_unique(items: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !items.iter().any(|item| item == &value) {
+        items.push(value);
+    }
+}
+
+fn normalize_bash_command_arity(command: &str) -> Option<String> {
+    let words = split_shell_words(command);
+    if words.is_empty() {
+        return None;
+    }
+
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index].as_str();
+        if is_env_assignment(word) || matches!(word, "sudo" | "env" | "command" | "time" | "nohup")
+        {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    if index >= words.len() {
+        return None;
+    }
+    let head = &words[index..];
+    let normalized = match (head.first()?.as_str(), head.get(1).map(String::as_str)) {
+        ("git", Some(cmd))
+            if matches!(
+                cmd,
+                "add"
+                    | "checkout"
+                    | "switch"
+                    | "commit"
+                    | "push"
+                    | "pull"
+                    | "fetch"
+                    | "clone"
+                    | "merge"
+                    | "rebase"
+                    | "status"
+                    | "reset"
+                    | "restore"
+            ) =>
+        {
+            format!("git {cmd}")
+        }
+        ("npm", Some(cmd))
+            if matches!(
+                cmd,
+                "install" | "i" | "update" | "uninstall" | "run" | "test" | "publish" | "pack"
+            ) =>
+        {
+            format!("npm {cmd}")
+        }
+        ("pnpm", Some(cmd))
+            if matches!(
+                cmd,
+                "add" | "install" | "update" | "remove" | "run" | "test" | "publish"
+            ) =>
+        {
+            format!("pnpm {cmd}")
+        }
+        ("yarn", Some(cmd))
+            if matches!(
+                cmd,
+                "add" | "install" | "remove" | "up" | "upgrade" | "run" | "test" | "dlx"
+            ) =>
+        {
+            format!("yarn {cmd}")
+        }
+        ("cargo", Some(cmd))
+            if matches!(
+                cmd,
+                "build" | "check" | "test" | "run" | "fmt" | "clippy" | "clean" | "doc"
+            ) =>
+        {
+            format!("cargo {cmd}")
+        }
+        ("pip", Some(cmd))
+            if matches!(cmd, "install" | "uninstall" | "list" | "freeze" | "show") =>
+        {
+            format!("pip {cmd}")
+        }
+        ("python", Some("-m")) if head.get(2).is_some_and(|module| module == "pip") => {
+            if let Some(cmd) = head.get(3) {
+                format!("python -m pip {cmd}")
+            } else {
+                "python -m pip".to_owned()
+            }
+        }
+        _ => return None,
+    };
+    Some(normalized)
+}
+
+fn split_shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in command.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some(open) => match ch {
+                '\\' if open == '"' => escaped = true,
+                c if c == open => quote = None,
+                _ => current.push(ch),
+            },
+            None => match ch {
+                '\\' => escaped = true,
+                '\'' | '"' => quote = Some(ch),
+                ' ' | '\t' | '\n' => {
+                    if !current.is_empty() {
+                        words.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            },
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _value)) = token.split_once('=') else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 /// The permission subject for a file-tool action against `path` (its normalized path).
@@ -284,16 +576,26 @@ mod tests {
         }
         assert_eq!(scope_of("bash"), Some(ToolScope::Command));
         assert!(is_command_tool("bash"));
-        for tool in ["task", "webfetch", "websearch"] {
+        for tool in [
+            "task",
+            "webfetch",
+            "websearch",
+            "todo",
+            "skill",
+            "lsp",
+            "question",
+            "plan_enter",
+            "plan_exit",
+            "doom_loop",
+        ] {
             assert_eq!(
                 scope_of(tool),
                 Some(ToolScope::Target),
                 "{tool} scopes by target string"
             );
         }
-        // A tool with no path/command scope (e.g. todo) has no scope.
-        assert_eq!(scope_of("todo"), None);
-        assert!(!is_file_tool("todo") && !is_command_tool("todo"));
+        assert_eq!(scope_of("unknown_tool"), None);
+        assert!(!is_file_tool("unknown_tool") && !is_command_tool("unknown_tool"));
     }
 
     #[test]
@@ -397,5 +699,47 @@ mod tests {
         assert_eq!(classify_command(&ruleset, "echo hi && ls"), Action::Allow);
         // A benign string containing the verb in an argument is not a separate command.
         assert_eq!(classify_command(&ruleset, "echo 'rm me'"), Action::Allow);
+    }
+
+    #[test]
+    fn command_match_candidates_include_arity_normalized_family() {
+        let candidates = command_match_candidates("sudo git checkout feature/demo");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == "git checkout")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == "sudo git checkout feature/demo")
+        );
+    }
+
+    #[test]
+    fn command_match_candidates_expand_home_aliases() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let candidates = command_match_candidates("cat ~/secrets/token.txt");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == &format!("cat {home}/secrets/token.txt"))
+        );
+    }
+
+    #[test]
+    fn capability_mapping_fans_out_mutator_tools() {
+        assert_eq!(capability_for_tool("write"), Some(CAPABILITY_EDIT));
+        assert_eq!(capability_for_tool("apply_patch"), Some(CAPABILITY_EDIT));
+        assert_eq!(
+            capability_for_tool("plan-enter"),
+            Some(CAPABILITY_PLAN_ENTER)
+        );
+        assert_eq!(canonical_tool_name("loop-safeguard"), CAPABILITY_DOOM_LOOP);
     }
 }

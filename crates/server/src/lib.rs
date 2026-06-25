@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 //! Axum HTTP surface for `cortex serve`.
 //!
 //! This crate owns the local loopback listener and lightweight HTTP routes. Session CRUD and prompt
@@ -10,10 +12,10 @@ use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     Json, Router,
@@ -86,6 +88,7 @@ pub struct ServerState {
     event_bus: Arc<EventBus>,
     prompt_buffers: PromptBuffers,
     local_shares: LocalShares,
+    permissions: PendingPermissions,
 }
 
 impl ServerState {
@@ -105,6 +108,7 @@ impl ServerState {
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
+            permissions: PendingPermissions::default(),
         }
     }
 
@@ -124,6 +128,7 @@ impl ServerState {
             event_bus: Arc::new(EventBus::new()),
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
+            permissions: PendingPermissions::default(),
         }
     }
 
@@ -220,6 +225,7 @@ impl std::fmt::Debug for ServerState {
             .field("event_subscribers", &self.event_bus.subscriber_count())
             .field("prompt_buffers", &self.prompt_buffers.len())
             .field("local_shares", &self.local_shares.len())
+            .field("pending_permissions", &self.permissions.len())
             .finish_non_exhaustive()
     }
 }
@@ -384,6 +390,80 @@ struct LocalShares {
     inner: Arc<Mutex<HashMap<String, String>>>,
 }
 
+#[derive(Clone, Default)]
+struct PendingPermissions {
+    inner: Arc<Mutex<PendingPermissionState>>,
+}
+
+#[derive(Default)]
+struct PendingPermissionState {
+    next_id: u64,
+    by_id: HashMap<String, Arc<PendingPermission>>,
+}
+
+struct PendingPermission {
+    id: String,
+    session_id: String,
+    message_id: String,
+    tool: String,
+    subject: String,
+    created_at: Instant,
+    reply: Mutex<Option<permissions::ScopedDecision>>,
+    ready: Condvar,
+}
+
+impl PendingPermission {
+    fn new(
+        id: String,
+        session_id: String,
+        message_id: String,
+        request: &permissions::PermissionRequest,
+    ) -> Self {
+        Self {
+            id,
+            session_id,
+            message_id,
+            tool: request.tool.clone(),
+            subject: request.subject.clone(),
+            created_at: Instant::now(),
+            reply: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn wait_with_timeout(&self, timeout: Duration) -> permissions::ScopedDecision {
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.reply.lock().expect("pending permission lock");
+        loop {
+            if let Some(reply) = guard.clone() {
+                return reply;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return permissions::ScopedDecision::once(permissions::Decision::Deny);
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next, _) = self
+                .ready
+                .wait_timeout(guard, remaining)
+                .expect("pending permission wait");
+            guard = next;
+        }
+    }
+
+    fn resolve(&self, reply: permissions::ScopedDecision) -> bool {
+        let mut changed = false;
+        if let Ok(mut guard) = self.reply.lock()
+            && guard.is_none()
+        {
+            *guard = Some(reply);
+            changed = true;
+        }
+        self.ready.notify_all();
+        changed
+    }
+}
+
 /// Errors produced while preparing or running the local server.
 #[derive(Debug, Error)]
 pub enum ServeError {
@@ -527,6 +607,22 @@ pub fn app_with_state(state: ServerState) -> Router {
         .route(
             "/session/{id}/command",
             post(execute_command).options(preflight),
+        )
+        .route(
+            "/permission/pending",
+            get(list_pending_permissions).options(preflight),
+        )
+        .route(
+            "/permission/reply",
+            post(reply_pending_permission).options(preflight),
+        )
+        .route(
+            "/session/{id}/permission/pending",
+            get(list_pending_permissions_for_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/permission/reply",
+            post(reply_pending_permission_for_session).options(preflight),
         )
         .route(
             "/session/{id}/abort",
@@ -955,6 +1051,44 @@ struct TodoListResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPermissionResponse {
+    pending: Vec<PendingPermissionItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPermissionItem {
+    id: String,
+    session_id: String,
+    message_id: String,
+    tool: String,
+    subject: String,
+    waited_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionReplyRequest {
+    id: String,
+    decision: String,
+    #[serde(default)]
+    always: bool,
+    #[serde(default)]
+    cascade: bool,
+    #[serde(default)]
+    feedback: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionReplyResponse {
+    status: &'static str,
+    id: String,
+    resolved: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct PromptResponse {
     status: &'static str,
     model: String,
@@ -1163,6 +1297,90 @@ async fn list_todos(
     Ok(Json(TodoListResponse { session, todos }))
 }
 
+async fn list_pending_permissions(
+    State(state): State<ServerState>,
+) -> Result<Json<PendingPermissionResponse>, ApiError> {
+    let pending = state.permissions.list(None)?;
+    Ok(Json(PendingPermissionResponse { pending }))
+}
+
+async fn list_pending_permissions_for_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PendingPermissionResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let pending = state.permissions.list(Some(id.as_str()))?;
+    Ok(Json(PendingPermissionResponse { pending }))
+}
+
+async fn reply_pending_permission(
+    State(state): State<ServerState>,
+    Json(payload): Json<PermissionReplyRequest>,
+) -> Result<Json<PermissionReplyResponse>, ApiError> {
+    let (decision, scope) = parse_permission_reply(&payload)?;
+    let id = payload.id.clone();
+    let resolved = state.permissions.reply(
+        &payload.id,
+        None,
+        permissions::ScopedDecision {
+            decision,
+            scope,
+            feedback: payload.feedback.clone(),
+        },
+        payload.cascade,
+    )?;
+    Ok(Json(PermissionReplyResponse {
+        status: "resolved",
+        id,
+        resolved,
+    }))
+}
+
+async fn reply_pending_permission_for_session(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<PermissionReplyRequest>,
+) -> Result<Json<PermissionReplyResponse>, ApiError> {
+    require_session(&state, &id)?;
+    let (decision, scope) = parse_permission_reply(&payload)?;
+    let request_id = payload.id.clone();
+    let resolved = state.permissions.reply(
+        &payload.id,
+        Some(id.as_str()),
+        permissions::ScopedDecision {
+            decision,
+            scope,
+            feedback: payload.feedback.clone(),
+        },
+        payload.cascade,
+    )?;
+    Ok(Json(PermissionReplyResponse {
+        status: "resolved",
+        id: request_id,
+        resolved,
+    }))
+}
+
+fn parse_permission_reply(
+    payload: &PermissionReplyRequest,
+) -> Result<(permissions::Decision, permissions::DecisionScope), ApiError> {
+    let decision = match payload.decision.trim().to_ascii_lowercase().as_str() {
+        "allow" => permissions::Decision::Allow,
+        "deny" => permissions::Decision::Deny,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "permission reply decision must be allow or deny, got `{other}`"
+            )));
+        }
+    };
+    let scope = if payload.always {
+        permissions::DecisionScope::Always
+    } else {
+        permissions::DecisionScope::Once
+    };
+    Ok((decision, scope))
+}
+
 async fn post_message(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
@@ -1255,6 +1473,7 @@ async fn execute_command(
         .map_err(ApiError::bad_request)?;
     let permission_engine = permission_engine_for_turn(
         state.event_bus.clone(),
+        state.permissions.clone(),
         &id,
         &call_id,
         &config_inputs,
@@ -1468,6 +1687,7 @@ async fn run_message_turn(
     }
     let permission_engine = permission_engine_for_turn(
         state.event_bus.clone(),
+        state.permissions.clone(),
         &session_id,
         &user_message.id,
         &config_inputs,
@@ -1871,8 +2091,43 @@ fn provider_openrouter_string(effective: &settings::EffectiveConfig, key: &str) 
         .and_then(non_empty)
 }
 
+struct ServerPermissionResponder {
+    pending: PendingPermissions,
+    session_id: String,
+    message_id: String,
+}
+
+impl ServerPermissionResponder {
+    fn new(pending: PendingPermissions, session_id: &str, message_id: &str) -> Self {
+        Self {
+            pending,
+            session_id: session_id.to_owned(),
+            message_id: message_id.to_owned(),
+        }
+    }
+}
+
+impl permissions::Responder for ServerPermissionResponder {
+    fn respond(&self, request: &permissions::PermissionRequest) -> permissions::Decision {
+        self.respond_scoped(request).decision
+    }
+
+    fn respond_scoped(
+        &self,
+        request: &permissions::PermissionRequest,
+    ) -> permissions::ScopedDecision {
+        let pending = self
+            .pending
+            .enqueue(&self.session_id, &self.message_id, request);
+        let reply = pending.wait_with_timeout(Duration::from_secs(60));
+        self.pending.remove(&pending.id);
+        reply
+    }
+}
+
 fn permission_engine_for_turn(
     bus: Arc<EventBus>,
+    pending_permissions: PendingPermissions,
     session_id: &str,
     message_id: &str,
     inputs: &settings::ConfigInputs,
@@ -1905,9 +2160,15 @@ fn permission_engine_for_turn(
     if ruleset.is_empty() && hard_denies.is_empty() {
         return Ok(None);
     }
+    let responder = Arc::new(ServerPermissionResponder::new(
+        pending_permissions,
+        session_id,
+        message_id,
+    ));
     Ok(Some(Arc::new(
         PermissionEngine::new(ruleset)
             .with_hard_denies(permissions::Ruleset::new(hard_denies))
+            .with_responder(responder)
             .with_bus(bus)
             .with_event_context(session_id.to_owned(), message_id.to_owned()),
     )))
@@ -2320,6 +2581,139 @@ impl LocalShares {
         shares.retain(|_, shared_session| shared_session != session_id);
         Ok(before != shares.len())
     }
+}
+
+impl PendingPermissions {
+    fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|state| state.by_id.len())
+            .unwrap_or(0)
+    }
+
+    fn enqueue(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        request: &permissions::PermissionRequest,
+    ) -> Arc<PendingPermission> {
+        let mut state = self.inner.lock().expect("pending permission registry lock");
+        let id = format!("perm-{}-{}", std::process::id(), state.next_id);
+        state.next_id = state.next_id.saturating_add(1);
+        let pending = Arc::new(PendingPermission::new(
+            id.clone(),
+            session_id.to_owned(),
+            message_id.to_owned(),
+            request,
+        ));
+        state.by_id.insert(id, pending.clone());
+        pending
+    }
+
+    fn remove(&self, id: &str) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.by_id.remove(id);
+        }
+    }
+
+    fn list(&self, session_id: Option<&str>) -> Result<Vec<PendingPermissionItem>, ApiError> {
+        let state = self.inner.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "permission registry is unavailable",
+            )
+        })?;
+        let mut pending: Vec<PendingPermissionItem> = state
+            .by_id
+            .values()
+            .filter(|entry| session_id.is_none_or(|session| entry.session_id == session))
+            .filter(|entry| {
+                entry
+                    .reply
+                    .lock()
+                    .map(|reply| reply.is_none())
+                    .unwrap_or(false)
+            })
+            .map(|entry| PendingPermissionItem {
+                id: entry.id.clone(),
+                session_id: entry.session_id.clone(),
+                message_id: entry.message_id.clone(),
+                tool: entry.tool.clone(),
+                subject: entry.subject.clone(),
+                waited_ms: entry.created_at.elapsed().as_millis() as u64,
+            })
+            .collect();
+        pending.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(pending)
+    }
+
+    fn reply(
+        &self,
+        id: &str,
+        session_id: Option<&str>,
+        reply: permissions::ScopedDecision,
+        cascade: bool,
+    ) -> Result<usize, ApiError> {
+        let state = self.inner.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "permission registry is unavailable",
+            )
+        })?;
+        let Some(target) = state.by_id.get(id).cloned() else {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("pending permission `{id}` was not found"),
+            ));
+        };
+        if let Some(expected_session) = session_id
+            && target.session_id != expected_session
+        {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("pending permission `{id}` was not found for session `{expected_session}`"),
+            ));
+        }
+        let mut resolved = 0;
+        if target.resolve(reply.clone()) {
+            resolved += 1;
+        }
+        if reply.scope == permissions::DecisionScope::Always {
+            for pending in state.by_id.values() {
+                if pending.id == target.id {
+                    continue;
+                }
+                if same_permission_family(&target, pending) && pending.resolve(reply.clone()) {
+                    resolved += 1;
+                }
+            }
+        } else if reply.decision == permissions::Decision::Deny && cascade {
+            for pending in state.by_id.values() {
+                if pending.id == target.id {
+                    continue;
+                }
+                if pending.session_id == target.session_id
+                    && pending.resolve(permissions::ScopedDecision::once(
+                        permissions::Decision::Deny,
+                    ))
+                {
+                    resolved += 1;
+                }
+            }
+        }
+        Ok(resolved)
+    }
+}
+
+fn same_permission_family(left: &PendingPermission, right: &PendingPermission) -> bool {
+    let left_tool = permissions::canonical_tool_name(&left.tool);
+    let right_tool = permissions::canonical_tool_name(&right.tool);
+    if left_tool == right_tool {
+        return true;
+    }
+    permissions::capability_for_tool(left_tool)
+        .zip(permissions::capability_for_tool(right_tool))
+        .is_some_and(|(l, r)| l == r)
 }
 
 async fn shutdown_signal(bus: Arc<EventBus>, version: String) {

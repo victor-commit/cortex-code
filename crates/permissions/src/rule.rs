@@ -37,7 +37,15 @@ impl Rule {
     /// Whether this rule's tool selector matches `tool` (an exact match, or the `*` wildcard).
     #[must_use]
     pub fn matches_tool(&self, tool: &str) -> bool {
-        self.tool == ANY_TOOL || self.tool == tool
+        if self.tool == ANY_TOOL {
+            return true;
+        }
+        let rule_tool = crate::scope::canonical_tool_name(&self.tool);
+        let request_tool = crate::scope::canonical_tool_name(tool);
+        if rule_tool == request_tool {
+            return true;
+        }
+        crate::scope::capability_for_tool(request_tool).is_some_and(|cap| cap == rule_tool)
     }
 
     /// Whether this rule matches a gated action against `tool` with subject `subject`.
@@ -50,6 +58,13 @@ impl Rule {
             let pattern = crate::scope::normalize_path(&self.pattern);
             let subject = crate::scope::normalize_path(subject);
             return glob_match(&pattern, &subject);
+        }
+        if matches!(crate::scope::scope_of(tool), Some(ToolScope::Command)) {
+            let patterns = crate::scope::command_match_candidates(&self.pattern);
+            let subjects = crate::scope::command_match_candidates(subject);
+            return patterns
+                .iter()
+                .any(|pattern| subjects.iter().any(|subject| glob_match(pattern, subject)));
         }
         glob_match(&self.pattern, subject)
     }
@@ -91,5 +106,36 @@ mod tests {
         let rule = Rule::new("read", "$HOME/private/**", Action::Deny);
         assert!(rule.matches("read", &format!("{home}/private/secret.txt")));
         assert!(rule.matches("read", "~/private/secret.txt"));
+    }
+
+    #[test]
+    fn capability_tool_selector_matches_equivalent_mutators() {
+        let rule = Rule::new("edit", "src/**", Action::Deny);
+        assert!(rule.matches("write", "src/main.rs"));
+        assert!(rule.matches("edit", "src/main.rs"));
+        assert!(rule.matches("apply_patch", "src/main.rs"));
+        assert!(rule.matches("format", "src/main.rs"));
+        assert!(!rule.matches("read", "src/main.rs"));
+    }
+
+    #[test]
+    fn command_rules_match_arity_normalized_families() {
+        let rule = Rule::new("bash", "git checkout", Action::Deny);
+        assert!(rule.matches("bash", "git checkout feature/branch"));
+        assert!(rule.matches("bash", "sudo git checkout main"));
+        assert!(!rule.matches("bash", "git status"));
+    }
+
+    #[test]
+    fn command_rules_expand_home_aliases_before_matching() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let rule = Rule::new("bash", "cat $HOME/private/**", Action::Deny);
+        assert!(rule.matches("bash", &format!("cat {home}/private/secret.txt")));
+        assert!(rule.matches("bash", "cat ~/private/secret.txt"));
     }
 }

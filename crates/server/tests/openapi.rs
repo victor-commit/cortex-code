@@ -60,6 +60,10 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session/{id}/prompt/submit", "post", 200);
     assert_method(paths, "/session/{id}/prompt/clear", "post", 200);
     assert_method(paths, "/session/{id}/command", "post", 200);
+    assert_method(paths, "/permission/pending", "get", 200);
+    assert_method(paths, "/permission/reply", "post", 200);
+    assert_method(paths, "/session/{id}/permission/pending", "get", 200);
+    assert_method(paths, "/session/{id}/permission/reply", "post", 200);
     assert_method(paths, "/session/{id}/abort", "post", 200);
     assert_method(paths, "/session/{id}/share", "post", 200);
     assert_method(paths, "/session/{id}/unshare", "post", 200);
@@ -71,6 +75,7 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_protected_operation(&document, "/session", "get");
     assert_protected_operation(&document, "/session/{id}/message", "post");
     assert_protected_operation(&document, "/event", "get");
+    assert_protected_operation(&document, "/permission/pending", "get");
     assert_eq!(
         document["components"]["schemas"]["MessageRequest"]["properties"]["model"]["type"],
         "string",
@@ -111,6 +116,10 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/session/{id}/prompt/submit"
                     | "/session/{id}/prompt/clear"
                     | "/session/{id}/command"
+                    | "/permission/pending"
+                    | "/permission/reply"
+                    | "/session/{id}/permission/pending"
+                    | "/session/{id}/permission/reply"
                     | "/session/{id}/abort"
                     | "/session/{id}/share"
                     | "/session/{id}/unshare"

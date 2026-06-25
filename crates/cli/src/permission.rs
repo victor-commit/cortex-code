@@ -43,8 +43,8 @@ use engine::Agent;
 use events::EventBus;
 use permissions::{
     ANY_TOOL, Action, Decision, DecisionOverride, PermissionEngine, PermissionRequest, Responder,
-    Rule, RuleError, Ruleset, SavedDecision, SavedDecisions, ScopedDecision, load_agent_rulesets,
-    load_layered, scope_of,
+    Rule, RuleError, Ruleset, SavedDecision, SavedDecisions, ScopedDecision, canonical_tool_name,
+    load_agent_rulesets, load_layered, scope_of,
 };
 use settings::ConfigInputs;
 
@@ -372,7 +372,7 @@ impl Responder for SaveResponder {
 
 /// Parse one `TOOL:GLOB` spec into a [`Rule`] carrying `action`.
 fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
-    let (tool, glob) = spec.split_once(':').ok_or_else(|| {
+    let (tool_selector, glob) = spec.split_once(':').ok_or_else(|| {
         format!(
             "invalid permission rule `{spec}`: expected TOOL:GLOB \
              (for example `write:src/**` or `bash:rm *`)"
@@ -385,13 +385,18 @@ fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
              (for example `write:src/**`)"
         ));
     }
-    let tool = tool.trim();
-    let tool = if tool.is_empty() { ANY_TOOL } else { tool };
+    let tool = tool_selector.trim();
+    let tool = if tool.is_empty() {
+        ANY_TOOL
+    } else {
+        canonical_tool_name(tool)
+    };
     if tool != ANY_TOOL && scope_of(tool).is_none() && !is_dynamic_tool_id(tool) {
         return Err(format!(
             "invalid permission rule `{spec}`: invalid tool id `{tool}` \
              (expected read, write, edit, apply_patch, glob, grep, format, external_directory, bash, task, \
-              webfetch, websearch, a plugin/MCP tool id, or *)"
+              webfetch, websearch, todo, skill, lsp, question, plan_enter, plan_exit, doom_loop, \
+              a plugin/MCP tool id, or *)"
         ));
     }
     Ok(Rule::new(tool, glob, action))
@@ -1066,8 +1071,28 @@ mod tests {
             Rule::new("task", "explore", Action::Allow)
         );
         assert_eq!(
+            parse_spec("todo:*", Action::Deny).expect("rule"),
+            Rule::new("todo", "*", Action::Deny)
+        );
+        assert_eq!(
             parse_spec("external_directory:/tmp/*", Action::Deny).expect("rule"),
             Rule::new("external_directory", "/tmp/*", Action::Deny)
+        );
+    }
+
+    #[test]
+    fn parses_legacy_alias_selectors_to_canonical_capabilities() {
+        assert_eq!(
+            parse_spec("plan-enter:*", Action::Allow).expect("rule"),
+            Rule::new("plan_enter", "*", Action::Allow)
+        );
+        assert_eq!(
+            parse_spec("plan-exit:*", Action::Allow).expect("rule"),
+            Rule::new("plan_exit", "*", Action::Allow)
+        );
+        assert_eq!(
+            parse_spec("loop-safeguard:*", Action::Deny).expect("rule"),
+            Rule::new("doom_loop", "*", Action::Deny)
         );
     }
 
