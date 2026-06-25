@@ -283,3 +283,232 @@ async fn runner_reports_ambiguous_edit_and_leaves_file_unchanged() {
     assert!(result_text(&parts).contains("matches"));
     assert_eq!(fs::read_to_string(dir.join("d.txt")).unwrap(), "dup dup");
 }
+
+#[tokio::test]
+async fn runner_applies_multiline_near_match_and_reports_fuzzy_strategy() {
+    let dir = temp_dir("fuzzy-near");
+    fs::write(
+        dir.join("main.rs"),
+        concat!(
+            "fn main() {\n",
+            "        if  ready  {\n",
+            "            do_work();\n",
+            "            finalize();\n",
+            "        }\n",
+            "}\n"
+        ),
+    )
+    .unwrap();
+
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(dir.clone()),
+    };
+
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            tool_call("c1", "read", r#"{"path":"main.rs"}"#),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            tool_call(
+                "c2",
+                "edit",
+                r#"{"path":"main.rs","oldString":"if ready {\n  do_work();\n  finalize();\n}","newString":"if ready {\n  do_more_work();\n  finalize();\n}"}"#,
+            ),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "done".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]);
+
+    let mut events = Vec::new();
+    SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("m", "", "edit main.rs"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    let (parts, is_error) = result_for(&events, "edit");
+    assert!(!is_error, "fuzzy replacement should succeed");
+    let output_text = result_text(&parts);
+    assert!(
+        output_text.contains("fuzzy match"),
+        "tool result should explain fuzzy strategy: {output_text}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("main.rs")).unwrap(),
+        concat!(
+            "fn main() {\n",
+            "if ready {\n",
+            "  do_more_work();\n",
+            "  finalize();\n",
+            "}\n",
+            "}\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn runner_uses_context_to_edit_the_best_matching_repeated_block() {
+    let dir = temp_dir("context-window");
+    fs::write(
+        dir.join("window.rs"),
+        concat!(
+            "fn choose() {\n",
+            "    let count = 10;\n",
+            "    println!(\"done\");\n",
+            "}\n",
+            "\n",
+            "fn choose() {\n",
+            "    let total = 99;\n",
+            "    println!(\"done\");\n",
+            "}\n"
+        ),
+    )
+    .unwrap();
+
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(dir.clone()),
+    };
+
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            tool_call("c1", "read", r#"{"path":"window.rs"}"#),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            tool_call(
+                "c2",
+                "edit",
+                r#"{"path":"window.rs","oldString":"fn choose() {\n  let total = 100;\n  println!(\"done\");\n}","newString":"fn choose() {\n    let total = 0;\n    println!(\"done\");\n}"}"#,
+            ),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "done".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]);
+
+    let mut events = Vec::new();
+    SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("m", "", "edit window.rs"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    let (parts, is_error) = result_for(&events, "edit");
+    assert!(!is_error, "context-aware fuzzy edit should succeed");
+    let output_text = result_text(&parts);
+    assert!(
+        output_text.contains("anchored line-window fuzzy match"),
+        "expected anchored line-window detail, got: {output_text}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("window.rs")).unwrap(),
+        concat!(
+            "fn choose() {\n",
+            "    let count = 10;\n",
+            "    println!(\"done\");\n",
+            "}\n",
+            "\n",
+            "fn choose() {\n",
+            "    let total = 0;\n",
+            "    println!(\"done\");\n",
+            "}\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn runner_not_found_error_includes_nearby_candidates_and_preserves_bytes() {
+    let dir = temp_dir("notfound-candidates");
+    fs::write(
+        dir.join("main.txt"),
+        "alpha beta gamma\ndelta epsilon zeta\neta theta iota\n",
+    )
+    .unwrap();
+
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(dir.clone()),
+    };
+
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            tool_call("c1", "read", r#"{"path":"main.txt"}"#),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            tool_call(
+                "c2",
+                "edit",
+                r#"{"path":"main.txt","oldString":"delta epsilon omega","newString":"replacement"}"#,
+            ),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "done".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]);
+
+    let mut events = Vec::new();
+    SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("m", "", "edit main.txt"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    let (parts, is_error) = result_for(&events, "edit");
+    assert!(
+        is_error,
+        "edit should fail when no safe fuzzy target exists"
+    );
+    let output_text = result_text(&parts);
+    assert!(
+        output_text.contains("closest candidates"),
+        "expected actionable nearby snippets, got: {output_text}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("main.txt")).unwrap(),
+        "alpha beta gamma\ndelta epsilon zeta\neta theta iota\n"
+    );
+}

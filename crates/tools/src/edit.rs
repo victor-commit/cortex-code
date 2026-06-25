@@ -11,8 +11,9 @@
 //!   refused with a "read it first" error before any mutation.
 //! - An `oldString` that does not occur (even after the whitespace-tolerant fallback) yields a clear
 //!   "string not found" error with no partial write.
-//! - When an exact match fails, a whitespace-normalized line fallback locates the intended region so
-//!   minor indentation/spacing drift in `oldString` still updates the right lines.
+//! - When an exact match fails, ordered fuzzy replacers (trimmed, line-normalized, indentation-aware,
+//!   and anchored line-window matching with Levenshtein-style similarity) locate the intended region
+//!   while still failing closed on ambiguity.
 //! - After a successful edit the post-edit hooks run: the formatter pass reformats the on-disk file
 //!   when a formatter is available, and any LSP diagnostics are re-injected into the tool result.
 //!   With no formatter/LSP attached, an edit succeeds unchanged with no error; when a surface
@@ -153,9 +154,18 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
             ));
         }
         Err(EditError::NotFound) => {
-            return ToolOutput::error(format!(
+            let candidates = nearest_candidates(&current, &old_string, 3);
+            let mut message = format!(
                 "edit: oldString was not found in {path}; re-read the file and copy the snippet exactly (file unchanged)"
-            ));
+            );
+            if !candidates.is_empty() {
+                message.push_str("\nClosest candidates:");
+                for candidate in candidates {
+                    message.push_str("\n- ");
+                    message.push_str(&candidate);
+                }
+            }
+            return ToolOutput::error(message);
         }
     };
 
@@ -188,7 +198,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     } else {
         format!("{} occurrences", applied.replacements)
     };
-    let summary = format!("edit: replaced {occurrences} in {path}");
+    let summary = if let Some(detail) = &applied.match_detail {
+        format!("edit: replaced {occurrences} in {path} ({detail})")
+    } else {
+        format!("edit: replaced {occurrences} in {path}")
+    };
 
     render_with_feedback(summary, feedback)
 }
@@ -229,6 +243,8 @@ struct Applied {
     content: String,
     /// How many occurrences were replaced.
     replacements: usize,
+    /// Optional detail about the matcher that was used.
+    match_detail: Option<String>,
 }
 
 /// Argument preconditions checked before any search.
@@ -242,8 +258,8 @@ fn validate_strings(old: &str, new: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Apply the edit to `buffer` in two deterministic tiers: byte-exact substring first, then a
-/// whitespace-normalized line fallback that tolerates indentation/spacing drift.
+/// Apply the edit to `buffer` in deterministic tiers: byte-exact substring first, then ordered
+/// fuzzy replacers (trimmed boundary, line-normalized, indentation-flexible, anchored line-window).
 fn apply_to_buffer(
     buffer: &str,
     old: &str,
@@ -266,41 +282,106 @@ fn apply_to_buffer(
         return Ok(Applied {
             content,
             replacements: exact_spans.len(),
+            match_detail: None,
         });
     }
 
-    // Tier 2 — whitespace-normalized line comparison (fuzzy fallback).
+    // Tier 2+ — ordered fuzzy replacers.
+    let trimmed = old.trim();
+    if trimmed != old {
+        let trimmed_spans: Vec<(usize, usize)> = buffer
+            .match_indices(trimmed)
+            .map(|(start, _)| (start, start + trimmed.len()))
+            .collect();
+        if !trimmed_spans.is_empty() {
+            if trimmed_spans.len() >= 2 && !replace_all {
+                return Err(EditError::Ambiguous(trimmed_spans.len()));
+            }
+            let mut content = buffer.to_owned();
+            for (start, end) in trimmed_spans.iter().rev() {
+                content.replace_range(*start..*end, new);
+            }
+            let detail = if trimmed_spans.len() == 1 {
+                "trimmed-boundary fuzzy match".to_owned()
+            } else {
+                format!(
+                    "trimmed-boundary fuzzy match across {} regions",
+                    trimmed_spans.len()
+                )
+            };
+            return Ok(Applied {
+                content,
+                replacements: trimmed_spans.len(),
+                match_detail: Some(detail),
+            });
+        }
+    }
+
     let lines = indexed_lines(buffer);
     let needle = needle_lines(old);
     if needle.is_empty() {
         return Err(EditError::NotFound);
     }
-    let runs = fuzzy_line_matches(&lines, &needle);
-    if runs.is_empty() {
-        return Err(EditError::NotFound);
-    }
-    if runs.len() >= 2 && !replace_all {
-        return Err(EditError::Ambiguous(runs.len()));
-    }
 
-    let mut content = buffer.to_owned();
-    for &first_line in runs.iter().rev() {
-        let last_line = first_line + needle.len() - 1;
-        let span_start = lines[first_line].start;
-        let span_end = lines[last_line].end;
-        let mut replacement = new.to_owned();
-        // The matched span includes the last line's trailing newline; keep the line structure intact
-        // when the replacement text omits it.
-        if lines[last_line].has_newline && !replacement.ends_with('\n') {
-            replacement.push('\n');
+    let strategy_candidates = [
+        (
+            "line-normalized fuzzy match",
+            line_normalized_matches(&lines, &needle),
+        ),
+        (
+            "indentation-flexible fuzzy match",
+            indentation_flexible_matches(&lines, &needle),
+        ),
+        (
+            "anchored line-window fuzzy match",
+            anchored_window_matches(&lines, &needle),
+        ),
+    ];
+
+    for (strategy, runs) in strategy_candidates {
+        if runs.is_empty() {
+            continue;
         }
-        content.replace_range(span_start..span_end, &replacement);
+        if runs.len() >= 2 && !replace_all {
+            return Err(EditError::Ambiguous(runs.len()));
+        }
+
+        let mut content = buffer.to_owned();
+        for matched in runs.iter().rev() {
+            let span_start = lines[matched.first_line].start;
+            let span_end = lines[matched.last_line].end;
+            let mut replacement = new.to_owned();
+            // The matched span includes the last line's trailing newline; keep the line structure
+            // intact when the replacement text omits it.
+            if lines[matched.last_line].has_newline && !replacement.ends_with('\n') {
+                replacement.push('\n');
+            }
+            content.replace_range(span_start..span_end, &replacement);
+        }
+
+        let match_detail = if runs.len() == 1 {
+            let matched = &runs[0];
+            if matched.first_line == matched.last_line {
+                format!("{strategy} at line {}", matched.first_line + 1)
+            } else {
+                format!(
+                    "{strategy} at lines {}-{}",
+                    matched.first_line + 1,
+                    matched.last_line + 1
+                )
+            }
+        } else {
+            format!("{strategy} across {} regions", runs.len())
+        };
+
+        return Ok(Applied {
+            content,
+            replacements: runs.len(),
+            match_detail: Some(match_detail),
+        });
     }
 
-    Ok(Applied {
-        content,
-        replacements: runs.len(),
-    })
+    Err(EditError::NotFound)
 }
 
 /// A single line of the buffer with its byte span and whether it carried a trailing newline.
@@ -345,8 +426,14 @@ fn normalize_ws(line: &str) -> String {
     line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineMatch {
+    first_line: usize,
+    last_line: usize,
+}
+
 /// Find non-overlapping runs of `lines` whose whitespace-normalized text equals the needle's.
-fn fuzzy_line_matches(lines: &[IndexedLine<'_>], needle: &[&str]) -> Vec<usize> {
+fn line_normalized_matches(lines: &[IndexedLine<'_>], needle: &[&str]) -> Vec<LineMatch> {
     if needle.is_empty() || lines.len() < needle.len() {
         return Vec::new();
     }
@@ -359,13 +446,261 @@ fn fuzzy_line_matches(lines: &[IndexedLine<'_>], needle: &[&str]) -> Vec<usize> 
             .enumerate()
             .all(|(offset, expected)| normalize_ws(lines[index + offset].text) == *expected);
         if is_match {
-            matches.push(index);
+            matches.push(LineMatch {
+                first_line: index,
+                last_line: index + needle.len() - 1,
+            });
             index += needle.len();
         } else {
             index += 1;
         }
     }
     matches
+}
+
+fn strip_common_indentation(lines: &[&str]) -> Vec<String> {
+    let mut min_indent = usize::MAX;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line
+            .chars()
+            .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+            .count();
+        min_indent = min_indent.min(indent);
+    }
+    if min_indent == usize::MAX {
+        return lines.iter().map(|line| (*line).to_owned()).collect();
+    }
+    lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                (*line).to_owned()
+            } else {
+                line.chars().skip(min_indent).collect()
+            }
+        })
+        .collect()
+}
+
+fn indentation_flexible_matches(lines: &[IndexedLine<'_>], needle: &[&str]) -> Vec<LineMatch> {
+    if needle.is_empty() || lines.len() < needle.len() {
+        return Vec::new();
+    }
+    let normalized_needle = strip_common_indentation(needle);
+    let mut matches = Vec::new();
+    for start in 0..=lines.len() - needle.len() {
+        let block: Vec<&str> = lines[start..start + needle.len()]
+            .iter()
+            .map(|line| line.text)
+            .collect();
+        let normalized_block = strip_common_indentation(&block);
+        if normalized_block == normalized_needle {
+            matches.push(LineMatch {
+                first_line: start,
+                last_line: start + needle.len() - 1,
+            });
+        }
+    }
+    matches
+}
+
+const ANCHORED_SIMILARITY_THRESHOLD: f64 = 0.65;
+const ANCHORED_SIMILARITY_MARGIN: f64 = 0.03;
+
+fn anchored_window_matches(lines: &[IndexedLine<'_>], needle: &[&str]) -> Vec<LineMatch> {
+    if needle.len() < 3 || lines.len() < needle.len() {
+        return Vec::new();
+    }
+
+    let first = needle[0].trim();
+    let last = needle[needle.len() - 1].trim();
+    let search_block_size = needle.len() as isize;
+    let max_line_delta = (search_block_size / 4).max(1);
+
+    let mut candidates: Vec<(LineMatch, f64)> = Vec::new();
+    for start in 0..lines.len() {
+        if lines[start].text.trim() != first {
+            continue;
+        }
+        for end in (start + 2)..lines.len() {
+            if lines[end].text.trim() != last {
+                continue;
+            }
+            let block_size = (end - start + 1) as isize;
+            if (block_size - search_block_size).abs() > max_line_delta {
+                continue;
+            }
+
+            let lines_to_compare = std::cmp::min(needle.len().saturating_sub(2), end - start - 1);
+            let similarity = if lines_to_compare == 0 {
+                1.0
+            } else {
+                let mut total = 0.0;
+                for offset in 0..lines_to_compare {
+                    let left = normalize_ws(lines[start + 1 + offset].text);
+                    let right = normalize_ws(needle[1 + offset]);
+                    total += normalized_similarity(&left, &right);
+                }
+                total / lines_to_compare as f64
+            };
+            if similarity >= ANCHORED_SIMILARITY_THRESHOLD {
+                candidates.push((
+                    LineMatch {
+                        first_line: start,
+                        last_line: end,
+                    },
+                    similarity,
+                ));
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let top_similarity = candidates[0].1;
+    let second_similarity = candidates.get(1).map(|candidate| candidate.1);
+    if second_similarity
+        .map(|score| top_similarity - score >= ANCHORED_SIMILARITY_MARGIN)
+        .unwrap_or(true)
+    {
+        return vec![candidates[0].0];
+    }
+
+    let mut ambiguous = Vec::new();
+    for (matched, score) in candidates {
+        if top_similarity - score <= ANCHORED_SIMILARITY_MARGIN {
+            ambiguous.push(matched);
+        }
+    }
+    ambiguous
+}
+
+fn normalized_similarity(left: &str, right: &str) -> f64 {
+    if left == right {
+        return 1.0;
+    }
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let max_len = left_chars.len().max(right_chars.len());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let distance = levenshtein_distance(&left_chars, &right_chars);
+    (1.0 - (distance as f64 / max_len as f64)).clamp(0.0, 1.0)
+}
+
+fn levenshtein_distance(left: &[char], right: &[char]) -> usize {
+    if left.is_empty() {
+        return right.len();
+    }
+    if right.is_empty() {
+        return left.len();
+    }
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+
+    for (i, &left_char) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, &right_char) in right.iter().enumerate() {
+            let cost = usize::from(left_char != right_char);
+            current[j + 1] = std::cmp::min(
+                std::cmp::min(current[j] + 1, previous[j + 1] + 1),
+                previous[j] + cost,
+            );
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn nearest_candidates(buffer: &str, old: &str, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let lines = indexed_lines(buffer);
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let needle_lines = needle_lines(old);
+    if needle_lines.is_empty() {
+        return Vec::new();
+    }
+    let needle_norm = normalize_ws(old);
+
+    let mut scored: Vec<(f64, usize, usize, String)> = Vec::new();
+    if needle_lines.len() == 1 {
+        for (index, line) in lines.iter().enumerate() {
+            let similarity = normalized_similarity(&normalize_ws(line.text), &needle_norm);
+            if similarity < 0.45 {
+                continue;
+            }
+            scored.push((similarity, index, index, line.text.to_owned()));
+        }
+    } else {
+        let line_count = needle_lines.len();
+        let min_window = line_count.saturating_sub(1).max(1);
+        let max_window = std::cmp::min(line_count + 1, lines.len());
+        for window in min_window..=max_window {
+            if window > lines.len() {
+                continue;
+            }
+            for start in 0..=lines.len() - window {
+                let end = start + window - 1;
+                let span = lines[start].start..lines[end].end;
+                let block = buffer[span].trim_end_matches('\n');
+                let similarity = normalized_similarity(&normalize_ws(block), &needle_norm);
+                if similarity < 0.45 {
+                    continue;
+                }
+                scored.push((similarity, start, end, block.to_owned()));
+            }
+        }
+    }
+
+    scored.sort_by(|left, right| right.0.total_cmp(&left.0));
+    scored.truncate(limit);
+    scored
+        .into_iter()
+        .map(|(score, start, end, snippet)| {
+            let label = if start == end {
+                format!("line {}", start + 1)
+            } else {
+                format!("lines {}-{}", start + 1, end + 1)
+            };
+            format!(
+                "{label} (similarity {:.2}): {}",
+                score,
+                snippet_preview(&snippet)
+            )
+        })
+        .collect()
+}
+
+fn snippet_preview(snippet: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let single_line = snippet
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ⏎ ");
+    if single_line.chars().count() <= MAX_CHARS {
+        return single_line;
+    }
+    let mut truncated = String::new();
+    for (index, ch) in single_line.chars().enumerate() {
+        if index >= MAX_CHARS {
+            truncated.push('…');
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated
 }
 
 /// Extract a string argument verbatim (no trimming: edit strings must be preserved exactly).
@@ -730,5 +1065,73 @@ mod tests {
         assert!(output.is_error);
         assert!(text_of(&output).to_lowercase().contains("matches"));
         assert_eq!(fs::read_to_string(dir.join("f.rs")).unwrap(), original);
+    }
+
+    #[test]
+    fn anchored_line_window_uses_levenshtein_similarity_to_pick_the_best_block() {
+        let dir = temp_dir("anchored-best");
+        let ctx = ctx_for(&dir);
+        let original = concat!(
+            "fn choose() {\n",
+            "    let count = 10;\n",
+            "    println!(\"done\");\n",
+            "}\n",
+            "\n",
+            "fn choose() {\n",
+            "    let total = 99;\n",
+            "    println!(\"done\");\n",
+            "}\n"
+        );
+        seed_read(&ctx, &dir, "window.rs", original);
+        let old = "fn choose() {\n  let total = 100;\n  println!(\"done\");\n}";
+        let new = "fn choose() {\n    let total = 0;\n    println!(\"done\");\n}";
+        let output = run(&edit_args("window.rs", old, new), &ctx);
+        assert!(!output.is_error, "{}", text_of(&output));
+        assert!(
+            text_of(&output).contains("anchored line-window fuzzy match"),
+            "expected fuzzy strategy note, got: {}",
+            text_of(&output)
+        );
+        let after = fs::read_to_string(dir.join("window.rs")).unwrap();
+        assert_eq!(
+            after,
+            concat!(
+                "fn choose() {\n",
+                "    let count = 10;\n",
+                "    println!(\"done\");\n",
+                "}\n",
+                "\n",
+                "fn choose() {\n",
+                "    let total = 0;\n",
+                "    println!(\"done\");\n",
+                "}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn not_found_error_includes_nearby_candidate_suggestions() {
+        let dir = temp_dir("notfound-suggest");
+        let ctx = ctx_for(&dir);
+        seed_read(
+            &ctx,
+            &dir,
+            "s.txt",
+            "alpha beta gamma\ndelta epsilon zeta\neta theta iota\n",
+        );
+        let output = run(
+            &edit_args("s.txt", "delta epsilon omega", "replacement"),
+            &ctx,
+        );
+        assert!(output.is_error);
+        let text = text_of(&output);
+        assert!(
+            text.contains("Closest candidates"),
+            "expected nearby suggestions, got: {text}"
+        );
+        assert!(
+            text.contains("line"),
+            "expected line-oriented candidate labels, got: {text}"
+        );
     }
 }
