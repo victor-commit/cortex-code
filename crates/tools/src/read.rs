@@ -30,8 +30,12 @@ use crate::tool::{Tool, ToolContext, ToolOutput};
 
 /// The default line cap applied to an unbounded read (architecture §3.4 / VAL-TOOLS-003).
 pub const DEFAULT_READ_LIMIT: usize = 2000;
+/// Compatibility cap for each rendered line's visible content.
+const DEFAULT_READ_MAX_LINE_CHARS: usize = 2000;
 /// Compatibility byte cap for the in-band rendered view before spill.
 const DEFAULT_READ_MAX_BYTES: usize = 50 * 1024;
+/// Visible marker appended when a rendered line is truncated to the compatibility cap.
+const PER_LINE_TRUNCATION_MARKER: &str = "… [truncated]";
 
 /// Bytes sampled from the head of a file to sniff its media type / binary-ness.
 const SNIFF_BYTES: usize = 4096;
@@ -209,7 +213,7 @@ fn push_notice(output: &mut String, notice: &str) {
 }
 
 /// Render a text file's windowed, line-numbered body plus any truncation/EOF indicator, returning
-/// the rendered text and whether the offset/limit window omitted trailing content.
+/// the rendered text and whether any content was omitted (window pagination or per-line truncation).
 fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> (String, bool) {
     let lines = split_lines(content);
     let total = lines.len();
@@ -231,14 +235,17 @@ fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> (S
     }
 
     let mut rendered: Vec<String> = Vec::new();
+    let mut line_content_omitted = false;
     for (index, line) in lines.iter().enumerate().skip(offset - 1).take(limit) {
+        let (line, truncated_line) = truncate_line_for_display(line);
+        line_content_omitted |= truncated_line;
         rendered.push(format!("{}: {}", index + 1, line));
     }
 
     let last = offset - 1 + rendered.len();
-    let truncated = last < total;
+    let window_truncated = last < total;
     let mut output = rendered.join("\n");
-    if truncated {
+    if window_truncated {
         if !output.is_empty() {
             output.push('\n');
         }
@@ -247,7 +254,18 @@ fn render_text(content: &str, offset: Option<usize>, limit: Option<usize>) -> (S
             last + 1
         ));
     }
-    (output, truncated)
+    (output, window_truncated || line_content_omitted)
+}
+
+/// Truncate a rendered line at the compatibility cap on a UTF-8 char boundary and append a marker.
+fn truncate_line_for_display(line: &str) -> (String, bool) {
+    let Some((cut, _)) = line.char_indices().nth(DEFAULT_READ_MAX_LINE_CHARS) else {
+        return (line.to_owned(), false);
+    };
+
+    let mut truncated = line[..cut].to_owned();
+    truncated.push_str(PER_LINE_TRUNCATION_MARKER);
+    (truncated, true)
 }
 
 /// Split file content into lines, dropping the single trailing empty element produced by a final
@@ -567,6 +585,44 @@ mod tests {
         let path = &rest[..end];
         let spilled = std::fs::read_to_string(path).expect("read spill file");
         assert_eq!(spilled, body, "spill holds the complete file content");
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Gap compatibility fix: each rendered line is truncated to 2000 chars on a UTF-8 boundary.
+    // Any such truncation counts as omitted content, so the complete file is spilled and named.
+    #[test]
+    fn overlong_line_is_char_truncated_and_spilled_as_complete_content() {
+        let dir = temp_dir("linecap");
+        let long_line = "🙂".repeat(DEFAULT_READ_MAX_LINE_CHARS + 1);
+        fs::write(dir.join("long.txt"), &long_line).unwrap();
+        let output = run(&read_args("long.txt"), &ctx_for(&dir));
+        let text = text_of(&output);
+
+        let expected_rendered = format!(
+            "1: {}{}",
+            "🙂".repeat(DEFAULT_READ_MAX_LINE_CHARS),
+            PER_LINE_TRUNCATION_MARKER
+        );
+        assert!(
+            text.contains(&expected_rendered),
+            "rendered line should be char-truncated with marker: {text}"
+        );
+        assert!(
+            !text.contains(&format!("1: {long_line}")),
+            "full overlong line must not be emitted in-band"
+        );
+        assert!(
+            text.contains("written to "),
+            "line truncation should trigger complete-file spill: {text}"
+        );
+
+        let marker = "written to ";
+        let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("the notice closes with ]");
+        let path = &rest[..end];
+        let spilled = std::fs::read_to_string(path).expect("read spill file");
+        assert_eq!(spilled, long_line, "spill holds the complete overlong line");
         let _ = std::fs::remove_file(path);
     }
 

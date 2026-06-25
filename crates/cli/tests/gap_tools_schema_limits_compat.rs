@@ -307,6 +307,14 @@ fn tool_result_texts(doc: &serde_json::Value, tool_name: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_spill_path(text: &str) -> &str {
+    let marker = "written to ";
+    let start = text.rfind(marker).expect("a spill pointer") + marker.len();
+    let rest = &text[start..];
+    let end = rest.find(']').expect("the notice closes with ]");
+    &rest[..end]
+}
+
 #[test]
 fn read_accepts_file_path_alias_and_apply_patch_accepts_patch_text_alias() {
     let home = scratch_home("aliases");
@@ -442,5 +450,47 @@ fn bash_workdir_scopes_single_command_and_glob_grep_default_caps_apply() {
     assert!(
         grep.contains("output truncated"),
         "grep default cap should truncate broad matches: {grep}"
+    );
+}
+
+#[test]
+fn read_truncates_overlong_line_per_line_and_spills_complete_file() {
+    let home = scratch_home("read-long-line");
+    let long_line = "🙂".repeat(2001);
+    fs::write(home.join("long.txt"), &long_line).unwrap();
+
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::success(&[
+            tool_call_frame(
+                "call_read_long",
+                "read",
+                serde_json::json!({ "path": "long.txt" }),
+            ),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[text_delta_frame("done"), done_frame("stop")]),
+    ]);
+    let doc = assert_success_json(cortex_run_json(
+        &home,
+        &fixture.base_url,
+        "google/gemini-2.5-flash",
+        "exercise read line truncation compatibility",
+    ));
+    fixture.finish();
+
+    let read = tool_result_texts(&doc, "read").join("\n");
+    let expected = format!("1: {}… [truncated]", "🙂".repeat(2000));
+    assert!(
+        read.contains(&expected),
+        "read should truncate rendered lines at 2000 chars with marker: {read}"
+    );
+    assert!(
+        !read.contains(&format!("1: {long_line}")),
+        "full overlong line must not be emitted in-band"
+    );
+    let spilled = fs::read_to_string(parse_spill_path(&read)).expect("read spill file");
+    assert_eq!(
+        spilled, long_line,
+        "spill should preserve complete line content"
     );
 }
