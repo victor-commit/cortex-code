@@ -24,15 +24,20 @@
 use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use crate::compaction::{self, CompactionPolicy};
 use crate::event::{CompactionRecord, RunError, RunOutcome, RunnerEvent, accumulate_usage};
-use crate::tools::ToolDispatcher;
+use crate::tools::{ToolDispatchResult, ToolDispatcher};
 
 /// The built-in step budget for a single turn (architecture §4, `MAX_STEPS`).
 pub const DEFAULT_MAX_STEPS: usize = 25;
+/// Maximum number of tool calls executed concurrently in a single model step.
+pub const DEFAULT_TOOL_DISPATCH_MAX_CONCURRENCY: usize = 4;
+/// Per-tool timeout while dispatching model-requested tool calls.
+pub const DEFAULT_TOOL_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The maximum number of context-overflow recoveries (compact-and-rebuild) attempted in one turn
 /// before the runner gives up with a clear context-overflow diagnostic rather than looping forever.
@@ -140,6 +145,8 @@ impl Turn {
 #[derive(Debug, Clone, Copy)]
 pub struct SessionRunner {
     max_steps: usize,
+    tool_dispatch_max_concurrency: usize,
+    tool_dispatch_timeout: Duration,
 }
 
 impl Default for SessionRunner {
@@ -154,6 +161,8 @@ impl SessionRunner {
     pub fn new(max_steps: usize) -> Self {
         Self {
             max_steps: max_steps.max(1),
+            tool_dispatch_max_concurrency: DEFAULT_TOOL_DISPATCH_MAX_CONCURRENCY,
+            tool_dispatch_timeout: DEFAULT_TOOL_DISPATCH_TIMEOUT,
         }
     }
 
@@ -161,6 +170,20 @@ impl SessionRunner {
     #[must_use]
     pub fn max_steps(&self) -> usize {
         self.max_steps
+    }
+
+    /// Set the maximum number of tool calls executed concurrently in one model step.
+    #[must_use]
+    pub fn with_tool_dispatch_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.tool_dispatch_max_concurrency = max_concurrency.max(1);
+        self
+    }
+
+    /// Set the per-tool dispatch timeout used while executing model-requested tools.
+    #[must_use]
+    pub fn with_tool_dispatch_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_dispatch_timeout = timeout.max(Duration::from_millis(1));
+        self
     }
 
     /// Run a turn against `provider`, streaming normalized events to `sink` and returning the
@@ -441,15 +464,57 @@ impl SessionRunner {
                             name: call.name.clone(),
                             arguments: call.arguments.clone(),
                         });
-                        let result = dispatcher.dispatch(call).await;
-                        let is_error = result.is_error;
-                        let content = result.content;
+                    }
+
+                    let max_concurrency = self
+                        .tool_dispatch_max_concurrency
+                        .max(1)
+                        .min(round.tool_calls.len().max(1));
+                    let dispatch_timeout = self.tool_dispatch_timeout;
+                    let mut pending_calls: VecDeque<(usize, ToolCall)> =
+                        round.tool_calls.iter().cloned().enumerate().collect();
+                    let mut in_flight = futures_util::stream::FuturesUnordered::new();
+                    let mut completed_results: Vec<Option<(ToolCall, ToolDispatchResult)>> =
+                        vec![None; round.tool_calls.len()];
+
+                    while in_flight.len() < max_concurrency {
+                        let Some((index, call)) = pending_calls.pop_front() else {
+                            break;
+                        };
+                        in_flight.push(dispatch_tool_call(
+                            dispatcher,
+                            call,
+                            index,
+                            dispatch_timeout,
+                        ));
+                    }
+
+                    while let Some((index, call, result)) = in_flight.next().await {
                         sink(RunnerEvent::ToolResult {
                             id: call.id.clone(),
                             name: call.name.clone(),
-                            parts: result.parts,
-                            is_error,
+                            parts: result.parts.clone(),
+                            is_error: result.is_error,
                         });
+                        completed_results[index] = Some((call, result));
+                        if let Some((next_index, next_call)) = pending_calls.pop_front() {
+                            in_flight.push(dispatch_tool_call(
+                                dispatcher,
+                                next_call,
+                                next_index,
+                                dispatch_timeout,
+                            ));
+                        }
+                    }
+
+                    for (index, call) in round.tool_calls.iter().enumerate() {
+                        let result = completed_results
+                            .get_mut(index)
+                            .and_then(Option::take)
+                            .map(|(_, result)| result)
+                            .unwrap_or_else(|| missing_tool_result(call));
+                        let is_error = result.is_error;
+                        let content = result.content.clone();
                         let tool_content = if is_error {
                             format!("Tool error from {}:\n{}", call.name, content)
                         } else {
@@ -764,6 +829,47 @@ fn append_skill_guidance_to_system(messages: &mut Vec<Message>, guidance: &str) 
         system.content.push_str(&block);
     } else {
         messages.insert(0, Message::system(block));
+    }
+}
+
+/// Execute one tool call with a per-call timeout, yielding a synthesized timeout result if needed.
+async fn dispatch_tool_call(
+    dispatcher: &dyn ToolDispatcher,
+    call: ToolCall,
+    index: usize,
+    timeout: Duration,
+) -> (usize, ToolCall, ToolDispatchResult) {
+    let result = match tokio::time::timeout(timeout, dispatcher.dispatch(&call)).await {
+        Ok(result) => result,
+        Err(_) => timed_out_tool_result(&call, timeout),
+    };
+    (index, call, result)
+}
+
+/// Synthesize an error result for a tool call that exceeded the dispatch timeout.
+fn timed_out_tool_result(call: &ToolCall, timeout: Duration) -> ToolDispatchResult {
+    let timeout_ms = timeout.as_millis();
+    let content = format!(
+        "Tool {} timed out after {timeout_ms}ms while executing call {}.",
+        call.name, call.id
+    );
+    ToolDispatchResult {
+        parts: vec![protocol::ToolResultPart::text(content.clone())],
+        content,
+        is_error: true,
+    }
+}
+
+/// Defensive fallback: synthesize an error result if a tool call somehow produced no completion.
+fn missing_tool_result(call: &ToolCall) -> ToolDispatchResult {
+    let content = format!(
+        "Tool {} did not produce a result for call {}.",
+        call.name, call.id
+    );
+    ToolDispatchResult {
+        parts: vec![protocol::ToolResultPart::text(content.clone())],
+        content,
+        is_error: true,
     }
 }
 

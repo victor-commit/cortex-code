@@ -6,11 +6,14 @@
 //! answer with exactly one terminal event (VAL-RUN-002), assistant-role assembly, and clean
 //! setup-error handling.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use engine::{RunnerEvent, SessionRunner, ToolDispatchResult, ToolDispatcher, Turn};
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, pending};
 use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, ToolDef, Usage};
+use tokio::time::sleep;
 
 /// A provider that replays a pre-scripted sequence of event batches, one batch per round-trip.
 struct ScriptedProvider {
@@ -666,6 +669,359 @@ async fn successful_skill_tool_result_is_appended_to_system_context() {
             && second_system.content.contains("SKILL-OK"),
         "skill guidance should be appended to the continuation system context: {}",
         second_system.content
+    );
+}
+
+// VAL-GAP-ENGINE-001: independent tool calls in one model step execute concurrently with bounded
+// fan-out.
+#[tokio::test]
+async fn independent_tool_calls_execute_concurrently_with_bounded_fanout() {
+    struct BoundedProvider;
+
+    impl Provider for BoundedProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = request
+                .messages
+                .iter()
+                .filter(|message| message.role == llm::Role::Tool)
+                .count();
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_a".to_owned(),
+                            name: "slow_a".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_b".to_owned(),
+                            name: "slow_b".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_c".to_owned(),
+                            name: "slow_c".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "done".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct BoundedDispatcher {
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+    }
+
+    impl ToolDispatcher for BoundedDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![
+                ToolDef {
+                    name: "slow_a".to_owned(),
+                    description: "slow tool a".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                },
+                ToolDef {
+                    name: "slow_b".to_owned(),
+                    description: "slow tool b".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                },
+                ToolDef {
+                    name: "slow_c".to_owned(),
+                    description: "slow tool c".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                },
+            ]
+        }
+
+        fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            let in_flight = Arc::clone(&self.in_flight);
+            let max_in_flight = Arc::clone(&self.max_in_flight);
+            let name = call.name.clone();
+            Box::pin(async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                while let Err(previous_max) =
+                    max_in_flight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                        (now > current).then_some(now)
+                    })
+                {
+                    if now <= previous_max {
+                        break;
+                    }
+                }
+                sleep(Duration::from_millis(60)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                ToolDispatchResult::text(format!("{name} ok"))
+            })
+        }
+    }
+
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let dispatcher = BoundedDispatcher {
+        in_flight,
+        max_in_flight: Arc::clone(&max_in_flight),
+    };
+    let provider = BoundedProvider;
+    let outcome = SessionRunner::default()
+        .with_tool_dispatch_max_concurrency(2)
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "run three independent tools"),
+            &dispatcher,
+            |_| {},
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    assert_eq!(
+        max_in_flight.load(Ordering::SeqCst),
+        2,
+        "runner should execute tool calls concurrently but keep fan-out bounded"
+    );
+}
+
+// VAL-GAP-ENGINE-002: out-of-order completions are reinserted into the transcript in deterministic
+// tool-call order.
+#[tokio::test]
+async fn reinjection_order_is_stable_when_tool_completion_order_differs() {
+    struct CaptureProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for CaptureProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            self.requests.lock().unwrap().push(request.messages.clone());
+            let round = self.requests.lock().unwrap().len();
+            Box::pin(async move {
+                let events = if round == 1 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_slow".to_owned(),
+                            name: "slow".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_fast".to_owned(),
+                            name: "fast".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "done".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct OutOfOrderDispatcher;
+
+    impl ToolDispatcher for OutOfOrderDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![
+                ToolDef {
+                    name: "slow".to_owned(),
+                    description: "slow".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                },
+                ToolDef {
+                    name: "fast".to_owned(),
+                    description: "fast".to_owned(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                },
+            ]
+        }
+
+        fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            let name = call.name.clone();
+            Box::pin(async move {
+                if name == "slow" {
+                    sleep(Duration::from_millis(120)).await;
+                } else {
+                    sleep(Duration::from_millis(10)).await;
+                }
+                ToolDispatchResult::text(format!("{name} complete"))
+            })
+        }
+    }
+
+    let provider = CaptureProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = OutOfOrderDispatcher;
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "exercise ordering"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    let completion_order: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            RunnerEvent::ToolResult { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        completion_order,
+        vec!["call_fast".to_owned(), "call_slow".to_owned()],
+        "tool results should surface in completion order"
+    );
+
+    let requests = provider.requests.lock().unwrap();
+    let second_request = requests.get(1).expect("continuation request");
+    let reinjected_order: Vec<String> = second_request
+        .iter()
+        .filter(|message| message.role == llm::Role::Tool)
+        .filter_map(|message| message.tool_call_id.clone())
+        .collect();
+    assert_eq!(
+        reinjected_order,
+        vec!["call_slow".to_owned(), "call_fast".to_owned()],
+        "tool results are reinserted deterministically in original tool-call order"
+    );
+}
+
+#[tokio::test]
+async fn timed_out_tool_calls_receive_synthetic_error_results() {
+    struct TimeoutProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for TimeoutProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            self.requests.lock().unwrap().push(request.messages.clone());
+            let round = self.requests.lock().unwrap().len();
+            Box::pin(async move {
+                let events = if round == 1 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_hang".to_owned(),
+                            name: "hang".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "recovered".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct HangingDispatcher;
+
+    impl ToolDispatcher for HangingDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "hang".to_owned(),
+                description: "never completes".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            Box::pin(async move { pending::<ToolDispatchResult>().await })
+        }
+    }
+
+    let provider = TimeoutProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = HangingDispatcher;
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .with_tool_dispatch_timeout(Duration::from_millis(25))
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "call the hanging tool"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    assert!(outcome.is_success(), "turn should continue after timeout");
+    let timeout_result = events.iter().find_map(|event| match event {
+        RunnerEvent::ToolResult {
+            name,
+            is_error,
+            parts,
+            ..
+        } if name == "hang" => Some((is_error, parts)),
+        _ => None,
+    });
+    let (is_error, parts) = timeout_result.expect("timed-out tool result event");
+    assert!(
+        *is_error,
+        "timeout should be synthesized as an error result"
+    );
+    let text = match &parts[0] {
+        protocol::ToolResultPart::Text { text } => text.as_str(),
+        _ => panic!("expected timeout text part"),
+    };
+    assert!(
+        text.contains("timed out"),
+        "timeout result should explain the synthesized timeout"
+    );
+
+    let requests = provider.requests.lock().unwrap();
+    let continuation = requests.get(1).expect("continuation round");
+    let timeout_message = continuation
+        .iter()
+        .find(|message| message.role == llm::Role::Tool)
+        .expect("re-injected timeout tool result");
+    assert!(
+        timeout_message.content.contains("timed out"),
+        "model should receive the synthesized timeout tool result"
     );
 }
 
