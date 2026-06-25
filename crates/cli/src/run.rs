@@ -426,7 +426,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 provider.provider_id(),
                 provider.model_id()
             );
-            (Arc::new(provider), None)
+            let auth = resolve_plugin_provider_auth(
+                &plugin_state,
+                &run_config.provider_config,
+                provider.provider_id(),
+            );
+            (Arc::new(provider.with_auth(auth)), None)
         }
         None => {
             let provider_id = run_config.model.provider_id.clone();
@@ -1226,6 +1231,26 @@ fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {
         }
     }
     diag.exit()
+}
+
+fn resolve_plugin_provider_auth(
+    plugin_state: &PluginState,
+    provider_config: &providers::ProviderConfigSet,
+    provider_id: &str,
+) -> Option<serde_json::Value> {
+    let inputs = provider_config.credential_inputs(provider_id);
+    let credential = providers::resolve_credential(provider_id, &inputs).ok()?;
+    let parsed = parse_plugin_auth_payload(credential.expose());
+    plugin_state.load_auth_for_provider(provider_id, Some(parsed))
+}
+
+fn parse_plugin_auth_payload(raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return serde_json::Value::Null;
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .unwrap_or_else(|_| serde_json::json!({ "type": "api", "key": trimmed }))
 }
 
 /// The result of awaiting a turn that may be interrupted by SIGINT.

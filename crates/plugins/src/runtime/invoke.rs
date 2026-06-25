@@ -534,6 +534,7 @@ impl RuntimeHost {
         plugin: &PluginSpec,
         name: &str,
         arguments: JsonValue,
+        auth: Option<JsonValue>,
     ) -> Result<PluginToolExecution, PluginRuntimeError> {
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let (result, _output) = self.invoke_plugin(
@@ -542,6 +543,7 @@ impl RuntimeHost {
             BridgeOperation::ToolExecute {
                 name: name.to_owned(),
                 arguments,
+                auth,
             },
         )?;
         if result.ok {
@@ -567,6 +569,7 @@ impl RuntimeHost {
         plugin: &PluginSpec,
         model: &str,
         messages: JsonValue,
+        auth: Option<JsonValue>,
     ) -> Result<String, PluginRuntimeError> {
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let (result, _output) = self.invoke_plugin(
@@ -575,6 +578,7 @@ impl RuntimeHost {
             BridgeOperation::ProviderComplete {
                 model: model.to_owned(),
                 messages,
+                auth,
             },
         )?;
         if result.ok {
@@ -586,6 +590,94 @@ impl RuntimeHost {
                 &runtime,
                 result,
                 "provider",
+            ))
+        }
+    }
+
+    /// Start one plugin auth method authorization.
+    pub fn authorize_auth_method(
+        &self,
+        plugin: &PluginSpec,
+        provider: &str,
+        method: &str,
+        inputs: JsonValue,
+    ) -> Result<PluginAuthAuthorizeResult, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, _output) = self.invoke_plugin(
+            plugin,
+            &runtime,
+            BridgeOperation::AuthAuthorize {
+                provider: provider.to_owned(),
+                method: method.to_owned(),
+                inputs,
+            },
+        )?;
+        if result.ok {
+            let output = result.output.unwrap_or(JsonValue::Null);
+            Ok(normalize_authorize_result(output))
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "auth",
+            ))
+        }
+    }
+
+    /// Complete one pending plugin OAuth callback.
+    pub fn complete_auth_callback(
+        &self,
+        plugin: &PluginSpec,
+        callback_id: &str,
+        code: Option<&str>,
+    ) -> Result<PluginAuthCallbackResult, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, _output) = self.invoke_plugin(
+            plugin,
+            &runtime,
+            BridgeOperation::AuthCallback {
+                callback_id: callback_id.to_owned(),
+                code: code.map(str::to_owned),
+            },
+        )?;
+        if result.ok {
+            let output = result.output.unwrap_or(JsonValue::Null);
+            Ok(normalize_callback_result(output))
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "auth",
+            ))
+        }
+    }
+
+    /// Apply a plugin auth hook's optional loader to a stored credential payload for provider use.
+    pub fn load_auth(
+        &self,
+        plugin: &PluginSpec,
+        provider: &str,
+        auth: JsonValue,
+    ) -> Result<JsonValue, PluginRuntimeError> {
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
+        let (result, _output) = self.invoke_plugin(
+            plugin,
+            &runtime,
+            BridgeOperation::AuthLoad {
+                provider: provider.to_owned(),
+                auth,
+            },
+        )?;
+        if result.ok {
+            Ok(result.output.unwrap_or(JsonValue::Null))
+        } else {
+            Err(error_from_bridge_result(
+                plugin.path(),
+                &runtime,
+                result,
+                "auth",
             ))
         }
     }
@@ -1364,6 +1456,104 @@ pub struct PluginAuthRegistration {
     /// Environment variables this method can read.
     #[serde(default)]
     pub env: Vec<String>,
+    /// Interactive auth methods (API key and/or OAuth) exposed by this provider.
+    #[serde(default)]
+    pub methods: Vec<PluginAuthMethodRegistration>,
+}
+
+/// A single provider auth method declared by a plugin auth hook.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAuthMethodRegistration {
+    /// Stable method id scoped to the provider (for example `api`, `oauth`, `device`).
+    pub id: String,
+    /// Method type.
+    #[serde(rename = "type")]
+    pub method_type: PluginAuthMethodType,
+    /// Human-facing label shown by `cortex auth`.
+    #[serde(default)]
+    pub label: String,
+    /// Input prompts the method requests before authorization.
+    #[serde(default)]
+    pub prompts: Vec<PluginAuthPrompt>,
+    /// Environment variables this specific method can source from.
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+/// The plugin auth method category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthMethodType {
+    /// API-style credential (usually an API key/token).
+    Api,
+    /// OAuth flow with authorize + callback.
+    Oauth,
+}
+
+/// One plugin-defined auth prompt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PluginAuthPrompt {
+    /// Free-form text input.
+    Text {
+        /// Prompt key stored in the method input map.
+        key: String,
+        /// Prompt message shown to the user.
+        message: String,
+        /// Optional placeholder hint.
+        #[serde(default)]
+        placeholder: Option<String>,
+    },
+    /// Pick-one selector.
+    Select {
+        /// Prompt key stored in the method input map.
+        key: String,
+        /// Prompt message shown to the user.
+        message: String,
+        /// Selectable options.
+        #[serde(default)]
+        options: Vec<PluginAuthPromptOption>,
+    },
+}
+
+/// One selectable option in a `select` auth prompt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAuthPromptOption {
+    /// Human-facing label.
+    pub label: String,
+    /// Stored value.
+    pub value: String,
+    /// Optional extra hint shown in pickers.
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
+/// Result of starting a plugin auth method authorization.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginAuthAuthorizeResult {
+    /// Returned shape from the bridge (`success`, `failed`, or `oauth_pending`).
+    #[serde(rename = "type")]
+    pub result_type: String,
+    /// Provider id associated with the result.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Opaque payload for follow-up handling.
+    #[serde(default)]
+    pub payload: JsonValue,
+}
+
+/// Result of completing an OAuth callback for a plugin auth authorization.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginAuthCallbackResult {
+    /// Returned shape from the bridge (`success` or `failed`).
+    #[serde(rename = "type")]
+    pub result_type: String,
+    /// Provider id associated with the result.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Opaque payload for credential extraction.
+    #[serde(default)]
+    pub payload: JsonValue,
 }
 
 /// A plugin-contributed model provider returned by a `provider` hook.
@@ -1583,22 +1773,68 @@ struct PackageResolveInput {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeOperation {
-    Load { config: JsonValue, surface: String },
-    Event { event: JsonValue },
-    ChatMessage { message: JsonValue },
-    ChatParams { params: JsonValue },
-    ChatHeaders { headers: JsonValue },
-    ToolDefinition { definition: JsonValue },
-    PermissionAsk { request: JsonValue },
-    CommandBefore { command: JsonValue },
-    ToolBefore { call: JsonValue },
-    ToolAfter { result: JsonValue },
+    Load {
+        config: JsonValue,
+        surface: String,
+    },
+    Event {
+        event: JsonValue,
+    },
+    ChatMessage {
+        message: JsonValue,
+    },
+    ChatParams {
+        params: JsonValue,
+    },
+    ChatHeaders {
+        headers: JsonValue,
+    },
+    ToolDefinition {
+        definition: JsonValue,
+    },
+    PermissionAsk {
+        request: JsonValue,
+    },
+    CommandBefore {
+        command: JsonValue,
+    },
+    ToolBefore {
+        call: JsonValue,
+    },
+    ToolAfter {
+        result: JsonValue,
+    },
     ShellEnv,
     Dispose,
-    ChatMessagesTransform { messages: JsonValue },
-    ChatSystemTransform { system: String },
-    ToolExecute { name: String, arguments: JsonValue },
-    ProviderComplete { model: String, messages: JsonValue },
+    ChatMessagesTransform {
+        messages: JsonValue,
+    },
+    ChatSystemTransform {
+        system: String,
+    },
+    ToolExecute {
+        name: String,
+        arguments: JsonValue,
+        auth: Option<JsonValue>,
+    },
+    ProviderComplete {
+        model: String,
+        messages: JsonValue,
+        auth: Option<JsonValue>,
+    },
+    AuthAuthorize {
+        provider: String,
+        method: String,
+        inputs: JsonValue,
+    },
+    AuthCallback {
+        callback_id: String,
+        code: Option<String>,
+    },
+    AuthLoad {
+        provider: String,
+        auth: JsonValue,
+    },
 }
 
 #[derive(Deserialize)]
@@ -2181,6 +2417,62 @@ fn output_content(value: &JsonValue) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| String::new())
 }
 
+fn normalize_authorize_result(value: JsonValue) -> PluginAuthAuthorizeResult {
+    let mut provider = None;
+    let mut payload = value.clone();
+    let mut result_type = "failed".to_owned();
+    if let JsonValue::Object(map) = value {
+        if let Some(found) = map.get("type").and_then(JsonValue::as_str) {
+            result_type = found.to_owned();
+        } else if map.contains_key("callback_id") {
+            result_type = "oauth_pending".to_owned();
+        } else if map.contains_key("key")
+            || map.contains_key("refresh")
+            || map.contains_key("access")
+            || map.contains_key("credential")
+        {
+            result_type = "success".to_owned();
+        }
+        provider = map
+            .get("provider")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned);
+        payload = JsonValue::Object(map);
+    }
+    PluginAuthAuthorizeResult {
+        result_type,
+        provider,
+        payload,
+    }
+}
+
+fn normalize_callback_result(value: JsonValue) -> PluginAuthCallbackResult {
+    let mut provider = None;
+    let mut payload = value.clone();
+    let mut result_type = "failed".to_owned();
+    if let JsonValue::Object(map) = value {
+        if let Some(found) = map.get("type").and_then(JsonValue::as_str) {
+            result_type = found.to_owned();
+        } else if map.contains_key("key")
+            || map.contains_key("refresh")
+            || map.contains_key("access")
+            || map.contains_key("credential")
+        {
+            result_type = "success".to_owned();
+        }
+        provider = map
+            .get("provider")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned);
+        payload = JsonValue::Object(map);
+    }
+    PluginAuthCallbackResult {
+        result_type,
+        provider,
+        payload,
+    }
+}
+
 const PACKAGE_RESOLVER_SCRIPT: &str = r#"
 import processModule from "node:process";
 import { createRequire } from "node:module";
@@ -2539,6 +2831,7 @@ function createInput(raw, directory) {
   const registeredAuth = [];
   const registeredProviders = [];
   const registeredWorkspaces = [];
+  const authCallbacks = new Map();
   const registerTool = (tool) => {
     registeredTools.push(tool);
     return tool;
@@ -2587,7 +2880,8 @@ function createInput(raw, directory) {
     registeredTools,
     registeredAuth,
     registeredProviders,
-    registeredWorkspaces
+    registeredWorkspaces,
+    authCallbacks
   };
 }
 
@@ -2627,16 +2921,167 @@ function normalizeTool(tool) {
   };
 }
 
+function normalizeAuthPromptOption(option) {
+  if (!option || typeof option !== "object") return null;
+  const label = String(option.label ?? option.value ?? "").trim();
+  const value = String(option.value ?? option.label ?? "").trim();
+  if (!label || !value) return null;
+  const normalized = { label, value };
+  if (option.hint != null) normalized.hint = String(option.hint);
+  return normalized;
+}
+
+function normalizeAuthPrompt(prompt) {
+  if (!prompt || typeof prompt !== "object") return null;
+  const key = String(prompt.key ?? "").trim();
+  if (!key) return null;
+  const type = String(prompt.type ?? "text").trim().toLowerCase();
+  const message = String(prompt.message ?? key).trim() || key;
+  if (type === "select") {
+    const options = Array.isArray(prompt.options)
+      ? prompt.options.map(normalizeAuthPromptOption).filter(Boolean)
+      : [];
+    if (options.length === 0) return null;
+    return { type: "select", key, message, options };
+  }
+  return {
+    type: "text",
+    key,
+    message,
+    placeholder: prompt.placeholder == null ? undefined : String(prompt.placeholder)
+  };
+}
+
+function normalizeAuthMethod(method) {
+  if (!method || typeof method !== "object") return null;
+  const type = String(method.type ?? "api").trim().toLowerCase();
+  if (type !== "api" && type !== "oauth") return null;
+  const id = String(method.id ?? type).trim() || type;
+  return {
+    id,
+    type,
+    label: String(method.label ?? method.name ?? id),
+    prompts: Array.isArray(method.prompts) ? method.prompts.map(normalizeAuthPrompt).filter(Boolean) : [],
+    env: Array.isArray(method.env) ? method.env.map(String) : []
+  };
+}
+
 function normalizeAuth(method) {
   if (!method || typeof method !== "object") return null;
   const id = String(method.id ?? method.provider ?? method.name ?? "").trim();
   if (!id) return null;
+
+  const normalizedMethods = [];
+  if (Array.isArray(method.methods)) {
+    normalizedMethods.push(...method.methods.map(normalizeAuthMethod).filter(Boolean));
+  } else if (typeof method.type === "string") {
+    const single = normalizeAuthMethod(method);
+    if (single) normalizedMethods.push(single);
+  }
+  if (normalizedMethods.length === 0) {
+    normalizedMethods.push({
+      id: "api",
+      type: "api",
+      label: "API key",
+      prompts: [],
+      env: Array.isArray(method.env) ? method.env.map(String) : []
+    });
+  }
   return {
     id,
     name: String(method.name ?? id),
     description: method.description == null ? undefined : String(method.description),
-    env: Array.isArray(method.env) ? method.env.map(String) : []
+    env: Array.isArray(method.env) ? method.env.map(String) : [],
+    methods: normalizedMethods
   };
+}
+
+function authEntriesFrom(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") {
+    if (Array.isArray(value.methods) || value.provider || value.loader) return [value];
+    if (Array.isArray(value.auth)) return value.auth;
+  }
+  return entriesFrom(value);
+}
+
+function loadAuthHook(hooks, context) {
+  const authHook = hooks?.auth ?? getHook(hooks, "auth");
+  if (typeof authHook === "function") {
+    return Promise.resolve(authHook({
+      register: context.input.experimental_workspace.registerAuth
+    })).then((returned) => ({
+      returned,
+      authHook
+    }));
+  }
+  return Promise.resolve({
+    returned: authHook,
+    authHook
+  });
+}
+
+function resolveAuthRegistration(returned, context, providerID) {
+  const authEntries = [...context.registeredAuth, ...authEntriesFrom(returned)];
+  const match = authEntries.find((entry) => String(entry?.id ?? entry?.provider ?? "").trim() === providerID);
+  if (!match || typeof match !== "object") return null;
+  return match;
+}
+
+function resolveAuthMethod(registration, requestedMethod) {
+  const methods = Array.isArray(registration?.methods) ? registration.methods : [];
+  if (methods.length === 0) {
+    return {
+      id: "api",
+      type: "api",
+      label: "API key"
+    };
+  }
+  const target = String(requestedMethod ?? "").trim().toLowerCase();
+  if (!target) return methods[0];
+  return methods.find((method) => String(method?.id ?? "").trim().toLowerCase() === target)
+    ?? methods.find((method) => String(method?.type ?? "").trim().toLowerCase() === target)
+    ?? null;
+}
+
+function normalizeAuthCallbackSuccess(value, providerID) {
+  if (!value || typeof value !== "object") {
+    return { type: "failed", provider: providerID };
+  }
+  if (value.type === "failed") {
+    return { type: "failed", provider: providerID };
+  }
+  if (value.type === "success" && value.credential && typeof value.credential === "object") {
+    return { ...value, provider: String(value.provider ?? providerID) };
+  }
+  if (value.type === "success") {
+    if (typeof value.key === "string") {
+      return {
+        type: "success",
+        provider: String(value.provider ?? providerID),
+        credential: {
+          type: "api",
+          key: value.key,
+          metadata: value.metadata && typeof value.metadata === "object" ? value.metadata : undefined
+        }
+      };
+    }
+    if (typeof value.access === "string" || typeof value.refresh === "string") {
+      return {
+        type: "success",
+        provider: String(value.provider ?? providerID),
+        credential: {
+          type: "oauth",
+          access: value.access == null ? undefined : String(value.access),
+          refresh: value.refresh == null ? undefined : String(value.refresh),
+          expires: value.expires == null ? undefined : Number(value.expires),
+          metadata: value.metadata && typeof value.metadata === "object" ? value.metadata : undefined
+        }
+      };
+    }
+  }
+  return { type: "failed", provider: providerID };
 }
 
 function normalizeModel(model) {
@@ -2897,12 +3342,16 @@ async function runOperation(operation, hooks, context, directory) {
       registrations.tools = entriesFrom(toolHook).map(normalizeTool).filter(Boolean);
       invokedHooks.push("tool");
     }
-    const authHook = getHook(hooks, "auth");
-    if (typeof authHook === "function") {
-      activeHook = "auth";
-      const returned = await authHook({ register: context.input.experimental_workspace.registerAuth });
-      registrations.auth_methods = [...context.registeredAuth, ...entriesFrom(returned)].map(normalizeAuth).filter(Boolean);
-      invokedHooks.push("auth");
+    const authHook = hooks?.auth ?? getHook(hooks, "auth");
+    if (typeof authHook === "function" || (authHook && typeof authHook === "object")) {
+      if (typeof authHook === "function") {
+        activeHook = "auth";
+      }
+      const { returned } = await loadAuthHook(hooks, context);
+      registrations.auth_methods = [...context.registeredAuth, ...authEntriesFrom(returned)].map(normalizeAuth).filter(Boolean);
+      if (typeof authHook === "function") {
+        invokedHooks.push("auth");
+      }
     }
     const providerHook = getHook(hooks, "provider");
     if (typeof providerHook === "function") {
@@ -3060,7 +3509,8 @@ async function runOperation(operation, hooks, context, directory) {
     output = normalizeToolResult(await execute(operation.arguments ?? {}, {
       directory,
       cwd: directory,
-      tool: String(operation.name ?? "")
+      tool: String(operation.name ?? ""),
+      auth: operation.auth ?? null
     }));
     invokedHooks.push("tool");
   } else if (operation.type === "provider_complete") {
@@ -3072,6 +3522,13 @@ async function runOperation(operation, hooks, context, directory) {
     const returned = await providerHook({ register: context.input.experimental_workspace.registerProvider });
     const providers = [...context.registeredProviders, ...entriesFrom(returned)];
     const provider = findProviderForModel(providers, String(operation.model ?? ""));
+    let auth = operation.auth ?? null;
+    const authHook = hooks?.auth ?? getHook(hooks, "auth");
+    if (auth && authHook && typeof authHook === "object" && typeof authHook.loader === "function") {
+      activeHook = "auth";
+      auth = await authHook.loader(async () => auth, provider);
+      invokedHooks.push("auth");
+    }
     const complete = provider.complete ?? provider.generate ?? provider.stream;
     if (typeof complete !== "function") {
       throw new Error(`plugin provider ${provider.id ?? provider.name ?? "unknown"} does not define complete(request)`);
@@ -3079,9 +3536,105 @@ async function runOperation(operation, hooks, context, directory) {
     output = normalizeToolResult(await complete({
       model: String(operation.model ?? ""),
       messages: operation.messages ?? [],
-      directory
+      directory,
+      auth
     }));
     invokedHooks.push("provider");
+  } else if (operation.type === "auth_authorize") {
+    const providerID = String(operation.provider ?? "").trim();
+    if (!providerID) {
+      throw new Error("auth authorize requires a provider id");
+    }
+    const { returned, authHook } = await loadAuthHook(hooks, context);
+    const registration = resolveAuthRegistration(returned, context, providerID);
+    if (!registration) {
+      throw new Error(`plugin auth provider ${providerID} is not registered`);
+    }
+    const method = resolveAuthMethod(registration, operation.method);
+    if (!method) {
+      throw new Error(`plugin auth provider ${providerID} does not define method ${String(operation.method ?? "")}`);
+    }
+    const inputs = operation.inputs && typeof operation.inputs === "object" && !Array.isArray(operation.inputs)
+      ? { ...operation.inputs }
+      : {};
+    if (String(method.type ?? "api") === "oauth") {
+      if (typeof method.authorize !== "function") {
+        throw new Error(`plugin auth provider ${providerID} method ${String(method.id ?? "oauth")} is missing authorize(inputs)`);
+      }
+      activeHook = "auth";
+      const authorize = await method.authorize(inputs);
+      const callback = authorize?.callback;
+      const callbackID = `${providerID}:${String(method.id ?? "oauth")}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+      if (typeof callback === "function") {
+        context.authCallbacks.set(callbackID, {
+          provider: providerID,
+          mode: String(authorize?.method ?? "code"),
+          callback
+        });
+      }
+      output = {
+        type: "oauth_pending",
+        provider: providerID,
+        method: String(authorize?.method ?? "code"),
+        url: authorize?.url == null ? "" : String(authorize.url),
+        instructions: authorize?.instructions == null ? "" : String(authorize.instructions),
+        callback_id: typeof callback === "function" ? callbackID : undefined
+      };
+      invokedHooks.push("auth");
+    } else {
+      if (typeof method.authorize === "function") {
+        activeHook = "auth";
+        const authorize = await method.authorize(inputs);
+        output = normalizeAuthCallbackSuccess(authorize, providerID);
+        invokedHooks.push("auth");
+      } else {
+        const fallbackKey = String(
+          inputs.api_key ?? inputs.apiKey ?? inputs.token ?? inputs.key ?? ""
+        ).trim();
+        if (!fallbackKey) {
+          output = { type: "failed", provider: providerID };
+        } else {
+          output = {
+            type: "success",
+            provider: providerID,
+            credential: { type: "api", key: fallbackKey }
+          };
+        }
+      }
+    }
+    if (authHook && typeof authHook === "object" && typeof authHook.loader === "function") {
+      // Keep parity with auth loader-capable hooks by surfacing that auth exists in this process.
+      registrations.auth_methods = [normalizeAuth(registration)].filter(Boolean);
+    }
+  } else if (operation.type === "auth_callback") {
+    const callbackID = String(operation.callback_id ?? "").trim();
+    if (!callbackID) {
+      throw new Error("auth callback requires a callback id");
+    }
+    const pending = context.authCallbacks.get(callbackID);
+    if (!pending || typeof pending.callback !== "function") {
+      throw new Error(`plugin auth callback ${callbackID} is not active`);
+    }
+    activeHook = "auth";
+    let result;
+    if (pending.mode === "auto") {
+      result = await pending.callback();
+    } else {
+      result = await pending.callback(operation.code == null ? "" : String(operation.code));
+    }
+    context.authCallbacks.delete(callbackID);
+    output = normalizeAuthCallbackSuccess(result, pending.provider);
+    invokedHooks.push("auth");
+  } else if (operation.type === "auth_load") {
+    const providerID = String(operation.provider ?? "").trim();
+    const authHook = hooks?.auth ?? getHook(hooks, "auth");
+    let loaded = operation.auth ?? null;
+    if (providerID && authHook && typeof authHook === "object" && typeof authHook.loader === "function") {
+      activeHook = "auth";
+      loaded = await authHook.loader(async () => loaded, { id: providerID });
+      invokedHooks.push("auth");
+    }
+    output = loaded;
   } else {
     throw new Error(`unknown plugin bridge operation: ${operation.type}`);
   }

@@ -151,13 +151,18 @@ export default async function plugin(input, options) {
 
     let execution = RuntimeHost::new()
         .with_timeout(Duration::from_secs(15))
-        .execute_tool(&loaded[0].spec, "cortex_echo", json!({ "text": "real-js" }))
+        .execute_tool(
+            &loaded[0].spec,
+            "cortex_echo",
+            json!({ "text": "real-js" }),
+            None,
+        )
         .expect("tool executes");
     assert_eq!(execution.content, "ECHO:real-js");
 
     let completion = RuntimeHost::new()
         .with_timeout(Duration::from_secs(15))
-        .complete_with_provider(&loaded[0].spec, "plugin/example-model", json!([]))
+        .complete_with_provider(&loaded[0].spec, "plugin/example-model", json!([]), None)
         .expect("provider completes");
     assert_eq!(completion, "PLUGIN_MODEL:plugin/example-model");
 

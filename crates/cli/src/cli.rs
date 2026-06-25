@@ -214,6 +214,22 @@ pub struct AuthLoginArgs {
     #[arg(long = "api-key-env", value_name = "ENV")]
     pub api_key_env: Option<String>,
 
+    /// Explicit auth method id/type when a provider exposes multiple methods.
+    ///
+    /// Examples: `api`, `oauth`, `device`.
+    #[arg(long = "auth-method", value_name = "METHOD")]
+    pub auth_method: Option<String>,
+
+    /// Structured auth input values (repeatable), forwarded to plugin/built-in auth methods.
+    ///
+    /// Example: `--auth-input tenant=example --auth-input region=us`.
+    #[arg(long = "auth-input", value_name = "KEY=VALUE")]
+    pub auth_inputs: Vec<String>,
+
+    /// OAuth authorization code for `oauth` auth methods that require a manual callback code.
+    #[arg(long = "oauth-code", value_name = "CODE")]
+    pub oauth_code: Option<String>,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -804,6 +820,12 @@ mod tests {
             "abc",
             "--api-key-env",
             "OPENROUTER_API_KEY",
+            "--auth-method",
+            "api",
+            "--auth-input",
+            "region=us",
+            "--oauth-code",
+            "code-123",
             "--format",
             "json",
         ])
@@ -815,6 +837,9 @@ mod tests {
                 assert_eq!(args.provider, "openrouter");
                 assert_eq!(args.api_key.as_deref(), Some("abc"));
                 assert_eq!(args.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+                assert_eq!(args.auth_method.as_deref(), Some("api"));
+                assert_eq!(args.auth_inputs, vec!["region=us".to_owned()]);
+                assert_eq!(args.oauth_code.as_deref(), Some("code-123"));
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected auth login, got {other:?}"),

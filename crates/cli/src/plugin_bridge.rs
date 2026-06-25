@@ -15,9 +15,9 @@ use llm::{
 };
 use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
-    LoadedPlugin, PluginConfigRule, PluginModelRegistration, PluginProviderRegistration,
-    PluginRuntimeError, PluginSpec, PluginToolRegistration, PluginWorkspaceRegistration,
-    RuntimeHost,
+    LoadedPlugin, PluginAuthMethodRegistration, PluginAuthRegistration, PluginConfigRule,
+    PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError, PluginSpec,
+    PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -141,8 +141,19 @@ impl PluginState {
 
     /// Resolve the current process config and load configured plugins for a non-run surface.
     pub(crate) fn from_process_config(pure: bool) -> Result<Self, ConfigOrRuntimeError> {
+        Self::from_process_config_for_surface(pure, "run")
+    }
+
+    /// Resolve the current process config and load configured plugins for one named surface.
+    pub(crate) fn from_process_config_for_surface(
+        pure: bool,
+        surface: &str,
+    ) -> Result<Self, ConfigOrRuntimeError> {
         if pure {
-            return Ok(Self::disabled());
+            if non_empty_surface(surface) == "run" {
+                return Ok(Self::disabled());
+            }
+            return Ok(Self::disabled_for_surface(surface));
         }
         let inputs =
             ConfigInputs::from_process(Default::default()).map_err(ConfigOrRuntimeError::Io)?;
@@ -150,7 +161,7 @@ impl PluginState {
         let effective = settings::load(inputs).map_err(ConfigOrRuntimeError::Config)?;
         let config = plugin_config_from_effective(&effective, &cwd)?;
         let resolved_config = effective_table_json(&effective);
-        Self::load_for_surface_with_config(&config, "run", resolved_config)
+        Self::load_for_surface_with_config(&config, surface, resolved_config)
             .map_err(ConfigOrRuntimeError::Runtime)
     }
 
@@ -196,6 +207,104 @@ impl PluginState {
             .collect()
     }
 
+    /// Auth methods contributed by plugin `auth` hooks.
+    #[must_use]
+    pub(crate) fn auth_methods(&self) -> Vec<PluginAuthMethodDoc> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| {
+                loaded
+                    .report
+                    .auth_methods
+                    .iter()
+                    .flat_map(move |registration| {
+                        registration.methods.iter().cloned().map(move |method| {
+                            PluginAuthMethodDoc {
+                                plugin: loaded.spec.raw_spec().to_owned(),
+                                provider_id: registration.id.clone(),
+                                provider_name: registration.name.clone(),
+                                method,
+                            }
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    /// Start one plugin auth method authorization.
+    pub(crate) fn authorize_auth_method(
+        &self,
+        provider_id: &str,
+        method_id: &str,
+        inputs: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let Some((loaded, _registration)) = self.auth_registration_for_provider(provider_id) else {
+            return Err(format!(
+                "no plugin auth provider `{provider_id}` is registered"
+            ));
+        };
+        let result = self
+            .host
+            .authorize_auth_method(&loaded.spec, provider_id, method_id, inputs)
+            .map_err(|err| err.to_string())?;
+        let mut payload = as_object(result.payload);
+        payload.insert(
+            "type".to_owned(),
+            JsonValue::String(result.result_type.to_owned()),
+        );
+        if let Some(provider) = result.provider {
+            payload.insert("provider".to_owned(), JsonValue::String(provider));
+        }
+        Ok(JsonValue::Object(payload))
+    }
+
+    /// Complete one pending plugin OAuth callback.
+    pub(crate) fn complete_auth_callback(
+        &self,
+        provider_id: &str,
+        callback_id: &str,
+        code: Option<&str>,
+    ) -> Result<JsonValue, String> {
+        let Some((loaded, _registration)) = self.auth_registration_for_provider(provider_id) else {
+            return Err(format!(
+                "no plugin auth provider `{provider_id}` is registered"
+            ));
+        };
+        let result = self
+            .host
+            .complete_auth_callback(&loaded.spec, callback_id, code)
+            .map_err(|err| err.to_string())?;
+        let mut payload = as_object(result.payload);
+        payload.insert(
+            "type".to_owned(),
+            JsonValue::String(result.result_type.to_owned()),
+        );
+        if let Some(provider) = result.provider {
+            payload.insert("provider".to_owned(), JsonValue::String(provider));
+        }
+        Ok(JsonValue::Object(payload))
+    }
+
+    /// Apply the plugin auth loader, if defined, before provider/tool execution.
+    #[must_use]
+    pub(crate) fn load_auth_for_provider(
+        &self,
+        provider_id: &str,
+        auth: Option<JsonValue>,
+    ) -> Option<JsonValue> {
+        let auth = auth?;
+        let Some((loaded, _registration)) = self.auth_registration_for_provider(provider_id) else {
+            return Some(auth);
+        };
+        match self.host.load_auth(&loaded.spec, provider_id, auth.clone()) {
+            Ok(loaded_auth) => Some(loaded_auth),
+            Err(err) => {
+                eprintln!("cortex plugin auth loader: {err}");
+                Some(auth)
+            }
+        }
+    }
+
     /// Workspace adapters contributed by plugin `experimental_workspace.register(type, adapter)`.
     #[must_use]
     pub(crate) fn workspace_adapters(&self) -> Vec<WorkspaceAdapterDoc> {
@@ -213,6 +322,20 @@ impl PluginState {
                     })
             })
             .collect()
+    }
+
+    fn auth_registration_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> Option<(&LoadedPlugin, &PluginAuthRegistration)> {
+        self.loaded.iter().find_map(|loaded| {
+            loaded
+                .report
+                .auth_methods
+                .iter()
+                .find(|registration| registration.id == provider_id)
+                .map(|registration| (loaded, registration))
+        })
     }
 
     /// A permission decision override hook, if any loaded plugin registered `permission.ask`.
@@ -278,6 +401,7 @@ impl PluginState {
                         spec: loaded.spec.clone(),
                         provider: provider.clone(),
                         model: registered.clone(),
+                        auth: None,
                     })
                 })
             })
@@ -736,6 +860,18 @@ fn effective_table_json(effective: &EffectiveConfig) -> JsonValue {
         .unwrap_or_else(|_| JsonValue::Object(Default::default()))
 }
 
+fn as_object(value: JsonValue) -> serde_json::Map<String, JsonValue> {
+    match value {
+        JsonValue::Object(map) => map,
+        JsonValue::Null => serde_json::Map::new(),
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("payload".to_owned(), other);
+            map
+        }
+    }
+}
+
 fn plugin_config_from_effective(
     effective: &EffectiveConfig,
     cwd: &std::path::Path,
@@ -785,6 +921,16 @@ impl CommandInvocation {
 pub(crate) enum CommandBeforeOutcome {
     Run(CommandInvocation),
     Veto { plugin: String, reason: String },
+}
+
+/// One plugin auth method exposed through `cortex auth list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct PluginAuthMethodDoc {
+    pub(crate) plugin: String,
+    pub(crate) provider_id: String,
+    pub(crate) provider_name: String,
+    #[serde(flatten)]
+    pub(crate) method: PluginAuthMethodRegistration,
 }
 
 /// One provider as emitted by `cortex models`.
@@ -1206,7 +1352,7 @@ impl Tool for PluginTool {
             }
             match self
                 .host
-                .execute_tool(&self.spec, self.name(), arguments.clone())
+                .execute_tool(&self.spec, self.name(), arguments.clone(), None)
             {
                 Ok(output) => {
                     if let Some(audit) = ctx.audit_sink() {
@@ -1242,6 +1388,7 @@ pub(crate) struct PluginModelProvider {
     spec: PluginSpec,
     provider: PluginProviderRegistration,
     model: PluginModelRegistration,
+    auth: Option<JsonValue>,
 }
 
 impl PluginModelProvider {
@@ -1254,6 +1401,12 @@ impl PluginModelProvider {
     pub(crate) fn model_id(&self) -> &str {
         &self.model.id
     }
+
+    #[must_use]
+    pub(crate) fn with_auth(mut self, auth: Option<JsonValue>) -> Self {
+        self.auth = auth;
+        self
+    }
 }
 
 impl Provider for PluginModelProvider {
@@ -1263,7 +1416,7 @@ impl Provider for PluginModelProvider {
                 .map_err(|err| LlmError::decode(err.to_string()))?;
             let text = self
                 .host
-                .complete_with_provider(&self.spec, &request.model, messages)
+                .complete_with_provider(&self.spec, &request.model, messages, self.auth.clone())
                 .map_err(|err| LlmError::upstream(err.to_string()))?;
             let stream = futures_util::stream::iter([
                 LlmEvent::TextDelta { text },
