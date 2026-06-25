@@ -880,7 +880,11 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
             let history: Vec<HistoryMessage> = messages
                 .into_iter()
                 .map(|message| {
-                    let content = if message.content.trim().is_empty() {
+                    let content = if let Some(summary) =
+                        legacy_compaction_summary_from_content(&message.content)
+                    {
+                        summary
+                    } else if message.content.trim().is_empty() {
                         message
                             .parts
                             .iter()
@@ -931,6 +935,11 @@ fn persist_assistant(
 /// summary text and tail boundary that produced the continued answer.
 fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
     for compaction in &outcome.compactions {
+        let legacy_content = serialize_legacy_compaction_summary_content(
+            &compaction.summary,
+            &compaction.tail_start_id,
+            compaction.continued_request,
+        );
         let part = MessagePart {
             id: String::new(),
             created_at: None,
@@ -942,12 +951,33 @@ fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
         };
         if let Err(err) =
             db.messages()
-                .create_with_parts(session_id, "system", &compaction.summary, &[part])
+                .create_with_parts(session_id, "system", &legacy_content, &[part])
         {
             eprintln!("cortex run: failed to persist compaction summary metadata: {err}");
             break;
         }
     }
+}
+
+fn legacy_compaction_summary_from_content(content: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
+    (parsed.get("type")?.as_str()? == "compaction_summary")
+        .then(|| parsed.get("summary")?.as_str().map(str::to_owned))
+        .flatten()
+}
+
+fn serialize_legacy_compaction_summary_content(
+    summary: &str,
+    tail_start_id: &str,
+    continued_request: bool,
+) -> String {
+    serde_json::json!({
+        "type": "compaction_summary",
+        "summary": summary,
+        "tail_start_id": tail_start_id,
+        "continued_request": continued_request,
+    })
+    .to_string()
 }
 
 /// Record this turn's token usage and cost so the session's cumulative totals stay accurate across
@@ -2882,6 +2912,80 @@ mod tests {
         assert_eq!(parse_context_limit(Some("0")), None);
         assert_eq!(parse_context_limit(Some("-5")), None);
         assert_eq!(parse_context_limit(Some("nope")), None);
+    }
+
+    #[test]
+    fn legacy_compaction_content_round_trips_summary_metadata() {
+        let legacy = serialize_legacy_compaction_summary_content("summary text", "tail_42", true);
+        let parsed: serde_json::Value = serde_json::from_str(&legacy).expect("legacy JSON");
+        assert_eq!(parsed["type"], "compaction_summary");
+        assert_eq!(parsed["summary"], "summary text");
+        assert_eq!(parsed["tail_start_id"], "tail_42");
+        assert_eq!(parsed["continued_request"], true);
+        assert_eq!(
+            legacy_compaction_summary_from_content(&legacy).as_deref(),
+            Some("summary text")
+        );
+    }
+
+    #[test]
+    fn load_history_uses_summary_from_legacy_compaction_content_json() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let legacy =
+            serialize_legacy_compaction_summary_content("compacted summary", "tail_7", true);
+        db.messages()
+            .create(&session.id, "system", &legacy)
+            .expect("persist legacy content message");
+
+        let history = load_history(&db, &session.id).expect("history loads");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, llm::Role::System);
+        assert_eq!(history[0].content, "compacted summary");
+    }
+
+    #[test]
+    fn persist_compactions_stores_legacy_content_json_and_compaction_parts() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let outcome = RunOutcome {
+            message: llm::Message::assistant("ignored"),
+            usage: None,
+            finish_reason: llm::FinishReason::Stop,
+            steps: 1,
+            compactions: vec![engine::CompactionRecord {
+                summary: "durable summary".to_owned(),
+                tail_start_id: "tail_11".to_owned(),
+                continued_request: true,
+            }],
+            error: None,
+        };
+
+        persist_compactions(&db, &session.id, &outcome);
+
+        let messages = db
+            .messages()
+            .list_for_session(&session.id)
+            .expect("list session messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "system");
+        let content: serde_json::Value =
+            serde_json::from_str(&messages[0].content).expect("legacy content JSON");
+        assert_eq!(content["type"], "compaction_summary");
+        assert_eq!(content["summary"], "durable summary");
+        assert_eq!(content["tail_start_id"], "tail_11");
+        assert_eq!(content["continued_request"], true);
+        assert_eq!(messages[0].parts.len(), 1);
+        assert!(matches!(
+            &messages[0].parts[0].body,
+            MessagePartBody::Compaction {
+                summary,
+                tail_start_id,
+                continued_request
+            } if summary == "durable summary"
+                && tail_start_id == "tail_11"
+                && *continued_request
+        ));
     }
 
     #[test]

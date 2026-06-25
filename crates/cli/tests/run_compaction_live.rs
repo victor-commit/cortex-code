@@ -351,21 +351,23 @@ fn compaction_summary_preserves_seeded_facts_and_persists_metadata() {
         String::from_utf8_lossy(&exported.stderr)
     );
     let artifact = parse_json(&exported.stdout);
-    let compaction_entries: Vec<Value> = artifact["messages"]
+    let compaction_messages: Vec<(&Value, Value)> = artifact["messages"]
         .as_array()
         .expect("messages array")
         .iter()
         .filter_map(|message| {
             let content = message["content"].as_str()?;
-            serde_json::from_str::<Value>(content).ok()
+            serde_json::from_str::<Value>(content)
+                .ok()
+                .map(|content| (message, content))
         })
-        .filter(|content| content["type"] == "compaction_summary")
+        .filter(|(_, content)| content["type"] == "compaction_summary")
         .collect();
     assert!(
-        !compaction_entries.is_empty(),
+        !compaction_messages.is_empty(),
         "export must include persisted compaction summary metadata"
     );
-    let first = &compaction_entries[0];
+    let (first_message, first) = &compaction_messages[0];
     assert!(
         first["summary"]
             .as_str()
@@ -377,6 +379,37 @@ fn compaction_summary_preserves_seeded_facts_and_persists_metadata() {
             .as_str()
             .is_some_and(|id| id.starts_with("tail_")),
         "compaction metadata should include a tail_start_id: {first}"
+    );
+    assert_eq!(
+        first["continued_request"].as_bool(),
+        Some(true),
+        "compaction metadata should include continued_request=true: {first}"
+    );
+    let compaction_parts = first_message["parts"]
+        .as_array()
+        .expect("parts array on compaction message")
+        .iter()
+        .filter(|part| part["type"] == "compaction")
+        .collect::<Vec<_>>();
+    assert!(
+        !compaction_parts.is_empty(),
+        "compaction summary message should retain rich parts[].type=compaction"
+    );
+    let first_part = compaction_parts[0];
+    assert_eq!(
+        first_part["summary"].as_str(),
+        first["summary"].as_str(),
+        "rich compaction part summary should match legacy content summary"
+    );
+    assert_eq!(
+        first_part["tail_start_id"].as_str(),
+        first["tail_start_id"].as_str(),
+        "rich compaction part tail_start_id should match legacy content"
+    );
+    assert_eq!(
+        first_part["continued_request"].as_bool(),
+        first["continued_request"].as_bool(),
+        "rich compaction part continued_request should match legacy content"
     );
 }
 
