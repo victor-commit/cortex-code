@@ -11,11 +11,13 @@ mod runtime;
 
 pub use config::{PluginConfig, PluginSpec};
 pub use runtime::{
-    JsRuntime, LoadedPlugin, PluginAuthAuthorizeResult, PluginAuthCallbackResult,
-    PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt, PluginAuthPromptOption,
-    PluginAuthRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput, PluginHookReport,
-    PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
-    PluginProviderRegistration, PluginRuntimeError, PluginToolExecution, PluginToolRegistration,
+    JsRuntime, LoadedPlugin, PluginAgentRegistration, PluginAuthAuthorizeResult,
+    PluginAuthCallbackResult, PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt,
+    PluginAuthPromptOption, PluginAuthRegistration, PluginCatalogRegistration,
+    PluginCommandRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput,
+    PluginHookReport, PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
+    PluginProviderRegistration, PluginRuntimeError, PluginSkillRegistration,
+    PluginThemeRegistration, PluginToolExecution, PluginToolRegistration,
     PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection, detect_runtime,
     detect_runtime_in_path,
 };

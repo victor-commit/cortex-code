@@ -13,5 +13,7 @@ audit = { workspace = true }
 redaction = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+semver = "1"
+sha2 = "0.10"
 thiserror = { workspace = true }
 toml = { workspace = true }

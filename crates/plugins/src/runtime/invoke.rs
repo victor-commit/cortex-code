@@ -9,13 +9,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::config::{PluginConfig, PluginSpec};
 use crate::distribution::{
-    PackageLockEntry, PackageLockError, PackageLockfile, locked_entry_is_valid,
+    PackageLockEntry, PackageLockError, PackageLockfile, locked_entry_is_valid, module_integrity,
     normalize_install_spec, package_import_spec, package_install_dir,
 };
 use crate::runtime::detection::{JsRuntime, RuntimeSelection, detect_runtime_in_path};
@@ -313,15 +314,24 @@ impl RuntimeHost {
             return Ok(Vec::new());
         }
 
-        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let surface = non_empty_surface(surface);
+        let selected = config
+            .entries()
+            .iter()
+            .filter(|plugin| plugin.supports_surface(&surface))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let mut chained_config = match resolved_config {
             JsonValue::Object(_) => resolved_config,
             _ => JsonValue::Object(Default::default()),
         };
-        let mut loaded_plugins = Vec::with_capacity(config.entries().len());
-        for plugin in config.entries() {
-            let plugin = self.resolve_plugin(plugin, &runtime)?;
+        let mut loaded_plugins = Vec::with_capacity(selected.len());
+        for plugin in selected {
+            let plugin = self.resolve_plugin(&plugin, &runtime)?;
             let loaded = self.load_plugin(&plugin, &runtime, &surface, chained_config.clone())?;
             if let Some(next_config) = loaded.report.config.clone()
                 && next_config.is_object()
@@ -886,6 +896,16 @@ impl RuntimeHost {
                         spec: spec.to_owned(),
                         message: "resolver did not return a package version".to_owned(),
                     })?;
+            let module_path = PathBuf::from(module_path);
+            let integrity = module_integrity(&module_path).map_err(|message| {
+                PluginRuntimeError::PackageResolveFailed {
+                    spec: spec.to_owned(),
+                    message: format!(
+                        "resolver returned module {} but integrity hashing failed: {message}",
+                        module_path.display()
+                    ),
+                }
+            })?;
             Ok(PackageLockEntry {
                 spec: spec.to_owned(),
                 import_spec: import_spec.to_owned(),
@@ -893,7 +913,8 @@ impl RuntimeHost {
                     .package_name
                     .unwrap_or_else(|| import_spec.to_owned()),
                 version,
-                module_path: PathBuf::from(module_path),
+                integrity,
+                module_path,
             })
         } else {
             Err(package_error_from_bridge_result(
@@ -985,6 +1006,7 @@ impl RuntimeHost {
         surface: &str,
         resolved_config: JsonValue,
     ) -> Result<LoadedPlugin, PluginRuntimeError> {
+        enforce_plugin_engine_range(plugin.path())?;
         let (result, output) = self.invoke_plugin(
             plugin,
             runtime,
@@ -1010,6 +1032,11 @@ impl RuntimeHost {
                 auth_methods: result.registrations.auth_methods,
                 providers: result.registrations.providers,
                 workspace_entries: result.registrations.workspace_entries,
+                agent_entries: result.registrations.agent_entries,
+                command_entries: result.registrations.command_entries,
+                skill_entries: result.registrations.skill_entries,
+                catalog_entries: result.registrations.catalog_entries,
+                theme_entries: result.registrations.theme_entries,
                 stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
                 stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
             };
@@ -1332,6 +1359,42 @@ impl PluginEventHooks {
             .collect()
     }
 
+    /// Plugin API v2 command entries contributed by loaded plugins.
+    #[must_use]
+    pub fn command_entries(&self) -> Vec<PluginCommandRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.command_entries.iter().cloned())
+            .collect()
+    }
+
+    /// Plugin API v2 skill entries contributed by loaded plugins.
+    #[must_use]
+    pub fn skill_entries(&self) -> Vec<PluginSkillRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.skill_entries.iter().cloned())
+            .collect()
+    }
+
+    /// Plugin API v2 catalog entries contributed by loaded plugins.
+    #[must_use]
+    pub fn catalog_entries(&self) -> Vec<PluginCatalogRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.catalog_entries.iter().cloned())
+            .collect()
+    }
+
+    /// TUI-theme entries contributed by loaded plugins.
+    #[must_use]
+    pub fn theme_entries(&self) -> Vec<PluginThemeRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.theme_entries.iter().cloned())
+            .collect()
+    }
+
     /// Collect text-completion candidates from plugin `experimental.text.complete` hooks.
     ///
     /// Each loaded plugin hook can return one string, an array of strings, or an object with
@@ -1486,6 +1549,16 @@ pub struct PluginLoadReport {
     pub providers: Vec<PluginProviderRegistration>,
     /// Workspace adapters contributed by `experimental_workspace.register`.
     pub workspace_entries: Vec<PluginWorkspaceRegistration>,
+    /// Agents contributed by the `agent` registration surface.
+    pub agent_entries: Vec<PluginAgentRegistration>,
+    /// Commands contributed by the `command` registration surface.
+    pub command_entries: Vec<PluginCommandRegistration>,
+    /// Skills contributed by the `skill` registration surface.
+    pub skill_entries: Vec<PluginSkillRegistration>,
+    /// Catalog entries contributed by the `catalog` registration surface.
+    pub catalog_entries: Vec<PluginCatalogRegistration>,
+    /// TUI theme entries contributed by the `theme` registration surface.
+    pub theme_entries: Vec<PluginThemeRegistration>,
     /// Redacted runtime stdout.
     pub stdout: String,
     /// Redacted runtime stderr.
@@ -1693,6 +1766,74 @@ pub struct PluginWorkspaceRegistration {
     pub description: String,
 }
 
+/// A plugin-contributed agent entry registered through the plugin API v2 `agent` surface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAgentRegistration {
+    /// Stable agent id.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub name: String,
+    /// Optional short description.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// A plugin-contributed command entry registered through the plugin API v2 `command` surface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginCommandRegistration {
+    /// Stable command id/name.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub name: String,
+    /// Optional short description.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// A plugin-contributed skill entry registered through the plugin API v2 `skill` surface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSkillRegistration {
+    /// Stable skill id/name.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub name: String,
+    /// Optional short description.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// A plugin-contributed catalog entry registered through the plugin API v2 `catalog` surface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginCatalogRegistration {
+    /// Stable catalog id/name.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub name: String,
+    /// Optional short description.
+    #[serde(default)]
+    pub description: String,
+    /// Optional entry kind/type.
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// A plugin-contributed theme entry registered through the plugin API v2 `theme` surface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginThemeRegistration {
+    /// Stable theme id/name.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub name: String,
+    /// Optional short description.
+    #[serde(default)]
+    pub description: String,
+}
+
 /// A plugin-contributed model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PluginModelRegistration {
@@ -1756,6 +1897,32 @@ pub enum PluginRuntimeError {
     PluginFileMissing {
         /// The missing plugin path.
         path: PathBuf,
+    },
+    /// The plugin's declared engine range cannot be parsed.
+    #[error(
+        "plugin manifest {} declares an invalid engines.cortex range `{requirement}`: {detail}",
+        path.display()
+    )]
+    InvalidEngineRange {
+        /// package.json path.
+        path: PathBuf,
+        /// Raw requirement string.
+        requirement: String,
+        /// Parse diagnostic.
+        detail: String,
+    },
+    /// The plugin requires a different Cortex version.
+    #[error(
+        "plugin manifest {} requires Cortex version `{requirement}` but this build is `{current}`",
+        path.display()
+    )]
+    IncompatibleEngine {
+        /// package.json path.
+        path: PathBuf,
+        /// Required semver range.
+        requirement: String,
+        /// Current Cortex version.
+        current: String,
     },
     /// A package plugin could not be resolved by the external runtime resolver.
     #[error("failed to resolve plugin package `{spec}`: {message}")]
@@ -2033,6 +2200,16 @@ struct BridgeRegistrations {
     providers: Vec<PluginProviderRegistration>,
     #[serde(default)]
     workspace_entries: Vec<PluginWorkspaceRegistration>,
+    #[serde(default)]
+    agent_entries: Vec<PluginAgentRegistration>,
+    #[serde(default)]
+    command_entries: Vec<PluginCommandRegistration>,
+    #[serde(default)]
+    skill_entries: Vec<PluginSkillRegistration>,
+    #[serde(default)]
+    catalog_entries: Vec<PluginCatalogRegistration>,
+    #[serde(default)]
+    theme_entries: Vec<PluginThemeRegistration>,
 }
 
 struct InvocationTemp {
@@ -2403,6 +2580,99 @@ fn package_lock_error(spec: &str, err: PackageLockError) -> PluginRuntimeError {
         spec: spec.to_owned(),
         message: err.to_string(),
     }
+}
+
+fn enforce_plugin_engine_range(plugin_path: &Path) -> Result<(), PluginRuntimeError> {
+    let Some((manifest_path, requirement)) = nearest_engine_requirement(plugin_path) else {
+        return Ok(());
+    };
+    let requirement = requirement.trim();
+    if requirement.is_empty() {
+        return Ok(());
+    }
+    let parsed = parse_engine_requirement(requirement).map_err(|detail| {
+        PluginRuntimeError::InvalidEngineRange {
+            path: manifest_path.clone(),
+            requirement: requirement.to_owned(),
+            detail,
+        }
+    })?;
+    let current =
+        Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or_else(|_| Version::new(0, 0, 0));
+    if parsed.matches(&current) {
+        return Ok(());
+    }
+    Err(PluginRuntimeError::IncompatibleEngine {
+        path: manifest_path,
+        requirement: requirement.to_owned(),
+        current: current.to_string(),
+    })
+}
+
+fn nearest_engine_requirement(plugin_path: &Path) -> Option<(PathBuf, String)> {
+    let mut current = plugin_path.parent();
+    while let Some(dir) = current {
+        let manifest = dir.join("package.json");
+        if manifest.is_file()
+            && let Ok(text) = std::fs::read_to_string(&manifest)
+            && let Ok(value) = serde_json::from_str::<JsonValue>(&text)
+            && let Some(requirement) = value
+                .get("engines")
+                .and_then(JsonValue::as_object)
+                .and_then(|engines| {
+                    engines
+                        .get("cortex")
+                        .or_else(|| engines.get("cortex-code"))
+                        .and_then(JsonValue::as_str)
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        {
+            return Some((manifest, requirement.to_owned()));
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn parse_engine_requirement(requirement: &str) -> Result<VersionReq, String> {
+    match VersionReq::parse(requirement) {
+        Ok(parsed) => Ok(parsed),
+        Err(primary_error) => {
+            let normalized = normalize_engine_requirement(requirement);
+            if normalized != requirement {
+                match VersionReq::parse(&normalized) {
+                    Ok(parsed) => return Ok(parsed),
+                    Err(normalized_error) => {
+                        return Err(format!(
+                            "{primary_error}; also failed after normalizing to `{normalized}`: {normalized_error}"
+                        ));
+                    }
+                }
+            }
+            Err(primary_error.to_string())
+        }
+    }
+}
+
+fn normalize_engine_requirement(requirement: &str) -> String {
+    let tokens = requirement.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() <= 1 {
+        return requirement.to_owned();
+    }
+    let mut normalized = String::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            let previous = tokens[index - 1];
+            if *token == "||" || previous == "||" {
+                normalized.push(' ');
+            } else {
+                normalized.push_str(", ");
+            }
+        }
+        normalized.push_str(token);
+    }
+    normalized
 }
 
 fn default_parameters() -> JsonValue {
@@ -3023,6 +3293,11 @@ function createInput(raw, directory) {
   const registeredAuth = [];
   const registeredProviders = [];
   const registeredWorkspaces = [];
+  const registeredAgents = [];
+  const registeredCommands = [];
+  const registeredSkills = [];
+  const registeredCatalog = [];
+  const registeredThemes = [];
   const authCallbacks = new Map();
   const registerTool = (tool) => {
     registeredTools.push(tool);
@@ -3048,6 +3323,26 @@ function createInput(raw, directory) {
     });
     return adapter;
   };
+  const registerAgent = (agent) => {
+    registeredAgents.push(agent);
+    return agent;
+  };
+  const registerCommand = (command) => {
+    registeredCommands.push(command);
+    return command;
+  };
+  const registerSkill = (skill) => {
+    registeredSkills.push(skill);
+    return skill;
+  };
+  const registerCatalog = (entry) => {
+    registeredCatalog.push(entry);
+    return entry;
+  };
+  const registerTheme = (theme) => {
+    registeredThemes.push(theme);
+    return theme;
+  };
   return {
     input: {
       project: { directory, root, worktree },
@@ -3066,13 +3361,30 @@ function createInput(raw, directory) {
         registerTool,
         registerAuth,
         registerProvider,
-        registerWorkspace
+        registerWorkspace,
+        registerAgent,
+        registerCommand,
+        registerSkill,
+        registerCatalog,
+        registerTheme
+      },
+      experimental: {
+        registerAgent,
+        registerCommand,
+        registerSkill,
+        registerCatalog,
+        registerTheme
       }
     },
     registeredTools,
     registeredAuth,
     registeredProviders,
     registeredWorkspaces,
+    registeredAgents,
+    registeredCommands,
+    registeredSkills,
+    registeredCatalog,
+    registeredThemes,
     authCallbacks
   };
 }
@@ -3328,6 +3640,62 @@ function normalizeWorkspace(entry) {
   return {
     type,
     name: String(entry.name ?? type),
+    description: String(entry.description ?? "")
+  };
+}
+
+function normalizeAgent(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const id = String(entry.id ?? entry.name ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(entry.name ?? id),
+    description: String(entry.description ?? "")
+  };
+}
+
+function normalizeCommand(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const id = String(entry.id ?? entry.name ?? entry.command ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(entry.name ?? id),
+    description: String(entry.description ?? "")
+  };
+}
+
+function normalizeSkill(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const id = String(entry.id ?? entry.name ?? entry.skill ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(entry.name ?? id),
+    description: String(entry.description ?? "")
+  };
+}
+
+function normalizeCatalog(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const id = String(entry.id ?? entry.name ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(entry.name ?? id),
+    description: String(entry.description ?? ""),
+    kind: String(entry.kind ?? entry.type ?? "")
+  };
+}
+
+function normalizeTheme(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const id = String(entry.id ?? entry.name ?? entry.theme ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(entry.name ?? id),
     description: String(entry.description ?? "")
   };
 }
@@ -3619,7 +3987,12 @@ async function runOperation(operation, hooks, context, directory) {
     tools: [],
     auth_methods: [],
     providers: [],
-    workspace_entries: []
+    workspace_entries: [],
+    agent_entries: [],
+    command_entries: [],
+    skill_entries: [],
+    catalog_entries: [],
+    theme_entries: []
   };
   let output = undefined;
 
@@ -3677,6 +4050,41 @@ async function runOperation(operation, hooks, context, directory) {
       const returned = await providerHook({ register: context.input.experimental_workspace.registerProvider });
       registrations.providers = [...context.registeredProviders, ...entriesFrom(returned)].map(normalizeProvider).filter(Boolean);
       invokedHooks.push("provider");
+    }
+    const agentHook = getHook(hooks, "agent");
+    if (typeof agentHook === "function") {
+      activeHook = "agent";
+      const returned = await agentHook({ register: context.input.experimental_workspace.registerAgent });
+      registrations.agent_entries = [...context.registeredAgents, ...entriesFrom(returned)].map(normalizeAgent).filter(Boolean);
+      invokedHooks.push("agent");
+    }
+    const commandHook = getHook(hooks, "command");
+    if (typeof commandHook === "function") {
+      activeHook = "command";
+      const returned = await commandHook({ register: context.input.experimental_workspace.registerCommand });
+      registrations.command_entries = [...context.registeredCommands, ...entriesFrom(returned)].map(normalizeCommand).filter(Boolean);
+      invokedHooks.push("command");
+    }
+    const skillHook = getHook(hooks, "skill");
+    if (typeof skillHook === "function") {
+      activeHook = "skill";
+      const returned = await skillHook({ register: context.input.experimental_workspace.registerSkill });
+      registrations.skill_entries = [...context.registeredSkills, ...entriesFrom(returned)].map(normalizeSkill).filter(Boolean);
+      invokedHooks.push("skill");
+    }
+    const catalogHook = getHook(hooks, "catalog");
+    if (typeof catalogHook === "function") {
+      activeHook = "catalog";
+      const returned = await catalogHook({ register: context.input.experimental_workspace.registerCatalog });
+      registrations.catalog_entries = [...context.registeredCatalog, ...entriesFrom(returned)].map(normalizeCatalog).filter(Boolean);
+      invokedHooks.push("catalog");
+    }
+    const themeHook = getHook(hooks, "theme");
+    if (typeof themeHook === "function") {
+      activeHook = "theme";
+      const returned = await themeHook({ register: context.input.experimental_workspace.registerTheme });
+      registrations.theme_entries = [...context.registeredThemes, ...entriesFrom(returned)].map(normalizeTheme).filter(Boolean);
+      invokedHooks.push("theme");
     }
     registrations.workspace_entries = context.registeredWorkspaces.map(normalizeWorkspace).filter(Boolean);
   } else if (operation.type === "event") {
@@ -4051,7 +4459,12 @@ async function handleRequest(request, hooks, hookEntries, context, directory) {
         tools: [],
         auth_methods: [],
         providers: [],
-        workspace_entries: []
+        workspace_entries: [],
+        agent_entries: [],
+        command_entries: [],
+        skill_entries: [],
+        catalog_entries: [],
+        theme_entries: []
       },
       error: errorToJson(error)
     });
@@ -4083,7 +4496,12 @@ try {
           tools: [],
           auth_methods: [],
           providers: [],
-          workspace_entries: []
+          workspace_entries: [],
+          agent_entries: [],
+          command_entries: [],
+          skill_entries: [],
+          catalog_entries: [],
+          theme_entries: []
         },
         error: errorToJson(error)
       });
@@ -4104,7 +4522,12 @@ try {
       tools: [],
       auth_methods: [],
       providers: [],
-      workspace_entries: []
+      workspace_entries: [],
+      agent_entries: [],
+      command_entries: [],
+      skill_entries: [],
+      catalog_entries: [],
+      theme_entries: []
     },
     error: errorToJson(error)
   });

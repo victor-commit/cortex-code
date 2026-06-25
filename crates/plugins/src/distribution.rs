@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub(crate) const LOCKFILE_RELATIVE_PATH: &[&str] = &[".cortex", "plugin-lock.json"];
 pub(crate) const PACKAGE_INSTALL_RELATIVE_PATH: &[&str] = &[".cortex", "plugins", "npm"];
@@ -11,6 +12,7 @@ pub(crate) struct PackageLockEntry {
     pub(crate) import_spec: String,
     pub(crate) package_name: String,
     pub(crate) version: String,
+    pub(crate) integrity: String,
     pub(crate) module_path: PathBuf,
 }
 
@@ -59,6 +61,7 @@ impl PackageLockfile {
                 import_spec: entry.import_spec.clone(),
                 package_name: entry.package_name.clone(),
                 version: entry.version.clone(),
+                integrity: entry.integrity.clone(),
                 module_path: restore_path(cwd, &entry.module_path),
             })
     }
@@ -74,6 +77,7 @@ impl PackageLockfile {
             import_spec: entry.import_spec,
             package_name: entry.package_name,
             version: entry.version,
+            integrity: entry.integrity,
             module_path: store_path(cwd, &entry.module_path),
         };
         if let Some(existing) = self
@@ -120,6 +124,8 @@ struct PackageLockEntryWire {
     import_spec: String,
     package_name: String,
     version: String,
+    #[serde(default)]
+    integrity: String,
     module_path: String,
 }
 
@@ -248,7 +254,36 @@ pub(crate) fn locked_entry_is_valid(entry: &PackageLockEntry) -> Result<(), Stri
             LOCKFILE_RELATIVE_PATH.join("/")
         ));
     }
+    if !entry.integrity.trim().is_empty() {
+        let actual_integrity = module_integrity(&entry.module_path).map_err(|message| {
+            format!(
+                "plugin package `{}` integrity check failed for {}: {message}",
+                entry.spec,
+                entry.module_path.display()
+            )
+        })?;
+        if entry.integrity != actual_integrity {
+            return Err(format!(
+                "plugin package `{}` integrity mismatch for {} (expected {}, got {}); remove {} to re-resolve",
+                entry.spec,
+                entry.module_path.display(),
+                entry.integrity,
+                actual_integrity,
+                LOCKFILE_RELATIVE_PATH.join("/")
+            ));
+        }
+    }
     Ok(())
+}
+
+pub(crate) fn module_integrity(module_path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(module_path).map_err(|source| source.to_string())?;
+    let digest = Sha256::digest(&bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok(format!("sha256:{hex}"))
 }
 
 fn nearest_package_json(module_path: &Path) -> Option<(String, String)> {

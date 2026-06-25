@@ -140,6 +140,40 @@ impl PluginSpec {
         &self.options
     }
 
+    /// The optional declared plugin surface/type.
+    ///
+    /// The value comes from the per-plugin options object (`type` or `surface`) and is interpreted
+    /// by the runtime host when deciding whether a plugin should load for a given surface.
+    #[must_use]
+    pub fn declared_type(&self) -> Option<&str> {
+        self.options
+            .get("type")
+            .or_else(|| self.options.get("surface"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Whether this plugin should load for `surface`.
+    ///
+    /// Plugins with no declared `type`/`surface` load on every surface. A `type = "tui"` plugin,
+    /// for example, only loads for the TUI surface.
+    #[must_use]
+    pub fn supports_surface(&self, surface: &str) -> bool {
+        let Some(kind) = self.declared_type() else {
+            return true;
+        };
+        match kind.to_ascii_lowercase().as_str() {
+            "all" | "any" => true,
+            "run" | "headless" => surface == "run",
+            "tui" => surface == "tui",
+            "serve" | "server" => surface == "serve",
+            "auth" => surface == "auth",
+            "models" => surface == "models",
+            _ => true,
+        }
+    }
+
     /// Whether this entry came from a package spec rather than a local file path.
     #[must_use]
     pub fn is_package(&self) -> bool {
@@ -352,6 +386,17 @@ plugin = [
     fn absent_plugin_key_is_empty() {
         let config = PluginConfig::from_toml_value(None, &cwd()).unwrap();
         assert!(config.is_empty());
+    }
+
+    #[test]
+    fn surface_type_filtering_is_supported() {
+        let value: TomlValue =
+            toml::from_str(r#"plugin = [["./plugin.mjs", { type = "tui" }]]"#).unwrap();
+        let config = PluginConfig::from_toml_value(value.get("plugin"), &cwd()).unwrap();
+        let spec = &config.entries()[0];
+        assert_eq!(spec.declared_type(), Some("tui"));
+        assert!(spec.supports_surface("tui"));
+        assert!(!spec.supports_surface("run"));
     }
 
     #[test]

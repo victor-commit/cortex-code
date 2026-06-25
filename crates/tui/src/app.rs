@@ -1865,10 +1865,32 @@ impl App {
     /// Open the theme picker (`/themes`): the selectable themes, with the active theme
     /// pre-highlighted.
     fn open_themes_dialog(&mut self) {
-        let items: Vec<String> = frame::style::ThemeColors::available_themes()
+        let mut items: Vec<String> = frame::style::ThemeColors::available_themes()
             .iter()
             .map(|name| (*name).to_owned())
             .collect();
+        if let Some(hooks) = self.plugin_text_complete.as_ref() {
+            let mut plugin_themes = hooks
+                .theme_entries()
+                .into_iter()
+                .filter_map(|entry| {
+                    let name = if entry.name.trim().is_empty() {
+                        entry.id
+                    } else {
+                        entry.name
+                    };
+                    let name = name.trim().to_owned();
+                    (!name.is_empty()).then_some(name)
+                })
+                .collect::<Vec<_>>();
+            plugin_themes.sort();
+            plugin_themes.dedup();
+            for name in plugin_themes {
+                if !items.iter().any(|item| item == &name) {
+                    items.push(name);
+                }
+            }
+        }
         let selected = items
             .iter()
             .position(|name| *name == self.theme)

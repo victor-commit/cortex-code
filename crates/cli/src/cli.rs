@@ -103,6 +103,10 @@ pub enum Command {
     /// Generate a custom markdown agent definition with a real model turn.
     Generate(GenerateArgs),
 
+    /// Install project plugins from package specs.
+    #[command(alias = "plug")]
+    Plugin(PluginArgs),
+
     /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
     ///
     /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
@@ -284,6 +288,39 @@ pub struct GenerateArgs {
 
     #[command(flatten)]
     pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct PluginArgs {
+    #[command(subcommand)]
+    pub command: PluginCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PluginCommand {
+    /// Install one package plugin and record it in project config.
+    Install(PluginInstallArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginInstallArgs {
+    /// Package spec to install (for example `@scope/package` or `file:/path/to/plugin`).
+    #[arg(value_name = "SPEC")]
+    pub spec: String,
+
+    /// Optional plugin surface type (`tui` loads only in the TUI surface).
+    #[arg(long = "type", value_enum, value_name = "TYPE")]
+    pub plugin_type: Option<PluginSurfaceType>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum PluginSurfaceType {
+    Run,
+    Tui,
 }
 
 #[derive(Debug, Args)]
@@ -776,6 +813,7 @@ mod tests {
             "agent",
             "auth",
             "models",
+            "plugin",
             "generate",
             "search",
             "replay",
@@ -868,6 +906,42 @@ mod tests {
         match cli.command {
             Some(Command::Models(args)) => assert_eq!(args.format.format, OutputFormat::Json),
             other => panic!("expected models, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plugin_install_parses_spec_type_and_format() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "plugin",
+            "install",
+            "@scope/demo",
+            "--type",
+            "tui",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Plugin(PluginArgs {
+                command: PluginCommand::Install(args),
+            })) => {
+                assert_eq!(args.spec, "@scope/demo");
+                assert_eq!(args.plugin_type, Some(PluginSurfaceType::Tui));
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected plugin install, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plug_alias_parses_plugin_install() {
+        let cli = Cli::try_parse_from(["cortex", "plug", "install", "demo"]).expect("parse");
+        match cli.command {
+            Some(Command::Plugin(PluginArgs {
+                command: PluginCommand::Install(args),
+            })) => assert_eq!(args.spec, "demo"),
+            other => panic!("expected plug install alias, got {other:?}"),
         }
     }
 
