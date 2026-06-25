@@ -339,3 +339,34 @@ fn models_text_early_stdout_close_exits_cleanly() {
         "must not print broken-pipe diagnostics: {stderr}"
     );
 }
+
+#[test]
+fn models_listing_excludes_provider_denied_by_experimental_policy() {
+    let sandbox = Sandbox::new("policy-deny");
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        r#"
+[experimental]
+policies = [{ effect = "deny", action = "provider.use", resource = "openrouter" }]
+"#,
+    )
+    .expect("write policy config");
+
+    let output = run(
+        cortex(&sandbox, true, &["models", "--format", "json"]),
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout is valid json");
+    let providers = doc["providers"].as_array().expect("providers array");
+    assert!(
+        providers.is_empty(),
+        "denied provider should be excluded from model listings: {doc}"
+    );
+}

@@ -8,6 +8,7 @@
 
 use errors::Exit;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use crate::cli::{ModelsArgs, OutputFormat};
@@ -37,6 +38,17 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
 
     let mut providers = builtin;
     providers.extend(state.providers());
+    let providers = match filter_denied_providers(&providers) {
+        Ok(providers) => providers,
+        Err(err) => {
+            eprintln!("cortex models: {err}");
+            return if err.is_config() {
+                Exit::Config
+            } else {
+                Exit::Failure
+            };
+        }
+    };
     emit(args.format.format, &providers)
 }
 
@@ -121,6 +133,23 @@ fn docs_from_catalogue(catalogue: &providers::Catalogue, source: &'static str) -
                 .collect(),
         })
         .collect()
+}
+
+fn filter_denied_providers(
+    providers: &[ProviderDoc],
+) -> Result<Vec<ProviderDoc>, policy::ProviderPolicyError> {
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).map_err(|err| {
+        policy::ProviderPolicyError::Invalid {
+            source: None,
+            message: format!("cannot determine configuration context: {err}"),
+        }
+    })?;
+    providers.iter().try_fold(Vec::new(), |mut acc, provider| {
+        if policy::provider_use_action(&inputs, &provider.id)? != permissions::Action::Deny {
+            acc.push(provider.clone());
+        }
+        Ok(acc)
+    })
 }
 
 #[derive(Serialize)]

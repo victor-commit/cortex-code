@@ -419,7 +419,7 @@ fn build_turn(
         eprintln!("cortex tui: {warning}");
     }
     let plugin_cwd = inputs.cwd.clone();
-    let effective = settings::load(inputs).map_err(|err| err.to_string())?;
+    let effective = settings::load(inputs.clone()).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
     let plugin_config =
@@ -437,6 +437,13 @@ fn build_turn(
     // so a per-session model choice governs the turn directly rather than via a config round-trip.
     let model = providers::resolve_model(Some(active_model));
     validate_model_id(&model.model_id)?;
+    policy::enforce_provider_use(&inputs, &model.provider_id).map_err(|err| {
+        if err.is_config() {
+            format!("cannot load provider policy: {err}")
+        } else {
+            err.to_string()
+        }
+    })?;
 
     let credentials =
         providers::CredentialInputs::openrouter_from_process(openrouter_api_key(&effective));

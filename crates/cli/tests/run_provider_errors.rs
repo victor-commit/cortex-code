@@ -247,6 +247,61 @@ fn net_disabled_refuses_run_before_credential_with_clean_stdout() {
     assert_no_backtrace(&stderr);
 }
 
+// Provider governance parity: `experimental.policies` can deny provider use, and that deny
+// surfaces before credential checks so a saved/missing key cannot bypass governance.
+#[test]
+fn experimental_provider_policy_deny_blocks_run_before_credential_resolution() {
+    let home = scratch_home();
+    let project = home.join("proj");
+    std::fs::create_dir_all(&project).expect("create project");
+    std::fs::write(
+        project.join("cortex.toml"),
+        r#"
+[experimental]
+policies = [{ effect = "deny", action = "provider.use", resource = "openrouter" }]
+"#,
+    )
+    .expect("write config");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+    command
+        .args(["run", "hi"])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("CORTEX_OPENROUTER_BASE_URL")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CORTEX_DATA_DIR")
+        .env_remove("CORTEX_DB_PATH")
+        .env_remove("CORTEX_AUTH_FILE")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let out = run(command);
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "provider policy deny should fail as a normal run failure"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "no assistant answer may be written on a policy deny"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("experimental.policies") && lower.contains("openrouter"),
+        "stderr must name the policy deny and provider, got: {stderr}"
+    );
+    assert!(
+        !lower.contains("missing credential") && !stderr.contains("OPENROUTER_API_KEY"),
+        "provider policy deny must happen before credential diagnostics, got: {stderr}"
+    );
+    assert_no_backtrace(&stderr);
+}
+
 /// Whether `strace` can trace a child here (it may be absent or `ptrace` may be restricted).
 fn strace_usable() -> bool {
     let probe = Command::new("strace")

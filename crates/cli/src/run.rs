@@ -334,13 +334,27 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         return Exit::Failure;
     }
 
+    let plugin_provider = plugin_state.provider_for_model(&run_config.model.model_id);
+    let selected_provider = plugin_provider
+        .as_ref()
+        .map(|provider| provider.provider_id())
+        .unwrap_or(run_config.model.provider_id.as_str());
+    if let Err(err) = policy::enforce_provider_use(&config_inputs, selected_provider) {
+        eprintln!("cortex run: {err}");
+        return if err.is_config() {
+            Exit::Config
+        } else {
+            Exit::Failure
+        };
+    }
+
     // The credential resolves through env > 0600 file > config indirection; an endpoint override
     // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
     // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
     let (provider_base, provider_audit): (
         Arc<dyn llm::Provider>,
         Option<crate::subagent::ProviderAuditConfig>,
-    ) = match plugin_state.provider_for_model(&run_config.model.model_id) {
+    ) = match plugin_provider {
         Some(provider) => {
             eprintln!(
                 "cortex run: using plugin provider {} for model {}",

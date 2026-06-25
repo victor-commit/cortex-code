@@ -1656,7 +1656,12 @@ async fn run_message_turn(
     )
     .map_err(plugin_runtime_error)?
     .with_audit(audit_sink.clone());
-    let resolved = resolve_turn_provider(&state.provider, &selected_model, &effective_config)?;
+    let resolved = resolve_turn_provider(
+        &state.provider,
+        &selected_model,
+        &effective_config,
+        &config_inputs,
+    )?;
     let history = load_history(&db, &session_id)?;
     let active_turn = state
         .active_turns
@@ -1790,10 +1795,21 @@ fn resolve_turn_provider(
     source: &ProviderSource,
     model_id: &str,
     effective_config: &settings::EffectiveConfig,
+    config_inputs: &settings::ConfigInputs,
 ) -> Result<ResolvedTurnProvider, ApiError> {
     match source {
         ProviderSource::OpenRouter => {
             let resolved = providers::resolve_model(Some(model_id));
+            policy::enforce_provider_use(config_inputs, &resolved.provider_id).map_err(|err| {
+                if err.is_config() {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("cannot load provider policy: {err}"),
+                    )
+                } else {
+                    ApiError::new(StatusCode::FORBIDDEN, err.to_string())
+                }
+            })?;
             let inputs = providers::CredentialInputs::openrouter_from_process(openrouter_api_key(
                 effective_config,
             ));
@@ -1817,6 +1833,16 @@ fn resolve_turn_provider(
         }
         ProviderSource::Fixed { provider } => {
             let resolved = providers::resolve_model(Some(model_id));
+            policy::enforce_provider_use(config_inputs, &resolved.provider_id).map_err(|err| {
+                if err.is_config() {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("cannot load provider policy: {err}"),
+                    )
+                } else {
+                    ApiError::new(StatusCode::FORBIDDEN, err.to_string())
+                }
+            })?;
             Ok(ResolvedTurnProvider {
                 model_id: resolved.model_id.clone(),
                 model: resolved,

@@ -39,7 +39,7 @@ pub fn run(args: GenerateArgs) -> Exit {
             return Exit::Failure;
         }
     };
-    let config = match resolve_generate_config(inputs) {
+    let config = match resolve_generate_config(inputs.clone()) {
         Ok(config) => config,
         Err(err) => {
             eprintln!("cortex generate: {err}");
@@ -49,6 +49,14 @@ pub fn run(args: GenerateArgs) -> Exit {
     if let Err(message) = validate_model_id(&config.model_id) {
         eprintln!("cortex generate: {message}");
         return Exit::Failure;
+    }
+    if let Err(err) = policy::enforce_provider_use(&inputs, &config.provider_id) {
+        eprintln!("cortex generate: {err}");
+        return if err.is_config() {
+            Exit::Config
+        } else {
+            Exit::Failure
+        };
     }
 
     let provider = match providers::resolve_openrouter_with_options(
@@ -115,14 +123,17 @@ pub fn run(args: GenerateArgs) -> Exit {
 
 struct GenerateConfig {
     model_id: String,
+    provider_id: String,
     base_url: Option<String>,
     api_key: Option<String>,
 }
 
 fn resolve_generate_config(inputs: ConfigInputs) -> Result<GenerateConfig, ConfigError> {
     let effective = settings::load(inputs)?;
+    let resolved = providers::resolve_model(Some(effective.model()));
     Ok(GenerateConfig {
-        model_id: providers::resolve_model(Some(effective.model())).model_id,
+        model_id: resolved.model_id,
+        provider_id: resolved.provider_id,
         base_url: openrouter_base_url_override(&effective),
         api_key: openrouter_api_key(&effective),
     })

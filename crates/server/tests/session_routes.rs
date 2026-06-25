@@ -600,6 +600,48 @@ action = "deny"
     );
 }
 
+#[tokio::test]
+async fn message_route_provider_policy_deny_returns_forbidden() {
+    let scratch = Scratch::new("server-message-provider-policy-deny");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[experimental]
+policies = [{ effect = "deny", action = "provider.use", resource = "openrouter" }]
+"#,
+    )
+    .expect("write project config");
+    let provider = Arc::new(EchoProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"say hi"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_json_content_type(&response);
+    let body: serde_json::Value = json_body(response).await;
+    assert!(
+        body["error"].as_str().is_some_and(|message| {
+            message.contains("experimental.policies") && message.contains("openrouter")
+        }),
+        "forbidden response should explain provider policy deny: {body:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn permission_routes_list_and_reply_resume_pending_turns() {
     let scratch = Scratch::new("server-permission-pending-routes");

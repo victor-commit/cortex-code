@@ -535,10 +535,21 @@ impl AcpService {
         &self,
         session_model: Option<&str>,
     ) -> Result<ResolvedProvider, String> {
+        let config_inputs = settings::ConfigInputs::from_process(BTreeMap::new())
+            .map_err(|err| format!("cannot load configuration context: {err}"))?;
         match &self.state.provider {
             #[cfg(test)]
             ProviderSource::Fixed { model_id, provider } => {
                 let model = providers::resolve_model(Some(model_id));
+                policy::enforce_provider_use(&config_inputs, &model.provider_id).map_err(
+                    |err| {
+                        if err.is_config() {
+                            format!("cannot load provider policy: {err}")
+                        } else {
+                            err.to_string()
+                        }
+                    },
+                )?;
                 Ok(ResolvedProvider {
                     model_id: model.model_id.clone(),
                     model,
@@ -546,9 +557,7 @@ impl AcpService {
                 })
             }
             ProviderSource::OpenRouter => {
-                let config_inputs = settings::ConfigInputs::from_process(BTreeMap::new())
-                    .map_err(|err| format!("cannot load configuration context: {err}"))?;
-                let effective = settings::load(config_inputs)
+                let effective = settings::load(config_inputs.clone())
                     .map_err(|err| format!("cannot load configuration: {err}"))?;
                 let model_id = session_model
                     .map(str::trim)
@@ -556,6 +565,15 @@ impl AcpService {
                     .unwrap_or_else(|| effective.model());
                 validate_model_id(model_id)?;
                 let model = providers::resolve_model(Some(model_id));
+                policy::enforce_provider_use(&config_inputs, &model.provider_id).map_err(
+                    |err| {
+                        if err.is_config() {
+                            format!("cannot load provider policy: {err}")
+                        } else {
+                            err.to_string()
+                        }
+                    },
+                )?;
                 let inputs = providers::CredentialInputs::openrouter_from_process(
                     openrouter_api_key(&effective),
                 );
