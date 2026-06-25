@@ -407,6 +407,8 @@ struct PendingPermission {
     message_id: String,
     tool: String,
     subject: String,
+    scope_tool: String,
+    scope_pattern: String,
     created_at: Instant,
     reply: Mutex<Option<permissions::ScopedDecision>>,
     ready: Condvar,
@@ -418,6 +420,7 @@ impl PendingPermission {
         session_id: String,
         message_id: String,
         request: &permissions::PermissionRequest,
+        scope_pattern: String,
     ) -> Self {
         Self {
             id,
@@ -425,6 +428,8 @@ impl PendingPermission {
             message_id,
             tool: request.tool.clone(),
             subject: request.subject.clone(),
+            scope_tool: permissions::canonical_tool_name(&request.tool).to_owned(),
+            scope_pattern,
             created_at: Instant::now(),
             reply: Mutex::new(None),
             ready: Condvar::new(),
@@ -2133,14 +2138,21 @@ fn plugin_runtime_error(err: plugins::PluginRuntimeError) -> ApiError {
 
 struct ServerPermissionResponder {
     pending: PendingPermissions,
+    ruleset: permissions::Ruleset,
     session_id: String,
     message_id: String,
 }
 
 impl ServerPermissionResponder {
-    fn new(pending: PendingPermissions, session_id: &str, message_id: &str) -> Self {
+    fn new(
+        pending: PendingPermissions,
+        ruleset: permissions::Ruleset,
+        session_id: &str,
+        message_id: &str,
+    ) -> Self {
         Self {
             pending,
+            ruleset,
             session_id: session_id.to_owned(),
             message_id: message_id.to_owned(),
         }
@@ -2156,9 +2168,13 @@ impl permissions::Responder for ServerPermissionResponder {
         &self,
         request: &permissions::PermissionRequest,
     ) -> permissions::ScopedDecision {
-        let pending = self
-            .pending
-            .enqueue(&self.session_id, &self.message_id, request);
+        let (_, matched_rule) = self.ruleset.resolve(&request.tool, &request.subject);
+        let scope_pattern = matched_rule
+            .map(|rule| rule.pattern.clone())
+            .unwrap_or_else(|| "*".to_owned());
+        let pending =
+            self.pending
+                .enqueue(&self.session_id, &self.message_id, request, scope_pattern);
         let reply = pending.wait_with_timeout(Duration::from_secs(60));
         self.pending.remove(&pending.id);
         reply
@@ -2202,6 +2218,7 @@ fn permission_engine_for_turn(
     }
     let responder = Arc::new(ServerPermissionResponder::new(
         pending_permissions,
+        ruleset.clone(),
         session_id,
         message_id,
     ));
@@ -2636,6 +2653,7 @@ impl PendingPermissions {
         session_id: &str,
         message_id: &str,
         request: &permissions::PermissionRequest,
+        scope_pattern: String,
     ) -> Arc<PendingPermission> {
         let mut state = self.inner.lock().expect("pending permission registry lock");
         let id = format!("perm-{}-{}", std::process::id(), state.next_id);
@@ -2645,6 +2663,7 @@ impl PendingPermissions {
             session_id.to_owned(),
             message_id.to_owned(),
             request,
+            scope_pattern,
         ));
         state.by_id.insert(id, pending.clone());
         pending
@@ -2723,7 +2742,7 @@ impl PendingPermissions {
                 if pending.id == target.id {
                     continue;
                 }
-                if same_permission_family(&target, pending) && pending.resolve(reply.clone()) {
+                if same_saved_decision_scope(&target, pending) && pending.resolve(reply.clone()) {
                     resolved += 1;
                 }
             }
@@ -2745,15 +2764,8 @@ impl PendingPermissions {
     }
 }
 
-fn same_permission_family(left: &PendingPermission, right: &PendingPermission) -> bool {
-    let left_tool = permissions::canonical_tool_name(&left.tool);
-    let right_tool = permissions::canonical_tool_name(&right.tool);
-    if left_tool == right_tool {
-        return true;
-    }
-    permissions::capability_for_tool(left_tool)
-        .zip(permissions::capability_for_tool(right_tool))
-        .is_some_and(|(l, r)| l == r)
+fn same_saved_decision_scope(left: &PendingPermission, right: &PendingPermission) -> bool {
+    left.scope_tool == right.scope_tool && left.scope_pattern == right.scope_pattern
 }
 
 async fn shutdown_signal(bus: Arc<EventBus>, version: String) {

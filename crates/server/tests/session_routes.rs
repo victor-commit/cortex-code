@@ -788,6 +788,182 @@ action = "ask"
     assert_eq!(second_response.status(), StatusCode::OK);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permission_reply_always_scopes_to_matching_pattern_only() {
+    let scratch = Scratch::new("server-permission-always-scope");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "bash"
+pattern = "echo *"
+action = "ask"
+
+[[permission]]
+tool = "bash"
+pattern = "rm *"
+action = "ask"
+"#,
+    )
+    .expect("write project config");
+
+    let provider = Arc::new(ScopedPermissionPendingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_cwd(workspace)
+        .with_config_env(Vec::new());
+    let app = server::app_with_state(state);
+    let safe_session = create_session(&app).await;
+    let risky_session = create_session(&app).await;
+
+    let safe_app = app.clone();
+    let safe_turn = tokio::spawn(async move {
+        safe_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{}/message", safe_session.id))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"run a safe permission check"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("safe response")
+    });
+    let risky_app = app.clone();
+    let risky_turn = tokio::spawn(async move {
+        risky_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{}/message", risky_session.id))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"run a risky permission check"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("risky response")
+    });
+
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/permission/pending")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if pending.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(pending.len(), 2, "both turns should be awaiting permission");
+
+    let safe_id = pending
+        .iter()
+        .find(|item| {
+            item["subject"]
+                .as_str()
+                .is_some_and(|subject| subject.contains("echo"))
+        })
+        .and_then(|item| item["id"].as_str())
+        .expect("safe ask id")
+        .to_owned();
+    let risky_id = pending
+        .iter()
+        .find(|item| {
+            item["subject"]
+                .as_str()
+                .is_some_and(|subject| subject.contains("rm"))
+        })
+        .and_then(|item| item["id"].as_str())
+        .expect("risky ask id")
+        .to_owned();
+
+    let safe_reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{safe_id}","decision":"allow","always":true}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("safe reply");
+    assert_eq!(safe_reply.status(), StatusCode::OK);
+    let safe_reply_body: serde_json::Value = json_body(safe_reply).await;
+    assert_eq!(
+        safe_reply_body["resolved"], 1,
+        "allow-always should only resolve asks in the same saved-decision scope"
+    );
+
+    let pending_after_safe = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/permission/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("pending response");
+    assert_eq!(pending_after_safe.status(), StatusCode::OK);
+    let pending_after_safe_body: serde_json::Value = json_body(pending_after_safe).await;
+    let pending_after_safe = pending_after_safe_body["pending"]
+        .as_array()
+        .expect("pending array");
+    assert_eq!(
+        pending_after_safe.len(),
+        1,
+        "unrelated pending ask should remain pending after allow-always"
+    );
+    assert_eq!(pending_after_safe[0]["id"], risky_id);
+
+    let risky_reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{risky_id}","decision":"allow"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("risky reply");
+    assert_eq!(risky_reply.status(), StatusCode::OK);
+
+    let safe_response = tokio::time::timeout(Duration::from_secs(3), safe_turn)
+        .await
+        .expect("safe turn completed")
+        .expect("safe turn join");
+    assert_eq!(safe_response.status(), StatusCode::OK);
+    let risky_response = tokio::time::timeout(Duration::from_secs(3), risky_turn)
+        .await
+        .expect("risky turn completed")
+        .expect("risky turn join");
+    assert_eq!(risky_response.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn overlapping_same_session_prompt_is_queued_and_persists_in_order() {
     let scratch = Scratch::new("server-message-same-session-queue");
@@ -2102,6 +2278,11 @@ struct PermissionPendingProvider {
 }
 
 #[derive(Debug, Default)]
+struct ScopedPermissionPendingProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
 struct RichPartsProvider {
     calls: AtomicUsize,
 }
@@ -2220,6 +2401,58 @@ impl Provider for PermissionPendingProvider {
                         id: "call_permission".to_owned(),
                         name: "bash".to_owned(),
                         arguments: r#"{"command":"echo permission-check"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "permission resolved".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 9,
+                        output_tokens: 4,
+                        total_tokens: 13,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for ScopedPermissionPendingProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if !has_tool_result {
+                let prompt = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == Role::User)
+                    .map(|message| message.content.as_str())
+                    .unwrap_or_default();
+                let command = if prompt.contains("risky") {
+                    "rm risky-target.txt"
+                } else {
+                    "echo safe-check"
+                };
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_permission_scope".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: serde_json::json!({ "command": command }).to_string(),
                     }),
                     LlmEvent::Done {
                         reason: FinishReason::ToolCalls,
