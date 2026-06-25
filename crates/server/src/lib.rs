@@ -436,23 +436,13 @@ impl PendingPermission {
         }
     }
 
-    fn wait_with_timeout(&self, timeout: Duration) -> permissions::ScopedDecision {
-        let deadline = Instant::now() + timeout;
+    fn wait(&self) -> permissions::ScopedDecision {
         let mut guard = self.reply.lock().expect("pending permission lock");
         loop {
             if let Some(reply) = guard.clone() {
                 return reply;
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return permissions::ScopedDecision::once(permissions::Decision::Deny);
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let (next, _) = self
-                .ready
-                .wait_timeout(guard, remaining)
-                .expect("pending permission wait");
-            guard = next;
+            guard = self.ready.wait(guard).expect("pending permission wait");
         }
     }
 
@@ -1524,6 +1514,10 @@ async fn abort_session(
         .active_turns
         .abort(&id)
         .map_err(|message| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let _resolved_pending = state.permissions.cancel_session(
+        &id,
+        permissions::ScopedDecision::once(permissions::Decision::Deny),
+    )?;
     let remote_active = state.remote_turns.is_active(&id)?;
     if remote_active && let Err(err) = write_remote_abort_request(&id) {
         eprintln!("cortex serve: failed to write remote abort marker for session {id}: {err}");
@@ -2175,9 +2169,18 @@ impl permissions::Responder for ServerPermissionResponder {
         let pending =
             self.pending
                 .enqueue(&self.session_id, &self.message_id, request, scope_pattern);
-        let reply = pending.wait_with_timeout(Duration::from_secs(60));
+        let reply = wait_for_pending_reply(&pending);
         self.pending.remove(&pending.id);
         reply
+    }
+}
+
+fn wait_for_pending_reply(pending: &PendingPermission) -> permissions::ScopedDecision {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| pending.wait())
+        }
+        _ => pending.wait(),
     }
 }
 
@@ -2758,6 +2761,26 @@ impl PendingPermissions {
                 {
                     resolved += 1;
                 }
+            }
+        }
+        Ok(resolved)
+    }
+
+    fn cancel_session(
+        &self,
+        session_id: &str,
+        reply: permissions::ScopedDecision,
+    ) -> Result<usize, ApiError> {
+        let state = self.inner.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "permission registry is unavailable",
+            )
+        })?;
+        let mut resolved = 0;
+        for pending in state.by_id.values() {
+            if pending.session_id == session_id && pending.resolve(reply.clone()) {
+                resolved += 1;
             }
         }
         Ok(resolved)

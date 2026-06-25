@@ -642,7 +642,7 @@ policies = [{ effect = "deny", action = "provider.use", resource = "openrouter" 
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn permission_routes_list_and_reply_resume_pending_turns() {
     let scratch = Scratch::new("server-permission-pending-routes");
     let workspace = scratch.dir.join("workspace");
