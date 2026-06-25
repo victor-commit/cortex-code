@@ -79,6 +79,90 @@ async fn message_route_runs_turn_persists_assistant_and_usage() {
 }
 
 #[tokio::test]
+async fn message_route_persists_rich_parts_and_reloads_them_after_restart() {
+    let scratch = Scratch::new("server-message-rich-parts");
+    let provider = Arc::new(RichPartsProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"record rich parts"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let assistant_parts = body["message"]["parts"]
+        .as_array()
+        .expect("assistant parts");
+    assert!(
+        assistant_parts.len() >= 6,
+        "assistant message should include rich typed parts: {body:?}"
+    );
+    let types: Vec<&str> = assistant_parts
+        .iter()
+        .filter_map(|part| part["type"].as_str())
+        .collect();
+    assert!(
+        types.contains(&"agent")
+            && types.contains(&"step")
+            && types.contains(&"reasoning")
+            && types.contains(&"tool")
+            && types.contains(&"usage")
+            && types.contains(&"text"),
+        "expected rich part kinds in persisted assistant message: {types:?}"
+    );
+    assert!(
+        assistant_parts.iter().all(|part| {
+            part["id"].as_str().is_some_and(|id| !id.is_empty())
+                && part["created_at"].as_str().is_some_and(|ts| !ts.is_empty())
+        }),
+        "persisted parts should carry stable ids and timestamps: {assistant_parts:?}"
+    );
+    let tool_states: Vec<&str> = assistant_parts
+        .iter()
+        .filter(|part| part["type"] == "tool")
+        .filter_map(|part| part["state"].as_str())
+        .collect();
+    assert!(
+        tool_states.contains(&"pending")
+            && tool_states.contains(&"running")
+            && tool_states.contains(&"completed"),
+        "tool lifecycle should track pending/running/completed: {tool_states:?}"
+    );
+
+    let relaunched = server::app_with_db_path(scratch.db_path());
+    let response = relaunched
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("message list response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let messages = body["messages"].as_array().expect("messages");
+    let assistant = messages
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .expect("assistant message");
+    let reloaded_parts = assistant["parts"].as_array().expect("assistant parts");
+    assert_eq!(
+        reloaded_parts, assistant_parts,
+        "reloaded session should return the same persisted parts without flattening"
+    );
+}
+
+#[tokio::test]
 async fn message_route_model_parameter_selects_requested_model_for_turn() {
     let scratch = Scratch::new("server-message-model-param");
     let provider = Arc::new(EchoProvider::default());
@@ -1705,6 +1789,11 @@ struct BashRmProvider {
     calls: AtomicUsize,
 }
 
+#[derive(Debug, Default)]
+struct RichPartsProvider {
+    calls: AtomicUsize,
+}
+
 impl Provider for CheckpointEditingProvider {
     fn stream<'a>(&'a self, _request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
         Box::pin(async move {
@@ -1826,6 +1915,54 @@ impl Provider for TodoWritingProvider {
                         reason: FinishReason::Stop,
                     },
                 ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl Provider for RichPartsProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if call == 0 && !has_tool_result {
+                vec![
+                    LlmEvent::Reasoning {
+                        text: "planning tool usage".to_owned(),
+                    },
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_rich_todo".to_owned(),
+                        name: "todo".to_owned(),
+                        arguments: serde_json::json!({
+                            "todos": [
+                                {"content": "rich part item", "status": "completed"}
+                            ]
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "rich parts recorded".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 12,
+                        output_tokens: 4,
+                        total_tokens: 16,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
             };
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })

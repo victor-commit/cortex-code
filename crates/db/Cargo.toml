@@ -13,6 +13,6 @@ protocol = { workspace = true }
 redaction = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }

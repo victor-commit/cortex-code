@@ -30,13 +30,13 @@ use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunError, RunOutcome,
     RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
-    project_history,
+    build_assistant_message_parts, project_history,
 };
 use events::{Event, EventBus, LifecyclePhase, Surface};
 use futures_util::{future::BoxFuture, stream};
 use llm::{Provider, ToolCall, ToolDef, Usage};
 use permissions::{PermissionEngine, RuleError};
-use protocol::TodoItem;
+use protocol::{MessagePart as RichMessagePart, TodoItem};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::{Deserialize, Serialize};
@@ -1447,7 +1447,12 @@ async fn run_message_turn(
         .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
     let user_message = db
         .messages()
-        .create(&session_id, "user", &prompt)
+        .create_with_parts(
+            &session_id,
+            "user",
+            &prompt,
+            &[RichMessagePart::text(prompt.clone())],
+        )
         .map_err(ApiError::from_db)?;
     let started_event = Event::turn_started(&session_id, &user_message.id);
     state.event_bus.publish(&started_event);
@@ -1477,7 +1482,7 @@ async fn run_message_turn(
         permission_engine,
         audit_sink,
     );
-    let outcome = run_cancellable_turn(
+    let result = run_cancellable_turn(
         resolved.provider.as_ref(),
         turn,
         &dispatcher,
@@ -1489,7 +1494,7 @@ async fn run_message_turn(
     .await;
     dispatcher.shutdown().await;
 
-    let Some(outcome) = outcome else {
+    let Some(result) = result else {
         state.event_bus.publish(&Event::turn_done(
             &session_id,
             &user_message.id,
@@ -1507,16 +1512,31 @@ async fn run_message_turn(
             finish_reason: None,
         });
     };
+    let TurnRunResult {
+        outcome,
+        runner_events,
+    } = result;
 
     if let Some(error) = &outcome.error {
         return Err(ApiError::from_run_error(error));
     }
 
     persist_usage(&db, &session_id, &outcome);
+    let assistant_parts = build_assistant_message_parts(
+        &resolved.model_id,
+        selected_agent.name(),
+        &runner_events,
+        &outcome,
+    );
     let assistant = db
         .messages()
-        .create(&session_id, "assistant", outcome.answer())
+        .create_with_parts(&session_id, "assistant", outcome.answer(), &assistant_parts)
         .map_err(ApiError::from_db)?;
+    state.event_bus.publish(&Event::message_parts(
+        session_id.clone(),
+        assistant.id.clone(),
+        assistant_parts.clone(),
+    ));
     let content = redaction::redact(outcome.answer());
 
     Ok(PromptResponse {
@@ -1630,14 +1650,31 @@ async fn run_cancellable_turn(
     bus: Arc<EventBus>,
     session_id: String,
     message_id: String,
-) -> Option<RunOutcome> {
+) -> Option<TurnRunResult> {
     let runner = SessionRunner::default();
+    let events: Arc<Mutex<Vec<RunnerEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_for_sink = events.clone();
     tokio::select! {
         outcome = runner.run_with_tools(provider, turn, dispatcher, move |event| {
             publish_runner_event(&bus, &session_id, &message_id, &event);
+            if let Ok(mut captured) = events_for_sink.lock() {
+                captured.push(event.clone());
+            }
         }) => Some(outcome),
         () = wait_for_abort(&mut abort_rx) => None,
     }
+    .map(|outcome| TurnRunResult {
+        outcome,
+        runner_events: events
+            .lock()
+            .map(|captured| captured.clone())
+            .unwrap_or_default(),
+    })
+}
+
+struct TurnRunResult {
+    outcome: RunOutcome,
+    runner_events: Vec<RunnerEvent>,
 }
 
 fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, event: &RunnerEvent) {
@@ -1722,7 +1759,23 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ap
         .map_err(ApiError::from_db)?;
     let history = messages
         .into_iter()
-        .map(|message| HistoryMessage::new(message.role, message.content))
+        .map(|message| {
+            let content = if message.content.trim().is_empty() {
+                message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match &part.body {
+                        protocol::MessagePartBody::Text { text }
+                        | protocol::MessagePartBody::Reasoning { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                message.content.clone()
+            };
+            HistoryMessage::new(message.role, content)
+        })
         .collect::<Vec<_>>();
     Ok(project_history(&history))
 }

@@ -37,13 +37,13 @@ use std::time::{Duration, Instant};
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
     CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner,
-    SystemContext, ToolDispatcher, Turn, project_history,
+    SystemContext, ToolDispatcher, Turn, build_assistant_message_parts, project_history,
 };
 use errors::{Diagnostic, Exit};
 use events::{Event, EventBus};
 use futures_util::future::BoxFuture;
 use llm::{LlmError, LlmRequest, LlmStream, Provider, ToolDef};
-use protocol::ToolResultPart;
+use protocol::{MessagePart, MessagePartBody, ToolResultPart};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde::Serialize;
@@ -393,13 +393,18 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Ok(history) => history,
         Err(exit) => return exit,
     };
-    let user_message = match db.messages().create(&session_id, "user", &prompt) {
-        Ok(message) => message,
-        Err(err) => {
-            eprintln!("cortex run: failed to persist the prompt: {err}");
-            return Exit::Failure;
-        }
-    };
+    let user_parts = vec![MessagePart::text(prompt.clone())];
+    let user_message =
+        match db
+            .messages()
+            .create_with_parts(&session_id, "user", &prompt, &user_parts)
+        {
+            Ok(message) => message,
+            Err(err) => {
+                eprintln!("cortex run: failed to persist the prompt: {err}");
+                return Exit::Failure;
+            }
+        };
     bus.publish(&Event::turn_started(&session_id, &user_message.id));
 
     // The configured MCP servers for this run, taken before the model id is moved out of the config.
@@ -550,6 +555,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             OutputFormat::Text => {
                 stream_text(
                     provider.as_ref(),
+                    &model_id,
+                    agent.name(),
                     &session_id,
                     &db,
                     turn,
@@ -561,6 +568,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             OutputFormat::Jsonl => {
                 stream_jsonl(
                     provider.as_ref(),
+                    &model_id,
                     agent.name(),
                     &session_id,
                     &tool_names,
@@ -820,7 +828,23 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
         Ok(messages) => {
             let history: Vec<HistoryMessage> = messages
                 .into_iter()
-                .map(|message| HistoryMessage::new(message.role, message.content))
+                .map(|message| {
+                    let content = if message.content.trim().is_empty() {
+                        message
+                            .parts
+                            .iter()
+                            .filter_map(|part| match &part.body {
+                                MessagePartBody::Text { text }
+                                | MessagePartBody::Reasoning { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        message.content.clone()
+                    };
+                    HistoryMessage::new(message.role, content)
+                })
                 .collect();
             Ok(project_history(&history))
         }
@@ -834,12 +858,21 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
 /// Persist the assistant's reply so a later run resuming the same session sees it. A persistence
 /// failure is reported on stderr but does not change the exit code: the answer has already been
 /// delivered to the user, so the run itself succeeded.
-fn persist_assistant(db: &Database, session_id: &str, outcome: &RunOutcome) {
-    if let Err(err) = db
+fn persist_assistant(
+    db: &Database,
+    session_id: &str,
+    outcome: &RunOutcome,
+    parts: &[MessagePart],
+) -> Option<String> {
+    match db
         .messages()
-        .create(session_id, "assistant", outcome.answer())
+        .create_with_parts(session_id, "assistant", outcome.answer(), parts)
     {
-        eprintln!("cortex run: failed to persist the assistant reply: {err}");
+        Ok(message) => Some(message.id),
+        Err(err) => {
+            eprintln!("cortex run: failed to persist the assistant reply: {err}");
+            None
+        }
     }
 }
 
@@ -847,15 +880,18 @@ fn persist_assistant(db: &Database, session_id: &str, outcome: &RunOutcome) {
 /// summary text and tail boundary that produced the continued answer.
 fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
     for compaction in &outcome.compactions {
-        let payload = serde_json::json!({
-            "type": "compaction_summary",
-            "tail_start_id": compaction.tail_start_id,
-            "continued_request": compaction.continued_request,
-            "summary": compaction.summary,
-        });
-        if let Err(err) = db
-            .messages()
-            .create(session_id, "system", &payload.to_string())
+        let part = MessagePart {
+            id: String::new(),
+            created_at: None,
+            body: MessagePartBody::Compaction {
+                summary: compaction.summary.clone(),
+                tail_start_id: compaction.tail_start_id.clone(),
+                continued_request: compaction.continued_request,
+            },
+        };
+        if let Err(err) =
+            db.messages()
+                .create_with_parts(session_id, "system", &compaction.summary, &[part])
         {
             eprintln!("cortex run: failed to persist compaction summary metadata: {err}");
             break;
@@ -1035,8 +1071,11 @@ fn parse_idle_timeout_ms(raw: Option<&str>) -> Option<Duration> {
 /// Stream the assistant answer as clean prose, flushing each fragment as it arrives so output is
 /// incremental rather than a single end-of-turn dump. The session id is intentionally omitted from
 /// the human prose (it is available via the machine formats).
+#[allow(clippy::too_many_arguments)]
 async fn stream_text(
     provider: &dyn llm::Provider,
+    model_id: &str,
+    agent: &str,
     session_id: &str,
     db: &Database,
     turn: Turn,
@@ -1046,17 +1085,19 @@ async fn stream_text(
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let mut wrote_any = false;
+    let mut runner_events: Vec<RunnerEvent> = Vec::new();
 
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
-        if let RunnerEvent::TextDelta { text } = event {
+        if let RunnerEvent::TextDelta { text } = &event {
             if !text.is_empty() {
-                let text = redaction::redact(&text);
+                let text = redaction::redact(text);
                 let _ = handle.write_all(text.as_bytes());
                 let _ = handle.flush();
                 wrote_any = true;
             }
         }
+        runner_events.push(event);
     })
     .await;
 
@@ -1092,8 +1133,15 @@ async fn stream_text(
         let _ = handle.flush();
     }
     drop(handle);
+    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
     persist_compactions(db, session_id, &outcome);
-    persist_assistant(db, session_id, &outcome);
+    if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
+        bus.publish(&Event::message_parts(
+            session_id.to_owned(),
+            message_id,
+            assistant_parts.clone(),
+        ));
+    }
     persist_usage(db, session_id, &outcome);
     Exit::Success
 }
@@ -1103,6 +1151,7 @@ async fn stream_text(
 #[allow(clippy::too_many_arguments)]
 async fn stream_jsonl(
     provider: &dyn llm::Provider,
+    model_id: &str,
     agent: &str,
     session_id: &str,
     tool_names: &[String],
@@ -1114,6 +1163,7 @@ async fn stream_jsonl(
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
+    let mut runner_events: Vec<RunnerEvent> = Vec::new();
 
     if let Ok(line) = render_session_line(agent, session_id, tool_names, tool_definitions) {
         let _ = handle.write_all(line.as_bytes());
@@ -1128,6 +1178,7 @@ async fn stream_jsonl(
             let _ = handle.write_all(b"\n");
             let _ = handle.flush();
         }
+        runner_events.push(event);
     })
     .await;
 
@@ -1147,8 +1198,15 @@ async fn stream_jsonl(
         eprintln!("cortex run: {err}");
         return err.exit();
     }
+    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
     persist_compactions(db, session_id, &outcome);
-    persist_assistant(db, session_id, &outcome);
+    if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
+        bus.publish(&Event::message_parts(
+            session_id.to_owned(),
+            message_id,
+            assistant_parts.clone(),
+        ));
+    }
     persist_usage(db, session_id, &outcome);
     Exit::Success
 }
@@ -1187,6 +1245,9 @@ struct RunDocument<'a> {
     /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_results: Vec<ToolResultDoc>,
+    /// Rich persisted message parts for this assistant turn.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<MessagePart>,
     /// Compaction metadata captured during this turn (summary text + preserved-tail boundary).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     compactions: Vec<CompactionDoc>,
@@ -1243,6 +1304,7 @@ async fn emit_json(
     // Collect each tool result as it streams so the completed document can carry the structured
     // tool output (text plus any media attachments) alongside the assistant answer.
     let mut tool_results: Vec<ToolResultDoc> = Vec::new();
+    let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
         if let RunnerEvent::ToolResult {
@@ -1250,15 +1312,16 @@ async fn emit_json(
             name,
             parts,
             is_error,
-        } = event
+        } = &event
         {
             tool_results.push(ToolResultDoc {
-                id,
-                name,
-                parts,
-                is_error,
+                id: id.clone(),
+                name: name.clone(),
+                parts: parts.clone(),
+                is_error: *is_error,
             });
         }
+        runner_events.push(event);
     })
     .await;
 
@@ -1287,6 +1350,7 @@ async fn emit_json(
     };
     let final_tool_definitions = dispatcher.definitions();
     let final_tool_names = tool_names_from(&final_tool_definitions);
+    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
 
     let line = match render_json_document(
         model_id,
@@ -1297,6 +1361,7 @@ async fn emit_json(
         &outcome,
         session_usage,
         tool_results,
+        assistant_parts.clone(),
     ) {
         Ok(line) => line,
         Err(err) => {
@@ -1316,7 +1381,13 @@ async fn emit_json(
     }
     drop(handle);
     persist_compactions(db, session_id, &outcome);
-    persist_assistant(db, session_id, &outcome);
+    if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
+        bus.publish(&Event::message_parts(
+            session_id.to_owned(),
+            message_id,
+            assistant_parts.clone(),
+        ));
+    }
     Exit::Success
 }
 
@@ -1332,6 +1403,7 @@ fn build_run_document<'a>(
     outcome: &'a RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
+    parts: Vec<MessagePart>,
 ) -> RunDocument<'a> {
     RunDocument {
         role: "assistant",
@@ -1346,6 +1418,7 @@ fn build_run_document<'a>(
         tools: tool_names,
         tool_definitions,
         tool_results,
+        parts,
         compactions: outcome
             .compactions
             .iter()
@@ -1370,6 +1443,7 @@ fn render_json_document(
     outcome: &RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
+    parts: Vec<MessagePart>,
 ) -> Result<String, serde_json::Error> {
     let mut line = serde_json::to_string(&build_run_document(
         model_id,
@@ -1380,6 +1454,7 @@ fn render_json_document(
         outcome,
         session_usage,
         tool_results,
+        parts,
     ))?;
     line.push('\n');
     Ok(redaction::redact(&line))
@@ -2497,6 +2572,7 @@ mod tests {
             &sample_outcome(),
             None,
             Vec::new(),
+            Vec::new(),
         )
         .expect("render");
         assert!(rendered.ends_with('\n'), "document must end with a newline");
@@ -2523,6 +2599,7 @@ mod tests {
             &[],
             &sample_outcome(),
             None,
+            Vec::new(),
             Vec::new(),
         )
         .expect("render");
@@ -2574,6 +2651,7 @@ mod tests {
             &sample_outcome(),
             Some(session_usage),
             Vec::new(),
+            Vec::new(),
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2618,6 +2696,7 @@ mod tests {
             &[],
             &outcome,
             None,
+            Vec::new(),
             Vec::new(),
         )
         .expect("render");
@@ -2675,6 +2754,7 @@ mod tests {
             &sample_outcome(),
             None,
             Vec::new(),
+            Vec::new(),
         )
         .expect("render");
         let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
@@ -2688,6 +2768,38 @@ mod tests {
             value["tool_definitions"][0]["parameters"]["properties"]["agent"]["enum"],
             serde_json::json!(["explore"])
         );
+    }
+
+    #[test]
+    fn json_document_carries_rich_message_parts_when_present() {
+        let parts = vec![
+            MessagePart {
+                id: "msg_demo_p0001".to_owned(),
+                created_at: Some("2026-01-01 00:00:00".to_owned()),
+                body: MessagePartBody::Agent {
+                    name: "build".to_owned(),
+                    mode: None,
+                    model: Some("google/gemini-2.5-flash".to_owned()),
+                },
+            },
+            MessagePart::text("answer body"),
+        ];
+        let rendered = render_json_document(
+            "google/gemini-2.5-flash",
+            "build",
+            "ses_parts",
+            &[],
+            &[],
+            &sample_outcome(),
+            None,
+            Vec::new(),
+            parts,
+        )
+        .expect("render");
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(value["parts"][0]["type"], "agent");
+        assert_eq!(value["parts"][0]["id"], "msg_demo_p0001");
+        assert_eq!(value["parts"][1]["type"], "text");
     }
 
     // `session_selection` maps the mutually-exclusive flags: an explicit id wins, `--continue`

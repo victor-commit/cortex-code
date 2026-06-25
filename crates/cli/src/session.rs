@@ -265,6 +265,7 @@ mod tests {
             session_id: "ses_a".to_owned(),
             role: "user".to_owned(),
             content: "marmalade".to_owned(),
+            parts: Vec::new(),
             created_at: "2026-01-01 00:00:00".to_owned(),
         }];
         let rendered = render_session_detail(&s, &messages);

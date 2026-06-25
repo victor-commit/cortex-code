@@ -1,5 +1,6 @@
 //! Typed event definitions carried on the [`EventBus`](crate::EventBus).
 
+use protocol::MessagePart;
 use serde::{Deserialize, Serialize};
 
 /// The surface that produced an event.
@@ -289,6 +290,17 @@ pub struct TurnDoneEvent {
     pub steps: usize,
 }
 
+/// Rich parts persisted for a message.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MessagePartsEvent {
+    /// Owning session id.
+    pub session_id: String,
+    /// Persisted message id.
+    pub message_id: String,
+    /// The typed persisted parts in stored order.
+    pub parts: Vec<MessagePart>,
+}
+
 /// A typed event delivered on the [`EventBus`](crate::EventBus).
 ///
 /// Each variant pairs an event *kind* with a strongly typed payload, so subscribers
@@ -338,6 +350,9 @@ pub enum Event {
     /// A turn reached a terminal state.
     #[serde(rename = "turn.done")]
     TurnDone(TurnDoneEvent),
+    /// Rich parts persisted for a message.
+    #[serde(rename = "message.parts")]
+    MessageParts(MessagePartsEvent),
 }
 
 impl Event {
@@ -359,6 +374,7 @@ impl Event {
             Event::TurnUsage(_) => "turn.usage",
             Event::TurnError(_) => "turn.error",
             Event::TurnDone(_) => "turn.done",
+            Event::MessageParts(_) => "message.parts",
         }
     }
 
@@ -622,6 +638,20 @@ impl Event {
             message_id: message_id.into(),
             reason: reason.into(),
             steps,
+        })
+    }
+
+    /// Construct a `message.parts` event.
+    #[must_use]
+    pub fn message_parts(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        parts: Vec<MessagePart>,
+    ) -> Self {
+        Event::MessageParts(MessagePartsEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            parts,
         })
     }
 }

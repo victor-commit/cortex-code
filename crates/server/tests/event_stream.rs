@@ -210,7 +210,7 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
         "final assistant text should include the observable tool marker: {body:?}"
     );
 
-    let events = collect_data_events(&mut stream, 6, Duration::from_secs(3)).await;
+    let events = collect_data_events(&mut stream, 7, Duration::from_secs(3)).await;
     assert!(
         events.iter().any(|event| event["kind"] == "tool.call"
             && event["name"] == "bash"
@@ -222,6 +222,14 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
             && event["name"] == "bash"
             && event["session_id"] == session.id),
         "SSE should include a correlated bash tool-result event: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "message.parts"
+            && event["session_id"] == session.id
+            && event["parts"]
+                .as_array()
+                .is_some_and(|parts| !parts.is_empty())),
+        "SSE should expose persisted rich message parts: {events:?}"
     );
 }
 

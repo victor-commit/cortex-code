@@ -20,14 +20,15 @@ use agent_client_protocol::schema::v1::{
 use db::{Database, DbPathInputs};
 use engine::{
     CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunOutcome, RunnerEvent,
-    SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn, project_history,
+    SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
+    build_assistant_message_parts, project_history,
 };
 use errors::Exit;
 use events::{Event, EventBus};
 use futures_util::future::BoxFuture;
 use llm::{Provider, ToolCall, ToolDef};
 use permissions::PermissionEngine;
-use protocol::TodoItem;
+use protocol::{MessagePart as RichMessagePart, TodoItem};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
 use serde_json::{Value, json};
@@ -398,10 +399,12 @@ impl AcpService {
                 return;
             }
         };
-        let user_message = match db
-            .messages()
-            .create(&prompt.session_id, "user", &prompt.text)
-        {
+        let user_message = match db.messages().create_with_parts(
+            &prompt.session_id,
+            "user",
+            &prompt.text,
+            &[RichMessagePart::text(prompt.text.clone())],
+        ) {
             Ok(message) => message,
             Err(err) => {
                 drop(active_guard);
@@ -437,7 +440,7 @@ impl AcpService {
             self.state.db_path.clone(),
             permissions,
         );
-        let outcome = run_cancellable_turn(
+        let result = run_cancellable_turn(
             resolved.provider.as_ref(),
             turn,
             &dispatcher,
@@ -453,7 +456,7 @@ impl AcpService {
         dispatcher.shutdown().await;
         drop(active_guard);
 
-        let Some(outcome) = outcome else {
+        let Some(result) = result else {
             self.state.event_bus.publish(&Event::turn_done(
                 &prompt.session_id,
                 &user_message.id,
@@ -467,6 +470,10 @@ impl AcpService {
             );
             return;
         };
+        let TurnRunResult {
+            outcome,
+            runner_events,
+        } = result;
 
         if let Some(error) = &outcome.error {
             let _ = writer.send_error(id, -32000, error.to_string());
@@ -474,13 +481,43 @@ impl AcpService {
         }
 
         persist_usage(&db, &prompt.session_id, &outcome);
-        if let Err(err) = db
-            .messages()
-            .create(&prompt.session_id, "assistant", outcome.answer())
-        {
-            let _ = writer.send_error(id, -32000, err.to_string());
-            return;
-        }
+        let assistant_parts =
+            build_assistant_message_parts(&resolved.model_id, "general", &runner_events, &outcome);
+        let assistant = match db.messages().create_with_parts(
+            &prompt.session_id,
+            "assistant",
+            outcome.answer(),
+            &assistant_parts,
+        ) {
+            Ok(message) => message,
+            Err(err) => {
+                let _ = writer.send_error(id, -32000, err.to_string());
+                return;
+            }
+        };
+        self.state.event_bus.publish(&Event::message_parts(
+            prompt.session_id.clone(),
+            assistant.id.clone(),
+            assistant_parts.clone(),
+        ));
+        let parts_note = SessionNotification::new(
+            SessionId::new(prompt.session_id.clone()),
+            SessionUpdate::AgentThoughtChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new(
+                    serde_json::json!({
+                        "type": "assistant_parts",
+                        "message_id": assistant.id,
+                        "parts": assistant_parts,
+                    })
+                    .to_string(),
+                )))
+                .message_id(Some(MessageId::new(format!("{}-parts", user_message.id)))),
+            ),
+        );
+        let _ = writer.send_notification(
+            "session/update",
+            serde_json::to_value(parts_note).expect("serialize parts update"),
+        );
 
         let response = PromptResponse::new(stop_reason_for_outcome(&outcome));
         let _ = writer.send_result(
@@ -802,7 +839,7 @@ async fn run_cancellable_turn<W>(
     dispatcher: &dyn ToolDispatcher,
     mut abort_rx: watch::Receiver<bool>,
     events: TurnEventSink<W>,
-) -> Option<RunOutcome>
+) -> Option<TurnRunResult>
 where
     W: Write + Send + 'static,
 {
@@ -811,13 +848,30 @@ where
     let bus = events.bus;
     let session_id = events.session_id;
     let message_id = events.message_id;
+    let captured_events: Arc<StdMutex<Vec<RunnerEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+    let captured_for_sink = captured_events.clone();
     tokio::select! {
         outcome = runner.run_with_tools(provider, turn, dispatcher, move |event| {
             publish_runner_event(&bus, &session_id, &message_id, &event);
             write_acp_update(&notify, &session_id, &message_id, &event);
+            if let Ok(mut captured) = captured_for_sink.lock() {
+                captured.push(event.clone());
+            }
         }) => Some(outcome),
         () = wait_for_abort(&mut abort_rx) => None,
     }
+    .map(|outcome| TurnRunResult {
+        outcome,
+        runner_events: captured_events
+            .lock()
+            .map(|captured| captured.clone())
+            .unwrap_or_default(),
+    })
+}
+
+struct TurnRunResult {
+    outcome: RunOutcome,
+    runner_events: Vec<RunnerEvent>,
 }
 
 fn write_acp_update<W>(
@@ -841,6 +895,80 @@ fn write_acp_update<W>(
                     .message_id(Some(MessageId::new(format!("{message_id}-thought")))),
             ))
         }
+        RunnerEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => Some(SessionUpdate::AgentThoughtChunk(
+            ContentChunk::new(ContentBlock::Text(TextContent::new(
+                serde_json::json!({
+                    "type": "tool",
+                    "state": "pending",
+                    "call_id": id,
+                    "name": name,
+                    "arguments": arguments,
+                })
+                .to_string(),
+            )))
+            .message_id(Some(MessageId::new(format!("{message_id}-tool-{id}")))),
+        )),
+        RunnerEvent::ToolResult {
+            id,
+            name,
+            parts,
+            is_error,
+        } => Some(SessionUpdate::AgentThoughtChunk(
+            ContentChunk::new(ContentBlock::Text(TextContent::new(
+                serde_json::json!({
+                    "type": "tool",
+                    "state": if *is_error { "error" } else { "completed" },
+                    "call_id": id,
+                    "name": name,
+                    "parts": parts,
+                })
+                .to_string(),
+            )))
+            .message_id(Some(MessageId::new(format!(
+                "{message_id}-tool-result-{id}"
+            )))),
+        )),
+        RunnerEvent::Retry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_kind,
+            classification,
+            message,
+        } => Some(SessionUpdate::AgentThoughtChunk(
+            ContentChunk::new(ContentBlock::Text(TextContent::new(
+                serde_json::json!({
+                    "type": "retry",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_ms": delay_ms,
+                    "error_kind": error_kind,
+                    "classification": classification,
+                    "message": message,
+                })
+                .to_string(),
+            )))
+            .message_id(Some(MessageId::new(format!(
+                "{message_id}-retry-{attempt}"
+            )))),
+        )),
+        RunnerEvent::Usage(usage) => Some(SessionUpdate::AgentThoughtChunk(
+            ContentChunk::new(ContentBlock::Text(TextContent::new(
+                serde_json::json!({
+                    "type": "usage",
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "cost": usage.cost,
+                })
+                .to_string(),
+            )))
+            .message_id(Some(MessageId::new(format!("{message_id}-usage")))),
+        )),
         _ => None,
     };
     if let Some(update) = update {
@@ -934,7 +1062,25 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, St
         .map(|messages| {
             messages
                 .into_iter()
-                .map(|message| HistoryMessage::new(message.role, message.content))
+                .map(|message| {
+                    let content = if message.content.trim().is_empty() {
+                        message
+                            .parts
+                            .iter()
+                            .filter_map(|part| match &part.body {
+                                protocol::MessagePartBody::Text { text }
+                                | protocol::MessagePartBody::Reasoning { text } => {
+                                    Some(text.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        message.content.clone()
+                    };
+                    HistoryMessage::new(message.role, content)
+                })
                 .collect::<Vec<_>>()
         })
         .map(|history| project_history(&history))

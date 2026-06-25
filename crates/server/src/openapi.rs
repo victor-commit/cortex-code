@@ -398,8 +398,22 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "session_id": { "type": "string" },
                         "role": { "type": "string" },
                         "content": { "type": "string" },
+                        "parts": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/RichMessagePart" }
+                        },
                         "created_at": { "type": "string" }
                     }
+                },
+                "RichMessagePart": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "created_at": { "type": "string" },
+                        "type": { "type": "string" }
+                    },
+                    "additionalProperties": true
                 },
                 "MessageListResponse": {
                     "type": "object",

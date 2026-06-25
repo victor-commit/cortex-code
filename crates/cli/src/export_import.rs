@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 
 use db::{Database, DbError, DbPathInputs};
 use errors::Exit;
+use protocol::MessagePart;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{ExportArgs, ImportArgs};
@@ -29,6 +30,8 @@ struct ArtifactSession {
 struct ArtifactMessage {
     role: String,
     content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<MessagePart>,
 }
 
 pub fn run_export(args: ExportArgs) -> Exit {
@@ -58,6 +61,7 @@ pub fn run_export(args: ExportArgs) -> Exit {
             .map(|message| ArtifactMessage {
                 role: redaction::redact(&message.role),
                 content: redaction::redact(&message.content),
+                parts: message.parts,
             })
             .collect(),
     };
@@ -112,7 +116,10 @@ pub fn run_import(args: ImportArgs) -> Exit {
     for message in &artifact.messages {
         let role = redaction::redact(&message.role);
         let content = redaction::redact(&message.content);
-        if let Err(err) = db.messages().create(&artifact.session.id, &role, &content) {
+        if let Err(err) =
+            db.messages()
+                .create_with_parts(&artifact.session.id, &role, &content, &message.parts)
+        {
             cleanup_import_failure(&db, &artifact.session.id);
             return db_error("import", &err);
         }

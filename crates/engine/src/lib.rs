@@ -30,6 +30,7 @@ mod environment;
 mod event;
 mod family;
 mod history;
+mod message_parts;
 mod runner;
 mod tools;
 
@@ -43,5 +44,6 @@ pub use environment::{EnvironmentBlock, GitStatus};
 pub use event::{CompactionRecord, RunError, RunOutcome, RunnerEvent};
 pub use family::ModelFamily;
 pub use history::{HistoryMessage, project_history, project_role};
+pub use message_parts::build_assistant_message_parts;
 pub use runner::{DEFAULT_MAX_STEPS, SessionRunner, Turn};
 pub use tools::{ToolDispatchResult, ToolDispatcher};

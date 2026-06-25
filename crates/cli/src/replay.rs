@@ -117,6 +117,7 @@ mod tests {
                 session_id: "ses_1".to_owned(),
                 role: "user".to_owned(),
                 content: "first".to_owned(),
+                parts: Vec::new(),
                 created_at: "2026-01-01 00:00:00".to_owned(),
             },
             Message {
@@ -124,6 +125,7 @@ mod tests {
                 session_id: "ses_1".to_owned(),
                 role: "assistant".to_owned(),
                 content: "second".to_owned(),
+                parts: Vec::new(),
                 created_at: "2026-01-01 00:00:01".to_owned(),
             },
         ];

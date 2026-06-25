@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use db::{Database, DbError, latest_version};
+use protocol::{MessagePart, MessagePartBody, ToolPartState};
 
 /// A self-cleaning scratch directory under the system temp dir.
 struct Scratch {
@@ -471,4 +472,73 @@ fn concurrent_opens_of_a_fresh_db_all_succeed() {
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();
     assert_eq!(integrity, "ok");
+}
+
+#[test]
+fn rich_message_parts_persist_across_reopen() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("rich-parts.db");
+
+    let (session_id, message_id, part_ids) = {
+        let db = Database::open(&db_path).expect("open db");
+        let session = db
+            .sessions()
+            .create(Some("rich parts"))
+            .expect("create session");
+        let parts = vec![
+            MessagePart::reasoning("considering tool usage"),
+            MessagePart {
+                id: String::new(),
+                created_at: None,
+                body: MessagePartBody::Tool {
+                    call_id: "call_demo".to_owned(),
+                    name: "todo".to_owned(),
+                    state: ToolPartState::Completed,
+                    input: Some("{\"todos\":[]}".to_owned()),
+                    output: Some("ok".to_owned()),
+                    attachments: Vec::new(),
+                    metadata: serde_json::json!({"demo": true}),
+                },
+            },
+            MessagePart::text("final answer"),
+        ];
+        let message = db
+            .messages()
+            .create_with_parts(&session.id, "assistant", "final answer", &parts)
+            .expect("create rich message");
+        let ids = message
+            .parts
+            .iter()
+            .map(|part| part.id.clone())
+            .collect::<Vec<_>>();
+        (session.id, message.id, ids)
+    };
+
+    let db = Database::open(&db_path).expect("reopen db");
+    let messages = db
+        .messages()
+        .list_for_session(&session_id)
+        .expect("list messages");
+    let message = messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .expect("assistant message exists");
+    assert_eq!(message.parts.len(), 3, "all rich parts should persist");
+    assert_eq!(
+        message
+            .parts
+            .iter()
+            .map(|part| part.id.clone())
+            .collect::<Vec<_>>(),
+        part_ids,
+        "part ids remain stable across reopen"
+    );
+    assert!(
+        message.parts.iter().all(|part| {
+            part.created_at
+                .as_deref()
+                .is_some_and(|timestamp| !timestamp.is_empty())
+        }),
+        "persisted parts carry timestamps"
+    );
 }
