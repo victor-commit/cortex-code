@@ -22,6 +22,9 @@ pub struct CompactionRecord {
     pub tail_start_id: String,
     /// Whether the original in-flight user request was auto-continued after compaction.
     pub continued_request: bool,
+    /// The model id used for compaction summarization, when explicitly selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// One normalized event emitted by the runner for a turn.

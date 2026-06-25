@@ -550,6 +550,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
     let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
+    let small_model_id = resolve_small_model_for_turn(
+        &plugin_state,
+        &model_id,
+        run_config
+            .resolved_config
+            .get("small_model")
+            .and_then(serde_json::Value::as_str),
+    );
     let system = render_system_context(
         &model_id,
         &agent,
@@ -559,7 +567,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     );
     let mut turn = Turn::new(&model_id, system, prompt.clone())
         .with_history(history)
-        .with_compaction(compaction);
+        .with_compaction(compaction)
+        .with_small_model(small_model_id.clone());
     if !provider_extra_params.is_empty() {
         turn = turn.with_extra_params(provider_extra_params);
     }
@@ -709,6 +718,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     turn,
                     &shaped_dispatcher,
                     checkpoint_recorder.as_ref(),
+                    &plugin_state,
                     bus.clone(),
                 )
                 .await
@@ -727,6 +737,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     turn,
                     &shaped_dispatcher,
                     checkpoint_recorder.as_ref(),
+                    &plugin_state,
                     bus.clone(),
                 )
                 .await
@@ -743,6 +754,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     turn,
                     &shaped_dispatcher,
                     checkpoint_recorder.as_ref(),
+                    &plugin_state,
                     bus.clone(),
                     structured_schema.as_ref(),
                     &workspace_adapters,
@@ -1253,6 +1265,27 @@ fn parse_plugin_auth_payload(raw: &str) -> serde_json::Value {
         .unwrap_or_else(|_| serde_json::json!({ "type": "api", "key": trimmed }))
 }
 
+fn resolve_small_model_for_turn(
+    plugin_state: &PluginState,
+    active_model: &str,
+    configured_small_model: Option<&str>,
+) -> Option<String> {
+    let configured = configured_small_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(active_model);
+    let selected = plugin_state.small_model_for(active_model, configured);
+    let selected = selected.trim();
+    if selected.is_empty() || selected == active_model {
+        return None;
+    }
+    if let Err(message) = validate_model_id(selected) {
+        eprintln!("cortex run: ignoring invalid small model `{selected}`: {message}");
+        return None;
+    }
+    Some(selected.to_owned())
+}
+
 /// The result of awaiting a turn that may be interrupted by SIGINT.
 enum TurnResult {
     /// The turn ran to completion (success or a normalized error in the outcome).
@@ -1382,6 +1415,7 @@ async fn stream_text(
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
+    plugin_state: &PluginState,
     bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
@@ -1407,7 +1441,7 @@ async fn stream_text(
     let snapshot_part =
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
-    let outcome = match result {
+    let mut outcome = match result {
         TurnResult::Completed(outcome) => outcome,
         TurnResult::Interrupted => {
             // Cancelled at a safe boundary: finish the partial line cleanly and exit with the
@@ -1421,6 +1455,7 @@ async fn stream_text(
             return Exit::Interrupted;
         }
     };
+    plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
 
     if let Some(err) = &outcome.error {
         if wrote_any {
@@ -1479,6 +1514,7 @@ async fn stream_jsonl(
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
+    plugin_state: &PluginState,
     bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
@@ -1512,7 +1548,7 @@ async fn stream_jsonl(
     let snapshot_part =
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
-    let outcome = match result {
+    let mut outcome = match result {
         TurnResult::Completed(outcome) => outcome,
         TurnResult::Interrupted => {
             // Every JSONL line already written is a complete object; stop emitting and exit. The
@@ -1522,6 +1558,7 @@ async fn stream_jsonl(
             return Exit::Interrupted;
         }
     };
+    plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
 
     drop(handle);
     if let Some(err) = &outcome.error {
@@ -1620,6 +1657,8 @@ struct CompactionDoc {
     summary: String,
     tail_start_id: String,
     continued_request: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 /// The leading `--jsonl` event announcing the agent persona and session id, before the runner's
@@ -1656,6 +1695,7 @@ async fn emit_json(
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
+    plugin_state: &PluginState,
     bus: Arc<EventBus>,
     schema: Option<&serde_json::Value>,
     workspace_adapters: &[WorkspaceAdapterDoc],
@@ -1688,7 +1728,7 @@ async fn emit_json(
     let snapshot_part =
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
-    let outcome = match result {
+    let mut outcome = match result {
         TurnResult::Completed(outcome) => outcome,
         TurnResult::Interrupted => {
             // The single JSON document is written only after the turn completes, so an interrupt
@@ -1697,6 +1737,7 @@ async fn emit_json(
             return Exit::Interrupted;
         }
     };
+    plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
 
     if let Some(err) = &outcome.error {
         eprintln!("cortex run: {err}");
@@ -1816,6 +1857,7 @@ fn build_run_document<'a>(
                 summary: record.summary.clone(),
                 tail_start_id: record.tail_start_id.clone(),
                 continued_request: record.continued_request,
+                model: record.model.clone(),
             })
             .collect(),
     }
@@ -3254,6 +3296,7 @@ mod tests {
                 summary: "durable summary".to_owned(),
                 tail_start_id: "tail_11".to_owned(),
                 continued_request: true,
+                model: None,
             }],
             error: None,
         };

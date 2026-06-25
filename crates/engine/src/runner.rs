@@ -101,6 +101,8 @@ pub struct Turn {
     pub extra_headers: Vec<(String, String)>,
     /// The context-compaction policy applied before each send and on overflow recovery.
     pub compaction: CompactionPolicy,
+    /// Optional model id used specifically for compaction-summary helper turns.
+    pub small_model_id: Option<String>,
 }
 
 impl Turn {
@@ -121,6 +123,7 @@ impl Turn {
             extra_params: JsonMap::new(),
             extra_headers: Vec::new(),
             compaction: CompactionPolicy::default(),
+            small_model_id: None,
         }
     }
 
@@ -163,6 +166,13 @@ impl Turn {
     #[must_use]
     pub fn with_compaction(mut self, compaction: CompactionPolicy) -> Self {
         self.compaction = compaction;
+        self
+    }
+
+    /// Set the model id used for compaction summaries (builder style).
+    #[must_use]
+    pub fn with_small_model(mut self, small_model_id: Option<String>) -> Self {
+        self.small_model_id = small_model_id;
         self
     }
 }
@@ -310,7 +320,9 @@ impl SessionRunner {
                 match self
                     .compact_with_summary(
                         provider,
-                        &turn.model_id,
+                        turn.small_model_id
+                            .as_deref()
+                            .unwrap_or(turn.model_id.as_str()),
                         &mut messages,
                         tail_messages,
                         input_budget,
@@ -685,6 +697,7 @@ impl SessionRunner {
             summary: summary.trim().to_owned(),
             tail_start_id,
             continued_request: true,
+            model: Some(model_id.to_owned()),
         }))
     }
 

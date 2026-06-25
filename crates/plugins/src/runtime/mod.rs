@@ -6,6 +6,7 @@ pub use invoke::{
     LoadedPlugin, PluginAuthAuthorizeResult, PluginAuthCallbackResult,
     PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt, PluginAuthPromptOption,
     PluginAuthRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput, PluginHookReport,
-    PluginLoadReport, PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError,
-    PluginToolExecution, PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
+    PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
+    PluginProviderRegistration, PluginRuntimeError, PluginToolExecution, PluginToolRegistration,
+    PluginWorkspaceRegistration, RuntimeHost,
 };

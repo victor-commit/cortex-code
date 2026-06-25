@@ -14,7 +14,8 @@ pub use runtime::{
     JsRuntime, LoadedPlugin, PluginAuthAuthorizeResult, PluginAuthCallbackResult,
     PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt, PluginAuthPromptOption,
     PluginAuthRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput, PluginHookReport,
-    PluginLoadReport, PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError,
-    PluginToolExecution, PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
-    RuntimeSelection, detect_runtime, detect_runtime_in_path,
+    PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
+    PluginProviderRegistration, PluginRuntimeError, PluginToolExecution, PluginToolRegistration,
+    PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection, detect_runtime,
+    detect_runtime_in_path,
 };

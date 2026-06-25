@@ -527,6 +527,64 @@ impl RuntimeHost {
         )
     }
 
+    /// Invoke a plugin's `experimental.provider.small_model` hook with the currently selected
+    /// small-model id and active model id.
+    pub fn invoke_small_model(
+        &self,
+        plugin: &PluginSpec,
+        model: String,
+        active_model: String,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ExperimentalProviderSmallModel {
+                model,
+                active_model,
+            },
+            "experimental.provider.small_model",
+        )
+    }
+
+    /// Invoke a plugin's `experimental.session.compacting` hook with one compaction record.
+    pub fn invoke_session_compacting(
+        &self,
+        plugin: &PluginSpec,
+        compaction: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ExperimentalSessionCompacting { compaction },
+            "experimental.session.compacting",
+        )
+    }
+
+    /// Invoke a plugin's `experimental.compaction.autocontinue` hook with one compaction record.
+    pub fn invoke_compaction_autocontinue(
+        &self,
+        plugin: &PluginSpec,
+        compaction: JsonValue,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ExperimentalCompactionAutocontinue { compaction },
+            "experimental.compaction.autocontinue",
+        )
+    }
+
+    /// Invoke a plugin's `experimental.text.complete` hook with the active input and cursor.
+    pub fn invoke_text_complete(
+        &self,
+        plugin: &PluginSpec,
+        text: String,
+        cursor: usize,
+    ) -> Result<PluginHookOutput, PluginRuntimeError> {
+        self.invoke_value_hook(
+            plugin,
+            BridgeOperation::ExperimentalTextComplete { text, cursor },
+            "experimental.text.complete",
+        )
+    }
+
     /// Execute one plugin-contributed tool by re-loading the real plugin module in the detected JS
     /// runtime and calling that tool's real JavaScript body.
     pub fn execute_tool(
@@ -570,7 +628,7 @@ impl RuntimeHost {
         model: &str,
         messages: JsonValue,
         auth: Option<JsonValue>,
-    ) -> Result<String, PluginRuntimeError> {
+    ) -> Result<PluginProviderCompletion, PluginRuntimeError> {
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let (result, _output) = self.invoke_plugin(
             plugin,
@@ -583,7 +641,10 @@ impl RuntimeHost {
         )?;
         if result.ok {
             let raw = result.output.unwrap_or(JsonValue::Null);
-            Ok(output_content(&raw))
+            Ok(PluginProviderCompletion {
+                content: output_content(&raw),
+                raw,
+            })
         } else {
             Err(error_from_bridge_result(
                 plugin.path(),
@@ -1271,6 +1332,55 @@ impl PluginEventHooks {
             .collect()
     }
 
+    /// Collect text-completion candidates from plugin `experimental.text.complete` hooks.
+    ///
+    /// Each loaded plugin hook can return one string, an array of strings, or an object with
+    /// `items`/`completions`/`suggestions`. Results are flattened in plugin order.
+    #[must_use]
+    pub fn text_complete(&self, text: &str, cursor: usize) -> Vec<String> {
+        if self.loaded.is_empty() {
+            return Vec::new();
+        }
+        let mut all = Vec::new();
+        for loaded in &self.loaded {
+            if !loaded
+                .report
+                .hooks
+                .iter()
+                .any(|hook| hook == "experimental.text.complete")
+            {
+                continue;
+            }
+            match self
+                .host
+                .invoke_text_complete(&loaded.spec, text.to_owned(), cursor)
+            {
+                Ok(output) => {
+                    let mut items = completion_items_from_value(output.output.as_ref());
+                    if !items.is_empty() {
+                        self.record_hook(
+                            "experimental.text.complete",
+                            "success",
+                            Some(&format!("{} item(s)", items.len())),
+                            loaded,
+                        );
+                    }
+                    all.append(&mut items);
+                }
+                Err(err) => {
+                    eprintln!("cortex plugin experimental.text.complete: {err}");
+                    self.record_hook(
+                        "experimental.text.complete",
+                        "error",
+                        Some(&err.to_string()),
+                        loaded,
+                    );
+                }
+            }
+        }
+        all
+    }
+
     /// Invoke every loaded plugin's `event` hook with a serializable event payload.
     ///
     /// Hook failures are reported on stderr and isolated from the caller's turn. The event payload
@@ -1603,6 +1713,15 @@ pub struct PluginModelRegistration {
     /// Output-token limit, if known.
     #[serde(default)]
     pub output: u64,
+    /// Whether this model accepts media attachments.
+    #[serde(default)]
+    pub attachment: bool,
+    /// Input token price in USD per million tokens.
+    #[serde(default)]
+    pub cost_input: f64,
+    /// Output token price in USD per million tokens.
+    #[serde(default)]
+    pub cost_output: f64,
 }
 
 /// Output of a plugin tool body.
@@ -1611,6 +1730,15 @@ pub struct PluginToolExecution {
     /// Text injected as the model-visible tool result.
     pub content: String,
     /// Raw JSON returned by the JavaScript bridge.
+    pub raw: JsonValue,
+}
+
+/// Output of a plugin provider completion body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginProviderCompletion {
+    /// Text injected as assistant-visible content.
+    pub content: String,
+    /// Raw JSON returned by the JavaScript bridge (may include streamed event objects).
     pub raw: JsonValue,
 }
 
@@ -1811,6 +1939,20 @@ enum BridgeOperation {
     },
     ChatSystemTransform {
         system: String,
+    },
+    ExperimentalProviderSmallModel {
+        model: String,
+        active_model: String,
+    },
+    ExperimentalSessionCompacting {
+        compaction: JsonValue,
+    },
+    ExperimentalCompactionAutocontinue {
+        compaction: JsonValue,
+    },
+    ExperimentalTextComplete {
+        text: String,
+        cursor: usize,
     },
     ToolExecute {
         name: String,
@@ -2415,6 +2557,56 @@ fn output_content(value: &JsonValue) -> String {
         }
     }
     serde_json::to_string(value).unwrap_or_else(|_| String::new())
+}
+
+fn completion_items_from_value(value: Option<&JsonValue>) -> Vec<String> {
+    fn as_items(value: &JsonValue) -> Vec<String> {
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim();
+            return if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![trimmed.to_owned()]
+            };
+        }
+        if let Some(array) = value.as_array() {
+            return array
+                .iter()
+                .filter_map(|item| match item {
+                    JsonValue::String(text) => {
+                        let trimmed = text.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+                    }
+                    JsonValue::Object(map) => map
+                        .get("text")
+                        .or_else(|| map.get("value"))
+                        .and_then(JsonValue::as_str)
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned),
+                    _ => None,
+                })
+                .collect();
+        }
+        let Some(map) = value.as_object() else {
+            return Vec::new();
+        };
+        for key in ["items", "completions", "suggestions"] {
+            if let Some(items) = map.get(key) {
+                return as_items(items);
+            }
+        }
+        map.get("text")
+            .or_else(|| map.get("value"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+    }
+
+    value.map_or_else(Vec::new, as_items)
 }
 
 fn normalize_authorize_result(value: JsonValue) -> PluginAuthAuthorizeResult {
@@ -3088,13 +3280,33 @@ function normalizeModel(model) {
   if (!model || typeof model !== "object") return null;
   const id = String(model.id ?? model.model ?? "").trim();
   if (!id) return null;
+  const cost = model.cost && typeof model.cost === "object" ? model.cost : {};
   return {
     id,
     name: String(model.name ?? id),
     tool_call: Boolean(model.tool_call ?? model.toolCall ?? model.tools),
     reasoning: Boolean(model.reasoning),
     context: Number(model.context ?? model.limit?.context ?? 0) || 0,
-    output: Number(model.output ?? model.limit?.output ?? 0) || 0
+    output: Number(model.output ?? model.limit?.output ?? 0) || 0,
+    attachment: Boolean(
+      model.attachment ?? model.attachments ?? model.media ?? model.vision
+    ),
+    cost_input: Number(
+      model.cost_input
+      ?? model.costInput
+      ?? cost.input
+      ?? cost.prompt
+      ?? cost.input_tokens
+      ?? 0
+    ) || 0,
+    cost_output: Number(
+      model.cost_output
+      ?? model.costOutput
+      ?? cost.output
+      ?? cost.completion
+      ?? cost.output_tokens
+      ?? 0
+    ) || 0
   };
 }
 
@@ -3166,6 +3378,112 @@ function normalizeToolResult(result) {
     return { content: JSON.stringify(result), raw: result };
   }
   return { content: String(result) };
+}
+
+function normalizeProviderCompleteResult(result) {
+  if (result == null) {
+    return {
+      content: "",
+      events: [{ type: "done", reason: "stop" }]
+    };
+  }
+
+  if (typeof result === "string") {
+    return {
+      content: result,
+      events: [
+        { type: "text_delta", text: result },
+        { type: "done", reason: "stop" }
+      ]
+    };
+  }
+
+  if (Array.isArray(result)) {
+    const text = result.map((part) => String(part ?? "")).join("");
+    return {
+      content: text,
+      events: result
+    };
+  }
+
+  if (typeof result === "object") {
+    const events = Array.isArray(result.events)
+      ? result.events
+      : Array.isArray(result.stream)
+        ? result.stream
+        : [];
+    const inferred = typeof result.content === "string"
+      ? result.content
+      : typeof result.text === "string"
+        ? result.text
+        : events
+            .filter((event) => event && typeof event === "object" && (
+              event.type === "text_delta" || event.type === "text" || event.type === "delta"
+            ))
+            .map((event) => String(event.text ?? event.delta ?? ""))
+            .join("");
+    const out = {
+      ...result,
+      content: inferred,
+      events: events.slice()
+    };
+    if (events.length === 0 && inferred) {
+      out.events = [
+        { type: "text_delta", text: inferred },
+        { type: "done", reason: "stop" }
+      ];
+    }
+    return out;
+  }
+
+  const text = String(result);
+  return {
+    content: text,
+    events: [
+      { type: "text_delta", text },
+      { type: "done", reason: "stop" }
+    ]
+  };
+}
+
+function normalizeTextCompleteResult(value) {
+  const collect = (input) => {
+    if (input == null) return [];
+    if (typeof input === "string") {
+      const trimmed = input.trim();
+      return trimmed ? [trimmed] : [];
+    }
+    if (Array.isArray(input)) {
+      return input.flatMap((item) => {
+        if (typeof item === "string") {
+          const trimmed = item.trim();
+          return trimmed ? [trimmed] : [];
+        }
+        if (item && typeof item === "object") {
+          const candidate = item.text ?? item.value ?? item.label ?? "";
+          if (typeof candidate === "string" && candidate.trim()) {
+            return [candidate.trim()];
+          }
+        }
+        return [];
+      });
+    }
+    if (typeof input === "object") {
+      for (const key of ["items", "completions", "suggestions"]) {
+        if (key in input) {
+          return collect(input[key]);
+        }
+      }
+      const candidate = input.text ?? input.value ?? input.label ?? "";
+      if (typeof candidate === "string" && candidate.trim()) {
+        return [candidate.trim()];
+      }
+      return [];
+    }
+    return [];
+  };
+
+  return { items: collect(value) };
 }
 
 function findTool(hooks, name, registeredTools, returnedTools) {
@@ -3533,13 +3851,73 @@ async function runOperation(operation, hooks, context, directory) {
     if (typeof complete !== "function") {
       throw new Error(`plugin provider ${provider.id ?? provider.name ?? "unknown"} does not define complete(request)`);
     }
-    output = normalizeToolResult(await complete({
+    output = normalizeProviderCompleteResult(await complete({
       model: String(operation.model ?? ""),
       messages: operation.messages ?? [],
       directory,
       auth
     }));
     invokedHooks.push("provider");
+  } else if (operation.type === "experimental_provider_small_model") {
+    const hook = getHook(hooks, "experimental.provider.small_model");
+    if (typeof hook === "function") {
+      activeHook = "experimental.provider.small_model";
+      output = await hook({
+        model: String(operation.model ?? ""),
+        active_model: String(operation.active_model ?? ""),
+        directory,
+        cwd: directory
+      });
+      invokedHooks.push("experimental.provider.small_model");
+    } else {
+      output = { model: String(operation.model ?? "") };
+    }
+  } else if (operation.type === "experimental_session_compacting") {
+    const hook = getHook(hooks, "experimental.session.compacting");
+    const payload = operation.compaction && typeof operation.compaction === "object"
+      ? operation.compaction
+      : {};
+    if (typeof hook === "function") {
+      activeHook = "experimental.session.compacting";
+      output = await hook({
+        ...payload,
+        directory,
+        cwd: directory
+      });
+      invokedHooks.push("experimental.session.compacting");
+    } else {
+      output = payload;
+    }
+  } else if (operation.type === "experimental_compaction_autocontinue") {
+    const hook = getHook(hooks, "experimental.compaction.autocontinue");
+    const payload = operation.compaction && typeof operation.compaction === "object"
+      ? operation.compaction
+      : {};
+    if (typeof hook === "function") {
+      activeHook = "experimental.compaction.autocontinue";
+      output = await hook({
+        ...payload,
+        directory,
+        cwd: directory
+      });
+      invokedHooks.push("experimental.compaction.autocontinue");
+    } else {
+      output = payload;
+    }
+  } else if (operation.type === "experimental_text_complete") {
+    const hook = getHook(hooks, "experimental.text.complete");
+    if (typeof hook === "function") {
+      activeHook = "experimental.text.complete";
+      output = normalizeTextCompleteResult(await hook({
+        text: String(operation.text ?? ""),
+        cursor: Number(operation.cursor ?? 0) || 0,
+        directory,
+        cwd: directory
+      }));
+      invokedHooks.push("experimental.text.complete");
+    } else {
+      output = { items: [] };
+    }
   } else if (operation.type === "auth_authorize") {
     const providerID = String(operation.provider ?? "").trim();
     if (!providerID) {

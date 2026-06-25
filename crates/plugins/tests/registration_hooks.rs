@@ -164,7 +164,7 @@ export default async function plugin(input, options) {
         .with_timeout(Duration::from_secs(15))
         .complete_with_provider(&loaded[0].spec, "plugin/example-model", json!([]), None)
         .expect("provider completes");
-    assert_eq!(completion, "PLUGIN_MODEL:plugin/example-model");
+    assert_eq!(completion.content, "PLUGIN_MODEL:plugin/example-model");
 
     RuntimeHost::new()
         .with_timeout(Duration::from_secs(15))

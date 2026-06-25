@@ -107,6 +107,7 @@ fn run(options: LaunchOptions) -> io::Result<()> {
     // Bind durable session persistence to the shared store so interactive turns are recorded and
     // become resumable from headless `cortex run` and the session picker (cross-surface continuity).
     app.set_session_store(db::DbPathInputs::from_process().resolve());
+    app.set_plugin_text_complete(load_plugin_text_complete_hooks(options.pure_plugins));
     let server_url = options
         .server_url
         .or_else(|| env_non_empty("CORTEX_SERVER_URL"));
@@ -434,6 +435,15 @@ fn env_non_empty(key: &str) -> Option<String> {
 
 fn env_pure_enabled() -> bool {
     std::env::var_os("CORTEX_PURE").is_some_and(|value| value.to_string_lossy() == "1")
+}
+
+fn load_plugin_text_complete_hooks(pure_plugins: bool) -> Option<plugins::PluginEventHooks> {
+    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).ok()?;
+    let plugin_cwd = inputs.cwd.clone();
+    let effective = settings::load(inputs).ok()?;
+    let plugin_config =
+        plugins::PluginConfig::from_toml_value(effective.get("plugin"), &plugin_cwd).ok()?;
+    plugins::PluginEventHooks::load_or_disabled(&plugin_config, pure_plugins, "tui").ok()
 }
 
 /// Suspend the TUI, open the user's external editor to compose prompt text, then restore the TUI

@@ -19,6 +19,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use engine::{Agent, RunnerEvent};
 use llm::{Message, Usage};
 use permissions::{Decision, ScopedDecision};
+use plugins::PluginEventHooks;
 use tui_components::toast::{Toast, ToastLevel};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
@@ -398,6 +399,11 @@ pub struct App {
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
     mention: Option<MentionPicker>,
+    /// Plugin-driven text completion bridge (`experimental.text.complete`) for interactive prompt
+    /// completions.
+    plugin_text_complete: Option<PluginEventHooks>,
+    /// A candidate returned by the plugin text-complete hook and awaiting insertion.
+    pending_text_completion: Option<String>,
     /// The open command palette (`Ctrl+P`), or `None` when closed. While set it is modal: it owns a
     /// search query and navigation, runs the highlighted command on Enter, and Esc dismisses it and
     /// returns focus to the prompt.
@@ -523,6 +529,8 @@ impl App {
             slash_selected: 0,
             dialog: None,
             mention: None,
+            plugin_text_complete: None,
+            pending_text_completion: None,
             palette: None,
             editor_requested: false,
             shell_mode: false,
@@ -609,6 +617,11 @@ impl App {
     /// real database; opening per write degrades gracefully when the store cannot be opened.
     pub fn set_session_store(&mut self, path: Option<PathBuf>) {
         self.db_path = path;
+    }
+
+    /// Attach plugin text-completion hooks discovered at TUI startup.
+    pub fn set_plugin_text_complete(&mut self, hooks: Option<PluginEventHooks>) {
+        self.plugin_text_complete = hooks;
     }
 
     /// Attach or detach the loopback server bridge used by cross-surface validation.
@@ -1588,6 +1601,48 @@ impl App {
         }
     }
 
+    /// Character offset of the prompt cursor from the beginning of the full input.
+    fn input_cursor_offset(&self) -> usize {
+        let pos = self.input.cursor_position();
+        let mut offset = 0usize;
+        for row in 0..pos.row {
+            if let Some(line) = self.input.line(row) {
+                offset = offset.saturating_add(line.chars().count());
+            }
+            offset = offset.saturating_add(1);
+        }
+        offset.saturating_add(pos.col)
+    }
+
+    /// Drive plugin-backed text completion (`experimental.text.complete`).
+    ///
+    /// First Tab fetches candidates and surfaces the first one; the next Tab inserts it into the
+    /// prompt.
+    fn trigger_text_completion(&mut self) {
+        if let Some(candidate) = self.pending_text_completion.take() {
+            self.input.set_value(&candidate);
+            self.on_prompt_edited();
+            self.ack = Some("Inserted plugin completion".to_owned());
+            return;
+        }
+        let Some(hooks) = self.plugin_text_complete.as_ref() else {
+            return;
+        };
+        let text = self.input.value();
+        if text.trim().is_empty() {
+            return;
+        }
+        let cursor = self.input_cursor_offset();
+        let candidates = hooks.text_complete(&text, cursor);
+        let Some(first) = candidates.first().cloned() else {
+            return;
+        };
+        self.pending_text_completion = Some(first.clone());
+        self.transcript
+            .push(Entry::Notice(format!("completion: {first}")));
+        self.scroll = 0;
+    }
+
     /// Open the command palette (`Ctrl+P`): a modal, searchable overlay of every built-in command.
     fn open_palette(&mut self) {
         self.palette = Some(Palette::default());
@@ -1685,6 +1740,7 @@ impl App {
     /// React to a prompt edit: reset the slash highlight and recompute the mention picker.
     fn on_prompt_edited(&mut self) {
         self.slash_selected = 0;
+        self.pending_text_completion = None;
         self.refresh_mention();
     }
 
@@ -3216,6 +3272,11 @@ impl App {
             KeyCode::Char('!') if !ctrl && !alt && self.input.value().is_empty() => {
                 self.shell_mode = true;
             }
+            KeyCode::Char('\t')
+                if !ctrl && !alt && !self.slash_menu_open() && !self.mention_open() =>
+            {
+                self.trigger_text_completion();
+            }
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
             // slash menu and the `@`-file picker, so refresh both after the edit.
             KeyCode::Char(c) if !ctrl && !alt => {
@@ -3224,6 +3285,11 @@ impl App {
                 }
                 self.input.insert_char(c);
                 self.on_prompt_edited();
+            }
+            KeyCode::Tab
+                if !ctrl && !alt && !shift && !self.slash_menu_open() && !self.mention_open() =>
+            {
+                self.trigger_text_completion()
             }
             // Shift+Enter inserts a soft newline and grows the input without submitting.
             KeyCode::Enter if shift => self.input.insert_newline(),

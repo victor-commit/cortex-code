@@ -530,6 +530,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "crossterm",
  "db",
  "engine",
  "errors",

@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::ToolDispatcher;
+use engine::{CompactionRecord, ToolDispatcher};
 use events::{Event, Subscriber};
 use futures_util::future::BoxFuture;
 use llm::{
     FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Message, Provider, Role, ToolCall,
-    ToolDef,
+    ToolDef, Usage,
 };
 use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
@@ -322,6 +322,111 @@ impl PluginState {
                     })
             })
             .collect()
+    }
+
+    /// Let plugins choose the small-model path used by compaction/summary helpers.
+    ///
+    /// Hooks compose in plugin configuration order. Each hook can return a string model id or an
+    /// object carrying `model` / `small_model`.
+    #[must_use]
+    pub(crate) fn small_model_for(&self, active_model: &str, default_small_model: &str) -> String {
+        let mut current = default_small_model.to_owned();
+        for loaded in &self.loaded {
+            if !plugin_has_hook(loaded, "experimental.provider.small_model") {
+                continue;
+            }
+            match self.host.invoke_small_model(
+                &loaded.spec,
+                current.clone(),
+                active_model.to_owned(),
+            ) {
+                Ok(output) => {
+                    if let Some(next) = output
+                        .output
+                        .as_ref()
+                        .and_then(small_model_from_value)
+                        .filter(|candidate| !candidate.trim().is_empty())
+                    {
+                        current = next;
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "experimental.provider.small_model",
+                                "select_small_model",
+                                "success",
+                                Some(&current),
+                            );
+                        }
+                    }
+                }
+                Err(err) => eprintln!("cortex plugin experimental.provider.small_model: {err}"),
+            }
+        }
+        current
+    }
+
+    /// Let plugins observe/transform compaction summaries and continuation markers in-place.
+    pub(crate) fn apply_compaction_hooks(&self, model_id: &str, records: &mut [CompactionRecord]) {
+        for record in records {
+            let mut value = compaction_record_to_json(record, model_id);
+            for loaded in &self.loaded {
+                if !plugin_has_hook(loaded, "experimental.session.compacting") {
+                    continue;
+                }
+                match self
+                    .host
+                    .invoke_session_compacting(&loaded.spec, value.clone())
+                {
+                    Ok(output) => {
+                        if let Some(next) = output.output {
+                            value = merge_compaction_value(value, next);
+                        }
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "experimental.session.compacting",
+                                "transform_compaction",
+                                "success",
+                                Some(&record.tail_start_id),
+                            );
+                        }
+                    }
+                    Err(err) => eprintln!("cortex plugin experimental.session.compacting: {err}"),
+                }
+            }
+
+            for loaded in &self.loaded {
+                if !plugin_has_hook(loaded, "experimental.compaction.autocontinue") {
+                    continue;
+                }
+                match self
+                    .host
+                    .invoke_compaction_autocontinue(&loaded.spec, value.clone())
+                {
+                    Ok(output) => {
+                        if let Some(next) = output.output {
+                            value = merge_compaction_value(value, next);
+                        }
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "experimental.compaction.autocontinue",
+                                "transform_compaction",
+                                "success",
+                                Some(&record.tail_start_id),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("cortex plugin experimental.compaction.autocontinue: {err}")
+                    }
+                }
+            }
+
+            if let Some(next) = compaction_record_from_value(record, &value) {
+                *record = next;
+            }
+        }
     }
 
     fn auth_registration_for_provider(
@@ -990,12 +1095,12 @@ impl ModelDoc {
             name: non_empty(&model.name).unwrap_or_else(|| model.id.clone()),
             provider: provider_id.to_owned(),
             default: false,
-            attachment: false,
+            attachment: model.attachment,
             tool_call: model.tool_call,
             reasoning: model.reasoning,
             cost: ModelCostDoc {
-                input: 0.0,
-                output: 0.0,
+                input: model.cost_input,
+                output: model.cost_output,
             },
             context_length: model.context,
             max_output_tokens: model.output,
@@ -1235,6 +1340,295 @@ fn tool_result_from_output(
     }
 }
 
+fn plugin_provider_events(
+    raw: &JsonValue,
+    fallback_text: &str,
+    model: &PluginModelRegistration,
+) -> Vec<LlmEvent> {
+    let mut events = Vec::new();
+    let mut saw_usage = false;
+    let mut usage_without_cost = None;
+    let mut saw_done = false;
+
+    let streamed = raw
+        .get("events")
+        .or_else(|| raw.get("stream"))
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    for event in streamed {
+        let JsonValue::Object(map) = event else {
+            continue;
+        };
+        let kind = map
+            .get("type")
+            .or_else(|| map.get("kind"))
+            .or_else(|| map.get("event"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        match kind.as_str() {
+            "text_delta" | "text" | "delta" => {
+                if let Some(text) = map
+                    .get("text")
+                    .or_else(|| map.get("delta"))
+                    .and_then(JsonValue::as_str)
+                {
+                    events.push(LlmEvent::TextDelta {
+                        text: text.to_owned(),
+                    });
+                }
+            }
+            "reasoning" | "thinking" => {
+                if let Some(text) = map
+                    .get("text")
+                    .or_else(|| map.get("delta"))
+                    .and_then(JsonValue::as_str)
+                {
+                    events.push(LlmEvent::Reasoning {
+                        text: text.to_owned(),
+                    });
+                }
+            }
+            "usage" => {
+                if let Some(usage) = usage_from_json_object(&map) {
+                    saw_usage = true;
+                    if usage.cost.is_none() {
+                        usage_without_cost = Some(usage.clone());
+                    }
+                    events.push(LlmEvent::Usage(usage));
+                }
+            }
+            "error" => {
+                let message = map
+                    .get("message")
+                    .or_else(|| map.get("error"))
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("plugin provider error")
+                    .to_owned();
+                let kind = map
+                    .get("kind")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("upstream")
+                    .to_owned();
+                events.push(LlmEvent::Error { message, kind });
+            }
+            "done" | "finish" => {
+                let reason = map
+                    .get("reason")
+                    .and_then(JsonValue::as_str)
+                    .map(parse_finish_reason)
+                    .unwrap_or(FinishReason::Stop);
+                events.push(LlmEvent::Done { reason });
+                saw_done = true;
+            }
+            _ => {}
+        }
+    }
+
+    if events
+        .iter()
+        .all(|event| !matches!(event, LlmEvent::TextDelta { .. }))
+        && !fallback_text.is_empty()
+    {
+        events.push(LlmEvent::TextDelta {
+            text: fallback_text.to_owned(),
+        });
+    }
+
+    if !saw_usage && let Some(usage) = usage_from_json_value(raw) {
+        if usage.cost.is_none() {
+            usage_without_cost = Some(usage.clone());
+        }
+        events.push(LlmEvent::Usage(usage));
+    }
+
+    if let Some(usage) = usage_without_cost
+        && let Some(cost) = plugin_usage_cost(model, &usage)
+    {
+        if let Some(LlmEvent::Usage(existing)) = events
+            .iter_mut()
+            .find(|event| matches!(event, LlmEvent::Usage(_)))
+            && existing.cost.is_none()
+        {
+            existing.cost = Some(cost);
+        }
+    }
+
+    if !saw_done {
+        events.push(LlmEvent::Done {
+            reason: parse_finish_reason(
+                raw.get("finish_reason")
+                    .or_else(|| raw.get("reason"))
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("stop"),
+            ),
+        });
+    }
+
+    events
+}
+
+fn usage_from_json_value(value: &JsonValue) -> Option<Usage> {
+    let object = value.as_object()?;
+    usage_from_json_object(object).or_else(|| {
+        object
+            .get("usage")
+            .and_then(JsonValue::as_object)
+            .and_then(usage_from_json_object)
+    })
+}
+
+fn usage_from_json_object(object: &serde_json::Map<String, JsonValue>) -> Option<Usage> {
+    let input_tokens = json_u32(
+        object
+            .get("input_tokens")
+            .or_else(|| object.get("prompt_tokens"))
+            .or_else(|| object.get("input")),
+    )?;
+    let output_tokens = json_u32(
+        object
+            .get("output_tokens")
+            .or_else(|| object.get("completion_tokens"))
+            .or_else(|| object.get("output")),
+    )?;
+    let total_tokens = json_u32(
+        object
+            .get("total_tokens")
+            .or_else(|| object.get("total"))
+            .or_else(|| object.get("tokens")),
+    )
+    .unwrap_or(input_tokens.saturating_add(output_tokens));
+    let cost = object
+        .get("cost")
+        .and_then(JsonValue::as_f64)
+        .or_else(|| object.get("price").and_then(JsonValue::as_f64));
+    Some(Usage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cost,
+    })
+}
+
+fn json_u32(value: Option<&JsonValue>) -> Option<u32> {
+    let value = value?;
+    if let Some(number) = value.as_u64() {
+        return u32::try_from(number).ok();
+    }
+    value
+        .as_str()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+}
+
+fn parse_finish_reason(reason: &str) -> FinishReason {
+    match reason.trim().to_ascii_lowercase().as_str() {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        "tool_calls" | "tool" => FinishReason::ToolCalls,
+        "content_filter" => FinishReason::ContentFilter,
+        "error" => FinishReason::Error,
+        other => FinishReason::Other(other.to_owned()),
+    }
+}
+
+fn plugin_usage_cost(model: &PluginModelRegistration, usage: &Usage) -> Option<f64> {
+    let in_cost = model.cost_input;
+    let out_cost = model.cost_output;
+    if in_cost <= 0.0 && out_cost <= 0.0 {
+        return None;
+    }
+    let input = f64::from(usage.input_tokens) * in_cost / 1_000_000.0;
+    let output = f64::from(usage.output_tokens) * out_cost / 1_000_000.0;
+    Some(input + output)
+}
+
+fn small_model_from_value(value: &JsonValue) -> Option<String> {
+    value.as_str().map(str::to_owned).or_else(|| {
+        value
+            .get("model")
+            .or_else(|| value.get("small_model"))
+            .or_else(|| value.get("id"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+    })
+}
+
+fn compaction_record_to_json(record: &CompactionRecord, model_id: &str) -> JsonValue {
+    serde_json::json!({
+        "summary": record.summary,
+        "tail_start_id": record.tail_start_id,
+        "continued_request": record.continued_request,
+        "model": record.model.as_deref().unwrap_or(model_id),
+    })
+}
+
+fn compaction_record_from_value(
+    current: &CompactionRecord,
+    value: &JsonValue,
+) -> Option<CompactionRecord> {
+    let map = value.as_object()?;
+    let summary = map
+        .get("summary")
+        .or_else(|| map.get("content"))
+        .or_else(|| map.get("text"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or(&current.summary)
+        .to_owned();
+    let tail_start_id = map
+        .get("tail_start_id")
+        .or_else(|| map.get("tailStartId"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or(&current.tail_start_id)
+        .to_owned();
+    let continued_request = map
+        .get("continued_request")
+        .or_else(|| map.get("autocontinue"))
+        .or_else(|| map.get("continue"))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(current.continued_request);
+    let model = map
+        .get("model")
+        .or_else(|| map.get("small_model"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .or_else(|| current.model.clone());
+    Some(CompactionRecord {
+        summary,
+        tail_start_id,
+        continued_request,
+        model,
+    })
+}
+
+fn merge_compaction_value(current: JsonValue, next: JsonValue) -> JsonValue {
+    match next {
+        JsonValue::String(summary) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("summary".to_owned(), JsonValue::String(summary));
+            JsonValue::Object(merged)
+        }
+        JsonValue::Bool(value) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("continued_request".to_owned(), JsonValue::Bool(value));
+            JsonValue::Object(merged)
+        }
+        JsonValue::Object(map) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.extend(map);
+            JsonValue::Object(merged)
+        }
+        JsonValue::Null => current,
+        other => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("summary".to_owned(), JsonValue::String(other.to_string()));
+            JsonValue::Object(merged)
+        }
+    }
+}
+
 fn system_output_to_string(value: JsonValue) -> String {
     match value {
         JsonValue::String(text) => text,
@@ -1414,16 +1808,15 @@ impl Provider for PluginModelProvider {
         Box::pin(async move {
             let messages = serde_json::to_value(&request.messages)
                 .map_err(|err| LlmError::decode(err.to_string()))?;
-            let text = self
+            let completion = self
                 .host
                 .complete_with_provider(&self.spec, &request.model, messages, self.auth.clone())
                 .map_err(|err| LlmError::upstream(err.to_string()))?;
-            let stream = futures_util::stream::iter([
-                LlmEvent::TextDelta { text },
-                LlmEvent::Done {
-                    reason: FinishReason::Stop,
-                },
-            ]);
+            let stream = futures_util::stream::iter(plugin_provider_events(
+                &completion.raw,
+                &completion.content,
+                &self.model,
+            ));
             Ok(Box::pin(stream) as LlmStream)
         })
     }
