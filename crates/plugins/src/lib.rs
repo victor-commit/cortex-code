@@ -14,5 +14,6 @@ pub use runtime::{
     JsRuntime, LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginEventHooks,
     PluginHookOutput, PluginHookReport, PluginLoadReport, PluginModelRegistration,
     PluginProviderRegistration, PluginRuntimeError, PluginToolExecution, PluginToolRegistration,
-    RuntimeHost, RuntimeSelection, detect_runtime, detect_runtime_in_path,
+    PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection, detect_runtime,
+    detect_runtime_in_path,
 };

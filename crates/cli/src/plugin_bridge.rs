@@ -16,11 +16,12 @@ use llm::{
 use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
     LoadedPlugin, PluginConfigRule, PluginModelRegistration, PluginProviderRegistration,
-    PluginRuntimeError, PluginSpec, PluginToolRegistration, RuntimeHost,
+    PluginRuntimeError, PluginSpec, PluginToolRegistration, PluginWorkspaceRegistration,
+    RuntimeHost,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use settings::{ConfigError, ConfigInputs};
+use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 use tools::{Tool, ToolContext, ToolOutput};
 
 const PURE_ENV: &str = "CORTEX_PURE";
@@ -66,19 +67,17 @@ impl PluginState {
         }
     }
 
-    /// Load configured plugins using the real external JS runtime.
-    pub(crate) fn load(config: &plugins::PluginConfig) -> Result<Self, PluginRuntimeError> {
-        Self::load_for_surface(config, "run")
-    }
-
-    /// Load configured plugins for a named surface using the real external JS runtime.
-    pub(crate) fn load_for_surface(
+    /// Load configured plugins for a named surface and pass the resolved effective config object
+    /// into plugin `config` hooks.
+    pub(crate) fn load_for_surface_with_config(
         config: &plugins::PluginConfig,
         surface: &str,
+        resolved_config: JsonValue,
     ) -> Result<Self, PluginRuntimeError> {
         let host = RuntimeHost::new();
         let surface = non_empty_surface(surface);
-        let loaded = host.load_plugins_for_surface(config, &surface)?;
+        let loaded =
+            host.load_plugins_for_surface_with_config(config, &surface, resolved_config)?;
         Ok(Self {
             loaded,
             host,
@@ -88,24 +87,18 @@ impl PluginState {
         })
     }
 
-    /// Load configured plugins unless pure mode disabled all plugin behavior.
-    pub(crate) fn load_or_disabled(
-        config: &plugins::PluginConfig,
-        pure: bool,
-    ) -> Result<Self, PluginRuntimeError> {
-        Self::load_or_disabled_for_surface(config, pure, "run")
-    }
-
-    /// Load configured plugins for a named surface unless pure mode disabled all plugin behavior.
-    pub(crate) fn load_or_disabled_for_surface(
+    /// Load configured plugins for a named surface unless pure mode disabled all plugin behavior,
+    /// passing the resolved effective config object into plugin `config` hooks.
+    pub(crate) fn load_or_disabled_for_surface_with_config(
         config: &plugins::PluginConfig,
         pure: bool,
         surface: &str,
+        resolved_config: JsonValue,
     ) -> Result<Self, PluginRuntimeError> {
         if pure {
             Ok(Self::disabled_for_surface(surface))
         } else {
-            Self::load_for_surface(config, surface)
+            Self::load_for_surface_with_config(config, surface, resolved_config)
         }
     }
 
@@ -155,15 +148,10 @@ impl PluginState {
             ConfigInputs::from_process(Default::default()).map_err(ConfigOrRuntimeError::Io)?;
         let cwd = inputs.cwd.clone();
         let effective = settings::load(inputs).map_err(ConfigOrRuntimeError::Config)?;
-        let config = plugins::PluginConfig::from_toml_value(effective.get("plugin"), &cwd)
-            .map_err(|message| {
-                ConfigOrRuntimeError::Config(ConfigError::TypeMismatch {
-                    key: "plugin".to_owned(),
-                    expected: "an array of plugin specs or [spec, options] pairs",
-                    found: message,
-                })
-            })?;
-        Self::load(&config).map_err(ConfigOrRuntimeError::Runtime)
+        let config = plugin_config_from_effective(&effective, &cwd)?;
+        let resolved_config = effective_table_json(&effective);
+        Self::load_for_surface_with_config(&config, "run", resolved_config)
+            .map_err(ConfigOrRuntimeError::Runtime)
     }
 
     /// Permission rules contributed by every loaded plugin's `config` hook.
@@ -205,6 +193,25 @@ impl PluginState {
             .iter()
             .flat_map(|loaded| loaded.report.providers.iter())
             .map(ProviderDoc::from_plugin)
+            .collect()
+    }
+
+    /// Workspace adapters contributed by plugin `experimental_workspace.register(type, adapter)`.
+    #[must_use]
+    pub(crate) fn workspace_adapters(&self) -> Vec<WorkspaceAdapterDoc> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| {
+                loaded
+                    .report
+                    .workspace_entries
+                    .iter()
+                    .cloned()
+                    .map(move |workspace| WorkspaceAdapterDoc {
+                        plugin: loaded.spec.raw_spec().to_owned(),
+                        workspace,
+                    })
+            })
             .collect()
     }
 
@@ -724,6 +731,24 @@ impl std::fmt::Display for ConfigOrRuntimeError {
     }
 }
 
+fn effective_table_json(effective: &EffectiveConfig) -> JsonValue {
+    serde_json::to_value(effective.table())
+        .unwrap_or_else(|_| JsonValue::Object(Default::default()))
+}
+
+fn plugin_config_from_effective(
+    effective: &EffectiveConfig,
+    cwd: &std::path::Path,
+) -> Result<plugins::PluginConfig, ConfigOrRuntimeError> {
+    plugins::PluginConfig::from_toml_value(effective.get("plugin"), cwd).map_err(|message| {
+        ConfigOrRuntimeError::Config(ConfigError::TypeMismatch {
+            key: "plugin".to_owned(),
+            expected: "an array of plugin specs or [spec, options] pairs",
+            found: message,
+        })
+    })
+}
+
 fn plugin_rule_to_permission_rule(rule: &PluginConfigRule) -> Option<Rule> {
     let action = Action::parse(&rule.action)?;
     Some(Rule::new(rule.tool.clone(), rule.pattern.clone(), action))
@@ -831,6 +856,15 @@ impl ModelDoc {
             source: "plugin",
         }
     }
+}
+
+/// One plugin-contributed workspace adapter exposed through machine output and server discovery
+/// surfaces.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct WorkspaceAdapterDoc {
+    pub(crate) plugin: String,
+    #[serde(flatten)]
+    pub(crate) workspace: PluginWorkspaceRegistration,
 }
 
 fn non_empty(value: &str) -> Option<String> {

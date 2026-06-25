@@ -56,7 +56,9 @@ use crate::custom_agents;
 use crate::custom_modes;
 use crate::permission;
 use crate::permission_store;
-use crate::plugin_bridge::{CommandBeforeOutcome, CommandInvocation, PluginState};
+use crate::plugin_bridge::{
+    CommandBeforeOutcome, CommandInvocation, PluginState, WorkspaceAdapterDoc,
+};
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
@@ -251,7 +253,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // audit session is ready but before provider credentials are resolved. A configured plugin is
     // fail-closed: missing Bun/Node/Deno, a missing file, or a load-time throw stops the run with
     // an attributed error rather than silently continuing without hooks.
-    let plugin_state = match PluginState::load_or_disabled(&run_config.plugins, pure_plugins) {
+    let plugin_state = match PluginState::load_or_disabled_for_surface_with_config(
+        &run_config.plugins,
+        pure_plugins,
+        "run",
+        run_config.resolved_config.clone(),
+    ) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex run: {err}");
@@ -681,6 +688,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         plugin_state.tool_definition_dispatcher(&dispatcher, session_id.clone());
     let tool_definitions = shaped_dispatcher.definitions();
     let tool_names = tool_names_from(&tool_definitions);
+    let workspace_adapters = plugin_state.workspace_adapters();
 
     let exit = runtime.block_on(async {
         let exit = match format {
@@ -732,6 +740,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     checkpoint_recorder.as_ref(),
                     bus.clone(),
                     structured_schema.as_ref(),
+                    &workspace_adapters,
                 )
                 .await
             }
@@ -817,7 +826,12 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
             return Exit::Config;
         }
     };
-    let plugin_state = match PluginState::load_or_disabled(&run_config.plugins, pure_plugins) {
+    let plugin_state = match PluginState::load_or_disabled_for_surface_with_config(
+        &run_config.plugins,
+        pure_plugins,
+        "run",
+        run_config.resolved_config.clone(),
+    ) {
         Ok(state) => state,
         Err(err) => {
             eprintln!("cortex run: {err}");
@@ -1553,6 +1567,10 @@ struct RunDocument<'a> {
     /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_results: Vec<ToolResultDoc>,
+    /// Workspace adapters registered by plugins through
+    /// `experimental_workspace.register(type, adapter)`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    workspace_adapters: Vec<WorkspaceAdapterDoc>,
     /// Rich persisted message parts for this assistant turn.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     parts: Vec<MessagePart>,
@@ -1615,6 +1633,7 @@ async fn emit_json(
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     bus: Arc<EventBus>,
     schema: Option<&serde_json::Value>,
+    workspace_adapters: &[WorkspaceAdapterDoc],
 ) -> Exit {
     // Collect each tool result as it streams so the completed document can carry the structured
     // tool output (text plus any media attachments) alongside the assistant answer.
@@ -1699,6 +1718,7 @@ async fn emit_json(
         &outcome,
         session_usage,
         tool_results,
+        workspace_adapters.to_vec(),
         assistant_parts.clone(),
         structured_output,
     ) {
@@ -1743,6 +1763,7 @@ fn build_run_document<'a>(
     outcome: &'a RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
+    workspace_adapters: Vec<WorkspaceAdapterDoc>,
     parts: Vec<MessagePart>,
     structured_output: Option<serde_json::Value>,
 ) -> RunDocument<'a> {
@@ -1761,6 +1782,7 @@ fn build_run_document<'a>(
         tools: tool_names,
         tool_definitions,
         tool_results,
+        workspace_adapters,
         parts,
         compactions: outcome
             .compactions
@@ -1787,6 +1809,7 @@ fn render_json_document(
     outcome: &RunOutcome,
     session_usage: Option<UsageTotals>,
     tool_results: Vec<ToolResultDoc>,
+    workspace_adapters: Vec<WorkspaceAdapterDoc>,
     parts: Vec<MessagePart>,
     structured_output: Option<serde_json::Value>,
 ) -> Result<String, serde_json::Error> {
@@ -1800,6 +1823,7 @@ fn render_json_document(
         outcome,
         session_usage,
         tool_results,
+        workspace_adapters,
         parts,
         structured_output,
     ))?;
@@ -2166,6 +2190,7 @@ struct RunConfig {
     lsp_config: lsp::LspConfigSet,
     plugins: plugins::PluginConfig,
     websearch: Option<tools::WebSearchConfig>,
+    resolved_config: serde_json::Value,
 }
 
 /// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
@@ -2206,6 +2231,8 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
         lsp_config: crate::lsp_config::from_effective(&effective)?,
         plugins,
         websearch,
+        resolved_config: serde_json::to_value(effective.table())
+            .unwrap_or_else(|_| serde_json::Value::Object(Default::default())),
     })
 }
 
@@ -3386,6 +3413,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .expect("render");
@@ -3414,6 +3442,7 @@ mod tests {
             &[],
             &sample_outcome(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             None,
@@ -3469,6 +3498,7 @@ mod tests {
             Some(session_usage),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .expect("render");
@@ -3515,6 +3545,7 @@ mod tests {
             &[],
             &outcome,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             None,
@@ -3576,6 +3607,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .expect("render");
@@ -3615,6 +3647,7 @@ mod tests {
             &[],
             &sample_outcome(),
             None,
+            Vec::new(),
             Vec::new(),
             parts,
             None,

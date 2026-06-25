@@ -5,5 +5,6 @@ pub use detection::{JsRuntime, RuntimeSelection, detect_runtime, detect_runtime_
 pub use invoke::{
     LoadedPlugin, PluginAuthRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput,
     PluginHookReport, PluginLoadReport, PluginModelRegistration, PluginProviderRegistration,
-    PluginRuntimeError, PluginToolExecution, PluginToolRegistration, RuntimeHost,
+    PluginRuntimeError, PluginToolExecution, PluginToolRegistration, PluginWorkspaceRegistration,
+    RuntimeHost,
 };

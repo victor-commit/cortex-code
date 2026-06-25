@@ -253,8 +253,26 @@ impl RuntimeHost {
         config: &PluginConfig,
         surface: &str,
     ) -> Result<Vec<PluginLoadReport>, PluginRuntimeError> {
+        self.load_config_for_surface_with_config(
+            config,
+            surface,
+            JsonValue::Object(Default::default()),
+        )
+    }
+
+    /// Load configured plugins for a named surface with a resolved effective config object.
+    ///
+    /// The supplied `resolved_config` is passed to each plugin `config` hook. Plugins load in
+    /// deterministic config order, and any config object returned/mutated by one hook is passed to
+    /// the next plugin so hooks observe cumulative layered changes.
+    pub fn load_config_for_surface_with_config(
+        &self,
+        config: &PluginConfig,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> Result<Vec<PluginLoadReport>, PluginRuntimeError> {
         Ok(self
-            .load_plugins_for_surface(config, surface)?
+            .load_plugins_for_surface_with_config(config, surface, resolved_config)?
             .into_iter()
             .map(|loaded| loaded.report)
             .collect())
@@ -276,20 +294,43 @@ impl RuntimeHost {
         config: &PluginConfig,
         surface: &str,
     ) -> Result<Vec<LoadedPlugin>, PluginRuntimeError> {
+        self.load_plugins_for_surface_with_config(
+            config,
+            surface,
+            JsonValue::Object(Default::default()),
+        )
+    }
+
+    /// Load every configured plugin in order for a named surface, passing `resolved_config` to the
+    /// plugin `config` hook and chaining hook-returned config mutations across plugins.
+    pub fn load_plugins_for_surface_with_config(
+        &self,
+        config: &PluginConfig,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> Result<Vec<LoadedPlugin>, PluginRuntimeError> {
         if config.is_empty() {
             return Ok(Vec::new());
         }
 
         let runtime = self.detect_runtime().ok_or(PluginRuntimeError::NoRuntime)?;
         let surface = non_empty_surface(surface);
-        config
-            .entries()
-            .iter()
-            .map(|plugin| {
-                let plugin = self.resolve_plugin(plugin, &runtime)?;
-                self.load_plugin(&plugin, &runtime, &surface)
-            })
-            .collect()
+        let mut chained_config = match resolved_config {
+            JsonValue::Object(_) => resolved_config,
+            _ => JsonValue::Object(Default::default()),
+        };
+        let mut loaded_plugins = Vec::with_capacity(config.entries().len());
+        for plugin in config.entries() {
+            let plugin = self.resolve_plugin(plugin, &runtime)?;
+            let loaded = self.load_plugin(&plugin, &runtime, &surface, chained_config.clone())?;
+            if let Some(next_config) = loaded.report.config.clone()
+                && next_config.is_object()
+            {
+                chained_config = next_config;
+            }
+            loaded_plugins.push(loaded);
+        }
+        Ok(loaded_plugins)
     }
 
     /// Invoke a loaded plugin's `event` hook with a real event payload.
@@ -789,12 +830,13 @@ impl RuntimeHost {
         plugin: &PluginSpec,
         runtime: &RuntimeSelection,
         surface: &str,
+        resolved_config: JsonValue,
     ) -> Result<LoadedPlugin, PluginRuntimeError> {
         let (result, output) = self.invoke_plugin(
             plugin,
             runtime,
             BridgeOperation::Load {
-                config: JsonValue::Object(Default::default()),
+                config: resolved_config,
                 surface: surface.to_owned(),
             },
         )?;
@@ -810,9 +852,11 @@ impl RuntimeHost {
                 hooks: result.hooks,
                 invoked_hooks: result.invoked_hooks,
                 config_rules: result.registrations.config_rules,
+                config: result.registrations.config,
                 tools: result.registrations.tools,
                 auth_methods: result.registrations.auth_methods,
                 providers: result.registrations.providers,
+                workspace_entries: result.registrations.workspace_entries,
                 stdout: redaction::redact(&String::from_utf8_lossy(&output.stdout)),
                 stderr: redaction::redact(&String::from_utf8_lossy(&output.stderr)),
             };
@@ -1051,9 +1095,20 @@ impl PluginEventHooks {
 
     /// Load configured plugins for `surface` through the real external runtime.
     pub fn load(config: &PluginConfig, surface: &str) -> Result<Self, PluginRuntimeError> {
+        Self::load_with_config(config, surface, JsonValue::Object(Default::default()))
+    }
+
+    /// Load configured plugins for `surface` through the real external runtime with a resolved
+    /// effective config object passed into plugin `config` hooks.
+    pub fn load_with_config(
+        config: &PluginConfig,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> Result<Self, PluginRuntimeError> {
         let host = RuntimeHost::new();
         let surface = non_empty_surface(surface);
-        let loaded = host.load_plugins_for_surface(config, &surface)?;
+        let loaded =
+            host.load_plugins_for_surface_with_config(config, &surface, resolved_config)?;
         Ok(Self {
             loaded,
             host,
@@ -1085,10 +1140,26 @@ impl PluginEventHooks {
         pure: bool,
         surface: &str,
     ) -> Result<Self, PluginRuntimeError> {
+        Self::load_or_disabled_with_config(
+            config,
+            pure,
+            surface,
+            JsonValue::Object(Default::default()),
+        )
+    }
+
+    /// Load configured plugins unless pure mode disabled all plugin behavior, passing a resolved
+    /// effective config object into plugin `config` hooks.
+    pub fn load_or_disabled_with_config(
+        config: &PluginConfig,
+        pure: bool,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> Result<Self, PluginRuntimeError> {
         if pure {
             Ok(Self::disabled(surface))
         } else {
-            Self::load(config, surface)
+            Self::load_with_config(config, surface, resolved_config)
         }
     }
 
@@ -1096,6 +1167,16 @@ impl PluginEventHooks {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.loaded.is_empty()
+    }
+
+    /// Workspace adapters contributed by loaded plugins through
+    /// `experimental_workspace.register(type, adapter)`.
+    #[must_use]
+    pub fn workspace_entries(&self) -> Vec<PluginWorkspaceRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.workspace_entries.iter().cloned())
+            .collect()
     }
 
     /// Invoke every loaded plugin's `event` hook with a serializable event payload.
@@ -1193,12 +1274,16 @@ pub struct PluginLoadReport {
     pub invoked_hooks: Vec<String>,
     /// Permission rules contributed by the `config` hook.
     pub config_rules: Vec<PluginConfigRule>,
+    /// The effective config object observed/returned by the plugin `config` hook chain.
+    pub config: Option<JsonValue>,
     /// Tools contributed by the `tool` hook.
     pub tools: Vec<PluginToolRegistration>,
     /// Authentication methods contributed by the `auth` hook.
     pub auth_methods: Vec<PluginAuthRegistration>,
     /// Model providers contributed by the `provider` hook.
     pub providers: Vec<PluginProviderRegistration>,
+    /// Workspace adapters contributed by `experimental_workspace.register`.
+    pub workspace_entries: Vec<PluginWorkspaceRegistration>,
     /// Redacted runtime stdout.
     pub stdout: String,
     /// Redacted runtime stderr.
@@ -1292,6 +1377,20 @@ pub struct PluginProviderRegistration {
     /// Models served by this provider.
     #[serde(default)]
     pub models: Vec<PluginModelRegistration>,
+}
+
+/// A plugin-contributed workspace adapter registered through `experimental_workspace.register`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginWorkspaceRegistration {
+    /// Stable workspace adapter type id.
+    #[serde(rename = "type")]
+    pub workspace_type: String,
+    /// Human-readable adapter name.
+    #[serde(default)]
+    pub name: String,
+    /// Optional description shown in workspace discovery surfaces.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A plugin-contributed model.
@@ -1547,11 +1646,15 @@ struct BridgeRegistrations {
     #[serde(default)]
     config_rules: Vec<PluginConfigRule>,
     #[serde(default)]
+    config: Option<JsonValue>,
+    #[serde(default)]
     tools: Vec<PluginToolRegistration>,
     #[serde(default)]
     auth_methods: Vec<PluginAuthRegistration>,
     #[serde(default)]
     providers: Vec<PluginProviderRegistration>,
+    #[serde(default)]
+    workspace_entries: Vec<PluginWorkspaceRegistration>,
 }
 
 struct InvocationTemp {
@@ -2246,39 +2349,132 @@ function commandFromTemplate(strings, values) {
 }
 
 function makeShell(directory) {
-  const run = (command, options = {}) => new Promise((resolve) => {
-    const timeout = Number(options.timeout ?? 120000);
-    const child = execFile(
-      "bash",
-      ["-lc", String(command)],
-      {
-        cwd: String(options.cwd ?? directory),
-        timeout,
-        maxBuffer: 10 * 1024 * 1024,
-        env: proc.env
-      },
-      (error, stdout, stderr) => {
-        const exitCode = typeof error?.code === "number" ? error.code : 0;
-        resolve({
-          stdout: String(stdout ?? ""),
-          stderr: String(stderr ?? ""),
-          exitCode,
-          code: exitCode,
-          pid: child.pid ?? null,
-          timedOut: Boolean(error?.killed)
-        });
-      }
-    );
-  });
-
-  const tagged = (strings, ...values) => {
-    if (Array.isArray(strings) && Object.prototype.hasOwnProperty.call(strings, "raw")) {
-      return run(commandFromTemplate(strings, values));
+  const normalizeEnv = (baseEnv, extraEnv) => {
+    if (!extraEnv || typeof extraEnv !== "object" || Array.isArray(extraEnv)) {
+      return baseEnv;
     }
-    return run(strings);
+    const merged = { ...baseEnv };
+    for (const [name, value] of Object.entries(extraEnv)) {
+      if (value === undefined || value === null) continue;
+      merged[String(name)] = String(value);
+    }
+    return merged;
   };
-  tagged.run = run;
-  return tagged;
+
+  const toShellOutput = (stdoutRaw, stderrRaw, exitCode, pid, timedOut) => {
+    const stdout = String(stdoutRaw ?? "");
+    const stderr = String(stderrRaw ?? "");
+    const bytes = Buffer.from(stdout);
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      code: exitCode,
+      ok: exitCode === 0,
+      pid: pid ?? null,
+      timedOut: Boolean(timedOut),
+      text() {
+        return stdout;
+      },
+      json() {
+        if (!stdout.trim()) return null;
+        return JSON.parse(stdout);
+      },
+      arrayBuffer() {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      },
+      bytes() {
+        return new Uint8Array(bytes);
+      },
+      blob() {
+        return new Blob([bytes]);
+      }
+    };
+  };
+
+  const decoratePromise = (promise) => {
+    const shellPromise = promise;
+    shellPromise.cwd = () => shellPromise;
+    shellPromise.env = () => shellPromise;
+    shellPromise.quiet = () => shellPromise;
+    shellPromise.nothrow = () => shellPromise;
+    shellPromise.throws = () => shellPromise;
+    shellPromise.lines = async function* () {
+      const text = await shellPromise.text();
+      for (const line of text.split(/\r?\n/u)) {
+        if (line.length > 0) {
+          yield line;
+        }
+      }
+    };
+    shellPromise.text = async () => (await shellPromise).text();
+    shellPromise.json = async () => (await shellPromise).json();
+    shellPromise.arrayBuffer = async () => (await shellPromise).arrayBuffer();
+    shellPromise.blob = async () => (await shellPromise).blob();
+    return shellPromise;
+  };
+
+  const createShell = (defaults) => {
+    const run = (command, options = {}) =>
+      decoratePromise(
+        new Promise((resolve) => {
+          const timeout = Number(options.timeout ?? defaults.timeout);
+          const cwd = String(options.cwd ?? defaults.cwd ?? directory);
+          const env = normalizeEnv(normalizeEnv(proc.env, defaults.env), options.env);
+          const child = execFile(
+            "bash",
+            ["-lc", String(command)],
+            {
+              cwd,
+              timeout,
+              maxBuffer: 10 * 1024 * 1024,
+              env
+            },
+            (error, stdout, stderr) => {
+              const exitCode = typeof error?.code === "number" ? error.code : 0;
+              resolve(
+                toShellOutput(
+                  stdout,
+                  stderr,
+                  exitCode,
+                  child.pid ?? null,
+                  Boolean(error?.killed)
+                )
+              );
+            }
+          );
+        })
+      );
+
+    const tagged = (strings, ...values) => {
+      if (Array.isArray(strings) && Object.prototype.hasOwnProperty.call(strings, "raw")) {
+        return run(commandFromTemplate(strings, values));
+      }
+      return run(strings);
+    };
+    tagged.run = run;
+    tagged.escape = shellEscape;
+    tagged.braces = (pattern) => [String(pattern)];
+    tagged.cwd = (cwd) =>
+      createShell({
+        ...defaults,
+        cwd: String(cwd ?? defaults.cwd ?? directory)
+      });
+    tagged.env = (extraEnv) =>
+      createShell({
+        ...defaults,
+        env: normalizeEnv(defaults.env ?? {}, extraEnv)
+      });
+    tagged.nothrow = () => tagged;
+    tagged.throws = () => tagged;
+    return tagged;
+  };
+
+  return createShell({
+    cwd: directory,
+    env: {},
+    timeout: 120000
+  });
 }
 
 function resolvePluginFunction(module) {
@@ -2342,6 +2538,7 @@ function createInput(raw, directory) {
   const registeredTools = [];
   const registeredAuth = [];
   const registeredProviders = [];
+  const registeredWorkspaces = [];
   const registerTool = (tool) => {
     registeredTools.push(tool);
     return tool;
@@ -2353,6 +2550,18 @@ function createInput(raw, directory) {
   const registerProvider = (provider) => {
     registeredProviders.push(provider);
     return provider;
+  };
+  const registerWorkspace = (type, adapter) => {
+    const workspaceType = String(type ?? "").trim();
+    if (!workspaceType || !adapter || typeof adapter !== "object") {
+      return adapter;
+    }
+    registeredWorkspaces.push({
+      type: workspaceType,
+      name: String(adapter.name ?? workspaceType),
+      description: String(adapter.description ?? "")
+    });
+    return adapter;
   };
   return {
     input: {
@@ -2366,17 +2575,19 @@ function createInput(raw, directory) {
       shell: shell.run,
       $: shell,
       experimental_workspace: {
-        register(tool) {
-          return registerTool(tool);
+        register(type, adapter) {
+          return registerWorkspace(type, adapter);
         },
         registerTool,
         registerAuth,
-        registerProvider
+        registerProvider,
+        registerWorkspace
       }
     },
     registeredTools,
     registeredAuth,
-    registeredProviders
+    registeredProviders,
+    registeredWorkspaces
   };
 }
 
@@ -2451,6 +2662,39 @@ function normalizeProvider(provider) {
     name: String(provider.name ?? id),
     models: entriesFrom(provider.models).map(normalizeModel).filter(Boolean)
   };
+}
+
+function normalizeWorkspace(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const type = String(entry.type ?? entry.id ?? "").trim();
+  if (!type) return null;
+  return {
+    type,
+    name: String(entry.name ?? type),
+    description: String(entry.description ?? "")
+  };
+}
+
+function cloneObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeConfigResult(returned, mutated) {
+  const base = cloneObject(mutated);
+  if (returned === undefined) {
+    return base;
+  }
+  if (Array.isArray(returned)) {
+    base.permission = returned;
+    return base;
+  }
+  if (returned && typeof returned === "object") {
+    return { ...base, ...returned };
+  }
+  return base;
 }
 
 function normalizeConfigRules(value) {
@@ -2606,7 +2850,14 @@ async function loadHooks(raw, directory) {
 
 async function runOperation(operation, hooks, context, directory) {
   const invokedHooks = [];
-  const registrations = { config_rules: [], tools: [], auth_methods: [], providers: [] };
+  const registrations = {
+    config_rules: [],
+    config: undefined,
+    tools: [],
+    auth_methods: [],
+    providers: [],
+    workspace_entries: []
+  };
   let output = undefined;
 
   if (operation.type === "load") {
@@ -2626,10 +2877,14 @@ async function runOperation(operation, hooks, context, directory) {
     const configHook = getHook(hooks, "config");
     if (typeof configHook === "function") {
       activeHook = "config";
-      registrations.config_rules = normalizeConfigRules(await configHook(operation.config ?? {}));
+      const inputConfig = cloneObject(operation.config);
+      const returned = await configHook(inputConfig);
+      const normalized = normalizeConfigResult(returned, inputConfig);
+      registrations.config = normalized;
+      registrations.config_rules = normalizeConfigRules(normalized);
       invokedHooks.push("config");
     }
-    const toolHook = getHook(hooks, "tool");
+    const toolHook = hooks?.tool;
     if (typeof toolHook === "function") {
       activeHook = "tool";
       const returned = await toolHook({
@@ -2637,6 +2892,9 @@ async function runOperation(operation, hooks, context, directory) {
         registerTool: context.input.experimental_workspace.registerTool
       });
       registrations.tools = [...context.registeredTools, ...entriesFrom(returned)].map(normalizeTool).filter(Boolean);
+      invokedHooks.push("tool");
+    } else if (toolHook && typeof toolHook === "object") {
+      registrations.tools = entriesFrom(toolHook).map(normalizeTool).filter(Boolean);
       invokedHooks.push("tool");
     }
     const authHook = getHook(hooks, "auth");
@@ -2653,6 +2911,7 @@ async function runOperation(operation, hooks, context, directory) {
       registrations.providers = [...context.registeredProviders, ...entriesFrom(returned)].map(normalizeProvider).filter(Boolean);
       invokedHooks.push("provider");
     }
+    registrations.workspace_entries = context.registeredWorkspaces.map(normalizeWorkspace).filter(Boolean);
   } else if (operation.type === "event") {
     const eventHook = getHook(hooks, "event");
     if (typeof eventHook === "function") {
@@ -2779,15 +3038,20 @@ async function runOperation(operation, hooks, context, directory) {
     }
     output = normalizeSystemResult(returned, system);
   } else if (operation.type === "tool_execute") {
-    const toolHook = getHook(hooks, "tool");
-    if (typeof toolHook !== "function") {
+    const toolHook = hooks?.tool;
+    if (!(typeof toolHook === "function" || (toolHook && typeof toolHook === "object"))) {
       throw new Error("plugin did not define a tool hook");
     }
-    activeHook = "tool";
-    const returned = await toolHook({
-      register: context.input.experimental_workspace.registerTool,
-      registerTool: context.input.experimental_workspace.registerTool
-    });
+    let returned = undefined;
+    if (typeof toolHook === "function") {
+      activeHook = "tool";
+      returned = await toolHook({
+        register: context.input.experimental_workspace.registerTool,
+        registerTool: context.input.experimental_workspace.registerTool
+      });
+    } else {
+      returned = toolHook;
+    }
     const tool = findTool(hooks, String(operation.name ?? ""), context.registeredTools, returned);
     const execute = tool.execute ?? tool.run ?? tool.call;
     if (typeof execute !== "function") {
@@ -2850,7 +3114,14 @@ async function handleRequest(request, hooks, hookEntries, context, directory) {
       pid: typeof proc.pid === "number" ? proc.pid : null,
       hooks: [],
       invoked_hooks: [],
-      registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
+      registrations: {
+        config_rules: [],
+        config: undefined,
+        tools: [],
+        auth_methods: [],
+        providers: [],
+        workspace_entries: []
+      },
       error: errorToJson(error)
     });
   }
@@ -2875,7 +3146,14 @@ try {
         pid: typeof proc.pid === "number" ? proc.pid : null,
         hooks: [],
         invoked_hooks: [],
-        registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
+        registrations: {
+          config_rules: [],
+          config: undefined,
+          tools: [],
+          auth_methods: [],
+          providers: [],
+          workspace_entries: []
+        },
         error: errorToJson(error)
       });
       continue;
@@ -2889,7 +3167,14 @@ try {
     pid: typeof proc.pid === "number" ? proc.pid : null,
     hooks: [],
     invoked_hooks: [],
-    registrations: { config_rules: [], tools: [], auth_methods: [], providers: [] },
+    registrations: {
+      config_rules: [],
+      config: undefined,
+      tools: [],
+      auth_methods: [],
+      providers: [],
+      workspace_entries: []
+    },
     error: errorToJson(error)
   });
   proc.exitCode = 1;
