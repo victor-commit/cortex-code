@@ -210,6 +210,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn task_ask_without_responder_fails_closed_and_prevents_spawning() {
+        // VAL-GAP-PERM-004 deterministic registry-level coverage for task ask behavior.
+        let runner = Arc::new(RecordingRunner::new());
+        let engine = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "task",
+            "explore",
+            Action::Ask,
+        )]));
+        let ctx = ToolContext::new(std::env::temp_dir())
+            .with_task_runner(runner.clone())
+            .with_permissions(Arc::new(engine));
+        let out = tool()
+            .execute(json!({"agent":"explore","prompt":"do work"}), &ctx)
+            .await;
+        assert!(out.is_error);
+        assert!(out.model_content().contains("permission denied"));
+        assert!(
+            runner.requests.lock().expect("lock").is_empty(),
+            "ask without responder must fail closed and not spawn a task"
+        );
+    }
+
     #[test]
     fn parameters_advertise_exactly_the_permitted_target_enum() {
         let params = tool().parameters();

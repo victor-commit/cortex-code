@@ -13,7 +13,11 @@ use crate::bash::BashTool;
 use crate::edit::EditTool;
 use crate::glob::GlobTool;
 use crate::grep::GrepTool;
+use crate::loop_safeguard::LoopSafeguardTool;
 use crate::lsp::LspTool;
+use crate::plan_enter::PlanEnterTool;
+use crate::plan_exit::PlanExitTool;
+use crate::question::QuestionTool;
 use crate::read::ReadTool;
 use crate::skill::SkillTool;
 use crate::task::TaskTool;
@@ -37,8 +41,8 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for non-GPT models (the default,
-    /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit` plus the utility tools
-    /// `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. This set has no `apply_patch`.
+    /// e.g. `google/gemini-2.5-flash`): the mutating `read`/`write`/`edit`, shared utility tools,
+    /// and advisory capability hooks. This set has no `apply_patch`.
     /// `websearch` is deliberately omitted until a surface supplies an explicit provider config.
     #[must_use]
     pub fn builtin() -> Self {
@@ -51,7 +55,8 @@ impl ToolRegistry {
     }
 
     /// A registry pre-populated with the built-in tool set for GPT-family models: `read` and
-    /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch`. GPT-family
+    /// `apply_patch` plus the utility tools `bash`/`glob`/`grep`/`lsp`/`todo`/`webfetch` and
+    /// advisory tools `question`/`plan-enter`/`plan-exit`/`loop-safeguard`. GPT-family
     /// models edit files through the `apply_patch` envelope, so `edit` and `write` are deliberately
     /// swapped out (architecture §3.4, model-aware tool materialization); the shell/code-search/LSP/
     /// todo utilities are model-agnostic and present for every family. `websearch` is deliberately
@@ -66,7 +71,8 @@ impl ToolRegistry {
     }
 
     /// Register the utility tools shared by every model family (`bash`, `glob`, `grep`, `lsp`,
-    /// `todo`, `webfetch`).
+    /// `todo`, `webfetch`) plus advisory capability hooks (`question`, `plan-enter`,
+    /// `plan-exit`, `loop-safeguard`).
     fn register_utility_tools(&mut self) {
         self.register(Box::new(BashTool));
         self.register(Box::new(GlobTool));
@@ -74,6 +80,10 @@ impl ToolRegistry {
         self.register(Box::new(LspTool));
         self.register(Box::new(TodoTool));
         self.register(Box::new(WebFetchTool));
+        self.register(Box::new(QuestionTool));
+        self.register(Box::new(PlanEnterTool));
+        self.register(Box::new(PlanExitTool));
+        self.register(Box::new(LoopSafeguardTool));
     }
 
     /// Add the real `websearch` tool with an explicit provider configuration.
@@ -186,7 +196,18 @@ mod tests {
     #[test]
     fn both_registries_advertise_the_utility_tools() {
         for registry in [ToolRegistry::builtin(), ToolRegistry::gpt()] {
-            for name in ["bash", "glob", "grep", "lsp", "todo", "webfetch"] {
+            for name in [
+                "bash",
+                "glob",
+                "grep",
+                "lsp",
+                "todo",
+                "webfetch",
+                "question",
+                "plan-enter",
+                "plan-exit",
+                "loop-safeguard",
+            ] {
                 assert!(
                     registry.get(name).is_some(),
                     "expected the `{name}` utility tool to be registered"

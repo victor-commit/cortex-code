@@ -276,6 +276,32 @@ fn cortex_run_json(home: &Path, base_url: &str, args: &[&str]) -> Output {
     run(command)
 }
 
+fn assert_success_json(out: Output) -> serde_json::Value {
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("valid run JSON")
+}
+
+fn tool_result_text(doc: &serde_json::Value, tool_name: &str) -> String {
+    doc["tool_results"]
+        .as_array()
+        .expect("tool results")
+        .iter()
+        .find(|result| result["name"] == tool_name)
+        .expect("target tool result")
+        .get("parts")
+        .and_then(serde_json::Value::as_array)
+        .expect("parts")
+        .iter()
+        .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn session_show_json(home: &Path, id: &str) -> serde_json::Value {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command
@@ -397,6 +423,91 @@ fn repeated_identical_tool_calls_trigger_loop_stop_before_extra_side_effects() {
         content.lines().count(),
         2,
         "only the first two calls should execute before loop stop"
+    );
+}
+
+#[test]
+fn advisory_question_and_plan_tools_are_permission_gated_deterministically() {
+    // VAL-GAP-PERM-004 deterministic fixture: scripted provider emits explicit advisory tool calls
+    // so coverage does not depend on live model tool-call luck.
+    let cases = [
+        (
+            "question",
+            serde_json::json!({"questions":[{"prompt":"Which option?"}]}),
+            "question:*",
+        ),
+        ("plan-enter", serde_json::json!({}), "plan-enter:*"),
+        ("plan-exit", serde_json::json!({}), "plan-exit:*"),
+    ];
+
+    for (tool_name, args, deny_rule) in cases {
+        let home = scratch_home(&format!("perm004-{tool_name}-deny"));
+        let fixture = Fixture::start(vec![
+            ScriptedResponse::success(&[
+                tool_call_frame("call_advisory", tool_name, args.clone()),
+                done_frame("tool_calls"),
+            ]),
+            ScriptedResponse::success(&[text_delta_frame("parent-done"), done_frame("stop")]),
+        ]);
+
+        let doc = assert_success_json(cortex_run_json(
+            &home,
+            &fixture.base_url,
+            &["--permission-deny", deny_rule, "exercise advisory deny"],
+        ));
+        fixture.finish();
+
+        let text = tool_result_text(&doc, tool_name).to_ascii_lowercase();
+        assert!(
+            text.contains("permission denied"),
+            "{tool_name} deny should be surfaced deterministically: {text}"
+        );
+    }
+}
+
+#[test]
+fn loop_safeguard_permission_deny_allows_repeated_rounds_to_continue() {
+    // VAL-GAP-PERM-004 deterministic fixture: repeated identical tool-call rounds are scripted so
+    // loop-safeguard permission behavior is deterministic and reproducible.
+    let home = scratch_home("perm004-loop-safeguard-deny");
+    let target = home.join("loop-safeguard.txt");
+    let command = format!("echo LOOP >> {}", target.display());
+    let args = serde_json::json!({ "command": command });
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::success(&[
+            tool_call_frame("call_1", "bash", args.clone()),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[
+            tool_call_frame("call_2", "bash", args.clone()),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[
+            tool_call_frame("call_3", "bash", args),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[text_delta_frame("completed"), done_frame("stop")]),
+    ]);
+
+    let doc = assert_success_json(cortex_run_json(
+        &home,
+        &fixture.base_url,
+        &[
+            "--permission-allow",
+            "bash:*",
+            "--permission-deny",
+            "loop-safeguard:*",
+            "run repeated command with safeguard denied",
+        ],
+    ));
+    fixture.finish();
+
+    assert_eq!(doc["content"], "completed");
+    let content = fs::read_to_string(&target).expect("side-effect file exists");
+    assert_eq!(
+        content.lines().count(),
+        3,
+        "denied safeguard must not stop repeated rounds from executing"
     );
 }
 

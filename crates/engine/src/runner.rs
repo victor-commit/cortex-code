@@ -24,7 +24,7 @@
 use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -53,6 +53,8 @@ const MAX_TRANSIENT_SETUP_RETRIES: usize = 2;
 
 /// Number of identical tool-call rounds allowed before stopping a detected doom-loop.
 const DOOM_LOOP_REPEAT_THRESHOLD: usize = 2;
+/// Internal advisory tool-call name used to gate the repeated-call safeguard.
+const LOOP_SAFEGUARD_TOOL_NAME: &str = "loop-safeguard";
 
 /// Base delay for runner-level transient setup retries.
 const BASE_TRANSIENT_RETRY_DELAY_MS: u64 = 250;
@@ -484,12 +486,37 @@ impl SessionRunner {
             match dispatcher {
                 Some(dispatcher) => {
                     if let Some(detail) = doom_loop_guard.observe(&round.tool_calls) {
-                        sink(RunnerEvent::Error {
-                            message: detail.clone(),
-                            kind: "doom-loop".to_owned(),
+                        let safeguard_call = ToolCall {
+                            id: format!("loop_safeguard_{steps}"),
+                            name: LOOP_SAFEGUARD_TOOL_NAME.to_owned(),
+                            arguments: json!({ "detail": detail }).to_string(),
+                        };
+                        sink(RunnerEvent::ToolCall {
+                            id: safeguard_call.id.clone(),
+                            name: safeguard_call.name.clone(),
+                            arguments: safeguard_call.arguments.clone(),
                         });
-                        error = Some(RunError::new(Diagnostic::doom_loop(detail)));
-                        break 'turn llm::FinishReason::Error;
+                        let (_, _, safeguard_result) = dispatch_tool_call(
+                            dispatcher,
+                            safeguard_call.clone(),
+                            0,
+                            self.tool_dispatch_timeout,
+                        )
+                        .await;
+                        sink(RunnerEvent::ToolResult {
+                            id: safeguard_call.id,
+                            name: safeguard_call.name,
+                            parts: safeguard_result.parts.clone(),
+                            is_error: safeguard_result.is_error,
+                        });
+                        if !loop_safeguard_was_denied(&safeguard_result) {
+                            sink(RunnerEvent::Error {
+                                message: detail.clone(),
+                                kind: "doom-loop".to_owned(),
+                            });
+                            error = Some(RunError::new(Diagnostic::doom_loop(detail)));
+                            break 'turn llm::FinishReason::Error;
+                        }
                     }
 
                     for call in &round.tool_calls {
@@ -907,6 +934,15 @@ fn missing_tool_result(call: &ToolCall) -> ToolDispatchResult {
         content,
         is_error: true,
     }
+}
+
+/// Whether the loop-safeguard advisory hook was blocked by permissions.
+fn loop_safeguard_was_denied(result: &ToolDispatchResult) -> bool {
+    result.is_error
+        && result
+            .content
+            .to_ascii_lowercase()
+            .contains("permission denied")
 }
 
 /// Stateful guard that stops repeated identical tool-call rounds (doom-loop protection).
