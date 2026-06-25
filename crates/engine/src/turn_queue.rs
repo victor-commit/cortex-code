@@ -25,16 +25,7 @@ impl TurnQueue {
     /// If the session already has an active turn, this waits until that turn completes and returns
     /// a lease marked as queued.
     pub async fn acquire(&self, session_id: impl Into<String>) -> Result<TurnLease, String> {
-        let session_id = session_id.into();
-        let mut queued = false;
-        loop {
-            if let Some(lease) = self.try_acquire(&session_id, queued)? {
-                return Ok(lease);
-            }
-            queued = true;
-            let waiter = self.waiter_for(&session_id)?;
-            waiter.notified().await;
-        }
+        self.acquire_inner(session_id.into(), || {}).await
     }
 
     /// Request cancellation for the active turn in `session_id`.
@@ -102,6 +93,27 @@ impl TurnQueue {
             waiter.notify_waiters();
         }
     }
+
+    async fn acquire_inner<F>(
+        &self,
+        session_id: String,
+        mut on_wait: F,
+    ) -> Result<TurnLease, String>
+    where
+        F: FnMut(),
+    {
+        let mut queued = false;
+        loop {
+            let waiter = self.waiter_for(&session_id)?;
+            let notified = waiter.notified();
+            if let Some(lease) = self.try_acquire(&session_id, queued)? {
+                return Ok(lease);
+            }
+            queued = true;
+            on_wait();
+            notified.await;
+        }
+    }
 }
 
 /// The active-turn lease for one session.
@@ -136,6 +148,7 @@ impl Drop for TurnLease {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
     use super::TurnQueue;
@@ -145,16 +158,23 @@ mod tests {
         let queue = TurnQueue::default();
         let first = queue.acquire("ses").await.expect("first lease");
         let queue_for_second = queue.clone();
-        let second = tokio::spawn(async move { queue_for_second.acquire("ses").await });
+        let mut second = tokio::spawn(async move { queue_for_second.acquire("ses").await });
 
-        let waiting = tokio::time::timeout(Duration::from_millis(40), second);
+        let waiting = tokio::time::timeout(Duration::from_millis(40), &mut second);
         assert!(
             waiting.await.is_err(),
             "second acquire should wait while first lease is active"
         );
 
         drop(first);
-        let second = queue.acquire("ses").await.expect("second lease");
+        let second = second
+            .await
+            .expect("join second acquire")
+            .expect("queued second lease");
+        assert!(second.queued(), "waiting acquire should report queued");
+        drop(second);
+
+        let second = queue.acquire("ses").await.expect("fresh second lease");
         assert!(
             !second.queued(),
             "a fresh acquire after release should not report queued"
@@ -173,6 +193,32 @@ mod tests {
 
         let second = second
             .await
+            .expect("join second acquire")
+            .expect("queued lease");
+        assert!(second.queued(), "waiting acquire should report queued");
+    }
+
+    #[tokio::test]
+    async fn acquire_does_not_miss_release_between_check_and_wait() {
+        let queue = TurnQueue::default();
+        let first = queue.acquire("ses").await.expect("first lease");
+        let first_lease = Arc::new(StdMutex::new(Some(first)));
+
+        let queue_for_second = queue.clone();
+        let first_for_hook = Arc::clone(&first_lease);
+        let second = tokio::spawn(async move {
+            queue_for_second
+                .acquire_inner("ses".to_owned(), || {
+                    if let Some(lease) = first_for_hook.lock().expect("lock first lease").take() {
+                        drop(lease);
+                    }
+                })
+                .await
+        });
+
+        let second = tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("second acquire should finish after release")
             .expect("join second acquire")
             .expect("queued lease");
         assert!(second.queued(), "waiting acquire should report queued");
