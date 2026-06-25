@@ -28,9 +28,9 @@ use axum::{
 };
 use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
-    Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunError, RunOutcome,
-    RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
-    build_assistant_message_parts, project_history,
+    Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
+    RunError, RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult,
+    ToolDispatcher, Turn, build_assistant_message_parts, project_history,
 };
 use events::{Event, EventBus, LifecyclePhase, Surface};
 use futures_util::{future::BoxFuture, stream};
@@ -1522,11 +1522,18 @@ async fn run_message_turn(
     }
 
     persist_usage(&db, &session_id, &outcome);
+    let mut lifecycle = PartLifecycleTracker::new(&user_message.id, &resolved.model_id);
+    for event in &runner_events {
+        let _ = lifecycle.observe(event);
+    }
+    let part_timestamps = lifecycle.part_timestamps();
     let assistant_parts = build_assistant_message_parts(
         &resolved.model_id,
         selected_agent.name(),
+        &user_message.id,
         &runner_events,
         &outcome,
+        &part_timestamps,
     );
     let assistant = db
         .messages()

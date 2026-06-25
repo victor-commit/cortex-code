@@ -19,9 +19,9 @@ use agent_client_protocol::schema::v1::{
 };
 use db::{Database, DbPathInputs};
 use engine::{
-    CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, RunOutcome, RunnerEvent,
-    SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher, Turn,
-    build_assistant_message_parts, project_history,
+    CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
+    RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher,
+    Turn, build_assistant_message_parts, project_history,
 };
 use errors::Exit;
 use events::{Event, EventBus};
@@ -481,8 +481,19 @@ impl AcpService {
         }
 
         persist_usage(&db, &prompt.session_id, &outcome);
-        let assistant_parts =
-            build_assistant_message_parts(&resolved.model_id, "general", &runner_events, &outcome);
+        let mut lifecycle = PartLifecycleTracker::new(&user_message.id, &resolved.model_id);
+        for event in &runner_events {
+            let _ = lifecycle.observe(event);
+        }
+        let part_timestamps = lifecycle.part_timestamps();
+        let assistant_parts = build_assistant_message_parts(
+            &resolved.model_id,
+            "general",
+            &user_message.id,
+            &runner_events,
+            &outcome,
+            &part_timestamps,
+        );
         let assistant = match db.messages().create_with_parts(
             &prompt.session_id,
             "assistant",

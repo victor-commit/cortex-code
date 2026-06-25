@@ -542,3 +542,34 @@ fn rich_message_parts_persist_across_reopen() {
         "persisted parts carry timestamps"
     );
 }
+
+#[test]
+fn rich_message_part_respects_supplied_created_at_when_present() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("rich-parts-created-at.db");
+    let db = Database::open(&db_path).expect("open db");
+    let session = db
+        .sessions()
+        .create(Some("rich parts timestamps"))
+        .expect("create session");
+    let expected = "2026-06-25 12:34:56";
+    let parts = vec![MessagePart {
+        id: "manual-created-at".to_owned(),
+        created_at: Some(expected.to_owned()),
+        body: MessagePartBody::Text {
+            text: "hello".to_owned(),
+        },
+    }];
+    let message = db
+        .messages()
+        .create_with_parts(&session.id, "assistant", "hello", &parts)
+        .expect("create message with explicit created_at");
+
+    let stored = message.parts.first().expect("stored part");
+    assert_eq!(stored.id, "manual-created-at");
+    assert_eq!(
+        stored.created_at.as_deref(),
+        Some(expected),
+        "explicit part created_at should be preserved"
+    );
+}

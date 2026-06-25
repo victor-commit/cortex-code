@@ -143,6 +143,7 @@ impl<'a> MessageRepo<'a> {
             } else {
                 payload.id.clone()
             };
+            let created_at = payload.created_at.clone();
             payload.id = part_id.clone();
             payload.created_at = None;
             let serialized = serde_json::to_string(&payload).map_err(|err| DbError::Operation {
@@ -151,8 +152,15 @@ impl<'a> MessageRepo<'a> {
             let redacted = redaction::redact(&serialized);
             self.conn.execute(
                 "INSERT INTO message_parts (id, message_id, session_id, ordinal, part_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-                params![part_id, message_id, session_id, ordinal as i64, redacted],
+                 VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, datetime('now')))",
+                params![
+                    part_id,
+                    message_id,
+                    session_id,
+                    ordinal as i64,
+                    redacted,
+                    created_at
+                ],
             )?;
         }
         Ok(())

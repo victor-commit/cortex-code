@@ -36,8 +36,9 @@ use std::time::{Duration, Instant};
 
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
-    CompactionPolicy, EnvironmentBlock, HistoryMessage, RunOutcome, RunnerEvent, SessionRunner,
-    SystemContext, ToolDispatcher, Turn, build_assistant_message_parts, project_history,
+    CompactionPolicy, EnvironmentBlock, HistoryMessage, PartLifecycleEvent, PartLifecycleTracker,
+    RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatcher, Turn,
+    build_assistant_message_parts, project_history,
 };
 use errors::{Diagnostic, Exit};
 use events::{Event, EventBus};
@@ -558,6 +559,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &model_id,
                     agent.name(),
                     &session_id,
+                    &user_message.id,
                     &db,
                     turn,
                     &shaped_dispatcher,
@@ -571,6 +573,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &model_id,
                     agent.name(),
                     &session_id,
+                    &user_message.id,
                     &tool_names,
                     &tool_definitions,
                     &db,
@@ -586,6 +589,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &model_id,
                     agent.name(),
                     &session_id,
+                    &user_message.id,
                     &db,
                     turn,
                     &shaped_dispatcher,
@@ -1077,6 +1081,7 @@ async fn stream_text(
     model_id: &str,
     agent: &str,
     session_id: &str,
+    turn_message_id: &str,
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -1086,9 +1091,11 @@ async fn stream_text(
     let mut handle = stdout.lock();
     let mut wrote_any = false;
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
+    let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
 
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
+        let _ = lifecycle.observe(&event);
         if let RunnerEvent::TextDelta { text } = &event {
             if !text.is_empty() {
                 let text = redaction::redact(text);
@@ -1133,7 +1140,15 @@ async fn stream_text(
         let _ = handle.flush();
     }
     drop(handle);
-    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
+    let part_timestamps = lifecycle.part_timestamps();
+    let assistant_parts = build_assistant_message_parts(
+        model_id,
+        agent,
+        turn_message_id,
+        &runner_events,
+        &outcome,
+        &part_timestamps,
+    );
     persist_compactions(db, session_id, &outcome);
     if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
         bus.publish(&Event::message_parts(
@@ -1154,6 +1169,7 @@ async fn stream_jsonl(
     model_id: &str,
     agent: &str,
     session_id: &str,
+    turn_message_id: &str,
     tool_names: &[String],
     tool_definitions: &[ToolDef],
     db: &Database,
@@ -1164,6 +1180,7 @@ async fn stream_jsonl(
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
+    let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
 
     if let Ok(line) = render_session_line(agent, session_id, tool_names, tool_definitions) {
         let _ = handle.write_all(line.as_bytes());
@@ -1173,6 +1190,13 @@ async fn stream_jsonl(
 
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
+        for part_event in lifecycle.observe(&event) {
+            if let Ok(line) = render_part_lifecycle_line(&part_event) {
+                let _ = handle.write_all(line.as_bytes());
+                let _ = handle.write_all(b"\n");
+                let _ = handle.flush();
+            }
+        }
         if let Ok(line) = render_event_line(&event) {
             let _ = handle.write_all(line.as_bytes());
             let _ = handle.write_all(b"\n");
@@ -1198,7 +1222,15 @@ async fn stream_jsonl(
         eprintln!("cortex run: {err}");
         return err.exit();
     }
-    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
+    let part_timestamps = lifecycle.part_timestamps();
+    let assistant_parts = build_assistant_message_parts(
+        model_id,
+        agent,
+        turn_message_id,
+        &runner_events,
+        &outcome,
+        &part_timestamps,
+    );
     persist_compactions(db, session_id, &outcome);
     if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
         bus.publish(&Event::message_parts(
@@ -1296,6 +1328,7 @@ async fn emit_json(
     model_id: &str,
     agent: &str,
     session_id: &str,
+    turn_message_id: &str,
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
@@ -1305,8 +1338,10 @@ async fn emit_json(
     // tool output (text plus any media attachments) alongside the assistant answer.
     let mut tool_results: Vec<ToolResultDoc> = Vec::new();
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
+    let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
+        let _ = lifecycle.observe(&event);
         if let RunnerEvent::ToolResult {
             id,
             name,
@@ -1350,7 +1385,15 @@ async fn emit_json(
     };
     let final_tool_definitions = dispatcher.definitions();
     let final_tool_names = tool_names_from(&final_tool_definitions);
-    let assistant_parts = build_assistant_message_parts(model_id, agent, &runner_events, &outcome);
+    let part_timestamps = lifecycle.part_timestamps();
+    let assistant_parts = build_assistant_message_parts(
+        model_id,
+        agent,
+        turn_message_id,
+        &runner_events,
+        &outcome,
+        &part_timestamps,
+    );
 
     let line = match render_json_document(
         model_id,
@@ -1489,6 +1532,11 @@ fn tool_names_from(tool_definitions: &[ToolDef]) -> Vec<String> {
 /// Render one normalized runner event as a single JSONL line (without the trailing newline). Every
 /// event serializes to an object carrying a stable `type` discriminator.
 fn render_event_line(event: &RunnerEvent) -> Result<String, serde_json::Error> {
+    serde_json::to_string(event).map(|line| redaction::redact(&line))
+}
+
+/// Render one derived part lifecycle event as a JSONL line.
+fn render_part_lifecycle_line(event: &PartLifecycleEvent) -> Result<String, serde_json::Error> {
     serde_json::to_string(event).map(|line| redaction::redact(&line))
 }
 
