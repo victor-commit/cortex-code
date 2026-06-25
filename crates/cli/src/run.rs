@@ -34,6 +34,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use checkpoints::TurnRecorder;
 use db::{Database, DbPathInputs, UsageTotals};
 use engine::{
     CompactionPolicy, EnvironmentBlock, HistoryMessage, PartLifecycleEvent, PartLifecycleTracker,
@@ -570,6 +571,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &db,
                     turn,
                     &shaped_dispatcher,
+                    checkpoint_recorder.as_ref(),
                     bus.clone(),
                 )
                 .await
@@ -586,6 +588,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &db,
                     turn,
                     &shaped_dispatcher,
+                    checkpoint_recorder.as_ref(),
                     bus.clone(),
                 )
                 .await
@@ -600,6 +603,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     &db,
                     turn,
                     &shaped_dispatcher,
+                    checkpoint_recorder.as_ref(),
                     bus.clone(),
                     structured_schema.as_ref(),
                 )
@@ -618,13 +622,6 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
         exit
     });
-
-    // Finalize the turn's checkpoint AFTER the turn completes: record each touched file's
-    // post-mutation state and append the snapshot to the durable journal. A read-only turn (no
-    // mutations recorded) appends nothing, so purely read/grep/glob turns create no checkpoint churn.
-    if let Some(recorder) = &checkpoint_recorder {
-        crate::checkpoint::finalize_turn(recorder);
-    }
 
     if exit == Exit::Success {
         maybe_generate_session_title(&db, &session_id, &prompt);
@@ -931,6 +928,54 @@ fn persist_assistant(
     }
 }
 
+/// Finalize the turn recorder and convert its recorded snapshot into a rich assistant part.
+///
+/// The payload intentionally carries only file paths and change classes, never raw file content.
+fn checkpoint_snapshot_part(
+    turn_message_id: &str,
+    recorder: Option<&TurnRecorder>,
+) -> Option<MessagePart> {
+    let turn = recorder.and_then(crate::checkpoint::finalize_turn)?;
+    snapshot_part_from_turn(turn_message_id, &turn)
+}
+
+fn snapshot_part_from_turn(
+    turn_message_id: &str,
+    turn: &checkpoints::RecordedTurn,
+) -> Option<MessagePart> {
+    let mut created = Vec::new();
+    let mut updated = Vec::new();
+    let mut deleted = Vec::new();
+
+    for file in &turn.files {
+        match (&file.pre, &file.post) {
+            (None, Some(_)) => created.push(file.rel_path.clone()),
+            (Some(_), None) => deleted.push(file.rel_path.clone()),
+            (Some(_), Some(_)) => updated.push(file.rel_path.clone()),
+            (None, None) => {}
+        }
+    }
+
+    if created.is_empty() && updated.is_empty() && deleted.is_empty() {
+        return None;
+    }
+
+    created.sort();
+    updated.sort();
+    deleted.sort();
+
+    Some(MessagePart {
+        id: format!("part_{}_snapshot_1", turn_message_id),
+        created_at: None,
+        body: MessagePartBody::Snapshot {
+            label: turn.label.clone(),
+            created,
+            updated,
+            deleted,
+        },
+    })
+}
+
 /// Persist compaction summary metadata as system messages so replay/export surfaces include the
 /// summary text and tail boundary that produced the continued answer.
 fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
@@ -1162,6 +1207,7 @@ async fn stream_text(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
@@ -1184,6 +1230,8 @@ async fn stream_text(
         runner_events.push(event);
     })
     .await;
+    let snapshot_part =
+        checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let outcome = match result {
         TurnResult::Completed(outcome) => outcome,
@@ -1218,7 +1266,7 @@ async fn stream_text(
     }
     drop(handle);
     let part_timestamps = lifecycle.part_timestamps();
-    let assistant_parts = build_assistant_message_parts(
+    let mut assistant_parts = build_assistant_message_parts(
         model_id,
         agent,
         turn_message_id,
@@ -1226,6 +1274,9 @@ async fn stream_text(
         &outcome,
         &part_timestamps,
     );
+    if let Some(snapshot_part) = snapshot_part {
+        assistant_parts.push(snapshot_part);
+    }
     persist_compactions(db, session_id, &outcome);
     if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
         bus.publish(&Event::message_parts(
@@ -1252,6 +1303,7 @@ async fn stream_jsonl(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     bus: Arc<EventBus>,
 ) -> Exit {
     let stdout = io::stdout();
@@ -1282,6 +1334,8 @@ async fn stream_jsonl(
         runner_events.push(event);
     })
     .await;
+    let snapshot_part =
+        checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let outcome = match result {
         TurnResult::Completed(outcome) => outcome,
@@ -1300,7 +1354,7 @@ async fn stream_jsonl(
         return err.exit();
     }
     let part_timestamps = lifecycle.part_timestamps();
-    let assistant_parts = build_assistant_message_parts(
+    let mut assistant_parts = build_assistant_message_parts(
         model_id,
         agent,
         turn_message_id,
@@ -1308,6 +1362,9 @@ async fn stream_jsonl(
         &outcome,
         &part_timestamps,
     );
+    if let Some(snapshot_part) = snapshot_part {
+        assistant_parts.push(snapshot_part);
+    }
     persist_compactions(db, session_id, &outcome);
     if let Some(message_id) = persist_assistant(db, session_id, &outcome, &assistant_parts) {
         bus.publish(&Event::message_parts(
@@ -1412,6 +1469,7 @@ async fn emit_json(
     db: &Database,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     bus: Arc<EventBus>,
     schema: Option<&serde_json::Value>,
 ) -> Exit {
@@ -1440,6 +1498,8 @@ async fn emit_json(
         runner_events.push(event);
     })
     .await;
+    let snapshot_part =
+        checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let outcome = match result {
         TurnResult::Completed(outcome) => outcome,
@@ -1467,7 +1527,7 @@ async fn emit_json(
     let final_tool_definitions = dispatcher.definitions();
     let final_tool_names = tool_names_from(&final_tool_definitions);
     let part_timestamps = lifecycle.part_timestamps();
-    let assistant_parts = build_assistant_message_parts(
+    let mut assistant_parts = build_assistant_message_parts(
         model_id,
         agent,
         turn_message_id,
@@ -1475,6 +1535,9 @@ async fn emit_json(
         &outcome,
         &part_timestamps,
     );
+    if let Some(snapshot_part) = snapshot_part {
+        assistant_parts.push(snapshot_part);
+    }
     let structured_output = match validate_structured_output(outcome.answer(), schema) {
         Ok(value) => value,
         Err(diag) => {
@@ -2986,6 +3049,75 @@ mod tests {
                 && tail_start_id == "tail_11"
                 && *continued_request
         ));
+    }
+
+    #[test]
+    fn snapshot_part_summarizes_created_updated_and_deleted_paths_without_blob_oids() {
+        let turn = checkpoints::RecordedTurn {
+            label: "ses_snapshot".to_owned(),
+            files: vec![
+                checkpoints::TurnFileRecord {
+                    rel_path: "new.txt".to_owned(),
+                    pre: None,
+                    post: Some(checkpoints::FileImage {
+                        oid: "oid_created".to_owned(),
+                        executable: false,
+                    }),
+                },
+                checkpoints::TurnFileRecord {
+                    rel_path: "edited.txt".to_owned(),
+                    pre: Some(checkpoints::FileImage {
+                        oid: "oid_before".to_owned(),
+                        executable: false,
+                    }),
+                    post: Some(checkpoints::FileImage {
+                        oid: "oid_after".to_owned(),
+                        executable: false,
+                    }),
+                },
+                checkpoints::TurnFileRecord {
+                    rel_path: "removed.txt".to_owned(),
+                    pre: Some(checkpoints::FileImage {
+                        oid: "oid_deleted".to_owned(),
+                        executable: false,
+                    }),
+                    post: None,
+                },
+            ],
+        };
+
+        let part = snapshot_part_from_turn("msg_turn_1", &turn).expect("snapshot part");
+        assert_eq!(part.id, "part_msg_turn_1_snapshot_1");
+        assert!(matches!(
+            &part.body,
+            MessagePartBody::Snapshot {
+                label,
+                created,
+                updated,
+                deleted
+            } if label == "ses_snapshot"
+                && created == &vec!["new.txt".to_owned()]
+                && updated == &vec!["edited.txt".to_owned()]
+                && deleted == &vec!["removed.txt".to_owned()]
+        ));
+
+        let json = serde_json::to_string(&part).expect("serialize snapshot part");
+        assert!(
+            !json.contains("oid_before")
+                && !json.contains("oid_after")
+                && !json.contains("oid_created")
+                && !json.contains("oid_deleted"),
+            "snapshot part must not expose git blob ids: {json}"
+        );
+    }
+
+    #[test]
+    fn snapshot_part_is_omitted_when_no_file_changes_were_recorded() {
+        let turn = checkpoints::RecordedTurn {
+            label: "ses_empty".to_owned(),
+            files: Vec::new(),
+        };
+        assert!(snapshot_part_from_turn("msg_turn_empty", &turn).is_none());
     }
 
     #[test]

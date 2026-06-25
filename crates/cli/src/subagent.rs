@@ -248,7 +248,7 @@ impl CliTaskRunner {
         dispatcher.background_jobs().shutdown().await;
         lsp_hooks.shutdown();
         if let Some(recorder) = &checkpoint_recorder {
-            crate::checkpoint::finalize_turn(recorder);
+            let _ = crate::checkpoint::finalize_turn(recorder);
         }
 
         persist_usage(&db, &child_session.id, &outcome);

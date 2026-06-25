@@ -130,6 +130,15 @@ pub enum MessagePartBody {
         tail_start_id: String,
         continued_request: bool,
     },
+    Snapshot {
+        label: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        created: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        updated: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        deleted: Vec<String>,
+    },
     Retry {
         attempt: usize,
         max_attempts: usize,

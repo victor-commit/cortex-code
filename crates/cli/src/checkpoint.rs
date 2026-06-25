@@ -12,7 +12,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use checkpoints::{CheckpointError, RestoreOutcome, ShadowStore, TurnRecorder};
+use checkpoints::{CheckpointError, RecordedTurn, RestoreOutcome, ShadowStore, TurnRecorder};
 use errors::Exit;
 use serde::Serialize;
 
@@ -47,9 +47,16 @@ pub fn open_store(cwd: &Path) -> Result<Option<ShadowStore>, CheckpointError> {
 
 /// Finalize a turn recorder at the end of a run, logging (but not failing the run on) any snapshot
 /// failure: the agent's work has already been delivered, so a degraded undo is reported, not fatal.
-pub fn finalize_turn(recorder: &TurnRecorder) {
-    if let Err(err) = recorder.finalize() {
-        eprintln!("cortex run: checkpoint snapshot unavailable: {err}");
+///
+/// Returns the finalized snapshot when one was recorded.
+#[must_use]
+pub fn finalize_turn(recorder: &TurnRecorder) -> Option<RecordedTurn> {
+    match recorder.finalize() {
+        Ok(turn) => turn,
+        Err(err) => {
+            eprintln!("cortex run: checkpoint snapshot unavailable: {err}");
+            None
+        }
     }
 }
 
