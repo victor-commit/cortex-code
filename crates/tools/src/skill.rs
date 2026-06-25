@@ -5,11 +5,17 @@
 //! skill's guidance only when the model explicitly engages it. The engine then treats a successful
 //! `skill` tool result as system-context guidance for the continuation round.
 
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use skills::Skill;
+use url::Url;
 
 use crate::tool::{Tool, ToolContext, ToolOutput};
+
+const FILE_LIMIT: usize = 24;
 
 /// Model-facing tool used to engage a discovered markdown skill.
 pub struct SkillTool {
@@ -97,11 +103,7 @@ impl Tool for SkillTool {
                 return ToolOutput::error(message);
             }
 
-            ToolOutput::text(format!(
-                "Skill `{}` engaged. Treat the following guidance as system-level instructions \
-                 for the rest of this turn:\n\n{}",
-                skill.name, skill.guidance
-            ))
+            ToolOutput::text(render_skill_content(skill, ctx))
         })
     }
 }
@@ -118,21 +120,139 @@ fn render_description(skills: &[Skill]) -> String {
         out.push_str(": ");
         out.push_str(skill.description.trim());
     }
+    out.push_str(
+        "\n\nWhen engaged, the tool returns skill guidance plus the skill base directory and a \
+         file inventory with per-file permission status.",
+    );
     out
+}
+
+fn render_skill_content(skill: &Skill, ctx: &ToolContext) -> String {
+    let guidance = skill.guidance.trim();
+    let (base_dir, files) = skill_inventory(skill, ctx);
+    let base_uri = Url::from_directory_path(&base_dir)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| base_dir.to_string_lossy().to_string());
+
+    let mut lines = vec![
+        format!("<skill_content name=\"{}\">", skill.name),
+        format!("# Skill: {}", skill.name),
+        String::new(),
+        guidance.to_owned(),
+        String::new(),
+        format!("Base directory for this skill: {base_uri}"),
+        "Relative paths in this skill are relative to this base directory.".to_owned(),
+        "Note: file list is sampled and includes permission status.".to_owned(),
+        String::new(),
+        "<skill_files>".to_owned(),
+    ];
+
+    if files.is_empty() {
+        lines.push("<file status=\"none\">(no supporting files discovered)</file>".to_owned());
+    } else {
+        for (path, status) in files {
+            lines.push(format!("<file status=\"{status}\">{path}</file>"));
+        }
+    }
+
+    lines.push("</skill_files>".to_owned());
+    lines.push("</skill_content>".to_owned());
+    lines.join("\n")
+}
+
+fn skill_inventory(skill: &Skill, ctx: &ToolContext) -> (PathBuf, Vec<(String, &'static str)>) {
+    let base_dir = skill
+        .source
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let source_file = skill
+        .source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
+    let files = discover_skill_files(&base_dir, source_file.as_deref());
+
+    let inventory = files
+        .into_iter()
+        .take(FILE_LIMIT)
+        .map(|file| {
+            let relative = file
+                .strip_prefix(&base_dir)
+                .ok()
+                .unwrap_or(file.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            let status = if ctx
+                .permission_check("read", &file.to_string_lossy())
+                .allowed
+            {
+                "allowed"
+            } else {
+                "permission_denied"
+            };
+            (relative, status)
+        })
+        .collect::<Vec<_>>();
+
+    (base_dir, inventory)
+}
+
+fn discover_skill_files(base_dir: &Path, source_file: Option<&str>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![base_dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        let mut paths = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.is_file() {
+                if source_file
+                    .and_then(|name| {
+                        path.file_name()
+                            .and_then(|file| file.to_str())
+                            .map(|file| file == name)
+                    })
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use super::*;
+    use permissions::{Action, PermissionEngine, Rule, Ruleset};
 
     fn skill(name: &str, description: &str, guidance: &str) -> Skill {
+        skill_at(name, description, guidance, PathBuf::from("SKILL.md"))
+    }
+
+    fn skill_at(name: &str, description: &str, guidance: &str, source: PathBuf) -> Skill {
         Skill {
             name: name.to_owned(),
             description: description.to_owned(),
             guidance: guidance.to_owned(),
-            source: PathBuf::from("SKILL.md"),
+            source,
         }
     }
 
@@ -184,5 +304,75 @@ mod tests {
         let output = tool.execute(json!({ "skill": "alpha" }), &ctx).await;
         assert!(!output.is_error);
         assert!(output.model_content().contains("SKILL-ALPHA"));
+    }
+
+    #[tokio::test]
+    async fn includes_base_directory_and_file_inventory_in_skill_output() {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-skill-tool-inventory-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("references")).expect("create references dir");
+        fs::write(root.join("references").join("guide.md"), "# guide").expect("write guide");
+        fs::write(root.join("helper.sh"), "echo helper").expect("write helper");
+
+        let tool = SkillTool::new(vec![skill_at(
+            "alpha",
+            "Use alpha",
+            "Append SKILL-ALPHA.",
+            root.join("SKILL.md"),
+        )]);
+        let ctx = ToolContext::new(root.clone());
+
+        let output = tool.execute(json!({ "name": "alpha" }), &ctx).await;
+        assert!(!output.is_error);
+        let content = output.model_content();
+        assert!(
+            content.contains("Base directory for this skill:"),
+            "{content}"
+        );
+        assert!(
+            content.contains("references/guide.md") || content.contains("helper.sh"),
+            "{content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inventory_marks_permission_denied_files() {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-skill-tool-permissions-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("references")).expect("create references dir");
+        fs::create_dir_all(root.join("secrets")).expect("create secrets dir");
+        fs::write(root.join("references").join("guide.md"), "# guide").expect("write guide");
+        fs::write(root.join("secrets").join("private.md"), "# secret").expect("write secret");
+
+        let tool = SkillTool::new(vec![skill_at(
+            "alpha",
+            "Use alpha",
+            "Append SKILL-ALPHA.",
+            root.join("SKILL.md"),
+        )]);
+        let permissions = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("skill", "*", Action::Allow),
+            Rule::new("read", "*", Action::Allow),
+            Rule::new("read", "secrets/**", Action::Deny),
+        ])));
+        let ctx = ToolContext::new(root.clone()).with_permissions(permissions);
+
+        let output = tool.execute(json!({ "name": "alpha" }), &ctx).await;
+        assert!(!output.is_error);
+        let content = output.model_content();
+        assert!(
+            content.contains("status=\"allowed\""),
+            "allowed file status should be explicit: {content}"
+        );
+        assert!(
+            content.contains("status=\"permission_denied\""),
+            "denied file status should be explicit: {content}"
+        );
     }
 }
