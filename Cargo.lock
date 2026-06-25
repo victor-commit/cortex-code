@@ -1766,6 +1766,7 @@ name = "memory"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "reqwest 0.12.28",
  "settings",
  "toml",
 ]

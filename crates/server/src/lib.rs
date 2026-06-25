@@ -1611,6 +1611,13 @@ async fn run_message_turn(
     for warning in project_memory.warnings() {
         eprintln!("cortex serve: {warning}");
     }
+    if project_memory.net_blocked() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "network is disabled by CORTEX_NO_NET=1; remote instruction URLs cannot be fetched"
+                .to_owned(),
+        ));
+    }
     let selected_agent = resolve_turn_agent(&config_inputs, effective_config.agent(), "serve")
         .map_err(ApiError::bad_request)?;
     let selected_model = select_turn_model(

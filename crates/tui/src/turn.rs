@@ -407,6 +407,12 @@ fn build_turn(
     for warning in project_memory.warnings() {
         eprintln!("cortex tui: {warning}");
     }
+    if project_memory.net_blocked() {
+        return Err(
+            "network is disabled by CORTEX_NO_NET=1; remote instruction URLs cannot be fetched"
+                .to_owned(),
+        );
+    }
     let discovered_skills = skills::discover(&inputs);
     for warning in &discovered_skills.warnings {
         eprintln!("cortex tui: {warning}");

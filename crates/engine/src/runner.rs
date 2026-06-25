@@ -310,6 +310,12 @@ impl SessionRunner {
             }
             steps += 1;
 
+            if let Some(dispatcher) = dispatcher
+                && let Some(addition) = dispatcher.dynamic_system_instructions()
+            {
+                append_system_instructions(&mut messages, &addition);
+            }
+
             // compactIfNeeded before send: when needed, summarize the compactable head with a
             // tool-free model call, keep a recent tail by turn, and auto-continue the original
             // request. If summarization is unavailable, fall back to bounded mechanical compaction.
@@ -905,6 +911,24 @@ fn append_skill_guidance_to_system(messages: &mut Vec<Message>, guidance: &str) 
         system.content.push_str(&block);
     } else {
         messages.insert(0, Message::system(block));
+    }
+}
+
+/// Inject dynamic system instructions into the active system context for the next continuation
+/// round (for example, memory instructions activated after tool reads).
+fn append_system_instructions(messages: &mut Vec<Message>, instructions: &str) {
+    let instructions = instructions.trim();
+    if instructions.is_empty() {
+        return;
+    }
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|message| message.role == Role::System)
+    {
+        system.content.push_str("\n\n");
+        system.content.push_str(instructions);
+    } else {
+        messages.insert(0, Message::system(instructions.to_owned()));
     }
 }
 

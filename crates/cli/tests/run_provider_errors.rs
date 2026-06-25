@@ -247,6 +247,40 @@ fn net_disabled_refuses_run_before_credential_with_clean_stdout() {
     assert_no_backtrace(&stderr);
 }
 
+#[test]
+fn net_disabled_refuses_remote_instruction_urls_before_provider_setup() {
+    let home = scratch_home();
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).expect("create project");
+    std::fs::write(
+        project.join("cortex.toml"),
+        r#"instructions = ["https://example.com/memory.md"]"#,
+    )
+    .expect("write config");
+
+    let mut command = cmd(&["run", "hi"]);
+    command.current_dir(&project);
+    command.env("HOME", &home);
+    command.env("OPENROUTER_API_KEY", fake_key());
+    command.env("CORTEX_NO_NET", "1");
+
+    let out = run(command);
+
+    assert_eq!(
+        out.status.code(),
+        Some(NET_DISABLED_CODE),
+        "remote instruction URL loading must fail closed under CORTEX_NO_NET"
+    );
+    assert!(out.stdout.is_empty(), "a refusal keeps stdout byte-empty");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("remote instruction URLs cannot be fetched")
+            && stderr.contains("CORTEX_NO_NET"),
+        "stderr should explain the blocked remote instruction URL fetch, got: {stderr}"
+    );
+    assert_no_backtrace(&stderr);
+}
+
 // Provider governance parity: `experimental.policies` can deny provider use, and that deny
 // surfaces before credential checks so a saved/missing key cannot bypass governance.
 #[test]

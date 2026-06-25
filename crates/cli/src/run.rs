@@ -123,6 +123,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     for warning in project_memory.warnings() {
         eprintln!("cortex run: {warning}");
     }
+    if project_memory.net_blocked() {
+        eprintln!(
+            "cortex run: network is disabled by CORTEX_NO_NET=1; remote instruction URLs cannot be fetched"
+        );
+        return Exit::NetDisabled;
+    }
+    let dynamic_memory_tracker =
+        memory::DynamicMemoryTracker::new(config_inputs.clone(), &project_memory);
     let project_memory_block = project_memory.render();
 
     let configured_agent = if args.agent.is_none() {
@@ -541,6 +549,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 return Exit::Failure;
             }
         };
+    persist_memory_provenance(&db, &session_id, project_memory.sources());
     bus.publish(&Event::turn_started(&session_id, &user_message.id));
 
     // The configured MCP servers for this run, taken before the model id is moved out of the config.
@@ -642,6 +651,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let dispatcher =
         RegistryDispatcher::for_model(cwd.clone(), &model_id, session_id.clone(), todo_store);
     let dispatcher = dispatcher.with_audit(audit_sink.clone());
+    let dispatcher = dispatcher.with_dynamic_memory(dynamic_memory_tracker);
     let dispatcher = match run_config.websearch.clone() {
         Some(config) => dispatcher.with_websearch(config),
         None => dispatcher,
@@ -1041,7 +1051,10 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
         Ok(messages) => {
             let history: Vec<HistoryMessage> = messages
                 .into_iter()
-                .map(|message| {
+                .filter_map(|message| {
+                    if memory_provenance_from_content(&message.content) {
+                        return None;
+                    }
                     let content = if let Some(summary) =
                         legacy_compaction_summary_from_content(&message.content)
                     {
@@ -1060,7 +1073,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
                     } else {
                         message.content.clone()
                     };
-                    HistoryMessage::new(message.role, content)
+                    Some(HistoryMessage::new(message.role, content))
                 })
                 .collect();
             Ok(project_history(&history))
@@ -1167,6 +1180,57 @@ fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
             break;
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryProvenancePayload {
+    r#type: &'static str,
+    sources: Vec<MemoryProvenanceSource>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryProvenanceSource {
+    kind: String,
+    path: String,
+}
+
+fn persist_memory_provenance(db: &Database, session_id: &str, sources: &[memory::MemorySource]) {
+    if sources.is_empty() {
+        return;
+    }
+    let payload = MemoryProvenancePayload {
+        r#type: "memory_provenance",
+        sources: sources
+            .iter()
+            .map(|source| MemoryProvenanceSource {
+                kind: source.kind.to_owned(),
+                path: source.path.display().to_string(),
+            })
+            .collect(),
+    };
+    let serialized = match serde_json::to_string(&payload) {
+        Ok(serialized) => serialized,
+        Err(err) => {
+            eprintln!("cortex run: failed to serialize memory provenance: {err}");
+            return;
+        }
+    };
+    if let Err(err) = db
+        .messages()
+        .create_with_parts(session_id, "system", &serialized, &[])
+    {
+        eprintln!("cortex run: failed to persist memory provenance: {err}");
+    }
+}
+
+fn memory_provenance_from_content(content: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    parsed
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind == "memory_provenance")
 }
 
 fn legacy_compaction_summary_from_content(content: &str) -> Option<String> {
@@ -3281,6 +3345,61 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].role, llm::Role::System);
         assert_eq!(history[0].content, "compacted summary");
+    }
+
+    #[test]
+    fn memory_provenance_messages_are_excluded_from_model_history() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let sources = vec![memory::MemorySource {
+            path: std::path::PathBuf::from("/tmp/AGENTS.md"),
+            kind: "AGENTS.md",
+            content: "ignored".to_owned(),
+        }];
+        persist_memory_provenance(&db, &session.id, &sources);
+        db.messages()
+            .create(&session.id, "user", "hello")
+            .expect("persist user message");
+
+        let history = load_history(&db, &session.id).expect("history loads");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, llm::Role::User);
+        assert_eq!(history[0].content, "hello");
+    }
+
+    #[test]
+    fn persist_memory_provenance_stores_source_metadata() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let sources = vec![
+            memory::MemorySource {
+                path: std::path::PathBuf::from("/tmp/CLAUDE.md"),
+                kind: "CLAUDE.md",
+                content: "x".to_owned(),
+            },
+            memory::MemorySource {
+                path: std::path::PathBuf::from("/tmp/AGENTS.md"),
+                kind: "AGENTS.md",
+                content: "y".to_owned(),
+            },
+        ];
+
+        persist_memory_provenance(&db, &session.id, &sources);
+
+        let messages = db
+            .messages()
+            .list_for_session(&session.id)
+            .expect("list session messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "system");
+        assert!(memory_provenance_from_content(&messages[0].content));
+        let payload: serde_json::Value =
+            serde_json::from_str(&messages[0].content).expect("parse provenance json");
+        assert_eq!(payload["type"], "memory_provenance");
+        let listed = payload["sources"].as_array().expect("sources array");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["kind"], "CLAUDE.md");
+        assert_eq!(listed[1]["kind"], "AGENTS.md");
     }
 
     #[test]

@@ -1697,6 +1697,10 @@ impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
             self.state.apply_tool_after_hooks(&call, result)
         })
     }
+
+    fn dynamic_system_instructions(&self) -> Option<String> {
+        self.inner.dynamic_system_instructions()
+    }
 }
 
 struct PluginPermissionOverride {
@@ -1890,6 +1894,7 @@ pub(crate) fn tool_defs_from_state(state: &PluginState) -> Vec<ToolDef> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::ready;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1948,6 +1953,40 @@ mod tests {
         fn replace(&self, _session_id: &str, _items: &[protocol::TodoItem]) -> Result<(), String> {
             Ok(())
         }
+    }
+
+    struct DynamicForwardingProbe;
+
+    impl ToolDispatcher for DynamicForwardingProbe {
+        fn definitions(&self) -> Vec<ToolDef> {
+            Vec::new()
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+        ) -> BoxFuture<'a, engine::ToolDispatchResult> {
+            Box::pin(ready(engine::ToolDispatchResult {
+                content: "ok".to_owned(),
+                parts: vec![protocol::ToolResultPart::text("ok")],
+                is_error: false,
+            }))
+        }
+
+        fn dynamic_system_instructions(&self) -> Option<String> {
+            Some("DYNAMIC-MEMORY-PROBE".to_owned())
+        }
+    }
+
+    #[test]
+    fn tool_definition_dispatcher_forwards_dynamic_system_instructions() {
+        let state = PluginState::disabled_for_surface("run");
+        let probe = DynamicForwardingProbe;
+        let wrapped = state.tool_definition_dispatcher(&probe, "ses_dynamic");
+        assert_eq!(
+            wrapped.dynamic_system_instructions().as_deref(),
+            Some("DYNAMIC-MEMORY-PROBE")
+        );
     }
 
     #[test]

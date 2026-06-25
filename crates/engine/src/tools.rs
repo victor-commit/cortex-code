@@ -47,4 +47,11 @@ pub trait ToolDispatcher: Send + Sync {
 
     /// Execute one assembled tool call, resolving to its structured result.
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult>;
+
+    /// Optional dynamic system-prompt instructions that should be appended before the next model
+    /// request (for example, memory instructions activated by prior tool reads).
+    #[must_use]
+    fn dynamic_system_instructions(&self) -> Option<String> {
+        None
+    }
 }

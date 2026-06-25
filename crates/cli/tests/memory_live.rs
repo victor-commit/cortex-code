@@ -6,9 +6,11 @@
 //! across built-in and custom agents.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const MODEL: &str = "google/gemini-2.5-flash";
@@ -113,6 +115,26 @@ fn json_doc(out: Output) -> serde_json::Value {
 
 fn content(doc: &serde_json::Value) -> &str {
     doc["content"].as_str().expect("assistant content")
+}
+
+fn spawn_text_server(body: &str) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().expect("server addr");
+    let body = body.to_owned();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/plain\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    });
+    (format!("http://{addr}/memory.md"), handle)
 }
 
 #[test]
@@ -452,4 +474,179 @@ Answer the user directly and briefly.
             content(&doc)
         );
     }
+}
+
+#[test]
+fn claude_and_context_files_are_loaded_as_memory() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = scratch_project("claude-context");
+    let claude_token = "TEST-MEMORY-CLAUDE-TOKEN-7305";
+    let context_token = "TEST-MEMORY-CONTEXT-TOKEN-7305";
+    write(
+        &proj.join("CLAUDE.md"),
+        &format!(
+            "Project CLAUDE instruction: every final answer MUST include token {claude_token}."
+        ),
+    );
+    write(
+        &proj.join("CONTEXT.md"),
+        &format!(
+            "Project CONTEXT instruction: every final answer MUST include token {context_token}."
+        ),
+    );
+
+    let doc = json_doc(run(cortex_in(
+        &home,
+        &proj,
+        &key,
+        &[
+            "run",
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "Follow all project memory instructions and respond in one short sentence.",
+        ],
+    )));
+    let response = content(&doc);
+    assert!(
+        response.contains(claude_token) && response.contains(context_token),
+        "both CLAUDE.md and CONTEXT.md should influence the answer: {response}"
+    );
+}
+
+#[test]
+fn project_claude_takes_precedence_over_global_claude() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = scratch_project("global-vs-project");
+    write(
+        &home.join(".claude/CLAUDE.md"),
+        "Global CLAUDE instruction: final answer MUST be exactly GLOBAL-CLAUDE-7305.",
+    );
+    write(
+        &proj.join("CLAUDE.md"),
+        "Project CLAUDE instruction: final answer MUST be exactly PROJECT-CLAUDE-7305.",
+    );
+
+    let doc = json_doc(run(cortex_in(
+        &home,
+        &proj,
+        &key,
+        &[
+            "run",
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "Follow project memory exactly and reply now.",
+        ],
+    )));
+    let response = content(&doc).trim();
+    assert_eq!(
+        response, "PROJECT-CLAUDE-7305",
+        "project CLAUDE should override global CLAUDE when they conflict"
+    );
+}
+
+#[test]
+fn remote_instruction_url_is_loaded_in_live_turns() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let token = "REMOTE-CLAUDE-7306";
+    const MAX_ATTEMPTS: usize = 3;
+    let mut failures = Vec::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        let (home, proj) = scratch_project(&format!("remote-url-attempt-{attempt}"));
+        let (url, server) = spawn_text_server(&format!(
+            "Remote memory instruction: every final answer MUST include token {token}."
+        ));
+        write(
+            &proj.join("cortex.toml"),
+            &format!("instructions = [\"{url}\"]"),
+        );
+
+        let doc = json_doc(run(cortex_in(
+            &home,
+            &proj,
+            &key,
+            &[
+                "run",
+                "--model",
+                MODEL,
+                "--format",
+                "json",
+                "Follow any project memory instructions exactly and reply briefly.",
+            ],
+        )));
+        server.join().expect("server thread");
+        let response = content(&doc);
+        if response.contains(token) {
+            return;
+        }
+        failures.push(format!(
+            "attempt {attempt}/{MAX_ATTEMPTS}: response={response:?}"
+        ));
+        thread::sleep(Duration::from_millis(150 * attempt as u64));
+    }
+    panic!(
+        "remote instruction URL content should influence the answer after {MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
+    );
+}
+
+#[test]
+fn nested_memory_is_injected_after_reading_nested_files() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let (home, proj) = scratch_project("dynamic-read");
+    let nested = proj.join("nested");
+    fs::create_dir_all(&nested).expect("create nested dir");
+    let root_token = "ROOT-DYN-7307";
+    let nested_token = "NESTED-DYN-7307";
+    write(
+        &proj.join("AGENTS.md"),
+        &format!("Root memory: every final answer MUST include token {root_token}."),
+    );
+    write(
+        &nested.join("AGENTS.md"),
+        &format!("Nested memory: every final answer MUST include token {nested_token}."),
+    );
+    write(&nested.join("target.txt"), "read me");
+
+    let doc = json_doc(run(cortex_in(
+        &home,
+        &proj,
+        &key,
+        &[
+            "run",
+            "--agent",
+            "build",
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "First call the Read tool on nested/target.txt. Only after that, follow all active project memory instructions and reply with one short sentence.",
+        ],
+    )));
+    let response = content(&doc);
+    assert!(
+        response.contains(root_token) && response.contains(nested_token),
+        "nested memory should activate after the read and influence the same turn: {response}"
+    );
+    assert!(
+        doc["tool_results"]
+            .as_array()
+            .is_some_and(|results| results.iter().any(|result| result["name"] == "read")),
+        "dynamic memory proof requires a real read tool call in the turn: {doc}"
+    );
 }

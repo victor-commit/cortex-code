@@ -784,6 +784,15 @@ impl ToolContext {
             .unwrap_or(false)
     }
 
+    /// The set of resolved absolute file paths read in this session context.
+    #[must_use]
+    pub fn read_paths(&self) -> Vec<PathBuf> {
+        self.reads
+            .lock()
+            .map(|reads| reads.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Whether the permission engine (when attached) allows `tool` to act on `target`.
     ///
     /// With no engine attached every action is allowed, so a tool can run unconditionally until the

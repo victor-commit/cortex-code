@@ -8,12 +8,13 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
+use memory::DynamicMemoryTracker;
 use permissions::PermissionEngine;
 use tools::{
     BackgroundJobs, LspService, MutationHooks, TaskRunner, TaskTarget, TodoStore, Tool,
@@ -29,6 +30,7 @@ pub struct RegistryDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
     mcp: Option<Arc<McpManager>>,
+    dynamic_memory: Option<Arc<Mutex<DynamicMemoryTracker>>>,
 }
 
 impl RegistryDispatcher {
@@ -56,6 +58,7 @@ impl RegistryDispatcher {
                 .with_session(session_id)
                 .with_todo_store(todos),
             mcp: None,
+            dynamic_memory: None,
         }
     }
 
@@ -151,6 +154,14 @@ impl RegistryDispatcher {
     #[must_use]
     pub fn with_websearch(mut self, config: WebSearchConfig) -> Self {
         self.registry.register_websearch(config);
+        self
+    }
+
+    /// Attach a dynamic memory tracker so new instructions discovered from file reads can be
+    /// injected into subsequent continuation requests in the same turn.
+    #[must_use]
+    pub fn with_dynamic_memory(mut self, tracker: DynamicMemoryTracker) -> Self {
+        self.dynamic_memory = Some(Arc::new(Mutex::new(tracker)));
         self
     }
 
@@ -293,6 +304,21 @@ impl ToolDispatcher for RegistryDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+
+    fn dynamic_system_instructions(&self) -> Option<String> {
+        let tracker = self.dynamic_memory.as_ref()?;
+        let mut tracker = tracker.lock().ok()?;
+        let update = tracker.update_for_reads(&self.context.read_paths());
+        for warning in update.warnings {
+            eprintln!("cortex run: {warning}");
+        }
+        if update.net_blocked {
+            eprintln!(
+                "cortex run: network is disabled by CORTEX_NO_NET=1; remote instruction URLs cannot be fetched"
+            );
+        }
+        update.rendered
     }
 }
 
