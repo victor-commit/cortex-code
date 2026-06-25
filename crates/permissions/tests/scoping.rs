@@ -58,6 +58,7 @@ fn path_scope_governs_all_file_tools() {
         "glob",
         "grep",
         "format",
+        "external_directory",
     ] {
         assert_eq!(
             engine.evaluate(&request_for(tool, "secrets/key.txt")),

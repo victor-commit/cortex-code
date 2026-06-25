@@ -175,11 +175,13 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     // Permission gating for every affected path, still before any write, so a denied path fails the
     // whole operation with no partial application.
-    for (_, display) in &plan {
-        if !ctx.permits("apply_patch", display) {
-            return ToolOutput::error(format!(
-                "apply_patch: permission denied for {display} (no changes made)"
-            ));
+    for (action, display) in &plan {
+        for path in action_paths(action) {
+            if !ctx.permits("apply_patch", &path.to_string_lossy()) {
+                return ToolOutput::error(format!(
+                    "apply_patch: permission denied for {display} (no changes made)"
+                ));
+            }
         }
     }
 

@@ -115,18 +115,24 @@ pub struct BuiltinAgentPermissionRules {
 
 /// The built-in permission layer for a selected agent persona.
 ///
-/// `plan` and `explore` both need a permission engine attached even with no user config so
-/// mutation attempts are refused. Because headless asks fail closed, those modes also need low
-/// precedence allows for the read/search tools they are supposed to use. The allows are deliberately
-/// lower precedence than config/CLI rules, while the mutation denies are high precedence.
+/// Every mode gets the cross-surface baseline defaults (allow by default, ask for
+/// `external_directory`, and ask for dotenv reads except `.env.example`). `plan` and `explore`
+/// then add read/search allows plus high-precedence mutating hard denies.
 #[must_use]
 pub fn builtin_agent_permission_rules(agent: Agent) -> BuiltinAgentPermissionRules {
     match agent {
         Agent::Plan | Agent::Explore => BuiltinAgentPermissionRules {
-            base_rules: read_only_allow_rules(),
+            base_rules: {
+                let mut rules = read_only_allow_rules();
+                rules.extend(permissions::default_external_and_env_rules());
+                rules
+            },
             restriction_rules: mutation_deny_rules(),
         },
-        Agent::Build | Agent::General => BuiltinAgentPermissionRules::default(),
+        Agent::Build | Agent::General => BuiltinAgentPermissionRules {
+            base_rules: permissions::permissive_default_rules(),
+            restriction_rules: Vec::new(),
+        },
     }
 }
 
@@ -384,7 +390,7 @@ fn parse_spec(spec: &str, action: Action) -> Result<Rule, String> {
     if tool != ANY_TOOL && scope_of(tool).is_none() && !is_dynamic_tool_id(tool) {
         return Err(format!(
             "invalid permission rule `{spec}`: invalid tool id `{tool}` \
-             (expected read, write, edit, apply_patch, glob, grep, format, bash, task, \
+             (expected read, write, edit, apply_patch, glob, grep, format, external_directory, bash, task, \
               webfetch, websearch, a plugin/MCP tool id, or *)"
         ));
     }
@@ -512,12 +518,28 @@ mod tests {
     }
 
     #[test]
-    fn build_and_general_contribute_no_builtin_permission_rules() {
+    fn build_and_general_include_external_and_env_baseline_rules() {
         for agent in [Agent::Build, Agent::General] {
             let rules = builtin_agent_permission_rules(agent);
             assert!(
-                rules.base_rules.is_empty() && rules.restriction_rules.is_empty(),
-                "{agent:?} should not narrow the default ungated headless behavior"
+                !rules.base_rules.is_empty() && rules.restriction_rules.is_empty(),
+                "{agent:?} should include baseline rules with no mode hard-denies"
+            );
+            let ruleset = Ruleset::new(rules.base_rules);
+            assert_eq!(
+                ruleset.classify("read", ".env"),
+                Action::Ask,
+                "{agent:?} asks before reading .env by default"
+            );
+            assert_eq!(
+                ruleset.classify("read", ".env.example"),
+                Action::Allow,
+                "{agent:?} allows .env.example by default"
+            );
+            assert_eq!(
+                ruleset.classify("external_directory", "/outside/path/*"),
+                Action::Ask,
+                "{agent:?} asks for outside-workspace paths by default"
             );
         }
     }
@@ -1042,6 +1064,10 @@ mod tests {
         assert_eq!(
             parse_spec("task:explore", Action::Allow).expect("rule"),
             Rule::new("task", "explore", Action::Allow)
+        );
+        assert_eq!(
+            parse_spec("external_directory:/tmp/*", Action::Deny).expect("rule"),
+            Rule::new("external_directory", "/tmp/*", Action::Deny)
         );
     }
 

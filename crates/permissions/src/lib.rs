@@ -42,6 +42,7 @@
 mod action;
 mod agent;
 mod config;
+mod defaults;
 mod engine;
 mod glob;
 mod rule;
@@ -53,6 +54,7 @@ pub mod store;
 pub use action::Action;
 pub use agent::{AgentRulesets, narrow_action};
 pub use config::{RuleError, load_agent_rulesets, load_layered, rules_from_table};
+pub use defaults::{default_external_and_env_rules, permissive_default_rules};
 pub use engine::{
     Decision, DecisionOverride, DecisionScope, Outcome, PermissionEngine, PermissionRequest,
     Responder, ScopedDecision,

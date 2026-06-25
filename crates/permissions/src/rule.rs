@@ -2,6 +2,7 @@
 
 use crate::action::Action;
 use crate::glob::glob_match;
+use crate::scope::ToolScope;
 
 /// The tool selector that matches any gated tool.
 pub const ANY_TOOL: &str = "*";
@@ -42,7 +43,15 @@ impl Rule {
     /// Whether this rule matches a gated action against `tool` with subject `subject`.
     #[must_use]
     pub fn matches(&self, tool: &str, subject: &str) -> bool {
-        self.matches_tool(tool) && glob_match(&self.pattern, subject)
+        if !self.matches_tool(tool) {
+            return false;
+        }
+        if matches!(crate::scope::scope_of(tool), Some(ToolScope::Path)) {
+            let pattern = crate::scope::normalize_path(&self.pattern);
+            let subject = crate::scope::normalize_path(subject);
+            return glob_match(&pattern, &subject);
+        }
+        glob_match(&self.pattern, subject)
     }
 }
 
@@ -69,5 +78,18 @@ mod tests {
         let rule = Rule::new("bash", "git push*", Action::Deny);
         assert!(rule.matches("bash", "git push origin"));
         assert!(!rule.matches("bash", "git status"));
+    }
+
+    #[test]
+    fn path_rules_expand_home_aliases_before_matching() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let rule = Rule::new("read", "$HOME/private/**", Action::Deny);
+        assert!(rule.matches("read", &format!("{home}/private/secret.txt")));
+        assert!(rule.matches("read", "~/private/secret.txt"));
     }
 }

@@ -1915,11 +1915,16 @@ fn permission_engine_for_turn(
 
 fn readonly_agent_base_rules(agent: Agent) -> Vec<permissions::Rule> {
     match agent {
-        Agent::Plan | Agent::Explore => ["read", "glob", "grep", "lsp", "webfetch", "websearch"]
-            .into_iter()
-            .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Allow))
-            .collect(),
-        Agent::Build | Agent::General => Vec::new(),
+        Agent::Plan | Agent::Explore => {
+            let mut rules: Vec<permissions::Rule> =
+                ["read", "glob", "grep", "lsp", "webfetch", "websearch"]
+                    .into_iter()
+                    .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Allow))
+                    .collect();
+            rules.extend(permissions::default_external_and_env_rules());
+            rules
+        }
+        Agent::Build | Agent::General => permissions::permissive_default_rules(),
     }
 }
 

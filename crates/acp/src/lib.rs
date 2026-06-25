@@ -1096,15 +1096,16 @@ fn permission_engine_for_turn(
 ) -> Result<Option<Arc<PermissionEngine>>, String> {
     let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
         .map_err(|err| format!("cannot load permission configuration context: {err}"))?;
-    let mut ruleset = permissions::load_layered(&inputs)
+    let mut ruleset = permissions::Ruleset::new(permissions::permissive_default_rules());
+    let loaded = permissions::load_layered(&inputs)
         .map_err(|err| format!("invalid permission configuration: {err}"))?;
+    for rule in loaded.rules() {
+        ruleset.push(rule.clone());
+    }
     let trust =
         policy::resolve_trust(&inputs).map_err(|err| format!("cannot load trust policy: {err}"))?;
     for rule in policy::trust_ruleset(trust).rules() {
         ruleset.push(rule.clone());
-    }
-    if ruleset.is_empty() {
-        return Ok(None);
     }
     Ok(Some(Arc::new(
         PermissionEngine::new(ruleset)

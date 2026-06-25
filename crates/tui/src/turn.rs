@@ -602,18 +602,19 @@ fn persist_saved_decisions(
     }
 }
 
-/// The TUI's default permission policy: allow everything, then ask before each effectful tool. With
-/// last-matching-rule-wins the trailing `ask` rules govern the mutating/effectful tools while the
-/// read-only tools stay allowed, so a normal read/grep/glob turn is never interrupted by a prompt.
+/// The TUI's default permission policy starts from the cross-surface baseline (allow by default,
+/// ask for external-directory access, and ask for dotenv reads except `.env.example`), then asks
+/// before each effectful mutating tool.
 fn default_ruleset() -> permissions::Ruleset {
     use permissions::{Action, Rule};
-    permissions::Ruleset::new(vec![
-        Rule::new("*", "*", Action::Allow),
+    let mut rules = permissions::permissive_default_rules();
+    rules.extend([
         Rule::new("write", "*", Action::Ask),
         Rule::new("edit", "*", Action::Ask),
         Rule::new("apply_patch", "*", Action::Ask),
         Rule::new("bash", "*", Action::Ask),
-    ])
+    ]);
+    permissions::Ruleset::new(rules)
 }
 
 /// Validate that a resolved model id is a fully-qualified `provider/model` OpenRouter id, rejecting

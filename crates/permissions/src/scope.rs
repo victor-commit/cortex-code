@@ -37,8 +37,8 @@ pub enum ToolScope {
     Target,
 }
 
-/// The file tools whose permission subject is their target path.
-const PATH_TOOLS: [&str; 7] = [
+/// The path-scoped actions whose permission subject is a normalized path.
+const PATH_TOOLS: [&str; 8] = [
     "read",
     "write",
     "edit",
@@ -46,6 +46,7 @@ const PATH_TOOLS: [&str; 7] = [
     "glob",
     "grep",
     "format",
+    "external_directory",
 ];
 
 /// The tool whose permission subject is the shell command it runs.
@@ -89,7 +90,7 @@ pub fn is_command_tool(tool: &str) -> bool {
 /// identically (VAL-PERM-006).
 #[must_use]
 pub fn normalize_path(path: &str) -> String {
-    let trimmed = path.trim();
+    let trimmed = expand_home_tokens(path.trim());
     if trimmed.is_empty() {
         return String::new();
     }
@@ -106,6 +107,31 @@ pub fn normalize_path(path: &str) -> String {
 
     let body = segments.join("/");
     if absolute { format!("/{body}") } else { body }
+}
+
+fn expand_home_tokens(path: &str) -> String {
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_owned();
+    };
+    let home = std::path::PathBuf::from(home)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if path == "~" {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return format!("{home}/{rest}");
+    }
+    if path == "$HOME" || path == "${HOME}" {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("$HOME/") {
+        return format!("{home}/{rest}");
+    }
+    if let Some(rest) = path.strip_prefix("${HOME}/") {
+        return format!("{home}/{rest}");
+    }
+    path.to_owned()
 }
 
 /// The permission subject for a file-tool action against `path` (its normalized path).
@@ -247,6 +273,7 @@ mod tests {
             "glob",
             "grep",
             "format",
+            "external_directory",
         ] {
             assert_eq!(
                 scope_of(tool),
@@ -284,6 +311,28 @@ mod tests {
     fn normalize_path_keeps_dotdot_literal() {
         // `..` is never resolved, so a glob cannot be widened by path arithmetic.
         assert_eq!(normalize_path("src/../secrets/x"), "src/../secrets/x");
+    }
+
+    #[test]
+    fn normalize_path_expands_home_aliases_when_home_is_available() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home)
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(
+            normalize_path("~/secrets/.env"),
+            format!("{home}/secrets/.env")
+        );
+        assert_eq!(
+            normalize_path("$HOME/secrets/.env"),
+            format!("{home}/secrets/.env")
+        );
+        assert_eq!(
+            normalize_path("${HOME}/secrets/.env"),
+            format!("{home}/secrets/.env")
+        );
     }
 
     #[test]

@@ -15,12 +15,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use engine::{RunnerEvent, SessionRunner, ToolDispatchResult, ToolDispatcher, Turn};
 use futures_util::future::BoxFuture;
 use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall};
+use permissions::{Action, PermissionEngine, Rule, Ruleset, permissive_default_rules};
 use tools::{ToolContext, ToolRegistry};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -33,6 +34,18 @@ fn temp_dir(tag: &str) -> PathBuf {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+fn workspace_dir(tag: &str) -> PathBuf {
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("target")
+        .join("tool-gap-permissions");
+    let dir = root.join(format!("cortex-gap-{tag}-{}-{unique}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create workspace dir");
     dir
 }
 
@@ -356,6 +369,243 @@ async fn mutating_tool_on_a_read_only_file_errors_and_leaves_bytes_intact() {
     // Restore perms to read back the bytes; the file is byte-for-byte identical (no truncation).
     set_readonly(&path, false);
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn external_directory_gate_blocks_outside_paths_but_keeps_inside_access() {
+    // VAL-GAP-PERM-001: outside workspace asks/denies through external_directory while
+    // inside workspace reads follow normal rules.
+    let workspace = workspace_dir("external-gate");
+    let inside = workspace.join("inside.txt");
+    fs::write(&inside, "INSIDE\n").unwrap();
+
+    let outside_root = workspace
+        .parent()
+        .expect("workspace has parent")
+        .join(format!(
+            "outside-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+    fs::create_dir_all(&outside_root).unwrap();
+    let outside = outside_root.join("outside.txt");
+    fs::write(&outside, "OUTSIDE-KEEP\n").unwrap();
+
+    let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+        Rule::new("*", "*", Action::Allow),
+        Rule::new("external_directory", "*", Action::Ask),
+    ])));
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(workspace.clone()).with_permissions(engine),
+    };
+
+    let events = run_session(
+        &dispatcher,
+        "google/gemini-2.5-flash",
+        vec![
+            tool_call_round("c1", "read", r#"{"path":"inside.txt"}"#),
+            tool_call_round(
+                "c2",
+                "read",
+                &serde_json::json!({ "path": outside.to_string_lossy() }).to_string(),
+            ),
+            tool_call_round(
+                "c3",
+                "write",
+                &serde_json::json!({
+                    "path": outside.to_string_lossy(),
+                    "content": "OUTSIDE-CHANGED\n"
+                })
+                .to_string(),
+            ),
+            final_round("done"),
+        ],
+    )
+    .await;
+
+    let results = tool_results(&events);
+    assert!(
+        !results[0].2,
+        "inside read should succeed: {:?}",
+        results[0]
+    );
+    assert!(
+        results[0].1.contains("1: INSIDE"),
+        "inside content should be returned: {:?}",
+        results[0]
+    );
+    assert!(
+        results[1].2,
+        "outside read should be denied: {:?}",
+        results[1]
+    );
+    assert!(
+        results[1].1.to_lowercase().contains("permission denied"),
+        "outside deny message should be explicit: {:?}",
+        results[1]
+    );
+    assert!(
+        results[2].2,
+        "outside write should be denied: {:?}",
+        results[2]
+    );
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "OUTSIDE-KEEP\n",
+        "denied outside write must leave bytes unchanged"
+    );
+}
+
+#[tokio::test]
+async fn read_defaults_ask_for_dotenv_but_allow_dotenv_example() {
+    // VAL-GAP-PERM-002: `.env` asks/denies by default while `.env.example` stays readable.
+    let workspace = workspace_dir("dotenv-defaults");
+    fs::write(workspace.join(".env"), "API_KEY=super-secret\n").unwrap();
+    fs::write(workspace.join(".env.example"), "API_KEY=example\n").unwrap();
+
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(workspace.clone()).with_permissions(Arc::new(
+            PermissionEngine::new(Ruleset::new(permissive_default_rules())),
+        )),
+    };
+
+    let events = run_session(
+        &dispatcher,
+        "google/gemini-2.5-flash",
+        vec![
+            tool_call_round("c1", "read", r#"{"path":".env"}"#),
+            tool_call_round("c2", "read", r#"{"path":".env.example"}"#),
+            final_round("done"),
+        ],
+    )
+    .await;
+    let results = tool_results(&events);
+    assert!(results[0].2, ".env read should be denied: {:?}", results[0]);
+    assert!(
+        results[0].1.to_lowercase().contains("permission denied"),
+        "dotenv deny should be explicit: {:?}",
+        results[0]
+    );
+    assert!(
+        !results[0].1.contains("super-secret"),
+        "denied .env read must not leak secret bytes: {:?}",
+        results[0]
+    );
+    assert!(
+        !results[1].2,
+        ".env.example read should be allowed: {:?}",
+        results[1]
+    );
+    assert!(
+        results[1].1.contains("1: API_KEY=example"),
+        ".env.example content should be returned: {:?}",
+        results[1]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn home_aliases_and_symlink_escape_are_resolved_before_permission_matching() {
+    // VAL-GAP-PERM-009: `~`, `$HOME`, `..`, and symlink aliases collapse to the intended canonical
+    // path for matching; denied symlink escape leaves outside bytes unchanged.
+    let workspace = workspace_dir("canonical-paths");
+    let home = std::env::var("HOME").expect("HOME should be set for this test");
+    let outside_root = PathBuf::from(home.clone()).join(format!(
+        "cortex-gap-home-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(outside_root.join("nested")).unwrap();
+    let outside = outside_root.join("secret.txt");
+    fs::write(&outside, "HOME-SECRET\n").unwrap();
+    fs::write(outside_root.join("nested/inner.txt"), "INNER\n").unwrap();
+
+    let alias = workspace.join("escape-link.txt");
+    std::os::unix::fs::symlink(&outside, &alias).unwrap();
+
+    let mut rules = vec![Rule::new("*", "*", Action::Allow)];
+    rules.push(Rule::new(
+        "read",
+        format!(
+            "$HOME/{}/secret.txt",
+            outside_root.file_name().unwrap().to_string_lossy()
+        ),
+        Action::Deny,
+    ));
+    rules.push(Rule::new("external_directory", "*", Action::Ask));
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(workspace.clone())
+            .with_permissions(Arc::new(PermissionEngine::new(Ruleset::new(rules)))),
+    };
+
+    let tilde_secret = format!(
+        "~/{}/secret.txt",
+        outside_root.file_name().unwrap().to_string_lossy()
+    );
+    let home_normalized = format!(
+        "{}/{}",
+        home,
+        outside_root.file_name().unwrap().to_string_lossy()
+    );
+    let dotdot_inner = format!(
+        "$HOME/{}/nested/../secret.txt",
+        outside_root.file_name().unwrap().to_string_lossy()
+    );
+
+    let events = run_session(
+        &dispatcher,
+        "google/gemini-2.5-flash",
+        vec![
+            tool_call_round(
+                "c1",
+                "read",
+                &serde_json::json!({ "path": tilde_secret }).to_string(),
+            ),
+            tool_call_round(
+                "c2",
+                "read",
+                &serde_json::json!({ "path": format!("{home_normalized}/secret.txt") }).to_string(),
+            ),
+            tool_call_round(
+                "c3",
+                "read",
+                &serde_json::json!({ "path": dotdot_inner }).to_string(),
+            ),
+            tool_call_round(
+                "c4",
+                "write",
+                &serde_json::json!({
+                    "path": alias.to_string_lossy(),
+                    "content": "MUTATED\n"
+                })
+                .to_string(),
+            ),
+            final_round("done"),
+        ],
+    )
+    .await;
+
+    let results = tool_results(&events);
+    for (index, result) in results.iter().take(3).enumerate() {
+        assert!(result.2, "alias read #{index} should be denied: {result:?}");
+        assert!(
+            result.1.to_lowercase().contains("permission denied"),
+            "alias read #{index} should surface permission denied: {result:?}"
+        );
+    }
+    assert!(
+        results[3].2,
+        "symlink escape write should be denied: {:?}",
+        results[3]
+    );
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "HOME-SECRET\n",
+        "denied symlink escape must not mutate outside target"
+    );
 }
 
 /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.

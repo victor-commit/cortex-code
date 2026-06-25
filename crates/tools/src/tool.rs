@@ -8,14 +8,14 @@
 //! consults before producing an effect. A tool never aborts the turn: a failure is returned as a
 //! [`ToolOutput`] with [`is_error`](ToolOutput::is_error) set so the model can recover.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use futures_util::future::BoxFuture;
-use permissions::{PermissionEngine, request_for};
+use permissions::{PermissionEngine, ToolScope, request_for, scope_of};
 use protocol::{TodoItem, ToolResultPart};
 
 use crate::bash::BackgroundJobs;
@@ -388,6 +388,7 @@ pub trait TaskRunner: Send + Sync {
 #[derive(Clone)]
 pub struct ToolContext {
     cwd: PathBuf,
+    external_allowlist_roots: Arc<Vec<PathBuf>>,
     reads: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
     audit: Option<Arc<audit::AuditSink>>,
@@ -407,8 +408,10 @@ impl ToolContext {
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         let cwd = canonicalize_identity_path(&cwd.into());
+        let external_allowlist_roots = Arc::new(default_external_allowlist_roots(&cwd));
         Self {
             cwd,
+            external_allowlist_roots,
             reads: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             audit: None,
@@ -589,7 +592,8 @@ impl ToolContext {
     /// across every tool in the session.
     #[must_use]
     pub fn resolve(&self, path: &str) -> PathBuf {
-        let candidate = Path::new(path);
+        let expanded = expand_user_path(path);
+        let candidate = Path::new(&expanded);
         let resolved = if candidate.is_absolute() {
             candidate.to_path_buf()
         } else {
@@ -654,29 +658,74 @@ impl ToolContext {
     #[must_use]
     pub fn permits(&self, tool: &str, target: &str) -> bool {
         match &self.permissions {
-            Some(engine) => {
-                let request = request_for(tool, target);
-                let evaluation = engine.evaluate_detail(&request);
-                if let Some(audit) = &self.audit {
-                    audit.record_permission_decision(
-                        &request.tool,
-                        &evaluation.pattern,
-                        &request.subject,
-                        evaluation.action.as_str(),
-                        evaluation.outcome.as_str(),
-                    );
-                }
-                evaluation.outcome.is_allowed()
-            }
+            Some(engine) => self.permits_with_engine(engine, tool, target),
             None => true,
         }
     }
 
     fn permission_target_for_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.cwd)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string()
+        self.permission_subject_for_resolved_path(path)
+    }
+
+    fn permits_with_engine(&self, engine: &PermissionEngine, tool: &str, target: &str) -> bool {
+        if matches!(scope_of(tool), Some(ToolScope::Path)) {
+            let resolved = self.resolve(target);
+            if !self.permit_external_directory(engine, &resolved) {
+                return false;
+            }
+            let scoped_target = self.permission_subject_for_resolved_path(&resolved);
+            let request = request_for(tool, &scoped_target);
+            return self.evaluate_permission(engine, request);
+        }
+        self.evaluate_permission(engine, request_for(tool, target))
+    }
+
+    fn evaluate_permission(
+        &self,
+        engine: &PermissionEngine,
+        request: permissions::PermissionRequest,
+    ) -> bool {
+        let evaluation = engine.evaluate_detail(&request);
+        if let Some(audit) = &self.audit {
+            audit.record_permission_decision(
+                &request.tool,
+                &evaluation.pattern,
+                &request.subject,
+                evaluation.action.as_str(),
+                evaluation.outcome.as_str(),
+            );
+        }
+        evaluation.outcome.is_allowed()
+    }
+
+    fn permit_external_directory(&self, engine: &PermissionEngine, resolved: &Path) -> bool {
+        if resolved.starts_with(&self.cwd) || self.is_allowlisted_external_path(resolved) {
+            return true;
+        }
+        let boundary = if resolved.is_dir() {
+            resolved.to_path_buf()
+        } else {
+            resolved
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| resolved.to_path_buf())
+        };
+        let resource = boundary.join("*").to_string_lossy().to_string();
+        self.evaluate_permission(engine, request_for("external_directory", &resource))
+    }
+
+    fn permission_subject_for_resolved_path(&self, path: &Path) -> String {
+        match path.strip_prefix(&self.cwd) {
+            Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+            Ok(relative) => relative.to_string_lossy().to_string(),
+            Err(_) => path.to_string_lossy().to_string(),
+        }
+    }
+
+    fn is_allowlisted_external_path(&self, path: &Path) -> bool {
+        self.external_allowlist_roots
+            .iter()
+            .any(|root| path.starts_with(root))
     }
 
     fn identity_key(&self, path: &Path) -> PathBuf {
@@ -718,6 +767,114 @@ fn canonicalize_identity_path(path: &Path) -> PathBuf {
     }
 }
 
+fn default_external_allowlist_roots(cwd: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    push_allowlist_root(&mut roots, std::env::temp_dir());
+
+    let mut inputs = match settings::ConfigInputs::from_process(BTreeMap::new()) {
+        Ok(inputs) => inputs,
+        Err(_) => return roots,
+    };
+    inputs.cwd = cwd.to_path_buf();
+
+    let discovery = skills::discover(&inputs);
+    for skill in discovery.skills.values() {
+        if let Some(base_dir) = skill.source.parent() {
+            push_allowlist_root(&mut roots, base_dir.to_path_buf());
+            push_allowlist_root(&mut roots, base_dir.join("reference"));
+            push_allowlist_root(&mut roots, base_dir.join("references"));
+        }
+    }
+
+    if let Ok(effective) = settings::load(inputs.clone()) {
+        for key in ["references", "reference"] {
+            if let Some(value) = effective.get(key) {
+                append_reference_roots(&mut roots, value, cwd, inputs.home.as_deref());
+            }
+        }
+    }
+
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn append_reference_roots(
+    roots: &mut Vec<PathBuf>,
+    value: &toml::Value,
+    cwd: &Path,
+    home: Option<&Path>,
+) {
+    match value {
+        toml::Value::String(raw) => {
+            if let Some(path) = resolve_local_reference_path(raw, cwd, home) {
+                push_allowlist_root(roots, path);
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                append_reference_roots(roots, value, cwd, home);
+            }
+        }
+        toml::Value::Table(table) => {
+            if let Some(path) = table.get("path").and_then(toml::Value::as_str)
+                && let Some(path) = resolve_local_reference_path(path, cwd, home)
+            {
+                push_allowlist_root(roots, path);
+            }
+            for value in table.values() {
+                append_reference_roots(roots, value, cwd, home);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_local_reference_path(value: &str, cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("~/") {
+        return home.map(|home| home.join(&value[2..]));
+    }
+    if value.starts_with('/') {
+        return Some(PathBuf::from(value));
+    }
+    if value.starts_with("./") || value.starts_with("../") {
+        return Some(cwd.join(value));
+    }
+    None
+}
+
+fn push_allowlist_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    roots.push(canonicalize_identity_path(&root));
+}
+
+fn expand_user_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let Some(home) = std::env::var_os("HOME") else {
+        return trimmed.to_owned();
+    };
+    let home = PathBuf::from(home).to_string_lossy().to_string();
+    if trimmed == "~" {
+        return home;
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return format!("{home}/{rest}");
+    }
+    if trimmed == "$HOME" || trimmed == "${HOME}" {
+        return home;
+    }
+    if let Some(rest) = trimmed.strip_prefix("$HOME/") {
+        return format!("{home}/{rest}");
+    }
+    if let Some(rest) = trimmed.strip_prefix("${HOME}/") {
+        return format!("{home}/{rest}");
+    }
+    trimmed.to_owned()
+}
+
 /// A callable agent tool.
 pub trait Tool: Send + Sync {
     /// The tool name the model calls (e.g. `read`).
@@ -742,17 +899,28 @@ mod tests {
     use super::*;
     use permissions::{Action, PermissionEngine, Rule, Ruleset};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn temp_dir(tag: &str) -> PathBuf {
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "cortex-tool-audit-{tag}-{}-{}",
+            "cortex-tool-audit-{tag}-{}-{unique}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn workspace_dir(tag: &str) -> PathBuf {
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("target")
+            .join("tool-context-tests");
+        let dir = base.join(format!("cortex-tool-{tag}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create workspace dir");
         dir
     }
 
@@ -828,5 +996,90 @@ mod tests {
             "a read recorded via symlink path is honored via target path"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn outside_workspace_paths_require_external_directory_permission() {
+        let workspace = workspace_dir("external-gate");
+        let outside = workspace
+            .parent()
+            .expect("workspace has parent")
+            .join(format!(
+                "outside-{}",
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join("secret.txt");
+        if let Some(parent) = outside.parent() {
+            std::fs::create_dir_all(parent).expect("create outside parent");
+        }
+        std::fs::write(&outside, "secret").expect("seed outside file");
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("*", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Ask),
+        ])));
+        let ctx = ToolContext::new(workspace.clone()).with_permissions(engine);
+
+        assert!(
+            !ctx.permits("read", &outside.to_string_lossy()),
+            "outside workspace path should be denied without an external_directory responder"
+        );
+        assert!(
+            ctx.permits("read", "inside.txt"),
+            "inside workspace path should stay allowed"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(
+            outside
+                .parent()
+                .expect("outside file has parent")
+                .to_path_buf(),
+        );
+    }
+
+    #[test]
+    fn temp_paths_are_allowlisted_from_external_directory_asks() {
+        let workspace = workspace_dir("external-allow-temp");
+        let temp_file = std::env::temp_dir()
+            .join(format!(
+                "cortex-tool-temp-{}",
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join("spill.txt");
+        if let Some(parent) = temp_file.parent() {
+            std::fs::create_dir_all(parent).expect("create temp parent");
+        }
+        std::fs::write(&temp_file, "spill").expect("seed temp file");
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("*", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Ask),
+        ])));
+        let ctx = ToolContext::new(workspace.clone()).with_permissions(engine);
+
+        assert!(
+            ctx.permits("read", &temp_file.to_string_lossy()),
+            "temp path should bypass external_directory ask via allowlist"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(
+            temp_file
+                .parent()
+                .expect("temp file has parent")
+                .to_path_buf(),
+        );
+    }
+
+    #[test]
+    fn resolve_expands_home_aliases() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let workspace = workspace_dir("resolve-home");
+        let ctx = ToolContext::new(workspace.clone());
+        let expected = canonicalize_identity_path(&PathBuf::from(home).join("cortex-home-path"));
+
+        assert_eq!(ctx.resolve("~/cortex-home-path"), expected);
+        assert_eq!(ctx.resolve("$HOME/cortex-home-path"), expected);
+        assert_eq!(ctx.resolve("${HOME}/cortex-home-path"), expected);
+        let _ = std::fs::remove_dir_all(workspace);
     }
 }
