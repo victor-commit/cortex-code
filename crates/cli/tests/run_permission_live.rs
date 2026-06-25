@@ -18,9 +18,12 @@
 //! every fixture uses a unique scratch directory under the system temp dir.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// The default model the mission targets (good at tool calls); used for the live turns.
@@ -149,6 +152,234 @@ fn run(mut command: Command, timeout: Duration) -> Output {
         stdout: out_thread.join().expect("join stdout reader"),
         stderr: err_thread.join().expect("join stderr reader"),
     }
+}
+
+#[derive(Debug, Clone)]
+struct ScriptedResponse {
+    status_line: &'static str,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+impl ScriptedResponse {
+    fn success(frames: &[String]) -> Self {
+        Self {
+            status_line: "HTTP/1.1 200 OK",
+            headers: vec![
+                ("content-type".to_owned(), "text/event-stream".to_owned()),
+                ("cache-control".to_owned(), "no-cache".to_owned()),
+                ("connection".to_owned(), "close".to_owned()),
+            ],
+            body: sse_body(frames),
+        }
+    }
+}
+
+struct Fixture {
+    base_url: String,
+    handle: thread::JoinHandle<()>,
+}
+
+impl Fixture {
+    fn start(responses: Vec<ScriptedResponse>) -> Self {
+        let listener = bind_loopback_listener();
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let port = listener.local_addr().expect("local addr").port();
+        let responses = Arc::new(Mutex::new(responses));
+        let handle = {
+            let responses = Arc::clone(&responses);
+            thread::spawn(move || {
+                let idle_deadline = Instant::now() + Duration::from_secs(12);
+                while Instant::now() < idle_deadline {
+                    let remaining = responses.lock().expect("responses lock").len();
+                    if remaining == 0 {
+                        break;
+                    }
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = read_http_request(&mut stream);
+                            let response = responses.lock().expect("responses lock").remove(0);
+                            let _ = write_http_response(&mut stream, &response);
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+        Self {
+            base_url: format!("http://127.0.0.1:{port}"),
+            handle,
+        }
+    }
+
+    fn finish(self) {
+        let _ = self.handle.join();
+    }
+}
+
+fn bind_loopback_listener() -> TcpListener {
+    for port in 3200..=3299 {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return listener;
+        }
+    }
+    panic!("no free loopback port in mission range 3200-3299");
+}
+
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let header_end = loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(());
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+
+    let headers = String::from_utf8_lossy(&buffer[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let already = buffer.len().saturating_sub(header_end);
+    let mut remaining = content_length.saturating_sub(already);
+    while remaining > 0 {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(read);
+    }
+    Ok(())
+}
+
+fn write_http_response(stream: &mut TcpStream, response: &ScriptedResponse) -> std::io::Result<()> {
+    let mut rendered = String::new();
+    rendered.push_str(response.status_line);
+    rendered.push_str("\r\n");
+    for (name, value) in &response.headers {
+        rendered.push_str(name);
+        rendered.push_str(": ");
+        rendered.push_str(value);
+        rendered.push_str("\r\n");
+    }
+    rendered.push_str(&format!("content-length: {}\r\n\r\n", response.body.len()));
+    rendered.push_str(&response.body);
+    stream.write_all(rendered.as_bytes())?;
+    stream.flush()
+}
+
+fn sse_body(frames: &[String]) -> String {
+    let mut body = String::new();
+    for frame in frames {
+        body.push_str("data: ");
+        body.push_str(frame);
+        body.push_str("\n\n");
+    }
+    body.push_str("data: [DONE]\n\n");
+    body
+}
+
+fn tool_call_frame(call_id: &str, name: &str, arguments: serde_json::Value) -> String {
+    serde_json::json!({
+        "id": "permission-fixture",
+        "object": "chat.completion.chunk",
+        "model": MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments.to_string()
+                    }
+                }]
+            },
+            "finish_reason": null
+        }]
+    })
+    .to_string()
+}
+
+fn text_delta_frame(text: &str) -> String {
+    serde_json::json!({
+        "id": "permission-fixture",
+        "object": "chat.completion.chunk",
+        "model": MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": { "content": text },
+            "finish_reason": null
+        }]
+    })
+    .to_string()
+}
+
+fn done_frame(reason: &str) -> String {
+    serde_json::json!({
+        "id": "permission-fixture",
+        "object": "chat.completion.chunk",
+        "model": MODEL,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": reason
+        }]
+    })
+    .to_string()
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, body).expect("write executable script");
+    let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod executable script");
+}
+
+fn write_formatter_script(dir: &Path) -> PathBuf {
+    let script = dir.join("uppercase-format.sh");
+    #[cfg(unix)]
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\ntr '[:lower:]' '[:upper:]' < \"$file\" > \"$file.tmp\"\nmv \"$file.tmp\" \"$file\"\n",
+    );
+    script
+}
+
+fn write_project_config_with_formatter_and_permissions(
+    proj: &Path,
+    formatter_script: &Path,
+    permission_rules: &str,
+) {
+    let formatter_script = formatter_script
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let config = format!(
+        "[formatter.custom]\ncommand = [\"{formatter_script}\", \"$FILE\"]\nextensions = [\".fmtperm\"]\n\n{permission_rules}\n"
+    );
+    fs::write(proj.join("cortex.toml"), config).expect("write project config");
 }
 
 /// VAL-SKEL/usage: a malformed permission flag fails fast with the stable usage exit code, before
@@ -481,5 +712,120 @@ fn cli_deny_overrides_a_config_allow() {
     assert!(
         proj.join("x").exists(),
         "the CLI deny is appended last and overrides the config-file allow, preserving x"
+    );
+}
+
+/// VAL-GAP-PERM-003 deterministic formatter branch:
+/// a custom formatter is configured for `.fmtperm`, but an `edit` capability deny with a
+/// write-specific allow keeps the initial write successful while blocking the formatter-induced
+/// mutation. This exercises the real post-mutation hook path without depending on live model
+/// tool-call behavior or rustfmt availability.
+#[cfg(unix)]
+#[test]
+fn formatter_induced_mutation_is_blocked_when_edit_capability_is_denied() {
+    let (home, proj) = layered_tree("perm003-format-deny");
+    let formatter = write_formatter_script(&home);
+    write_project_config_with_formatter_and_permissions(
+        &proj,
+        &formatter,
+        "[[permission]]\n\
+tool = \"edit\"\n\
+pattern = \"fixture.fmtperm\"\n\
+action = \"deny\"\n\
+\n\
+[[permission]]\n\
+tool = \"write\"\n\
+pattern = \"fixture.fmtperm\"\n\
+action = \"allow\"",
+    );
+
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::success(&[
+            tool_call_frame(
+                "call_write",
+                "write",
+                serde_json::json!({
+                    "path": "fixture.fmtperm",
+                    "content": "lowercase content\n"
+                }),
+            ),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[text_delta_frame("done"), done_frame("stop")]),
+    ]);
+
+    let mut command = cortex_layered(
+        &home,
+        &proj,
+        "test-openrouter-key",
+        &["run", "--model", MODEL, "run"],
+    );
+    command.env("CORTEX_OPENROUTER_BASE_URL", &fixture.base_url);
+    let out = run(command, Duration::from_secs(120));
+    fixture.finish();
+
+    assert!(
+        out.status.success(),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("fixture.fmtperm")).expect("read fixture file"),
+        "lowercase content\n",
+        "write should be allowed but formatter-induced mutation should be blocked by edit deny"
+    );
+}
+
+/// VAL-GAP-PERM-003 deterministic formatter branch:
+/// with `edit` capability allowed, the same custom formatter mutates the file through the real
+/// post-mutation hook path.
+#[cfg(unix)]
+#[test]
+fn formatter_induced_mutation_runs_when_edit_capability_is_allowed() {
+    let (home, proj) = layered_tree("perm003-format-allow");
+    let formatter = write_formatter_script(&home);
+    write_project_config_with_formatter_and_permissions(
+        &proj,
+        &formatter,
+        "[[permission]]\n\
+tool = \"edit\"\n\
+pattern = \"fixture.fmtperm\"\n\
+action = \"allow\"",
+    );
+
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::success(&[
+            tool_call_frame(
+                "call_write",
+                "write",
+                serde_json::json!({
+                    "path": "fixture.fmtperm",
+                    "content": "lowercase content\n"
+                }),
+            ),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[text_delta_frame("done"), done_frame("stop")]),
+    ]);
+
+    let mut command = cortex_layered(
+        &home,
+        &proj,
+        "test-openrouter-key",
+        &["run", "--model", MODEL, "run"],
+    );
+    command.env("CORTEX_OPENROUTER_BASE_URL", &fixture.base_url);
+    let out = run(command, Duration::from_secs(120));
+    fixture.finish();
+
+    assert!(
+        out.status.success(),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("fixture.fmtperm")).expect("read fixture file"),
+        "LOWERCASE CONTENT\n",
+        "formatter-induced mutation should apply when edit capability is allowed"
     );
 }
