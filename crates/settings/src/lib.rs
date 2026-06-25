@@ -228,9 +228,11 @@ pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
     {
         merge::merge_into(&mut table, remote);
     }
-    let managed_layer = load_managed_layer(&source_options, &cwd, home.as_deref())?;
-    if let Some(managed) = managed_layer.as_ref() {
-        merge::merge_into(&mut table, managed.clone());
+    let mut managed_layer = load_managed_layer(&source_options, &cwd, home.as_deref())?;
+    if let Some(managed) = managed_layer.as_mut() {
+        let base_dir = managed.source.parent().unwrap_or(&cwd);
+        subst::substitute(&mut managed.table, &environment, base_dir, home.as_deref())?;
+        merge::merge_into(&mut table, managed.table.clone());
     }
 
     if let Some(mut inline) = inline_content_layer(&environment)? {
@@ -242,7 +244,11 @@ pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
     apply_string_overrides(&mut table, cli_overrides);
     subst::substitute(&mut table, &environment, &cwd, home.as_deref())?;
     if let Some(managed) = managed_layer.as_ref() {
-        apply_managed_locks(&mut table, managed, &source_options.managed_locked_keys);
+        apply_managed_locks(
+            &mut table,
+            &managed.table,
+            &source_options.managed_locked_keys,
+        );
     }
     schema::validate(&mut table)?;
 
@@ -650,12 +656,15 @@ fn load_managed_layer(
     options: &SourceOptions,
     cwd: &Path,
     home: Option<&Path>,
-) -> Result<Option<Table>, ConfigError> {
+) -> Result<Option<ConfigLayer>, ConfigError> {
     let Some(path) = options.managed_file.as_deref() else {
         return Ok(None);
     };
     let path = PathBuf::from(resolve_path_value(path, cwd, home));
-    read_layer(&path)
+    Ok(read_layer(&path)?.map(|table| ConfigLayer {
+        source: path,
+        table,
+    }))
 }
 
 fn resolve_path_value(raw: &str, cwd: &Path, home: Option<&Path>) -> String {

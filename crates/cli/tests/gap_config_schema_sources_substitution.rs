@@ -303,7 +303,36 @@ remote_well_known_url = "{}"
 fn managed_config_locks_keys_and_local_parse_errors_remain_visible() {
     let scratch = Scratch::new("managed-locks");
     let managed_path = scratch.root.join("managed.toml");
-    fs::write(&managed_path, r#"model = "managed-model""#).expect("write managed file");
+    fs::write(&managed_path, r#"model = "{env:MODEL_ENV}""#).expect("write managed file");
+    scratch.write_project(&format!(
+        r#"
+model = "project-model"
+[config_sources]
+managed_file = "{}"
+managed_locked_keys = ["model"]
+"#,
+        managed_path.display()
+    ));
+
+    let report = scratch.config_json(&[("MODEL_ENV", "managed-model")]);
+    assert_eq!(report["model"], "managed-model");
+
+    scratch.write_project("model = \n");
+    let output = scratch.raw(&[]);
+    assert_eq!(output.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cortex.toml"), "{stderr}");
+}
+
+#[test]
+fn managed_config_locked_key_resolves_file_substitution_relative_to_managed_file() {
+    let scratch = Scratch::new("managed-locks-file");
+    let managed_dir = scratch.root.join("managed");
+    fs::create_dir_all(&managed_dir).expect("create managed dir");
+    let managed_path = managed_dir.join("managed.toml");
+    fs::write(managed_dir.join("model.txt"), "  managed-from-file  \n")
+        .expect("write managed model file");
+    fs::write(&managed_path, r#"model = "{file:./model.txt}""#).expect("write managed file");
     scratch.write_project(&format!(
         r#"
 model = "project-model"
@@ -315,13 +344,7 @@ managed_locked_keys = ["model"]
     ));
 
     let report = scratch.config_json(&[]);
-    assert_eq!(report["model"], "managed-model");
-
-    scratch.write_project("model = \n");
-    let output = scratch.raw(&[]);
-    assert_eq!(output.status.code(), Some(5));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cortex.toml"), "{stderr}");
+    assert_eq!(report["model"], "managed-from-file");
 }
 
 #[test]

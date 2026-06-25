@@ -214,6 +214,52 @@ message = "prefix-{env:EMBED_VAR}-{file:./chunk.txt}-suffix"
 }
 
 #[test]
+fn managed_locked_env_substitution_resolves_and_overrides_env_and_cli() {
+    let scratch = Scratch::new();
+    let managed_path = scratch.root.join("managed/managed.toml");
+    scratch.write("managed/managed.toml", r#"model = "{env:MODEL_ENV}""#);
+    scratch.write_project(&format!(
+        r#"
+model = "project-model"
+[config_sources]
+managed_file = "{}"
+managed_locked_keys = ["model"]
+"#,
+        managed_path.display()
+    ));
+
+    let mut inputs = scratch.inputs(&[
+        ("MODEL_ENV", "managed-model"),
+        ("CORTEX_MODEL", "from-env-override"),
+    ]);
+    inputs
+        .cli_overrides
+        .insert("model".to_owned(), "from-cli-override".to_owned());
+    let config = load(inputs).expect("loads");
+    assert_eq!(config.model(), "managed-model");
+}
+
+#[test]
+fn managed_locked_file_substitution_is_resolved_relative_to_managed_file() {
+    let scratch = Scratch::new();
+    let managed_path = scratch.root.join("managed/managed.toml");
+    scratch.write("managed/model.txt", "  managed-from-file  \n");
+    scratch.write("managed/managed.toml", r#"model = "{file:./model.txt}""#);
+    scratch.write_project(&format!(
+        r#"
+model = "project-model"
+[config_sources]
+managed_file = "{}"
+managed_locked_keys = ["model"]
+"#,
+        managed_path.display()
+    ));
+
+    let config = load(scratch.inputs(&[])).expect("loads");
+    assert_eq!(config.model(), "managed-from-file");
+}
+
+#[test]
 fn tilde_expands_to_home_for_path_values() {
     let scratch = Scratch::new();
     scratch.write_project(r#"cache_path = "~/cache/data.txt""#);
