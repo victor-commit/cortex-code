@@ -1,5 +1,6 @@
 //! Built-in language-server definitions and file-extension routing.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ pub struct LspServerConfig {
     language_id: String,
     program: String,
     args: Vec<String>,
+    env: BTreeMap<String, String>,
     extensions: Vec<String>,
     root_markers: Vec<String>,
     request_timeout: Duration,
@@ -44,6 +46,7 @@ impl LspServerConfig {
             language_id: language_id.into(),
             program: program.into(),
             args: Vec::new(),
+            env: BTreeMap::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
             request_timeout: Duration::from_secs(10),
@@ -69,6 +72,46 @@ impl LspServerConfig {
         self
     }
 
+    /// Replace the launch program.
+    #[must_use]
+    pub fn with_program(mut self, program: impl Into<String>) -> Self {
+        self.program = program.into();
+        self
+    }
+
+    /// Replace launch arguments.
+    #[must_use]
+    pub fn with_exact_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set one launch-time environment variable.
+    #[must_use]
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(key.into(), value.into());
+        self
+    }
+
+    /// Replace launch-time environment variables.
+    #[must_use]
+    pub fn with_envs<I, K, V>(mut self, env: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.env = env
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        self
+    }
+
     /// Register a handled file extension.
     #[must_use]
     pub fn with_extension(mut self, ext: impl AsRef<str>) -> Self {
@@ -90,6 +133,17 @@ impl LspServerConfig {
             self = self.with_extension(ext);
         }
         self
+    }
+
+    /// Replace handled file extensions.
+    #[must_use]
+    pub fn with_exact_extensions<I, S>(mut self, exts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.extensions.clear();
+        self.with_extensions(exts)
     }
 
     /// Register a project root marker.
@@ -134,6 +188,12 @@ impl LspServerConfig {
         &self.args
     }
 
+    /// Launch-time environment overrides.
+    #[must_use]
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
     /// Normalized handled extensions.
     #[must_use]
     pub fn extensions(&self) -> &[String] {
@@ -164,9 +224,13 @@ impl LspServerConfig {
     /// Convert to a spawnable command.
     #[must_use]
     pub fn to_command(&self) -> LspServerCommand {
-        LspServerCommand::new(self.program.clone())
+        let mut command = LspServerCommand::new(self.program.clone())
             .with_args(self.args.iter().cloned())
-            .with_request_timeout(self.request_timeout)
+            .with_request_timeout(self.request_timeout);
+        for (key, value) in &self.env {
+            command = command.with_env(key.clone(), value.clone());
+        }
+        command
     }
 }
 
@@ -218,6 +282,12 @@ impl LspConfigSet {
                         package: "typescript-language-server".to_owned(),
                     }),
             )
+    }
+
+    /// Build a config set from an explicit server list.
+    #[must_use]
+    pub fn from_servers(servers: Vec<LspServerConfig>) -> Self {
+        Self { servers }
     }
 
     /// Add a server definition.
@@ -291,5 +361,17 @@ mod tests {
             Some(InstallPlan::Npm { .. })
         ));
         assert!(set.get("rust").and_then(LspServerConfig::install).is_none());
+    }
+
+    #[test]
+    fn command_conversion_carries_configured_env() {
+        let command = LspServerConfig::new("python", "ruff")
+            .with_env("RUFF_CACHE_DIR", "/tmp/cache")
+            .to_command();
+        assert_eq!(command.program(), "ruff");
+        assert_eq!(
+            command.env(),
+            &[("RUFF_CACHE_DIR".to_owned(), "/tmp/cache".to_owned())]
+        );
     }
 }

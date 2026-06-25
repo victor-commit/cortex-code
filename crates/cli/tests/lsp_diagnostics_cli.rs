@@ -31,6 +31,12 @@ fn has_command(program: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+fn toml_string(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 fn cortex_in(cwd: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(cwd);
@@ -193,5 +199,107 @@ fn no_net_preinstalled_ruff_returns_real_diagnostics_offline() {
     assert!(
         rendered.contains("\"F821\"") && rendered.contains("\"F401\""),
         "expected Ruff error and warning codes: {rendered}"
+    );
+}
+
+#[test]
+fn lsp_server_can_be_disabled_per_language_via_config() {
+    if !has_command("ruff") {
+        eprintln!("skipping local LSP proof: ruff is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("python-disabled");
+    let file = dir.join("bad.py");
+    std::fs::write(&file, "print(undefined_name)\n").expect("write python fixture");
+    std::fs::write(
+        dir.join("cortex.toml"),
+        r#"
+[lsp.servers.python]
+disabled = true
+"#,
+    )
+    .expect("write config");
+
+    let mut command = cortex_in(&dir);
+    command.args(["lsp", "diagnostics", "bad.py", "--format", "json"]);
+    command
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(doc["status"], "no_server");
+    assert!(
+        doc["language"].is_null() && doc["program"].is_null(),
+        "disabled language server should not resolve a launcher: {doc}"
+    );
+    let note = doc["note"].as_str().expect("note");
+    assert!(
+        note.contains("no language server is configured"),
+        "disabled server should report unconfigured extension: {note}"
+    );
+}
+
+#[test]
+fn lsp_custom_program_receives_configured_environment() {
+    let dir = temp_dir("custom-env");
+    let file = dir.join("bad.py");
+    std::fs::write(&file, "print(undefined_name)\n").expect("write python fixture");
+
+    let marker = dir.join("lsp-env-marker.txt");
+    let script = dir.join("capture-lsp-env.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s' \"${CORTEX_LSP_CAPTURE:-missing}\" > \"${CORTEX_LSP_MARKER:-/tmp/missing}\"\nexit 1\n",
+    )
+    .expect("write fake lsp server");
+    make_executable(&script);
+    std::fs::write(
+        dir.join("cortex.toml"),
+        format!(
+            r#"
+[lsp.servers.python]
+program = "{}"
+args = []
+extensions = ["py"]
+[lsp.servers.python.env]
+CORTEX_LSP_CAPTURE = "env-ok"
+CORTEX_LSP_MARKER = "{}"
+"#,
+            toml_string(&script),
+            toml_string(&marker)
+        ),
+    )
+    .expect("write config");
+
+    let mut command = cortex_in(&dir);
+    command.args(["lsp", "diagnostics", "bad.py", "--format", "json"]);
+    command
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(doc["status"], "unavailable");
+    assert_eq!(doc["program"], script.to_string_lossy().as_ref());
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("marker written"),
+        "env-ok",
+        "custom server process should receive configured env vars"
     );
 }

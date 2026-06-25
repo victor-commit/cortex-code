@@ -91,6 +91,7 @@ pub(crate) struct CliTaskRunnerConfig {
     pub parent_cap: Option<Ruleset>,
     pub parent_model_id: String,
     pub formatter_config: format::FormatterConfig,
+    pub lsp_config: lsp::LspConfigSet,
     pub config_inputs: ConfigInputs,
     pub project_memory: Option<String>,
     pub bus: Arc<EventBus>,
@@ -213,7 +214,10 @@ impl CliTaskRunner {
             ));
         }
 
-        let lsp_hooks = Arc::new(crate::lsp_bridge::LspHooks::new(self.config.cwd.clone()));
+        let lsp_hooks = Arc::new(crate::lsp_bridge::LspHooks::new(
+            self.config.cwd.clone(),
+            self.config.lsp_config.clone(),
+        ));
         let mutation_hooks = Arc::new(crate::format_bridge::PostMutationHooks::with_config(
             self.config.cwd.clone(),
             self.config.formatter_config.clone(),
@@ -509,6 +513,7 @@ mod tests {
             parent_cap: None,
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
+            lsp_config: lsp::LspConfigSet::defaults(),
             config_inputs: inputs,
             project_memory: None,
             bus: Arc::new(EventBus::new()),
@@ -604,6 +609,7 @@ mod tests {
             ])),
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
+            lsp_config: lsp::LspConfigSet::defaults(),
             config_inputs: inputs,
             project_memory: None,
             bus: Arc::new(EventBus::new()),
@@ -677,6 +683,7 @@ mod tests {
             parent_cap: None,
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
+            lsp_config: lsp::LspConfigSet::defaults(),
             config_inputs: inputs,
             project_memory: None,
             bus: Arc::new(EventBus::new()),
@@ -761,6 +768,7 @@ mod tests {
             parent_cap: None,
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
+            lsp_config: lsp::LspConfigSet::defaults(),
             config_inputs: inputs,
             project_memory: None,
             bus: Arc::new(EventBus::new()),

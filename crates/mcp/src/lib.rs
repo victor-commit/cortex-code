@@ -37,7 +37,9 @@ pub use catalogue::{
     qualify_prompts, qualify_resources, qualify_tools,
 };
 pub use client::{DEFAULT_TIMEOUT, McpClient};
-pub use config::{McpConfigError, McpServerConfig, McpTransport, servers_from_value};
+pub use config::{
+    McpConfigError, McpOAuthConfig, McpServerConfig, McpTransport, servers_from_value,
+};
 pub use credentials::{CredentialStore, StoredToken, now_secs};
 pub use error::McpError;
 pub use manager::{ConnectionState, McpConnectOptions, McpManager, ServerStatus};

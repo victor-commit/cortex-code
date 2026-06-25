@@ -53,6 +53,7 @@ use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
 use crate::cli::{OutputFormat, RunArgs};
 use crate::custom_agents;
+use crate::custom_modes;
 use crate::permission;
 use crate::permission_store;
 use crate::plugin_bridge::{CommandBeforeOutcome, CommandInvocation, PluginState};
@@ -107,6 +108,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     for warning in &discovered_agents.warnings {
         eprintln!("cortex run: {warning}");
     }
+    let discovered_modes = custom_modes::discover(&config_inputs);
+    for warning in &discovered_modes.warnings {
+        eprintln!("cortex run: {warning}");
+    }
     let discovered_skills = skills::discover(&config_inputs);
     for warning in &discovered_skills.warnings {
         eprintln!("cortex run: {warning}");
@@ -130,6 +135,18 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         None
     };
     let requested_agent = args.agent.as_deref().or(configured_agent.as_deref());
+    let configured_mode = if args.mode.is_none() {
+        match configured_mode_name(&config_inputs) {
+            Ok(mode) => mode,
+            Err(err) => {
+                eprintln!("cortex run: {err}");
+                return Exit::Config;
+            }
+        }
+    } else {
+        None
+    };
+    let requested_mode = args.mode.as_deref().or(configured_mode.as_deref());
 
     // Resolve the agent persona before any network consideration so an unknown agent fails fast
     // with an actionable, agent-naming error and a non-zero exit, never touching the network or the
@@ -141,6 +158,13 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             eprintln!(
                 "cortex run: {err}; select one with --agent <name> (for example --agent build)"
             );
+            return Exit::Failure;
+        }
+    };
+    let mode = match custom_modes::resolve(requested_mode, &discovered_modes) {
+        Ok(mode) => mode,
+        Err(err) => {
+            eprintln!("cortex run: {err}; select one with --mode <name> (for example --mode plan)");
             return Exit::Failure;
         }
     };
@@ -250,9 +274,16 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // agent is active in the same way as a CLI-selected one, so its mode restrictions and scoped
     // permission rules govern the turn across surfaces.
     let active_agent = Some(agent.name());
-    let builtin_agent_rules = permission::builtin_agent_permission_rules(agent.base_agent());
+    let effective_base_agent = mode
+        .as_ref()
+        .and_then(custom_modes::ActiveMode::base_agent)
+        .unwrap_or_else(|| agent.base_agent());
+    let builtin_agent_rules = permission::builtin_agent_permission_rules(effective_base_agent);
     let builtin_hard_denies = builtin_agent_rules.restriction_rules.clone();
     let mut post_save_permission_rules = agent.permissions().to_vec();
+    if let Some(mode) = &mode {
+        post_save_permission_rules.extend(mode.permissions().iter().cloned());
+    }
     post_save_permission_rules.extend(builtin_agent_rules.restriction_rules);
 
     // Resolve the project's trust level (the layered config's `trust` key) into trust deny rules.
@@ -510,6 +541,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let system = render_system_context(
         &model_id,
         &agent,
+        mode.as_ref(),
         &discovered_skill_list,
         project_memory_block.clone(),
     );
@@ -570,7 +602,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
     };
 
-    let lsp_hooks = std::sync::Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));
+    let lsp_hooks = std::sync::Arc::new(crate::lsp_bridge::LspHooks::new(
+        cwd.clone(),
+        run_config.lsp_config.clone(),
+    ));
     let mutation_hooks = std::sync::Arc::new(crate::format_bridge::PostMutationHooks::with_config(
         cwd.clone(),
         run_config.formatter_config.clone(),
@@ -635,6 +670,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             parent_cap: parent_permission_cap,
             parent_model_id: model_id.clone(),
             formatter_config: run_config.formatter_config.clone(),
+            lsp_config: run_config.lsp_config.clone(),
             config_inputs: subagent_config_inputs,
             project_memory: project_memory_block.clone(),
             bus: bus.clone(),
@@ -653,6 +689,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     provider.as_ref(),
                     &model_id,
                     agent.name(),
+                    mode.as_ref().map(custom_modes::ActiveMode::name),
                     &session_id,
                     &user_message.id,
                     &db,
@@ -668,6 +705,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     provider.as_ref(),
                     &model_id,
                     agent.name(),
+                    mode.as_ref().map(custom_modes::ActiveMode::name),
                     &session_id,
                     &user_message.id,
                     &tool_names,
@@ -685,6 +723,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     provider.as_ref(),
                     &model_id,
                     agent.name(),
+                    mode.as_ref().map(custom_modes::ActiveMode::name),
                     &session_id,
                     &user_message.id,
                     &db,
@@ -883,15 +922,23 @@ fn resolve_command_path(path: &str) -> std::path::PathBuf {
 fn render_system_context(
     model_id: &str,
     agent: &custom_agents::ActiveAgent,
+    mode: Option<&custom_modes::ActiveMode>,
     skills: &[skills::Skill],
     project_memory: Option<String>,
 ) -> String {
+    let effective_base_agent = mode
+        .and_then(custom_modes::ActiveMode::base_agent)
+        .unwrap_or_else(|| agent.base_agent());
     let mut system = SystemContext::for_model(model_id, EnvironmentBlock::from_process())
         .with_project_memory(project_memory)
-        .with_agent(agent.base_agent())
+        .with_agent(effective_base_agent)
         .render();
     if let Some(prompt) = agent.custom_prompt() {
         system.push_str("\n\nCustom agent instructions:\n");
+        system.push_str(prompt);
+    }
+    if let Some(prompt) = mode.and_then(custom_modes::ActiveMode::prompt) {
+        system.push_str("\n\nMode instructions:\n");
         system.push_str(prompt);
     }
     if let Some(hint) = skills::render_system_hint(skills) {
@@ -1289,6 +1336,7 @@ async fn stream_text(
     provider: &dyn llm::Provider,
     model_id: &str,
     agent: &str,
+    _mode: Option<&str>,
     session_id: &str,
     turn_message_id: &str,
     db: &Database,
@@ -1383,6 +1431,7 @@ async fn stream_jsonl(
     provider: &dyn llm::Provider,
     model_id: &str,
     agent: &str,
+    mode: Option<&str>,
     session_id: &str,
     turn_message_id: &str,
     tool_names: &[String],
@@ -1398,7 +1447,7 @@ async fn stream_jsonl(
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
 
-    if let Ok(line) = render_session_line(agent, session_id, tool_names, tool_definitions) {
+    if let Ok(line) = render_session_line(agent, mode, session_id, tool_names, tool_definitions) {
         let _ = handle.write_all(line.as_bytes());
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
@@ -1475,6 +1524,9 @@ struct RunDocument<'a> {
     model: &'a str,
     /// The agent persona this turn ran under (the value passed to `--agent`, or the default).
     agent: &'a str,
+    /// Optional mode overlay composed with the selected agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'a str>,
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
     finish_reason: &'a llm::FinishReason,
@@ -1535,6 +1587,9 @@ struct SessionEvent<'a> {
     kind: &'a str,
     /// The agent persona this turn ran under (the value passed to `--agent`, or the default).
     agent: &'a str,
+    /// Optional mode overlay composed with the selected agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'a str>,
     /// The stable, re-usable session id this turn ran under (feed back via `--session`).
     session: &'a str,
     /// The per-turn tool set materialized for the model's family, in advertised order (the
@@ -1551,6 +1606,7 @@ async fn emit_json(
     provider: &dyn llm::Provider,
     model_id: &str,
     agent: &str,
+    mode: Option<&str>,
     session_id: &str,
     turn_message_id: &str,
     db: &Database,
@@ -1636,6 +1692,7 @@ async fn emit_json(
     let line = match render_json_document(
         model_id,
         agent,
+        mode,
         session_id,
         &final_tool_names,
         &final_tool_definitions,
@@ -1679,6 +1736,7 @@ async fn emit_json(
 fn build_run_document<'a>(
     model_id: &'a str,
     agent: &'a str,
+    mode: Option<&'a str>,
     session_id: &'a str,
     tool_names: &'a [String],
     tool_definitions: &'a [ToolDef],
@@ -1694,6 +1752,7 @@ fn build_run_document<'a>(
         structured_output,
         model: model_id,
         agent,
+        mode,
         session: session_id,
         finish_reason: &outcome.finish_reason,
         steps: outcome.steps,
@@ -1721,6 +1780,7 @@ fn build_run_document<'a>(
 fn render_json_document(
     model_id: &str,
     agent: &str,
+    mode: Option<&str>,
     session_id: &str,
     tool_names: &[String],
     tool_definitions: &[ToolDef],
@@ -1733,6 +1793,7 @@ fn render_json_document(
     let mut line = serde_json::to_string(&build_run_document(
         model_id,
         agent,
+        mode,
         session_id,
         tool_names,
         tool_definitions,
@@ -1750,6 +1811,7 @@ fn render_json_document(
 /// agent persona, the session id, and the per-turn tool advertisement.
 fn render_session_line(
     agent: &str,
+    mode: Option<&str>,
     session_id: &str,
     tool_names: &[String],
     tool_definitions: &[ToolDef],
@@ -1757,6 +1819,7 @@ fn render_session_line(
     serde_json::to_string(&SessionEvent {
         kind: "session",
         agent,
+        mode,
         session: session_id,
         tools: tool_names,
         tool_definitions,
@@ -2079,6 +2142,20 @@ fn configured_agent_name(inputs: &ConfigInputs) -> Result<Option<String>, Config
     Ok(non_empty(effective.agent()))
 }
 
+/// The layered default mode for `cortex run` when no `--mode` flag is supplied.
+///
+/// # Errors
+/// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded.
+fn configured_mode_name(inputs: &ConfigInputs) -> Result<Option<String>, ConfigError> {
+    let effective = settings::load(inputs.clone())?;
+    Ok(non_empty(
+        effective
+            .get("mode")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default(),
+    ))
+}
+
 /// The configuration-derived inputs for a run: the resolved model, typed provider policy/config,
 /// and additional local runtime integrations.
 struct RunConfig {
@@ -2086,6 +2163,7 @@ struct RunConfig {
     provider_config: providers::ProviderConfigSet,
     mcp_servers: std::collections::BTreeMap<String, mcp::McpServerConfig>,
     formatter_config: format::FormatterConfig,
+    lsp_config: lsp::LspConfigSet,
     plugins: plugins::PluginConfig,
     websearch: Option<tools::WebSearchConfig>,
 }
@@ -2125,6 +2203,7 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
         provider_config,
         mcp_servers: mcp_servers_from_config(&effective)?,
         formatter_config,
+        lsp_config: crate::lsp_config::from_effective(&effective)?,
         plugins,
         websearch,
     })
@@ -3299,6 +3378,7 @@ mod tests {
         let rendered = render_json_document(
             "google/gemini-2.5-flash",
             "build",
+            None,
             "ses_x",
             &[],
             &[],
@@ -3328,6 +3408,7 @@ mod tests {
         let rendered = render_json_document(
             "google/gemini-2.5-flash",
             "plan",
+            None,
             "ses_abc123",
             &[],
             &[],
@@ -3380,6 +3461,7 @@ mod tests {
         let rendered = render_json_document(
             "google/gemini-2.5-flash",
             "build",
+            None,
             "ses_cumulative",
             &[],
             &[],
@@ -3427,6 +3509,7 @@ mod tests {
         let rendered = render_json_document(
             "m",
             "general",
+            None,
             "ses_y",
             &[],
             &[],
@@ -3454,7 +3537,7 @@ mod tests {
     #[test]
     fn jsonl_session_line_is_typed_and_carries_the_agent_and_session_id() {
         let tools = vec!["read".to_owned(), "apply_patch".to_owned()];
-        let line = render_session_line("plan", "ses_seed42", &tools, &[]).expect("render");
+        let line = render_session_line("plan", None, "ses_seed42", &tools, &[]).expect("render");
         let value: serde_json::Value = serde_json::from_str(&line).expect("json");
         assert_eq!(value["type"], "session");
         assert_eq!(value["agent"], "plan");
@@ -3485,6 +3568,7 @@ mod tests {
         let rendered = render_json_document(
             "openai/gpt-4o-mini",
             "build",
+            None,
             "ses_gpt",
             &gpt_tools,
             &defs,
@@ -3525,6 +3609,7 @@ mod tests {
         let rendered = render_json_document(
             "google/gemini-2.5-flash",
             "build",
+            None,
             "ses_parts",
             &[],
             &[],

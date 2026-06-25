@@ -5,6 +5,7 @@
 //! language extension, the formatter binary on `PATH`, and, for project-scoped formatters, a config
 //! marker in the file's ancestor tree. Formatting is in-place and uses the real external binaries.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::process::{Command, Stdio};
 use toml::Value;
 
 /// A formatter family Cortex knows how to run after a file mutation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FormatterKind {
     /// `rustfmt --edition 2024`.
     Rustfmt,
@@ -111,8 +112,19 @@ pub struct FormatterSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FormatterCommand {
-    Builtin(FormatterKind),
+    Builtin {
+        kind: FormatterKind,
+        command: Option<Vec<String>>,
+        env: BTreeMap<String, String>,
+    },
     Custom(CustomFormatter),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct FormatterOverride {
+    disabled: bool,
+    command: Option<Vec<String>>,
+    env: BTreeMap<String, String>,
 }
 
 /// A configured formatter command that overrides built-in detection for matching extensions.
@@ -120,6 +132,7 @@ enum FormatterCommand {
 pub struct CustomFormatter {
     command: Vec<String>,
     extensions: Vec<String>,
+    env: BTreeMap<String, String>,
 }
 
 impl CustomFormatter {
@@ -130,7 +143,11 @@ impl CustomFormatter {
     ///
     /// # Errors
     /// Returns a human-readable config error when the command or extension list is empty.
-    pub fn new(command: Vec<String>, extensions: Vec<String>) -> Result<Self, String> {
+    pub fn new(
+        command: Vec<String>,
+        extensions: Vec<String>,
+        env: BTreeMap<String, String>,
+    ) -> Result<Self, String> {
         let command = command
             .into_iter()
             .map(|part| part.trim().to_owned())
@@ -154,6 +171,7 @@ impl CustomFormatter {
         Ok(Self {
             command,
             extensions,
+            env,
         })
     }
 
@@ -173,7 +191,7 @@ impl CustomFormatter {
 pub struct FormatterConfig {
     custom: Vec<CustomFormatter>,
     builtins_enabled: bool,
-    disabled: Vec<FormatterKind>,
+    builtin_overrides: BTreeMap<FormatterKind, FormatterOverride>,
 }
 
 impl Default for FormatterConfig {
@@ -181,7 +199,7 @@ impl Default for FormatterConfig {
         Self {
             custom: Vec::new(),
             builtins_enabled: true,
-            disabled: Vec::new(),
+            builtin_overrides: BTreeMap::new(),
         }
     }
 }
@@ -219,7 +237,7 @@ impl FormatterConfig {
             Value::Boolean(true) => Ok(Self::default()),
             Value::Table(table) => {
                 let mut config = Self {
-                    disabled: parse_disabled_builtins(table),
+                    builtin_overrides: parse_builtin_overrides(table)?,
                     ..Self::default()
                 };
                 if let Some(custom) = table.get("custom") {
@@ -242,7 +260,18 @@ impl FormatterConfig {
     }
 
     fn builtin_enabled(&self, kind: FormatterKind) -> bool {
-        self.builtins_enabled && !self.disabled.contains(&kind)
+        self.builtins_enabled
+            && !self
+                .builtin_overrides
+                .get(&kind)
+                .is_some_and(|override_| override_.disabled)
+    }
+
+    fn builtin_override(&self, kind: FormatterKind) -> FormatterOverride {
+        self.builtin_overrides
+            .get(&kind)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -284,7 +313,8 @@ impl FormatterRunner {
         if !self.config.builtin_enabled(kind) {
             return Err(SkipReason::UnsupportedExtension);
         }
-        if !binary_available(kind.binary()) {
+        let builtin_override = self.config.builtin_override(kind);
+        if builtin_override.command.is_none() && !binary_available(kind.binary()) {
             return Err(SkipReason::MissingBinary {
                 binary: kind.binary(),
             });
@@ -308,7 +338,11 @@ impl FormatterRunner {
         Ok(FormatterSelection {
             kind,
             current_dir,
-            command: FormatterCommand::Builtin(kind),
+            command: FormatterCommand::Builtin {
+                kind,
+                command: builtin_override.command,
+                env: builtin_override.env,
+            },
         })
     }
 
@@ -342,8 +376,8 @@ pub fn binary_available(binary: &str) -> bool {
 fn run_formatter(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
     let pre_format = fs::read(path).ok();
     let outcome = match &selection.command {
-        FormatterCommand::Builtin(kind) => {
-            run_builtin_formatter(path, *kind, &selection.current_dir)
+        FormatterCommand::Builtin { kind, command, env } => {
+            run_builtin_formatter(path, *kind, command.as_deref(), env, &selection.current_dir)
         }
         FormatterCommand::Custom(custom) => {
             run_custom_formatter(path, custom, &selection.current_dir)
@@ -359,14 +393,25 @@ fn run_formatter(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
     outcome
 }
 
-fn run_builtin_formatter(path: &Path, kind: FormatterKind, current_dir: &Path) -> FormatOutcome {
+fn run_builtin_formatter(
+    path: &Path,
+    kind: FormatterKind,
+    command_override: Option<&[String]>,
+    env: &BTreeMap<String, String>,
+    current_dir: &Path,
+) -> FormatOutcome {
+    if let Some(command_override) = command_override {
+        return run_overridden_command(path, command_override, env, current_dir, kind);
+    }
+
     let mut command = Command::new(kind.binary());
     configure_formatter_child(&mut command);
     command
         .current_dir(current_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .envs(env);
 
     match kind {
         FormatterKind::Rustfmt => {
@@ -395,7 +440,8 @@ fn run_custom_formatter(
         .current_dir(current_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .envs(&custom.env);
 
     let file_arg = path.to_string_lossy().to_string();
     let mut saw_file_placeholder = false;
@@ -414,6 +460,45 @@ fn run_custom_formatter(
     run_command(command, FormatterKind::Custom)
 }
 
+fn run_overridden_command(
+    path: &Path,
+    command_parts: &[String],
+    env: &BTreeMap<String, String>,
+    current_dir: &Path,
+    kind: FormatterKind,
+) -> FormatOutcome {
+    let Some(program) = command_parts.first() else {
+        return FormatOutcome::Failed(FormatFailure {
+            formatter: kind,
+            status: None,
+            stderr: "formatter command override is empty".to_owned(),
+        });
+    };
+    let mut command = Command::new(program);
+    configure_formatter_child(&mut command);
+    command
+        .current_dir(current_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .envs(env);
+
+    let file_arg = path.to_string_lossy().to_string();
+    let mut saw_file_placeholder = false;
+    for arg in command_parts.iter().skip(1) {
+        if arg.contains("$FILE") {
+            command.arg(arg.replace("$FILE", &file_arg));
+            saw_file_placeholder = true;
+        } else {
+            command.arg(arg);
+        }
+    }
+    if !saw_file_placeholder {
+        command.arg(&file_arg);
+    }
+    run_command(command, kind)
+}
+
 fn run_command(mut command: Command, kind: FormatterKind) -> FormatOutcome {
     match command.output() {
         Ok(output) if output.status.success() => FormatOutcome::Formatted(kind),
@@ -430,23 +515,50 @@ fn run_command(mut command: Command, kind: FormatterKind) -> FormatOutcome {
     }
 }
 
-fn parse_disabled_builtins(table: &toml::value::Table) -> Vec<FormatterKind> {
-    [
+fn parse_builtin_overrides(
+    table: &toml::value::Table,
+) -> Result<BTreeMap<FormatterKind, FormatterOverride>, String> {
+    let mut overrides = BTreeMap::new();
+    for (name, kind) in [
         ("rustfmt", FormatterKind::Rustfmt),
         ("prettier", FormatterKind::Prettier),
         ("ruff", FormatterKind::Ruff),
-    ]
-    .into_iter()
-    .filter_map(|(key, kind)| {
-        table
-            .get(key)
-            .and_then(Value::as_table)
-            .and_then(|table| table.get("disabled"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-            .then_some(kind)
-    })
-    .collect()
+    ] {
+        let Some(value) = table.get(name) else {
+            continue;
+        };
+        let builtin = value
+            .as_table()
+            .ok_or_else(|| format!("formatter.{name} must be a table"))?;
+        let disabled = match builtin.get("disabled") {
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| format!("formatter.{name}.disabled must be a boolean"))?,
+            None => false,
+        };
+        let command = builtin
+            .get("command")
+            .map(parse_string_or_array)
+            .transpose()?
+            .map(|parts| normalize_command(parts, &format!("formatter.{name}.command")))
+            .transpose()?;
+        let env = builtin
+            .get("env")
+            .map(parse_string_table)
+            .transpose()?
+            .unwrap_or_default();
+        if disabled || command.is_some() || !env.is_empty() {
+            overrides.insert(
+                kind,
+                FormatterOverride {
+                    disabled,
+                    command,
+                    env,
+                },
+            );
+        }
+    }
+    Ok(overrides)
 }
 
 fn parse_custom_formatters(value: &Value) -> Result<Vec<CustomFormatter>, String> {
@@ -454,27 +566,51 @@ fn parse_custom_formatters(value: &Value) -> Result<Vec<CustomFormatter>, String
         Value::Table(table)
             if table.contains_key("command") || table.contains_key("extensions") =>
         {
-            Ok(vec![parse_custom_formatter(table)?])
+            if table
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![parse_custom_formatter(table)?])
+            }
         }
         Value::Table(table) => table
             .iter()
             .map(|(name, value)| {
-                value
+                let entry = value
                     .as_table()
-                    .ok_or_else(|| format!("formatter.custom.{name} must be a table"))
-                    .and_then(parse_custom_formatter)
+                    .ok_or_else(|| format!("formatter.custom.{name} must be a table"))?;
+                if entry
+                    .get("disabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    return Ok(None);
+                }
+                parse_custom_formatter(entry).map(Some)
             })
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()
+            .map(|items| items.into_iter().flatten().collect()),
         Value::Array(items) => items
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                value
+                let entry = value
                     .as_table()
-                    .ok_or_else(|| format!("formatter.custom[{index}] must be a table"))
-                    .and_then(parse_custom_formatter)
+                    .ok_or_else(|| format!("formatter.custom[{index}] must be a table"))?;
+                if entry
+                    .get("disabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    return Ok(None);
+                }
+                parse_custom_formatter(entry).map(Some)
             })
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()
+            .map(|items| items.into_iter().flatten().collect()),
         other => Err(format!(
             "formatter.custom must be a table or array of tables, not {}",
             other.type_str()
@@ -491,7 +627,16 @@ fn parse_custom_formatter(table: &toml::value::Table) -> Result<CustomFormatter,
         .get("extensions")
         .ok_or_else(|| "formatter.custom.extensions is required".to_owned())
         .and_then(parse_string_or_array)?;
-    CustomFormatter::new(command, extensions)
+    let env = table
+        .get("env")
+        .map(parse_string_table)
+        .transpose()?
+        .unwrap_or_default();
+    CustomFormatter::new(
+        normalize_command(command, "formatter.custom.command")?,
+        extensions,
+        env,
+    )
 }
 
 fn parse_string_or_array(value: &Value) -> Result<Vec<String>, String> {
@@ -510,6 +655,32 @@ fn parse_string_or_array(value: &Value) -> Result<Vec<String>, String> {
             other.type_str()
         )),
     }
+}
+
+fn parse_string_table(value: &Value) -> Result<BTreeMap<String, String>, String> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| format!("expected a table of strings, not {}", value.type_str()))?;
+    let mut out = BTreeMap::new();
+    for (key, value) in table {
+        let text = value
+            .as_str()
+            .ok_or_else(|| format!("expected string for env.{key}, not {}", value.type_str()))?;
+        out.insert(key.clone(), text.to_owned());
+    }
+    Ok(out)
+}
+
+fn normalize_command(parts: Vec<String>, key: &str) -> Result<Vec<String>, String> {
+    let command = parts
+        .into_iter()
+        .map(|part| part.trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if command.is_empty() {
+        return Err(format!("{key} must contain at least one non-empty string"));
+    }
+    Ok(command)
 }
 
 fn normalize_extension(extension: &str) -> String {
@@ -657,6 +828,21 @@ mod tests {
         dir
     }
 
+    fn toml_string(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).expect("chmod");
+    }
+
     #[test]
     fn unsupported_extensions_are_left_unselected() {
         let dir = temp_dir("unknown");
@@ -721,5 +907,63 @@ mod tests {
                 FormatterKind::Ruff
             );
         }
+    }
+
+    #[test]
+    fn builtins_can_be_disabled_per_formatter() {
+        let dir = temp_dir("disabled-rustfmt");
+        let table: toml::value::Table = toml::from_str(
+            r#"
+[formatter.rustfmt]
+disabled = true
+"#,
+        )
+        .expect("toml");
+        let config = FormatterConfig::from_table(&table).expect("config");
+        let runner = FormatterRunner::with_config(&dir, config);
+        assert_eq!(
+            runner.select(&dir.join("demo.rs")),
+            Err(SkipReason::UnsupportedExtension),
+            "disabled built-in formatter should not be selected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_command_override_runs_with_configured_env() {
+        let dir = temp_dir("override-env");
+        let marker = dir.join("formatter-env.txt");
+        let script = dir.join("fake-rustfmt.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"${CORTEX_FORMAT_TEST:-missing}\" > \"${CORTEX_FORMAT_MARKER:-/tmp/missing}\"\nexit 0\n",
+        )
+        .expect("script");
+        make_executable(&script);
+
+        let table: toml::value::Table = toml::from_str(&format!(
+            r#"
+[formatter.rustfmt]
+command = ["{}", "$FILE"]
+[formatter.rustfmt.env]
+CORTEX_FORMAT_TEST = "env-ok"
+CORTEX_FORMAT_MARKER = "{}"
+"#,
+            toml_string(&script),
+            toml_string(&marker)
+        ))
+        .expect("toml");
+        let config = FormatterConfig::from_table(&table).expect("config");
+        let runner = FormatterRunner::with_config(&dir, config);
+        let file = dir.join("demo.rs");
+        fs::write(&file, "fn main() {}\n").expect("fixture file");
+
+        let outcome = runner.format_path(&file);
+        assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+        assert_eq!(
+            fs::read_to_string(&marker).expect("marker"),
+            "env-ok",
+            "override command should receive configured environment"
+        );
     }
 }

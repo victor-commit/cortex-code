@@ -595,6 +595,10 @@ pub struct RunArgs {
     #[arg(long, value_name = "NAME")]
     pub agent: Option<String>,
 
+    /// Mode overlay to compose with the selected agent for this turn.
+    #[arg(long, value_name = "NAME")]
+    pub mode: Option<String>,
+
     /// Resume an explicit session by id.
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
@@ -927,6 +931,7 @@ mod tests {
         for flag in [
             "--model",
             "--agent",
+            "--mode",
             "--session",
             "--format",
             "--schema",

@@ -755,6 +755,81 @@ url = "http://127.0.0.1:3226/mcp"
 }
 
 #[test]
+fn mcp_auth_honors_oauth_config_overrides_without_cli_mutation() {
+    let Some(_bin) = remote_server_bin() else {
+        eprintln!("skipping: cortex-mcp-remote-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("oauth-overrides");
+    let log = scratch.root.join("oauth-overrides.log");
+    let _fixture = Fixture::spawn("oauth", 3231, &log).expect("oauth fixture");
+    scratch.write_project_config(
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3231/mcp"
+[mcp.api.oauth]
+client_id = "fixture-client"
+scopes = ["openid", "profile"]
+callback_port = 3232
+"#,
+    );
+
+    let mut auth = cortex_command(
+        &scratch,
+        &["mcp", "auth", "api", "--timeout", "10", "--format", "json"],
+    );
+    let mut child = auth
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp auth");
+    let mut stdout = child.stdout.take().expect("auth stdout");
+    let mut stderr = child.stderr.take().expect("auth stderr");
+    let start = read_first_json_line(&mut stdout);
+    let authorize_url = start["authorize_url"].as_str().expect("authorize_url");
+    let redirect_uri = start["redirect_uri"].as_str().expect("redirect_uri");
+    assert_eq!(redirect_uri, "http://127.0.0.1:3232/callback");
+    assert!(
+        authorize_url.contains("client_id=fixture-client"),
+        "authorize URL must carry configured client_id, got: {authorize_url}"
+    );
+    assert!(
+        authorize_url.contains("scope=openid")
+            && (authorize_url.contains("%20profile") || authorize_url.contains("+profile")),
+        "authorize URL must carry configured scopes, got: {authorize_url}"
+    );
+
+    let callback_body = http_get_follow_once(authorize_url);
+    assert!(
+        callback_body.contains("Authorization complete"),
+        "callback body: {callback_body}"
+    );
+
+    let status = child.wait().expect("wait mcp auth");
+    assert_eq!(status.code(), Some(0), "mcp auth must exit successfully");
+    let mut auth_stdout_rest = Vec::new();
+    let mut auth_stderr = Vec::new();
+    let _ = stdout.read_to_end(&mut auth_stdout_rest);
+    let _ = stderr.read_to_end(&mut auth_stderr);
+    assert!(
+        auth_stderr.is_empty(),
+        "auth stderr should stay clean: {}",
+        String::from_utf8_lossy(&auth_stderr)
+    );
+    let list = mcp_list_json(&scratch);
+    assert_eq!(list["servers"][0]["status"], "connected");
+    assert!(
+        list["servers"][0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["id"] == "api_add")
+    );
+}
+
+#[test]
 fn mcp_list_reports_resources_and_prompts() {
     let Some(bin) = echo_server_bin() else {
         eprintln!("skipping: cortex-mcp-echo-server fixture not built");

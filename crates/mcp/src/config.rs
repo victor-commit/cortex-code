@@ -56,6 +56,9 @@ pub struct McpServerConfig {
     /// Whether this server is connected. A disabled entry is never spawned and its tools are absent.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Optional OAuth overrides for a remote server.
+    #[serde(default)]
+    pub oauth: Option<McpOAuthConfig>,
 }
 
 const fn default_enabled() -> bool {
@@ -71,6 +74,26 @@ impl McpServerConfig {
             .split_first()
             .map(|(program, args)| (program.as_str(), args))
     }
+}
+
+/// Optional OAuth settings for one remote MCP server.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpOAuthConfig {
+    /// OAuth client id override.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Explicit authorization endpoint override.
+    #[serde(default)]
+    pub authorize_endpoint: Option<String>,
+    /// Explicit token endpoint override.
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    /// Explicit scope list override.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Preferred OAuth loopback callback port.
+    #[serde(default)]
+    pub callback_port: Option<u16>,
 }
 
 /// A failure parsing the `mcp` config table into typed server entries.
@@ -178,6 +201,36 @@ mod tests {
         assert_eq!(api.transport, McpTransport::Remote);
         assert_eq!(api.url.as_deref(), Some("http://127.0.0.1:3201/mcp"));
         assert_eq!(api.headers.get("X-Api").map(String::as_str), Some("abc"));
+    }
+
+    #[test]
+    fn parses_remote_oauth_overrides() {
+        let value = json!({
+            "api": {
+                "type": "remote",
+                "url": "http://127.0.0.1:3201/mcp",
+                "oauth": {
+                    "client_id": "demo-client",
+                    "authorize_endpoint": "http://127.0.0.1:3201/authz",
+                    "token_endpoint": "http://127.0.0.1:3201/token",
+                    "scopes": ["openid", "profile"],
+                    "callback_port": 3227
+                }
+            }
+        });
+        let api = &servers_from_value(&value).expect("parse")["api"];
+        let oauth = api.oauth.as_ref().expect("oauth");
+        assert_eq!(oauth.client_id.as_deref(), Some("demo-client"));
+        assert_eq!(
+            oauth.authorize_endpoint.as_deref(),
+            Some("http://127.0.0.1:3201/authz")
+        );
+        assert_eq!(
+            oauth.token_endpoint.as_deref(),
+            Some("http://127.0.0.1:3201/token")
+        );
+        assert_eq!(oauth.scopes, vec!["openid", "profile"]);
+        assert_eq!(oauth.callback_port, Some(3227));
     }
 
     #[test]

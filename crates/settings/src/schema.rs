@@ -174,6 +174,15 @@ fn validate_formatter(table: &Table) -> Result<(), ConfigError> {
                     if let Some(disabled) = config.get("disabled") {
                         expect_bool(disabled, &format!("formatter.{builtin}.disabled"))?;
                     }
+                    if let Some(command) = config.get("command") {
+                        expect_string_or_array_of_strings(
+                            command,
+                            &format!("formatter.{builtin}.command"),
+                        )?;
+                    }
+                    if let Some(env) = config.get("env") {
+                        expect_table_of_strings(env, &format!("formatter.{builtin}.env"))?;
+                    }
                 }
             }
             Ok(())
@@ -233,6 +242,12 @@ fn validate_custom_formatter_entry(table: &Table, key: &str) -> Result<(), Confi
         )
     })?;
     expect_string_or_array_of_strings(extensions, &format!("{key}.extensions"))?;
+    if let Some(env) = table.get("env") {
+        expect_table_of_strings(env, &format!("{key}.env"))?;
+    }
+    if let Some(disabled) = table.get("disabled") {
+        expect_bool(disabled, &format!("{key}.disabled"))?;
+    }
     Ok(())
 }
 
@@ -261,6 +276,9 @@ fn validate_lsp(table: &Table) -> Result<(), ConfigError> {
                     }
                     if let Some(disabled) = config.get("disabled") {
                         expect_bool(disabled, &format!("lsp.servers.{name}.disabled"))?;
+                    }
+                    if let Some(env) = config.get("env") {
+                        expect_table_of_strings(env, &format!("lsp.servers.{name}.env"))?;
                     }
                 }
             }
@@ -291,6 +309,24 @@ fn validate_mcp(table: &Table) -> Result<(), ConfigError> {
                 "command" => expect_array_of_strings(value, &path)?,
                 "headers" | "environment" => expect_table_of_strings(value, &path)?,
                 "timeout" => expect_integer(value, &path)?,
+                "oauth" => {
+                    let oauth = expect_table(value, &path, "a table")?;
+                    for (oauth_key, oauth_value) in oauth {
+                        let oauth_path = format!("{path}.{oauth_key}");
+                        match oauth_key.as_str() {
+                            "client_id" | "authorize_endpoint" | "token_endpoint" => {
+                                expect_string(oauth_value, &oauth_path)?;
+                            }
+                            "scopes" => {
+                                expect_array_of_strings(oauth_value, &oauth_path)?;
+                            }
+                            "callback_port" => {
+                                expect_integer(oauth_value, &oauth_path)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -456,6 +492,24 @@ mod tests {
             message.contains("integer"),
             "names what was found: {message}"
         );
+    }
+
+    #[test]
+    fn mcp_oauth_fields_accept_expected_types() {
+        let mut t = table(
+            r#"
+[mcp.remote]
+type = "remote"
+url = "http://127.0.0.1:3226/mcp"
+[mcp.remote.oauth]
+client_id = "demo-client"
+authorize_endpoint = "http://127.0.0.1:3226/authorize"
+token_endpoint = "http://127.0.0.1:3226/token"
+scopes = ["openid", "profile"]
+callback_port = 3227
+"#,
+        );
+        validate(&mut t).expect("mcp oauth config is valid");
     }
 
     #[test]

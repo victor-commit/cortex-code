@@ -65,7 +65,13 @@ fn diagnostics(args: LspDiagnosticsArgs) -> Exit {
         return Exit::Failure;
     }
 
-    let config = lsp::LspConfigSet::defaults();
+    let config = match crate::lsp_config::load_from_process() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("cortex lsp diagnostics: {err}");
+            return Exit::Config;
+        }
+    };
     let server = config.resolve_for_path(&absolute).cloned();
     let mut manager = lsp::FeedbackManager::new(&cwd, config);
     let report = diagnostics_report(&args.file, server.as_ref(), manager.collect(&input_path));
@@ -235,7 +241,14 @@ fn absolute_path(cwd: &Path, path: &Path) -> PathBuf {
 
 fn status(format: OutputFormat) -> Exit {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let rows = crate::lsp_bridge::current_status(cwd)
+    let config = match crate::lsp_config::load_from_process() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("cortex lsp status: {err}");
+            return Exit::Config;
+        }
+    };
+    let rows = crate::lsp_bridge::current_status(cwd, config)
         .into_iter()
         .map(|status| {
             let (state, pid) = match status.state {

@@ -96,6 +96,12 @@ impl LspServerCommand {
         &self.args
     }
 
+    /// Environment overrides.
+    #[must_use]
+    pub fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+
     fn validate(&self) -> Result<(), LspError> {
         if self.program.trim().is_empty() || self.program.contains('\0') {
             return Err(LspError::InvalidCommand);

@@ -240,15 +240,45 @@ fn auth_server(args: McpAuthArgs) -> Exit {
         }
     };
 
-    runtime.block_on(async {
-        let oauth_config = match mcp::oauth::discover(url, "cortex").await {
+    let oauth_overrides = server.oauth.clone();
+    runtime.block_on(async move {
+        let client_id = oauth_overrides
+            .as_ref()
+            .and_then(|oauth| oauth.client_id.as_deref())
+            .filter(|client_id| !client_id.trim().is_empty())
+            .unwrap_or("cortex");
+        let mut oauth_config = match mcp::oauth::discover(url, client_id).await {
             Ok(config) => config,
             Err(err) => {
                 eprintln!("cortex mcp auth: {err}");
                 return Exit::Failure;
             }
         };
-        let request = match mcp::oauth::begin(oauth_config, args.callback_port).await {
+        let callback_port = args.callback_port.or_else(|| {
+            oauth_overrides
+                .as_ref()
+                .and_then(|oauth| oauth.callback_port)
+        });
+        if let Some(oauth) = &oauth_overrides {
+            if let Some(endpoint) = oauth
+                .authorize_endpoint
+                .as_deref()
+                .filter(|endpoint| !endpoint.trim().is_empty())
+            {
+                oauth_config.authorize_endpoint = endpoint.to_owned();
+            }
+            if let Some(endpoint) = oauth
+                .token_endpoint
+                .as_deref()
+                .filter(|endpoint| !endpoint.trim().is_empty())
+            {
+                oauth_config.token_endpoint = endpoint.to_owned();
+            }
+            if !oauth.scopes.is_empty() {
+                oauth_config.scopes = oauth.scopes.clone();
+            }
+        }
+        let request = match mcp::oauth::begin(oauth_config, callback_port).await {
             Ok(request) => request,
             Err(err) => {
                 eprintln!("cortex mcp auth: {err}");

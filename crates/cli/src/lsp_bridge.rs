@@ -16,9 +16,9 @@ pub struct LspHooks {
 impl LspHooks {
     /// Build hooks rooted at the current run working directory.
     #[must_use]
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, config: LspConfigSet) -> Self {
         Self {
-            manager: Mutex::new(FeedbackManager::new(root, LspConfigSet::defaults())),
+            manager: Mutex::new(FeedbackManager::new(root, config)),
         }
     }
 
@@ -184,7 +184,7 @@ fn to_tool_diagnostic(diagnostic: FileDiagnostic) -> tools::Diagnostic {
 
 /// Snapshot configured LSP server status without launching any server.
 #[must_use]
-pub fn current_status(root: impl Into<PathBuf>) -> Vec<ServerStatus> {
-    let mut manager = FeedbackManager::new(root, LspConfigSet::defaults());
+pub fn current_status(root: impl Into<PathBuf>, config: LspConfigSet) -> Vec<ServerStatus> {
+    let mut manager = FeedbackManager::new(root, config);
     manager.statuses()
 }
