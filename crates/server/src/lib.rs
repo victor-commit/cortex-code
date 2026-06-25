@@ -1466,7 +1466,7 @@ async fn execute_command(
     let effective_config = settings::load(config_inputs.clone()).map_err(config_api_error)?;
     let selected_agent = resolve_turn_agent(&config_inputs, effective_config.agent(), "serve")
         .map_err(ApiError::bad_request)?;
-    let permission_engine = permission_engine_for_turn(
+    let turn_permissions = permission_engine_for_turn(
         state.event_bus.clone(),
         state.permissions.clone(),
         &id,
@@ -1481,13 +1481,14 @@ async fn execute_command(
             db_path: state.db_path.clone(),
         }))
         .with_audit(audit_sink);
-    if let Some(permission_engine) = permission_engine {
+    if let Some(permission_engine) = turn_permissions.engine() {
         context = context.with_permissions(permission_engine);
     }
     let output = ToolRegistry::builtin()
         .execute("bash", &arguments, &context)
         .await;
     context.background_jobs().shutdown().await;
+    turn_permissions.persist_if_changed();
     state.event_bus.publish(&Event::tool_result_for_turn(
         id,
         call_id.clone(),
@@ -1703,7 +1704,7 @@ async fn run_message_turn(
     if let Some(temperature) = selected_agent.temperature() {
         turn = turn.with_temperature(temperature);
     }
-    let permission_engine = permission_engine_for_turn(
+    let turn_permissions = permission_engine_for_turn(
         state.event_bus.clone(),
         state.permissions.clone(),
         &session_id,
@@ -1717,7 +1718,7 @@ async fn run_message_turn(
         session_id.clone(),
         state.db_path.clone(),
         state.checkpoint_base.clone(),
-        permission_engine,
+        turn_permissions.engine(),
         audit_sink,
     );
     let result = run_cancellable_turn(
@@ -1731,6 +1732,7 @@ async fn run_message_turn(
     )
     .await;
     dispatcher.shutdown().await;
+    turn_permissions.persist_if_changed();
 
     let Some(result) = result else {
         state.event_bus.publish(&Event::turn_done(
@@ -2137,6 +2139,46 @@ struct ServerPermissionResponder {
     message_id: String,
 }
 
+struct ServerTurnPermissions {
+    engine: Option<Arc<PermissionEngine>>,
+    saved: Arc<permissions::SavedDecisions>,
+    loaded: Vec<permissions::SavedDecision>,
+    workspace_key: String,
+}
+
+impl ServerTurnPermissions {
+    fn new(
+        engine: Option<Arc<PermissionEngine>>,
+        saved: Arc<permissions::SavedDecisions>,
+        loaded: Vec<permissions::SavedDecision>,
+        workspace_key: String,
+    ) -> Self {
+        Self {
+            engine,
+            saved,
+            loaded,
+            workspace_key,
+        }
+    }
+
+    fn engine(&self) -> Option<Arc<PermissionEngine>> {
+        self.engine.clone()
+    }
+
+    fn persist_if_changed(&self) {
+        let snapshot = self.saved.snapshot();
+        if snapshot.as_slice() == self.loaded.as_slice() {
+            return;
+        }
+        if let Err(err) = permissions::store::save_for(&self.workspace_key, &snapshot) {
+            eprintln!(
+                "cortex serve: failed to persist saved permission decisions for workspace `{}`: {err}",
+                self.workspace_key
+            );
+        }
+    }
+}
+
 impl ServerPermissionResponder {
     fn new(
         pending: PendingPermissions,
@@ -2191,7 +2233,10 @@ fn permission_engine_for_turn(
     message_id: &str,
     inputs: &settings::ConfigInputs,
     agent: &custom_agents::ActiveAgent,
-) -> Result<Option<Arc<PermissionEngine>>, ApiError> {
+) -> Result<ServerTurnPermissions, ApiError> {
+    let workspace_key = checkpoints::workspace_key(&inputs.cwd);
+    let loaded = permissions::store::load_for(&workspace_key);
+    let saved = Arc::new(permissions::SavedDecisions::from_decisions(loaded.clone()));
     let base_agent = agent.base_agent();
     let config_ruleset = permissions::load_agent_rulesets(inputs)
         .map(|rulesets| rulesets.for_agent(agent.name()))
@@ -2212,12 +2257,23 @@ fn permission_engine_for_turn(
             format!("cannot load trust policy: {err}"),
         )
     })?;
+    let mut trust_hard_denies = Vec::new();
     for rule in policy::trust_ruleset(trust).rules() {
-        ruleset.push(rule.clone());
+        if rule.action == permissions::Action::Deny {
+            trust_hard_denies.push(rule.clone());
+        } else {
+            ruleset.push(rule.clone());
+        }
     }
-    let hard_denies = readonly_agent_restriction_rules(base_agent);
-    if ruleset.is_empty() && hard_denies.is_empty() {
-        return Ok(None);
+    let mut hard_denies = readonly_agent_restriction_rules(base_agent);
+    hard_denies.extend(trust_hard_denies);
+    if ruleset.is_empty() && hard_denies.is_empty() && saved.is_empty() {
+        return Ok(ServerTurnPermissions::new(
+            None,
+            saved,
+            loaded,
+            workspace_key,
+        ));
     }
     let responder = Arc::new(ServerPermissionResponder::new(
         pending_permissions,
@@ -2225,13 +2281,19 @@ fn permission_engine_for_turn(
         session_id,
         message_id,
     ));
-    Ok(Some(Arc::new(
-        PermissionEngine::new(ruleset)
-            .with_hard_denies(permissions::Ruleset::new(hard_denies))
-            .with_responder(responder)
-            .with_bus(bus)
-            .with_event_context(session_id.to_owned(), message_id.to_owned()),
-    )))
+    Ok(ServerTurnPermissions::new(
+        Some(Arc::new(
+            PermissionEngine::new(ruleset)
+                .with_hard_denies(permissions::Ruleset::new(hard_denies))
+                .with_responder(responder)
+                .with_saved_decisions(saved.clone())
+                .with_bus(bus)
+                .with_event_context(session_id.to_owned(), message_id.to_owned()),
+        )),
+        saved,
+        loaded,
+        workspace_key,
+    ))
 }
 
 fn readonly_agent_base_rules(agent: Agent) -> Vec<permissions::Rule> {

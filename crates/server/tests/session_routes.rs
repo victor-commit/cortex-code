@@ -964,6 +964,460 @@ action = "ask"
     assert_eq!(risky_response.status(), StatusCode::OK);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permission_reply_always_persists_and_reloads_after_restart_without_new_ask() {
+    let scratch = Scratch::new("server-permission-always-persist-restart");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "bash"
+pattern = "echo *"
+action = "ask"
+
+[[permission]]
+tool = "bash"
+pattern = "rm *"
+action = "ask"
+"#,
+    )
+    .expect("write project config");
+
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new()),
+    );
+    let first_session = create_session(&app).await;
+    let first_target = workspace.join("first.txt");
+    let second_target = workspace.join("second.txt");
+    let risky_target = workspace.join("risky-target.txt");
+
+    let first_app = app.clone();
+    let first_session_id = first_session.id.clone();
+    let first_turn = tokio::spawn(async move {
+        first_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{first_session_id}/command"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"command":"echo first > first.txt"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("first command response")
+    });
+
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/permission/pending")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !pending.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        pending.len(),
+        1,
+        "first command should be awaiting permission"
+    );
+    let first_id = pending[0]["id"].as_str().expect("pending id").to_owned();
+    assert!(
+        pending[0]["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains("echo first")),
+        "pending ask should match the echo command: {pending:?}"
+    );
+
+    let first_reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{first_id}","decision":"allow","always":true}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("reply response");
+    assert_eq!(first_reply.status(), StatusCode::OK);
+    let first_reply_body: serde_json::Value = json_body(first_reply).await;
+    assert_eq!(first_reply_body["resolved"], 1);
+
+    let first_response = tokio::time::timeout(Duration::from_secs(3), first_turn)
+        .await
+        .expect("first command completed")
+        .expect("first command join");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_body: serde_json::Value = json_body(first_response).await;
+    assert_eq!(first_body["status"], "completed");
+    assert!(
+        first_target.exists(),
+        "allowed command should create first.txt"
+    );
+
+    let workspace_key = checkpoints::workspace_key(&workspace);
+    let store_path = permissions::store::store_path_with(
+        &permissions::store::StoreInputs::from_process(),
+        &workspace_key,
+    )
+    .expect("permission store path");
+    assert!(
+        store_path.exists(),
+        "allow-always should persist a saved decision after command completion"
+    );
+    let stored: Vec<permissions::SavedDecision> = permissions::store::read(&store_path);
+    assert!(
+        stored.iter().any(|decision| {
+            decision.tool == "bash"
+                && decision.pattern == "echo *"
+                && decision.decision == permissions::Decision::Allow
+        }),
+        "saved decisions should include the scoped echo allow entry: {stored:?}"
+    );
+
+    let event_bus = Arc::new(events::EventBus::new());
+    let mut event_stream = event_bus.subscribe_stream();
+    let restarted = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new())
+            .with_event_bus(event_bus),
+    );
+    let restarted_session = create_session(&restarted).await;
+
+    let second_response = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/command", restarted_session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"command":"echo second > second.txt"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("second command response");
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_body: serde_json::Value = json_body(second_response).await;
+    assert_eq!(
+        second_body["status"], "completed",
+        "restarted server should auto-allow matching command from saved decision"
+    );
+    assert!(
+        second_target.exists(),
+        "matching command should run after restart without a new permission prompt"
+    );
+
+    let pending_after_second = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/permission/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("pending response");
+    assert_eq!(pending_after_second.status(), StatusCode::OK);
+    let pending_after_second_body: serde_json::Value = json_body(pending_after_second).await;
+    assert_eq!(
+        pending_after_second_body["pending"]
+            .as_array()
+            .map_or(0, std::vec::Vec::len),
+        0,
+        "matching saved decision should leave no pending permission entries"
+    );
+
+    let mut saw_permission_asked = false;
+    loop {
+        match event_stream.try_recv() {
+            Ok(event) => {
+                if event.kind() == "permission.asked" {
+                    saw_permission_asked = true;
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+        }
+    }
+    assert!(
+        !saw_permission_asked,
+        "matching saved decision should not emit permission.asked after restart"
+    );
+
+    let restarted_for_risky = restarted.clone();
+    let restarted_session_id = restarted_session.id.clone();
+    let risky_turn = tokio::spawn(async move {
+        restarted_for_risky
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{restarted_session_id}/command"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"command":"rm risky-target.txt"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("risky response")
+    });
+
+    let mut risky_pending = Vec::new();
+    let risky_deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < risky_deadline {
+        let pending_response = restarted
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/permission/pending")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        risky_pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !risky_pending.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        risky_pending.len(),
+        1,
+        "unrelated command should still require permission despite saved echo allow"
+    );
+    let risky_id = risky_pending[0]["id"]
+        .as_str()
+        .expect("risky id")
+        .to_owned();
+    assert!(
+        risky_pending[0]["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains("rm risky-target.txt")),
+        "pending subject should show unrelated risky command: {risky_pending:?}"
+    );
+
+    let risky_reply = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{risky_id}","decision":"deny"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("risky reply");
+    assert_eq!(risky_reply.status(), StatusCode::OK);
+
+    let risky_response = tokio::time::timeout(Duration::from_secs(3), risky_turn)
+        .await
+        .expect("risky command completed")
+        .expect("risky command join");
+    assert_eq!(risky_response.status(), StatusCode::OK);
+    let risky_body: serde_json::Value = json_body(risky_response).await;
+    assert_eq!(risky_body["status"], "error");
+    assert!(
+        !risky_target.exists(),
+        "denied risky command must not create side effects"
+    );
+
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn saved_allow_does_not_override_trust_or_readonly_hard_denies() {
+    let scratch = Scratch::new("server-permission-hard-deny-precedence");
+
+    let trusted_workspace = scratch.dir.join("trusted-workspace");
+    std::fs::create_dir_all(&trusted_workspace).expect("trusted workspace");
+    std::fs::write(
+        trusted_workspace.join("cortex.toml"),
+        r#"
+trust = "untrusted"
+
+[[permission]]
+tool = "bash"
+pattern = "echo *"
+action = "ask"
+"#,
+    )
+    .expect("write trust config");
+    let trusted_workspace_key = checkpoints::workspace_key(&trusted_workspace);
+    permissions::store::save_for(
+        &trusted_workspace_key,
+        &[permissions::SavedDecision::new(
+            "bash",
+            "echo *",
+            permissions::Decision::Allow,
+        )],
+    )
+    .expect("seed trust saved decision");
+    let trusted_app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(trusted_workspace.clone())
+            .with_config_env(Vec::new()),
+    );
+    let trusted_session = create_session(&trusted_app).await;
+    let trusted_target = trusted_workspace.join("trust.txt");
+    let trusted_response = trusted_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/command", trusted_session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"command":"echo trust > trust.txt"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("trust command response");
+    assert_eq!(trusted_response.status(), StatusCode::OK);
+    let trusted_body: serde_json::Value = json_body(trusted_response).await;
+    assert_eq!(
+        trusted_body["status"], "error",
+        "trust hard deny must outrank saved allow"
+    );
+    assert!(
+        !trusted_target.exists(),
+        "trust hard deny should block command side effects"
+    );
+    let trusted_pending = trusted_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/permission/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("pending response");
+    let trusted_pending_body: serde_json::Value = json_body(trusted_pending).await;
+    assert_eq!(
+        trusted_pending_body["pending"]
+            .as_array()
+            .map_or(0, std::vec::Vec::len),
+        0,
+        "trust hard deny should not create pending asks"
+    );
+
+    let plan_workspace = scratch.dir.join("plan-workspace");
+    std::fs::create_dir_all(&plan_workspace).expect("plan workspace");
+    std::fs::write(
+        plan_workspace.join("cortex.toml"),
+        r#"
+agent = "plan"
+
+[[permission]]
+tool = "bash"
+pattern = "echo *"
+action = "ask"
+"#,
+    )
+    .expect("write plan config");
+    let plan_workspace_key = checkpoints::workspace_key(&plan_workspace);
+    permissions::store::save_for(
+        &plan_workspace_key,
+        &[permissions::SavedDecision::new(
+            "bash",
+            "echo *",
+            permissions::Decision::Allow,
+        )],
+    )
+    .expect("seed plan saved decision");
+    let plan_app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(plan_workspace.clone())
+            .with_config_env(Vec::new()),
+    );
+    let plan_session = create_session(&plan_app).await;
+    let plan_target = plan_workspace.join("plan.txt");
+    let plan_response = plan_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/command", plan_session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"command":"echo plan > plan.txt"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("plan command response");
+    assert_eq!(plan_response.status(), StatusCode::OK);
+    let plan_body: serde_json::Value = json_body(plan_response).await;
+    assert_eq!(
+        plan_body["status"], "error",
+        "read-only agent hard deny must outrank saved allow"
+    );
+    assert!(
+        !plan_target.exists(),
+        "read-only mode should block command side effects"
+    );
+    let plan_pending = plan_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/permission/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("pending response");
+    let plan_pending_body: serde_json::Value = json_body(plan_pending).await;
+    assert_eq!(
+        plan_pending_body["pending"]
+            .as_array()
+            .map_or(0, std::vec::Vec::len),
+        0,
+        "read-only hard deny should not create pending asks"
+    );
+
+    if let Some(path) = permissions::store::store_path_with(
+        &permissions::store::StoreInputs::from_process(),
+        &trusted_workspace_key,
+    ) {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Some(path) = permissions::store::store_path_with(
+        &permissions::store::StoreInputs::from_process(),
+        &plan_workspace_key,
+    ) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[tokio::test]
 async fn overlapping_same_session_prompt_is_queued_and_persists_in_order() {
     let scratch = Scratch::new("server-message-same-session-queue");
