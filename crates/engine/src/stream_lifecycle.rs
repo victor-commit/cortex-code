@@ -212,7 +212,7 @@ impl PartLifecycleTracker {
                 self.close_open_parts(&mut emitted, Some((reason, *steps)));
             }
             RunnerEvent::Error { kind, message } => {
-                self.close_open_parts(&mut emitted, None);
+                self.close_non_step_parts(&mut emitted);
                 let step_id = step_part_id(&self.turn_id);
                 let mut delta = self.lifecycle_delta(PartLifecycleKind::Step, &step_id);
                 delta.metadata = serde_json::json!({
@@ -258,6 +258,20 @@ impl PartLifecycleTracker {
         emitted: &mut Vec<PartLifecycleEvent>,
         terminal_step: Option<(&llm::FinishReason, usize)>,
     ) {
+        self.close_non_step_parts(emitted);
+        let step_id = step_part_id(&self.turn_id);
+        let mut end = self.lifecycle_end(PartLifecycleKind::Step, &step_id);
+        if let Some((reason, steps)) = terminal_step {
+            end.step = Some(steps);
+            end.metadata = serde_json::json!({
+                "finish_reason": serde_json::to_value(reason).ok().and_then(|value| value.as_str().map(ToOwned::to_owned)).unwrap_or_else(|| format!("{reason:?}")),
+                "steps": steps,
+            });
+        }
+        emitted.push(end);
+    }
+
+    fn close_non_step_parts(&mut self, emitted: &mut Vec<PartLifecycleEvent>) {
         if self.reasoning_started {
             let reasoning_id = reasoning_part_id(&self.turn_id);
             emitted.push(self.lifecycle_end(PartLifecycleKind::Reasoning, &reasoning_id));
@@ -279,16 +293,6 @@ impl PartLifecycleTracker {
                 self.running_tools.remove(&call_id);
             }
         }
-        let step_id = step_part_id(&self.turn_id);
-        let mut end = self.lifecycle_end(PartLifecycleKind::Step, &step_id);
-        if let Some((reason, steps)) = terminal_step {
-            end.step = Some(steps);
-            end.metadata = serde_json::json!({
-                "finish_reason": serde_json::to_value(reason).ok().and_then(|value| value.as_str().map(ToOwned::to_owned)).unwrap_or_else(|| format!("{reason:?}")),
-                "steps": steps,
-            });
-        }
-        emitted.push(end);
     }
 
     fn lifecycle_start(&mut self, kind: PartLifecycleKind, part_id: &str) -> PartLifecycleEvent {
@@ -534,10 +538,108 @@ mod tests {
     }
 
     #[test]
+    fn error_emits_step_delta_before_single_terminal_end_and_closes_open_parts_once() {
+        let turn_id = "msg_turn_error";
+        let mut tracker = PartLifecycleTracker::new(turn_id, "google/gemini-2.5-flash");
+        let mut out = Vec::new();
+
+        out.extend(tracker.observe(&RunnerEvent::Reasoning {
+            text: "thinking".to_owned(),
+        }));
+        out.extend(tracker.observe(&RunnerEvent::TextDelta {
+            text: "partial".to_owned(),
+        }));
+        out.extend(tracker.observe(&RunnerEvent::ToolCall {
+            id: "call_err".to_owned(),
+            name: "todo".to_owned(),
+            arguments: "{\"todos\":\"1. [pending] x\"}".to_owned(),
+        }));
+        out.extend(tracker.observe(&RunnerEvent::Error {
+            kind: "upstream".to_owned(),
+            message: "boom".to_owned(),
+        }));
+        out.extend(tracker.observe(&RunnerEvent::Done {
+            reason: FinishReason::Error,
+            steps: 1,
+        }));
+
+        let step_id = step_part_id(turn_id);
+        let step_events: Vec<&PartLifecycleEvent> = out
+            .iter()
+            .filter(|event| event.part_id == step_id)
+            .collect();
+        assert_eq!(
+            step_events
+                .iter()
+                .filter(|event| event.phase == PartLifecyclePhase::End)
+                .count(),
+            1,
+            "step part should close exactly once: {step_events:?}"
+        );
+
+        let end_index = step_events
+            .iter()
+            .position(|event| event.phase == PartLifecyclePhase::End)
+            .expect("step end emitted");
+        assert!(
+            step_events[..end_index].iter().any(|event| {
+                event.phase == PartLifecyclePhase::Delta
+                    && event.metadata["error_kind"] == "upstream"
+                    && event.metadata["message"] == "boom"
+            }),
+            "error metadata delta should be emitted before the terminal step end: {step_events:?}"
+        );
+        assert!(
+            step_events[end_index + 1..]
+                .iter()
+                .all(|event| event.phase != PartLifecyclePhase::Delta),
+            "step should never receive deltas after end: {step_events:?}"
+        );
+
+        assert_eq!(
+            count_phase_for_part(&out, &reasoning_part_id(turn_id), PartLifecyclePhase::End),
+            1,
+            "reasoning part should close exactly once"
+        );
+        assert_eq!(
+            count_phase_for_part(&out, &text_part_id(turn_id), PartLifecyclePhase::End),
+            1,
+            "text part should close exactly once"
+        );
+
+        let running_id = tool_running_part_id(turn_id, "call_err");
+        assert_eq!(
+            count_phase_for_part(&out, &running_id, PartLifecyclePhase::End),
+            1,
+            "tool-progress part should close exactly once"
+        );
+        let running_end = out
+            .iter()
+            .find(|event| event.part_id == running_id && event.phase == PartLifecyclePhase::End)
+            .expect("running tool end emitted");
+        assert_eq!(
+            running_end.metadata["implicit_end"].as_bool(),
+            Some(true),
+            "open tool-progress should be closed with implicit_end metadata"
+        );
+    }
+
+    #[test]
     fn id_helpers_are_stable_per_turn() {
         let a = tool_pending_part_id("msg_1", "call 1");
         let b = tool_pending_part_id("msg_1", "call 1");
         assert_eq!(a, b);
         assert_ne!(a, tool_pending_part_id("msg_2", "call 1"));
+    }
+
+    fn count_phase_for_part(
+        events: &[PartLifecycleEvent],
+        part_id: &str,
+        phase: PartLifecyclePhase,
+    ) -> usize {
+        events
+            .iter()
+            .filter(|event| event.part_id == part_id && event.phase == phase)
+            .count()
     }
 }
