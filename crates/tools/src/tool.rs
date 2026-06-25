@@ -196,6 +196,14 @@ pub enum LspOperation {
     Definition,
     /// Resolve reference locations for a symbol position.
     References,
+    /// Resolve implementation locations for a symbol position.
+    Implementation,
+    /// Prepare call hierarchy items for a symbol position.
+    PrepareCallHierarchy,
+    /// Resolve incoming calls for a symbol position.
+    IncomingCalls,
+    /// Resolve outgoing calls for a symbol position.
+    OutgoingCalls,
     /// List document symbols for a file.
     DocumentSymbols,
     /// Search workspace symbols by query.

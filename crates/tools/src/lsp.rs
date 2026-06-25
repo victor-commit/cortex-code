@@ -7,10 +7,10 @@ use serde_json::{Value, json};
 use crate::tool::{LspOperation, LspRequest, Tool, ToolContext, ToolOutput};
 
 const DESCRIPTION: &str = "Query the project's real Language Server Protocol server. Use this \
-to get hover type/signature/docs, go-to-definition locations, references, document symbols, or \
-workspace symbols. Positions are 1-based line and 1-based character offsets over the target \
-symbol. For workspaceSymbols, include filePath when possible so Cortex can select the matching \
-language server.";
+to get hover type/signature/docs, go-to-definition locations, references, implementation \
+locations, call hierarchy, document symbols, or workspace symbols. Positions are 1-based line and \
+1-based character offsets over the target symbol. For workspaceSymbols, include filePath when \
+possible so Cortex can select the matching language server.";
 
 /// The `lsp` tool.
 pub struct LspTool;
@@ -30,7 +30,17 @@ impl Tool for LspTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["hover", "definition", "references", "documentSymbols", "workspaceSymbols"],
+                    "enum": [
+                        "hover",
+                        "definition",
+                        "references",
+                        "implementation",
+                        "prepareCallHierarchy",
+                        "incomingCalls",
+                        "outgoingCalls",
+                        "documentSymbols",
+                        "workspaceSymbols"
+                    ],
                     "description": "The LSP operation to run."
                 },
                 "filePath": {
@@ -40,12 +50,12 @@ impl Tool for LspTool {
                 "line": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "1-based line number over the target symbol (required for hover, definition, and references)."
+                    "description": "1-based line number over the target symbol (required for hover, definition, references, implementation, and call hierarchy actions)."
                 },
                 "character": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "1-based character offset over the target symbol (required for hover, definition, and references)."
+                    "description": "1-based character offset over the target symbol (required for hover, definition, references, implementation, and call hierarchy actions)."
                 },
                 "query": {
                     "type": "string",
@@ -106,7 +116,13 @@ fn parse_request(arguments: &Value) -> Result<LspRequest, String> {
         .unwrap_or(true);
 
     match operation {
-        LspOperation::Hover | LspOperation::Definition | LspOperation::References => {
+        LspOperation::Hover
+        | LspOperation::Definition
+        | LspOperation::References
+        | LspOperation::Implementation
+        | LspOperation::PrepareCallHierarchy
+        | LspOperation::IncomingCalls
+        | LspOperation::OutgoingCalls => {
             require_file(&file_path)?;
             require_positive(line, "line")?;
             require_positive(character, "character")?;
@@ -136,6 +152,14 @@ fn parse_operation(action: &str) -> Result<LspOperation, String> {
         "hover" => Ok(LspOperation::Hover),
         "definition" | "goToDefinition" | "gotoDefinition" => Ok(LspOperation::Definition),
         "references" => Ok(LspOperation::References),
+        "implementation" | "goToImplementation" | "gotoImplementation" => {
+            Ok(LspOperation::Implementation)
+        }
+        "prepareCallHierarchy" | "prepare_call_hierarchy" | "prepare-call-hierarchy" => {
+            Ok(LspOperation::PrepareCallHierarchy)
+        }
+        "incomingCalls" | "incoming_calls" | "incoming-calls" => Ok(LspOperation::IncomingCalls),
+        "outgoingCalls" | "outgoing_calls" | "outgoing-calls" => Ok(LspOperation::OutgoingCalls),
         "documentSymbols" | "document_symbols" | "document-symbols" => {
             Ok(LspOperation::DocumentSymbols)
         }
@@ -143,7 +167,7 @@ fn parse_operation(action: &str) -> Result<LspOperation, String> {
             Ok(LspOperation::WorkspaceSymbols)
         }
         other => Err(format!(
-            "lsp: unknown action '{other}' (expected hover, definition, references, documentSymbols, or workspaceSymbols)"
+            "lsp: unknown action '{other}' (expected hover, definition, references, implementation, prepareCallHierarchy, incomingCalls, outgoingCalls, documentSymbols, or workspaceSymbols)"
         )),
     }
 }
@@ -236,5 +260,71 @@ mod tests {
 
         assert!(!output.is_error, "{}", output.model_content());
         assert!(output.model_content().contains("no server available"));
+    }
+
+    #[test]
+    fn parse_request_accepts_implementation_and_call_hierarchy_actions() {
+        let implementation = parse_request(
+            &json!({"action":"goToImplementation","filePath":"src/lib.rs","line":5,"character":3}),
+        )
+        .expect("implementation request should parse");
+        assert_eq!(implementation.operation, LspOperation::Implementation);
+
+        let prepare = parse_request(&json!({
+            "action":"prepareCallHierarchy",
+            "filePath":"src/lib.rs",
+            "line":5,
+            "character":3
+        }))
+        .expect("prepare request should parse");
+        assert_eq!(prepare.operation, LspOperation::PrepareCallHierarchy);
+
+        let incoming = parse_request(&json!({
+            "action":"incoming_calls",
+            "filePath":"src/lib.rs",
+            "line":5,
+            "character":3
+        }))
+        .expect("incoming request should parse");
+        assert_eq!(incoming.operation, LspOperation::IncomingCalls);
+
+        let outgoing = parse_request(&json!({
+            "action":"outgoing-calls",
+            "filePath":"src/lib.rs",
+            "line":5,
+            "character":3
+        }))
+        .expect("outgoing request should parse");
+        assert_eq!(outgoing.operation, LspOperation::OutgoingCalls);
+    }
+
+    #[test]
+    fn parse_request_keeps_reference_include_declaration_and_action_validation() {
+        let references = parse_request(&json!({
+            "action":"references",
+            "filePath":"src/lib.rs",
+            "line":5,
+            "character":3,
+            "includeDeclaration": false
+        }))
+        .expect("references request should parse");
+        assert_eq!(references.operation, LspOperation::References);
+        assert!(!references.include_declaration);
+
+        let workspace = parse_request(&json!({
+            "action":"workspaceSymbols",
+            "query":"add_one"
+        }))
+        .expect("workspace symbols should not require filePath");
+        assert_eq!(workspace.operation, LspOperation::WorkspaceSymbols);
+        assert!(workspace.file_path.is_none());
+
+        let err = parse_request(&json!({
+            "action":"incomingCalls",
+            "filePath":"src/lib.rs",
+            "character":3
+        }))
+        .expect_err("incoming calls should require line and character");
+        assert!(err.contains("line"));
     }
 }

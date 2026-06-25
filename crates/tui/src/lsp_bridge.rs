@@ -88,6 +88,26 @@ fn to_navigation_request(request: tools::LspRequest) -> Result<NavigationRequest
             character: required_position(request.character, "character")?,
             include_declaration: request.include_declaration,
         }),
+        tools::LspOperation::Implementation => Ok(NavigationRequest::Implementation {
+            file_path: path_arg(request.file_path)?,
+            line: required_position(request.line, "line")?,
+            character: required_position(request.character, "character")?,
+        }),
+        tools::LspOperation::PrepareCallHierarchy => Ok(NavigationRequest::PrepareCallHierarchy {
+            file_path: path_arg(request.file_path)?,
+            line: required_position(request.line, "line")?,
+            character: required_position(request.character, "character")?,
+        }),
+        tools::LspOperation::IncomingCalls => Ok(NavigationRequest::IncomingCalls {
+            file_path: path_arg(request.file_path)?,
+            line: required_position(request.line, "line")?,
+            character: required_position(request.character, "character")?,
+        }),
+        tools::LspOperation::OutgoingCalls => Ok(NavigationRequest::OutgoingCalls {
+            file_path: path_arg(request.file_path)?,
+            line: required_position(request.line, "line")?,
+            character: required_position(request.character, "character")?,
+        }),
         tools::LspOperation::DocumentSymbols => Ok(NavigationRequest::DocumentSymbols {
             file_path: path_arg(request.file_path)?,
         }),
@@ -118,6 +138,10 @@ fn request_label(request: &tools::LspRequest) -> String {
         tools::LspOperation::Hover => "hover",
         tools::LspOperation::Definition => "definition",
         tools::LspOperation::References => "references",
+        tools::LspOperation::Implementation => "implementation",
+        tools::LspOperation::PrepareCallHierarchy => "prepareCallHierarchy",
+        tools::LspOperation::IncomingCalls => "incomingCalls",
+        tools::LspOperation::OutgoingCalls => "outgoingCalls",
         tools::LspOperation::DocumentSymbols => "documentSymbols",
         tools::LspOperation::WorkspaceSymbols => "workspaceSymbols",
     };
@@ -144,6 +168,18 @@ fn render_navigation_result(label: &str, outcome: NavigationOutcome) -> tools::T
         NavigationOutcome::Locations(locations) => tools::ToolOutput::text(format!(
             "lsp locations {label}:\n{}",
             lsp::locations_context_block(&locations)
+        )),
+        NavigationOutcome::CallHierarchyItems(items) => tools::ToolOutput::text(format!(
+            "lsp call hierarchy {label}:\n{}",
+            lsp::call_hierarchy_items_context_block(&items)
+        )),
+        NavigationOutcome::IncomingCalls(calls) => tools::ToolOutput::text(format!(
+            "lsp incoming calls {label}:\n{}",
+            lsp::incoming_calls_context_block(&calls)
+        )),
+        NavigationOutcome::OutgoingCalls(calls) => tools::ToolOutput::text(format!(
+            "lsp outgoing calls {label}:\n{}",
+            lsp::outgoing_calls_context_block(&calls)
         )),
         NavigationOutcome::DocumentSymbols(symbols) => tools::ToolOutput::text(format!(
             "lsp document symbols {label}:\n{}",

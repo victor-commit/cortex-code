@@ -13,7 +13,10 @@ use crate::LspError;
 use crate::diagnostics::{
     Diagnostic, DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, Position, PublishDiagnosticsParams,
 };
-use crate::navigation::{self, DocumentSymbol, Hover, Location, SymbolInformation};
+use crate::navigation::{
+    self, CallHierarchyItem, DocumentSymbol, Hover, IncomingCall, Location, OutgoingCall,
+    SymbolInformation,
+};
 use crate::protocol::{InitializeParams, InitializeResult, JSONRPC_VERSION};
 use crate::transport::{self, DEFAULT_MAX_MESSAGE_BYTES};
 
@@ -458,6 +461,90 @@ impl LspClient {
         Ok(navigation::locations_from_value(&result))
     }
 
+    /// Request implementation locations for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn goto_implementation(
+        &mut self,
+        uri: &str,
+        position: Position,
+    ) -> Result<Vec<Location>, LspError> {
+        let id = self.send_request(
+            navigation::IMPLEMENTATION_METHOD,
+            navigation::text_document_position_params(uri, position),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::locations_from_value(&result))
+    }
+
+    /// Request prepared call hierarchy items for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn prepare_call_hierarchy(
+        &mut self,
+        uri: &str,
+        position: Position,
+    ) -> Result<Vec<CallHierarchyItem>, LspError> {
+        let id = self.send_request(
+            navigation::PREPARE_CALL_HIERARCHY_METHOD,
+            navigation::call_hierarchy_prepare_params(uri, position),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::call_hierarchy_items_from_value(&result))
+    }
+
+    /// Request incoming call hierarchy edges for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn incoming_calls(
+        &mut self,
+        uri: &str,
+        position: Position,
+    ) -> Result<Vec<IncomingCall>, LspError> {
+        let prepare_id = self.send_request(
+            navigation::PREPARE_CALL_HIERARCHY_METHOD,
+            navigation::call_hierarchy_prepare_params(uri, position),
+        )?;
+        let prepare_result = self.await_response(prepare_id)?;
+        let Some(item) = first_call_hierarchy_item(&prepare_result) else {
+            return Ok(Vec::new());
+        };
+        let id = self.send_request(
+            navigation::INCOMING_CALLS_METHOD,
+            navigation::call_hierarchy_direction_params(item),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::incoming_calls_from_value(&result))
+    }
+
+    /// Request outgoing call hierarchy edges for the symbol at `position` in `uri`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn outgoing_calls(
+        &mut self,
+        uri: &str,
+        position: Position,
+    ) -> Result<Vec<OutgoingCall>, LspError> {
+        let prepare_id = self.send_request(
+            navigation::PREPARE_CALL_HIERARCHY_METHOD,
+            navigation::call_hierarchy_prepare_params(uri, position),
+        )?;
+        let prepare_result = self.await_response(prepare_id)?;
+        let Some(item) = first_call_hierarchy_item(&prepare_result) else {
+            return Ok(Vec::new());
+        };
+        let id = self.send_request(
+            navigation::OUTGOING_CALLS_METHOD,
+            navigation::call_hierarchy_direction_params(item),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(navigation::outgoing_calls_from_value(&result))
+    }
+
     /// Request document symbols for `uri`.
     ///
     /// # Errors
@@ -726,6 +813,14 @@ fn reader_loop(stdout: std::process::ChildStdout, max_bytes: usize, sender: &Sen
 fn force_kill(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn first_call_hierarchy_item(value: &Value) -> Option<Value> {
+    match value {
+        Value::Array(items) => items.first().cloned(),
+        Value::Object(_) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

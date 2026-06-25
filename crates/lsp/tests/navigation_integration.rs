@@ -37,7 +37,7 @@ fn write_rust_project(dir: &Path) -> PathBuf {
     let file = dir.join("src/lib.rs");
     std::fs::write(
         &file,
-        "pub fn add_one(input: i32) -> i32 {\n    input + 1\n}\n\npub fn call_add() -> i32 {\n    add_one(41)\n}\n\npub fn call_add_again() -> i32 {\n    add_one(1)\n}\n",
+        "pub trait Greeter {\n    fn greet(&self) -> &'static str;\n}\n\npub struct Robot;\n\nimpl Greeter for Robot {\n    fn greet(&self) -> &'static str {\n        \"beep\"\n    }\n}\n\npub fn add_one(input: i32) -> i32 {\n    input + 1\n}\n\npub fn call_add() -> i32 {\n    add_one(41)\n}\n\npub fn call_add_again() -> i32 {\n    add_one(1)\n}\n\npub fn invoke_greet() -> &'static str {\n    let robot = Robot;\n    robot.greet()\n}\n",
     )
     .expect("write lib.rs");
     file
@@ -64,7 +64,7 @@ fn retry_proxy_config(script: &Path, log: &Path) -> LspConfigSet {
 fn assert_rust_analyzer_results(manager: &mut FeedbackManager, file: &Path) {
     let hover = manager.navigate(NavigationRequest::Hover {
         file_path: file.to_path_buf(),
-        line: 6,
+        line: 18,
         character: 7,
     });
     let NavigationOutcome::Hover(Some(hover)) = hover else {
@@ -78,7 +78,7 @@ fn assert_rust_analyzer_results(manager: &mut FeedbackManager, file: &Path) {
 
     let definition = manager.navigate(NavigationRequest::Definition {
         file_path: file.to_path_buf(),
-        line: 6,
+        line: 18,
         character: 7,
     });
     let NavigationOutcome::Locations(definition_locations) = definition else {
@@ -86,14 +86,14 @@ fn assert_rust_analyzer_results(manager: &mut FeedbackManager, file: &Path) {
     };
     assert!(
         definition_locations.iter().any(|location| {
-            location.uri.ends_with("/src/lib.rs") && location.range.start.line == 0
+            location.uri.ends_with("/src/lib.rs") && location.range.start.line == 12
         }),
         "definition should point at add_one declaration, got {definition_locations:?}"
     );
 
     let references = manager.navigate(NavigationRequest::References {
         file_path: file.to_path_buf(),
-        line: 6,
+        line: 18,
         character: 7,
         include_declaration: true,
     });
@@ -105,12 +105,72 @@ fn assert_rust_analyzer_results(manager: &mut FeedbackManager, file: &Path) {
         .filter(|location| location.uri.ends_with("/src/lib.rs"))
         .map(|location| location.range.start.line + 1)
         .collect();
-    for expected in [1, 6, 10] {
+    for expected in [13, 18, 22] {
         assert!(
             reference_lines.contains(&expected),
             "reference lines should include {expected}, got {reference_lines:?}"
         );
     }
+
+    let implementation = manager.navigate(NavigationRequest::Implementation {
+        file_path: file.to_path_buf(),
+        line: 2,
+        character: 8,
+    });
+    let NavigationOutcome::Locations(implementation_locations) = implementation else {
+        panic!("expected implementation locations, got {implementation:?}");
+    };
+    assert!(
+        implementation_locations.iter().any(|location| {
+            location.uri.ends_with("/src/lib.rs") && location.range.start.line == 7
+        }),
+        "implementation should point at Greeter for Robot::greet, got {implementation_locations:?}"
+    );
+
+    let prepared = manager.navigate(NavigationRequest::PrepareCallHierarchy {
+        file_path: file.to_path_buf(),
+        line: 13,
+        character: 8,
+    });
+    let NavigationOutcome::CallHierarchyItems(prepared_items) = prepared else {
+        panic!("expected call hierarchy items, got {prepared:?}");
+    };
+    assert!(
+        prepared_items.iter().any(|item| item.name == "add_one"),
+        "prepareCallHierarchy should include add_one, got {prepared_items:?}"
+    );
+
+    let incoming = manager.navigate(NavigationRequest::IncomingCalls {
+        file_path: file.to_path_buf(),
+        line: 13,
+        character: 8,
+    });
+    let NavigationOutcome::IncomingCalls(incoming_calls) = incoming else {
+        panic!("expected incoming calls, got {incoming:?}");
+    };
+    let incoming_names: Vec<&str> = incoming_calls
+        .iter()
+        .map(|call| call.from.name.as_str())
+        .collect();
+    for expected in ["call_add", "call_add_again"] {
+        assert!(
+            incoming_names.contains(&expected),
+            "incoming call names should include {expected}, got {incoming_names:?}"
+        );
+    }
+
+    let outgoing = manager.navigate(NavigationRequest::OutgoingCalls {
+        file_path: file.to_path_buf(),
+        line: 17,
+        character: 8,
+    });
+    let NavigationOutcome::OutgoingCalls(outgoing_calls) = outgoing else {
+        panic!("expected outgoing calls, got {outgoing:?}");
+    };
+    assert!(
+        outgoing_calls.iter().any(|call| call.to.name == "add_one"),
+        "outgoing calls should include add_one, got {outgoing_calls:?}"
+    );
 
     let document_symbols = manager.navigate(NavigationRequest::DocumentSymbols {
         file_path: file.to_path_buf(),
@@ -230,6 +290,10 @@ fn rust_analyzer_retries_readiness_errors_for_all_navigation_operations() {
         "textDocument/hover",
         "textDocument/definition",
         "textDocument/references",
+        "textDocument/implementation",
+        "textDocument/prepareCallHierarchy",
+        "callHierarchy/incomingCalls",
+        "callHierarchy/outgoingCalls",
         "textDocument/documentSymbol",
         "workspace/symbol",
     ] {
@@ -295,7 +359,7 @@ fn killed_language_server_is_reported_unavailable_and_reaped() {
     std::thread::sleep(Duration::from_millis(150));
     let after_crash = manager.navigate(NavigationRequest::Hover {
         file_path: file,
-        line: 6,
+        line: 18,
         character: 7,
     });
     assert_eq!(after_crash, NavigationOutcome::Unavailable);
@@ -315,6 +379,10 @@ RETRY_METHODS = {
     "textDocument/definition": -32802,
     "textDocument/references": -32802,
     "textDocument/documentSymbol": -32802,
+    "textDocument/implementation": -32802,
+    "textDocument/prepareCallHierarchy": -32802,
+    "callHierarchy/incomingCalls": -32802,
+    "callHierarchy/outgoingCalls": -32802,
     "workspace/symbol": -32802,
 }
 

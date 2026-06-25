@@ -11,7 +11,10 @@ use url::Url;
 use crate::client::LspClient;
 use crate::config::{InstallPlan, LspConfigSet, LspServerConfig};
 use crate::diagnostics::{DiagnosticSeverity, Position};
-use crate::navigation::{DocumentSymbol, Hover, Location, SymbolInformation};
+use crate::navigation::{
+    CallHierarchyItem, DocumentSymbol, Hover, IncomingCall, Location, OutgoingCall,
+    SymbolInformation,
+};
 use crate::protocol::InitializeParams;
 
 /// Total wall-clock budget for one post-mutation LSP diagnostic collection.
@@ -83,6 +86,30 @@ pub enum NavigationRequest {
         character: u32,
         include_declaration: bool,
     },
+    /// Go to implementation from a symbol use/definition site.
+    Implementation {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Prepare call hierarchy items for a symbol.
+    PrepareCallHierarchy {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Resolve incoming call hierarchy edges for a symbol.
+    IncomingCalls {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
+    /// Resolve outgoing call hierarchy edges for a symbol.
+    OutgoingCalls {
+        file_path: PathBuf,
+        line: u32,
+        character: u32,
+    },
     /// List document symbols for a file.
     DocumentSymbols { file_path: PathBuf },
     /// Resolve workspace symbols. Supplying `file_path` selects the language server by extension;
@@ -104,6 +131,12 @@ pub enum NavigationOutcome {
     Hover(Option<Hover>),
     /// Definition/reference locations.
     Locations(Vec<Location>),
+    /// Prepared call hierarchy items.
+    CallHierarchyItems(Vec<CallHierarchyItem>),
+    /// Incoming call hierarchy edges.
+    IncomingCalls(Vec<IncomingCall>),
+    /// Outgoing call hierarchy edges.
+    OutgoingCalls(Vec<OutgoingCall>),
     /// Document symbols.
     DocumentSymbols(Vec<DocumentSymbol>),
     /// Workspace symbols.
@@ -311,6 +344,58 @@ impl FeedbackManager {
                     |locations| !locations.is_empty(),
                 )
                 .map(NavigationOutcome::Locations)
+            }),
+            NavigationRequest::Implementation {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.goto_implementation(uri, position),
+                    |locations| !locations.is_empty(),
+                )
+                .map(NavigationOutcome::Locations)
+            }),
+            NavigationRequest::PrepareCallHierarchy {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.prepare_call_hierarchy(uri, position),
+                    |items| !items.is_empty(),
+                )
+                .map(NavigationOutcome::CallHierarchyItems)
+            }),
+            NavigationRequest::IncomingCalls {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.incoming_calls(uri, position),
+                    |calls| !calls.is_empty(),
+                )
+                .map(NavigationOutcome::IncomingCalls)
+            }),
+            NavigationRequest::OutgoingCalls {
+                file_path,
+                line,
+                character,
+            } => self.with_document(&file_path, deadline, |client, uri| {
+                let position = one_based_to_lsp(line, character);
+                retry_navigation(
+                    deadline,
+                    || client.outgoing_calls(uri, position),
+                    |calls| !calls.is_empty(),
+                )
+                .map(NavigationOutcome::OutgoingCalls)
             }),
             NavigationRequest::DocumentSymbols { file_path } => {
                 self.with_document(&file_path, deadline, |client, uri| {

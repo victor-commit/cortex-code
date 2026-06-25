@@ -11,6 +11,10 @@ use crate::diagnostics::{Position, Range};
 pub(crate) const HOVER_METHOD: &str = "textDocument/hover";
 pub(crate) const DEFINITION_METHOD: &str = "textDocument/definition";
 pub(crate) const REFERENCES_METHOD: &str = "textDocument/references";
+pub(crate) const IMPLEMENTATION_METHOD: &str = "textDocument/implementation";
+pub(crate) const PREPARE_CALL_HIERARCHY_METHOD: &str = "textDocument/prepareCallHierarchy";
+pub(crate) const INCOMING_CALLS_METHOD: &str = "callHierarchy/incomingCalls";
+pub(crate) const OUTGOING_CALLS_METHOD: &str = "callHierarchy/outgoingCalls";
 pub(crate) const DOCUMENT_SYMBOL_METHOD: &str = "textDocument/documentSymbol";
 pub(crate) const WORKSPACE_SYMBOL_METHOD: &str = "workspace/symbol";
 
@@ -59,6 +63,85 @@ pub struct Location {
     pub uri: String,
     /// Zero-based LSP range in the document.
     pub range: Range,
+}
+
+/// A prepared call-hierarchy item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallHierarchyItem {
+    /// Item name.
+    pub name: String,
+    /// Optional detail/signature.
+    pub detail: Option<String>,
+    /// Symbol kind, when known.
+    pub kind: Option<SymbolKind>,
+    /// Document URI where the item is defined.
+    pub uri: String,
+    /// Selection range for the symbol.
+    pub selection_range: Range,
+}
+
+impl CallHierarchyItem {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            name: value.get("name")?.as_str()?.to_owned(),
+            detail: value
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            kind: value
+                .get("kind")
+                .and_then(Value::as_i64)
+                .and_then(SymbolKind::from_code),
+            uri: value.get("uri")?.as_str()?.to_owned(),
+            selection_range: Range::from_value(value.get("selectionRange")?)?,
+        })
+    }
+}
+
+/// One incoming-call edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingCall {
+    /// Caller item.
+    pub from: CallHierarchyItem,
+    /// Source ranges in the caller where the callee is referenced.
+    pub from_ranges: Vec<Range>,
+}
+
+impl IncomingCall {
+    fn from_value(value: &Value) -> Option<Self> {
+        let from_ranges = value
+            .get("fromRanges")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Range::from_value).collect())
+            .unwrap_or_default();
+        Some(Self {
+            from: CallHierarchyItem::from_value(value.get("from")?)?,
+            from_ranges,
+        })
+    }
+}
+
+/// One outgoing-call edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingCall {
+    /// Callee item.
+    pub to: CallHierarchyItem,
+    /// Source ranges in the caller where the callee is invoked.
+    pub from_ranges: Vec<Range>,
+}
+
+impl OutgoingCall {
+    fn from_value(value: &Value) -> Option<Self> {
+        let from_ranges = value
+            .get("fromRanges")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Range::from_value).collect())
+            .unwrap_or_default();
+        Some(Self {
+            to: CallHierarchyItem::from_value(value.get("to")?)?,
+            from_ranges,
+        })
+    }
 }
 
 impl Location {
@@ -292,6 +375,37 @@ pub fn locations_from_value(value: &Value) -> Vec<Location> {
     }
 }
 
+/// Parse `textDocument/prepareCallHierarchy`.
+#[must_use]
+pub fn call_hierarchy_items_from_value(value: &Value) -> Vec<CallHierarchyItem> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(CallHierarchyItem::from_value)
+            .collect(),
+        Value::Null => Vec::new(),
+        other => CallHierarchyItem::from_value(other).into_iter().collect(),
+    }
+}
+
+/// Parse `callHierarchy/incomingCalls`.
+#[must_use]
+pub fn incoming_calls_from_value(value: &Value) -> Vec<IncomingCall> {
+    value
+        .as_array()
+        .map(|items| items.iter().filter_map(IncomingCall::from_value).collect())
+        .unwrap_or_default()
+}
+
+/// Parse `callHierarchy/outgoingCalls`.
+#[must_use]
+pub fn outgoing_calls_from_value(value: &Value) -> Vec<OutgoingCall> {
+    value
+        .as_array()
+        .map(|items| items.iter().filter_map(OutgoingCall::from_value).collect())
+        .unwrap_or_default()
+}
+
 /// Parse `textDocument/documentSymbol`, accepting hierarchical and flat server shapes.
 #[must_use]
 pub fn document_symbols_from_value(value: &Value) -> Vec<DocumentSymbol> {
@@ -334,6 +448,14 @@ pub(crate) fn references_params(uri: &str, position: Position, include_declarati
         "position": { "line": position.line, "character": position.character },
         "context": { "includeDeclaration": include_declaration },
     })
+}
+
+pub(crate) fn call_hierarchy_prepare_params(uri: &str, position: Position) -> Value {
+    text_document_position_params(uri, position)
+}
+
+pub(crate) fn call_hierarchy_direction_params(item: Value) -> Value {
+    json!({ "item": item })
 }
 
 pub(crate) fn document_symbol_params(uri: &str) -> Value {
@@ -438,6 +560,71 @@ pub fn workspace_symbols_context_block(symbols: &[SymbolInformation]) -> String 
     out
 }
 
+/// Render prepared call-hierarchy items for tool output.
+#[must_use]
+pub fn call_hierarchy_items_context_block(items: &[CallHierarchyItem]) -> String {
+    if items.is_empty() {
+        return "No call hierarchy items.".to_owned();
+    }
+    let mut out = format!("{} call hierarchy item(s):\n", items.len());
+    for item in items {
+        let kind = item.kind.map_or("symbol", SymbolKind::label);
+        let detail = item
+            .detail
+            .as_deref()
+            .map(|detail| format!(" ({detail})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  - {kind} {}{detail} ({}:line {}:character {})\n",
+            item.name,
+            item.uri,
+            one_based(item.selection_range.start.line),
+            one_based(item.selection_range.start.character)
+        ));
+    }
+    out
+}
+
+/// Render incoming call edges for tool output.
+#[must_use]
+pub fn incoming_calls_context_block(calls: &[IncomingCall]) -> String {
+    if calls.is_empty() {
+        return "No incoming calls.".to_owned();
+    }
+    let mut out = format!("{} incoming call(s):\n", calls.len());
+    for call in calls {
+        let kind = call.from.kind.map_or("symbol", SymbolKind::label);
+        out.push_str(&format!(
+            "  - from {kind} {} ({}:line {}:character {})\n",
+            call.from.name,
+            call.from.uri,
+            one_based(call.from.selection_range.start.line),
+            one_based(call.from.selection_range.start.character)
+        ));
+    }
+    out
+}
+
+/// Render outgoing call edges for tool output.
+#[must_use]
+pub fn outgoing_calls_context_block(calls: &[OutgoingCall]) -> String {
+    if calls.is_empty() {
+        return "No outgoing calls.".to_owned();
+    }
+    let mut out = format!("{} outgoing call(s):\n", calls.len());
+    for call in calls {
+        let kind = call.to.kind.map_or("symbol", SymbolKind::label);
+        out.push_str(&format!(
+            "  - to {kind} {} ({}:line {}:character {})\n",
+            call.to.name,
+            call.to.uri,
+            one_based(call.to.selection_range.start.line),
+            one_based(call.to.selection_range.start.character)
+        ));
+    }
+    out
+}
+
 const fn one_based(zero_based: u32) -> u32 {
     zero_based.saturating_add(1)
 }
@@ -521,5 +708,50 @@ mod tests {
         ]));
         let rendered = workspace_symbols_context_block(&workspace);
         assert!(rendered.contains("struct Widget in probe"));
+    }
+
+    #[test]
+    fn call_hierarchy_shapes_parse_and_render_with_kinds() {
+        let prepared = call_hierarchy_items_from_value(&json!([
+            {
+                "name": "add_one",
+                "kind": 12,
+                "detail": "fn(i32) -> i32",
+                "uri": "file:///lib.rs",
+                "selectionRange": {"start": {"line": 12, "character": 7}, "end": {"line": 12, "character": 14}}
+            }
+        ]));
+        assert_eq!(prepared.len(), 1);
+        let prepared_rendered = call_hierarchy_items_context_block(&prepared);
+        assert!(prepared_rendered.contains("function add_one"));
+        assert!(prepared_rendered.contains("line 13:character 8"));
+
+        let incoming = incoming_calls_from_value(&json!([
+            {
+                "from": {
+                    "name": "call_add",
+                    "kind": 12,
+                    "uri": "file:///lib.rs",
+                    "selectionRange": {"start": {"line": 16, "character": 7}, "end": {"line": 16, "character": 15}}
+                },
+                "fromRanges": []
+            }
+        ]));
+        let incoming_rendered = incoming_calls_context_block(&incoming);
+        assert!(incoming_rendered.contains("from function call_add"));
+
+        let outgoing = outgoing_calls_from_value(&json!([
+            {
+                "to": {
+                    "name": "add_one",
+                    "kind": 12,
+                    "uri": "file:///lib.rs",
+                    "selectionRange": {"start": {"line": 12, "character": 7}, "end": {"line": 12, "character": 14}}
+                },
+                "fromRanges": []
+            }
+        ]));
+        let outgoing_rendered = outgoing_calls_context_block(&outgoing);
+        assert!(outgoing_rendered.contains("to function add_one"));
     }
 }
