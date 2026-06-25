@@ -843,6 +843,26 @@ fn persist_assistant(db: &Database, session_id: &str, outcome: &RunOutcome) {
     }
 }
 
+/// Persist compaction summary metadata as system messages so replay/export surfaces include the
+/// summary text and tail boundary that produced the continued answer.
+fn persist_compactions(db: &Database, session_id: &str, outcome: &RunOutcome) {
+    for compaction in &outcome.compactions {
+        let payload = serde_json::json!({
+            "type": "compaction_summary",
+            "tail_start_id": compaction.tail_start_id,
+            "continued_request": compaction.continued_request,
+            "summary": compaction.summary,
+        });
+        if let Err(err) = db
+            .messages()
+            .create(session_id, "system", &payload.to_string())
+        {
+            eprintln!("cortex run: failed to persist compaction summary metadata: {err}");
+            break;
+        }
+    }
+}
+
 /// Record this turn's token usage and cost so the session's cumulative totals stay accurate across
 /// separate `cortex run` invocations. Recorded in every output format (not just JSON) so a session
 /// that mixes formats still accumulates correctly. A persistence failure is reported on stderr but
@@ -1072,6 +1092,7 @@ async fn stream_text(
         let _ = handle.flush();
     }
     drop(handle);
+    persist_compactions(db, session_id, &outcome);
     persist_assistant(db, session_id, &outcome);
     persist_usage(db, session_id, &outcome);
     Exit::Success
@@ -1126,6 +1147,7 @@ async fn stream_jsonl(
         eprintln!("cortex run: {err}");
         return err.exit();
     }
+    persist_compactions(db, session_id, &outcome);
     persist_assistant(db, session_id, &outcome);
     persist_usage(db, session_id, &outcome);
     Exit::Success
@@ -1165,6 +1187,9 @@ struct RunDocument<'a> {
     /// output without binary bytes leaking into the text channel. Omitted when no tool was called.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_results: Vec<ToolResultDoc>,
+    /// Compaction metadata captured during this turn (summary text + preserved-tail boundary).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    compactions: Vec<CompactionDoc>,
 }
 
 /// One tool result in the completed-turn document: the call id, the tool name, the structured
@@ -1175,6 +1200,14 @@ struct ToolResultDoc {
     name: String,
     parts: Vec<ToolResultPart>,
     is_error: bool,
+}
+
+/// One compaction summary captured during a turn.
+#[derive(Serialize)]
+struct CompactionDoc {
+    summary: String,
+    tail_start_id: String,
+    continued_request: bool,
 }
 
 /// The leading `--jsonl` event announcing the agent persona and session id, before the runner's
@@ -1282,6 +1315,7 @@ async fn emit_json(
         return Exit::Failure;
     }
     drop(handle);
+    persist_compactions(db, session_id, &outcome);
     persist_assistant(db, session_id, &outcome);
     Exit::Success
 }
@@ -1312,6 +1346,15 @@ fn build_run_document<'a>(
         tools: tool_names,
         tool_definitions,
         tool_results,
+        compactions: outcome
+            .compactions
+            .iter()
+            .map(|record| CompactionDoc {
+                summary: record.summary.clone(),
+                tail_start_id: record.tail_start_id.clone(),
+                continued_request: record.continued_request,
+            })
+            .collect(),
     }
 }
 
@@ -2436,6 +2479,7 @@ mod tests {
             }),
             finish_reason: llm::FinishReason::Stop,
             steps: 1,
+            compactions: Vec::new(),
             error: None,
         }
     }

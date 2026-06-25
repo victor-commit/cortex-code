@@ -24,9 +24,11 @@
 use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use crate::compaction::{self, CompactionPolicy};
-use crate::event::{RunError, RunOutcome, RunnerEvent, accumulate_usage};
+use crate::event::{CompactionRecord, RunError, RunOutcome, RunnerEvent, accumulate_usage};
 use crate::tools::ToolDispatcher;
 
 /// The built-in step budget for a single turn (architecture §4, `MAX_STEPS`).
@@ -52,6 +54,20 @@ const MAX_TRANSIENT_RETRY_DELAY_MS: u64 = 2_000;
 /// The placeholder result injected for a tool call when no tool registry is available (M1).
 const TOOL_UNAVAILABLE: &str =
     "Tool execution is not available in this build; answer directly without using tools.";
+
+/// The compacting summarizer instruction: preserve factual memory and open work while staying brief.
+const COMPACTION_SUMMARY_PROMPT: &str = "Summarize the removed conversation context so future \
+    turns preserve factual memory. Keep names, identifiers, decisions, code changes, and open \
+    tasks. Be concise and factual. Respond with only the summary text.";
+
+/// Tool names whose outputs are protected from aggressive pruning during summary rendering.
+const COMPACTION_PROTECTED_TOOLS: &[&str] = &["skill"];
+
+/// Maximum number of characters kept from non-protected tool outputs in the compaction head.
+const TOOL_OUTPUT_MAX_CHARS: usize = 2_000;
+
+/// Upper bound for a single message fragment rendered into the compaction-summary transcript.
+const COMPACTION_FRAGMENT_MAX_CHARS: usize = 4_000;
 
 /// A single turn to run: the assembled system context, projected history, and new user input.
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +220,7 @@ impl SessionRunner {
         let mut answer = String::new();
         let mut total_usage = None;
         let mut steps = 0usize;
+        let mut compactions: Vec<CompactionRecord> = Vec::new();
         let mut error = None;
         let mut last_advertised_tool_defs: Option<Vec<ToolDef>> = None;
 
@@ -233,10 +250,39 @@ impl SessionRunner {
             }
             steps += 1;
 
-            // compactIfNeeded before send: prune/truncate the working messages to the input budget
-            // so an over-large request is shrunk before it ever reaches the provider.
-            if policy.auto {
-                compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
+            // compactIfNeeded before send: when needed, summarize the compactable head with a
+            // tool-free model call, keep a recent tail by turn, and auto-continue the original
+            // request. If summarization is unavailable, fall back to bounded mechanical compaction.
+            if policy.auto
+                && compaction::estimate_messages_tokens(&messages) > input_budget
+                && !messages.is_empty()
+            {
+                match self
+                    .compact_with_summary(
+                        provider,
+                        &turn.model_id,
+                        &mut messages,
+                        tail_messages,
+                        input_budget,
+                    )
+                    .await
+                {
+                    Ok(Some(record)) => {
+                        sink(RunnerEvent::Reasoning {
+                            text: format!(
+                                "[context compaction] tail_start_id={} continued_request={}",
+                                record.tail_start_id, record.continued_request
+                            ),
+                        });
+                        compactions.push(record);
+                    }
+                    Ok(None) => {
+                        compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
+                    }
+                    Err(_) => {
+                        compaction::compact_to_budget(&mut messages, tail_messages, input_budget);
+                    }
+                }
             }
 
             // Refresh the advertised tool catalogue immediately before every provider request.
@@ -436,6 +482,7 @@ impl SessionRunner {
             usage: total_usage,
             finish_reason,
             steps,
+            compactions,
             error,
         }
     }
@@ -449,6 +496,255 @@ impl SessionRunner {
         request.max_tokens = turn.max_tokens;
         request.temperature = turn.temperature;
         request
+    }
+
+    /// Compact an over-budget request by summarizing the compactable head through a tool-free model
+    /// call, preserving a recent tail by turn, and reinjecting the summary as a system message.
+    async fn compact_with_summary(
+        &self,
+        provider: &dyn Provider,
+        model_id: &str,
+        messages: &mut Vec<Message>,
+        tail_turns: usize,
+        budget: usize,
+    ) -> Result<Option<CompactionRecord>, Diagnostic> {
+        if compaction::estimate_messages_tokens(messages) <= budget || messages.is_empty() {
+            return Ok(None);
+        }
+
+        let system_head = usize::from(messages.first().is_some_and(|m| m.role == Role::System));
+        let tail_start = select_tail_start(messages, system_head, tail_turns);
+        if tail_start <= system_head || tail_start >= messages.len() {
+            return Ok(None);
+        }
+
+        let head = messages[system_head..tail_start].to_vec();
+        if head.is_empty() {
+            return Ok(None);
+        }
+        let transcript = render_compaction_transcript(&head, budget);
+        if transcript.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let summary = self
+            .summarize_compaction_head(provider, model_id, &transcript)
+            .await?;
+        if summary.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let tail_start_id = make_tail_start_id(tail_start, &messages[tail_start]);
+        let summary_message = Message::system(format!(
+            "<compaction_summary tail_start_id=\"{tail_start_id}\" continued_request=\"true\">\n{}\n</compaction_summary>",
+            summary.trim()
+        ));
+
+        let mut rebuilt =
+            Vec::with_capacity(system_head + 1 + messages.len().saturating_sub(tail_start));
+        if system_head == 1 {
+            rebuilt.push(messages[0].clone());
+        }
+        rebuilt.push(summary_message);
+        rebuilt.extend(messages[tail_start..].iter().cloned());
+        *messages = rebuilt;
+        if compaction::estimate_messages_tokens(messages) > budget {
+            let fallback_tail_messages = tail_turns.max(1).saturating_mul(2);
+            compaction::compact_to_budget(messages, fallback_tail_messages, budget);
+        }
+
+        Ok(Some(CompactionRecord {
+            summary: summary.trim().to_owned(),
+            tail_start_id,
+            continued_request: true,
+        }))
+    }
+
+    /// Call the model once (with tools disabled) to summarize compacted-away context.
+    async fn summarize_compaction_head(
+        &self,
+        provider: &dyn Provider,
+        model_id: &str,
+        transcript: &str,
+    ) -> Result<String, Diagnostic> {
+        let mut request = LlmRequest::new(model_id);
+        request.messages = vec![
+            Message::system(COMPACTION_SUMMARY_PROMPT),
+            Message::user(format!(
+                "Summarize this removed head context so later turns preserve key facts:\n\n{}",
+                transcript
+            )),
+        ];
+        request.max_tokens = Some(600);
+        request.temperature = Some(0.0);
+
+        let mut stream = provider
+            .stream(request)
+            .await
+            .map_err(|err| err.to_diagnostic())?;
+        let mut summary = String::new();
+        while let Some(event) = stream.next().await {
+            match event {
+                LlmEvent::TextDelta { text } => summary.push_str(&text),
+                LlmEvent::Error { message, kind } => {
+                    return Err(RunError::from_kind(&kind, message).diagnostic().clone());
+                }
+                LlmEvent::Reasoning { .. }
+                | LlmEvent::ToolCall(_)
+                | LlmEvent::ToolResult(_)
+                | LlmEvent::Usage(_)
+                | LlmEvent::Done { .. } => {}
+            }
+        }
+        let trimmed = summary.trim();
+        if trimmed.is_empty() {
+            return Err(Diagnostic::upstream(
+                "compaction summary request returned empty text",
+            ));
+        }
+        Ok(trimmed.to_owned())
+    }
+}
+
+/// Decide where the preserved tail begins, preferring turn boundaries (user-message starts).
+fn select_tail_start(messages: &[Message], system_head: usize, tail_turns: usize) -> usize {
+    let user_turn_starts: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .skip(system_head)
+        .filter_map(|(index, message)| (message.role == Role::User).then_some(index))
+        .collect();
+
+    let keep_turns = tail_turns.max(1);
+    if user_turn_starts.len() > keep_turns {
+        return user_turn_starts[user_turn_starts.len() - keep_turns];
+    }
+
+    let fallback_keep_messages = keep_turns.saturating_mul(2);
+    let min_tail_start = if messages.len() > system_head {
+        system_head + 1
+    } else {
+        system_head
+    };
+    messages
+        .len()
+        .saturating_sub(fallback_keep_messages)
+        .max(min_tail_start)
+}
+
+/// Render the compactable head into a bounded transcript for the summarizer model.
+fn render_compaction_transcript(head: &[Message], budget: usize) -> String {
+    let protected_tool_calls = protected_tool_call_ids(head);
+    let max_bytes = budget.saturating_mul(4).clamp(4_000, 120_000);
+    let mut rendered = String::new();
+
+    for (index, message) in head.iter().enumerate() {
+        let mut content = message.content.as_str().to_owned();
+        if message.role == Role::Tool {
+            let is_protected = message
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| protected_tool_calls.contains(id));
+            if is_protected {
+                content = truncate_with_marker(
+                    &content,
+                    COMPACTION_FRAGMENT_MAX_CHARS,
+                    "\n[… long protected tool output truncated …]\n",
+                );
+            } else {
+                content = truncate_with_marker(
+                    &content,
+                    TOOL_OUTPUT_MAX_CHARS,
+                    "\n[… tool output truncated for compaction summary …]\n",
+                );
+            }
+        } else {
+            content = truncate_with_marker(
+                &content,
+                COMPACTION_FRAGMENT_MAX_CHARS,
+                "\n[… message truncated for compaction summary …]\n",
+            );
+        }
+
+        let tool_call_suffix = message
+            .tool_call_id
+            .as_deref()
+            .map_or(String::new(), |id| format!(" tool_call_id={id}"));
+        let block = format!(
+            "message[{index}] role={}{}\n{}\n\n",
+            role_name(message.role),
+            tool_call_suffix,
+            content
+        );
+        if rendered.len().saturating_add(block.len()) > max_bytes {
+            rendered
+                .push_str("[… additional earlier messages omitted from compaction transcript …]");
+            break;
+        }
+        rendered.push_str(&block);
+    }
+
+    rendered
+}
+
+/// Collect tool-call ids whose outputs should be preserved in compaction transcripts.
+fn protected_tool_call_ids(head: &[Message]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for message in head
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+    {
+        for call in &message.tool_calls {
+            if COMPACTION_PROTECTED_TOOLS.contains(&call.name.as_str()) {
+                ids.insert(call.id.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// Truncate text to a character budget while preserving a head and tail sample around a marker.
+fn truncate_with_marker(text: &str, max_chars: usize, marker: &str) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let head_chars = max_chars / 2;
+    let tail_chars = max_chars.saturating_sub(head_chars);
+    let text_chars = text.chars().count();
+    let head_end = byte_offset_for_char(text, head_chars);
+    let tail_start = byte_offset_for_char(text, text_chars.saturating_sub(tail_chars));
+
+    let mut out =
+        String::with_capacity(head_end + marker.len() + text.len().saturating_sub(tail_start));
+    out.push_str(&text[..head_end]);
+    out.push_str(marker);
+    out.push_str(&text[tail_start..]);
+    out
+}
+
+/// UTF-8-safe byte offset for a char index.
+fn byte_offset_for_char(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or_else(|| text.len(), |(byte, _)| byte)
+}
+
+/// Stable tail-boundary identifier derived from the preserved-tail anchor message.
+fn make_tail_start_id(index: usize, message: &Message) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    role_name(message.role).hash(&mut hasher);
+    message.content.hash(&mut hasher);
+    message.tool_call_id.hash(&mut hasher);
+    let digest = hasher.finish();
+    format!("tail_{index}_{digest:x}")
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 

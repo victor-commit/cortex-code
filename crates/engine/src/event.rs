@@ -13,6 +13,17 @@ use errors::{Diagnostic, Exit};
 use llm::{FinishReason, Message, ToolDef, Usage};
 use serde::{Deserialize, Serialize};
 
+/// Metadata captured when the runner compacts context through an LLM-authored summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionRecord {
+    /// The model-authored summary injected into the compacted context.
+    pub summary: String,
+    /// The stable tail-boundary token identifying where preserved tail context begins.
+    pub tail_start_id: String,
+    /// Whether the original in-flight user request was auto-continued after compaction.
+    pub continued_request: bool,
+}
+
 /// One normalized event emitted by the runner for a turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -165,6 +176,8 @@ pub struct RunOutcome {
     pub finish_reason: FinishReason,
     /// How many provider round-trips (steps) the turn took.
     pub steps: usize,
+    /// Compaction summaries generated during this turn, in occurrence order.
+    pub compactions: Vec<CompactionRecord>,
     /// The normalized failure, when the turn ended in an error.
     pub error: Option<RunError>,
 }

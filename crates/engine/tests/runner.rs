@@ -1075,12 +1075,20 @@ fn large_history(turns: usize) -> Vec<llm::Message> {
 // it is sent, so the request fits the model's context budget and the turn still completes.
 #[tokio::test]
 async fn compact_if_needed_shrinks_a_large_history_before_send() {
-    let provider = RecordingProvider::new(vec![Behavior::Emit(vec![
-        text("answer"),
-        LlmEvent::Done {
-            reason: FinishReason::Stop,
-        },
-    ])]);
+    let provider = RecordingProvider::new(vec![
+        Behavior::Emit(vec![
+            text("summary of earlier turns"),
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+        Behavior::Emit(vec![
+            text("answer"),
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+    ]);
 
     // A small context window forces compaction; the history alone dwarfs it.
     let policy = engine::CompactionPolicy::for_context_window(4_000, 0);
@@ -1103,8 +1111,19 @@ async fn compact_if_needed_shrinks_a_large_history_before_send() {
     assert_eq!(outcome.answer(), "answer");
 
     let sent = provider.requests();
-    assert_eq!(sent.len(), 1, "a single round-trip");
-    let request = &sent[0];
+    assert_eq!(
+        sent.len(),
+        2,
+        "one tool-free summary request plus one main round-trip"
+    );
+    let summary_request = &sent[0];
+    assert!(
+        summary_request
+            .iter()
+            .all(|message| message.tool_calls.is_empty()),
+        "the compaction summary request does not advertise or replay tool calls"
+    );
+    let request = &sent[1];
     assert!(
         tokens(request) <= budget + 64,
         "the sent request must be compacted to within the budget, got {} > {budget}",
@@ -1124,9 +1143,131 @@ async fn compact_if_needed_shrinks_a_large_history_before_send() {
     assert!(
         request
             .iter()
-            .any(|m| m.content.contains("Context compaction")
-                || m.content.contains("omitted by context compaction")),
-        "compaction leaves an elision marker"
+            .any(|m| m.content.contains("<compaction_summary tail_start_id=")),
+        "the main request includes an LLM-authored compaction summary marker"
+    );
+    assert_eq!(
+        outcome.compactions.len(),
+        1,
+        "one compaction record is captured"
+    );
+    assert!(
+        !outcome.compactions[0].summary.is_empty(),
+        "compaction metadata keeps the summary text"
+    );
+    assert!(
+        outcome.compactions[0].continued_request,
+        "the original request is auto-continued after compaction"
+    );
+}
+
+// VAL-GAP-ENGINE-005/006: compaction is model-authored (not a synthetic omission line), preserves
+// protected tool output in the summarizer transcript, truncates non-protected tool output, records
+// metadata, and auto-continues the original user request after compaction.
+#[tokio::test]
+async fn compaction_summary_prunes_non_protected_tool_output_and_auto_continues() {
+    let provider = RecordingProvider::new(vec![
+        Behavior::Emit(vec![
+            text("seed facts: protected output says BLUEBIRD"),
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+        Behavior::Emit(vec![
+            text("BLUEBIRD"),
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]),
+    ]);
+
+    let skill_call = ToolCall {
+        id: "call_skill".to_owned(),
+        name: "skill".to_owned(),
+        arguments: "{}".to_owned(),
+    };
+    let grep_call = ToolCall {
+        id: "call_grep".to_owned(),
+        name: "grep".to_owned(),
+        arguments: "{}".to_owned(),
+    };
+    let protected_output = "PROTECTED_SKILL_OUTPUT ".repeat(250);
+    let non_protected_output = "NON_PROTECTED_OUTPUT ".repeat(500);
+    let history = vec![
+        llm::Message::user("oldest user turn"),
+        llm::Message {
+            role: llm::Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls: vec![skill_call.clone(), grep_call.clone()],
+        },
+        llm::Message::tool_result(skill_call.id.clone(), protected_output.clone()),
+        llm::Message::tool_result(grep_call.id.clone(), non_protected_output),
+        llm::Message::assistant("oldest assistant conclusion"),
+        llm::Message::user("recent tail turn"),
+        llm::Message::assistant("recent tail answer"),
+    ];
+    let mut policy = engine::CompactionPolicy::for_context_window(2_000, 0);
+    policy.tail_messages = 1;
+    let turn = Turn::new(
+        "google/gemini-2.5-flash",
+        "SYS",
+        "Reply with exactly the protected token.",
+    )
+    .with_history(history)
+    .with_compaction(policy);
+
+    let (events, outcome) = run(&provider, turn).await;
+    assert!(outcome.is_success(), "compacted turn should complete");
+    assert_eq!(outcome.answer(), "BLUEBIRD");
+    assert_eq!(outcome.compactions.len(), 1, "one compaction record");
+    let compaction = &outcome.compactions[0];
+    assert!(
+        compaction.summary.contains("BLUEBIRD"),
+        "summary preserves key fact"
+    );
+    assert!(
+        compaction.continued_request,
+        "the original request was auto-continued"
+    );
+    assert!(
+        !compaction.tail_start_id.is_empty(),
+        "tail_start_id metadata is populated"
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RunnerEvent::Reasoning { text }
+                if text.contains("[context compaction]") && text.contains("continued_request=true"))),
+        "event stream marks compaction before continuation"
+    );
+
+    let sent = provider.requests();
+    assert_eq!(sent.len(), 2, "summary request + continued main request");
+    let summary_prompt = &sent[0][1].content;
+    assert!(
+        summary_prompt.contains("PROTECTED_SKILL_OUTPUT"),
+        "protected tool output remains visible to the summarizer"
+    );
+    assert!(
+        summary_prompt.contains("tool output truncated for compaction summary")
+            || !summary_prompt.contains(&"NON_PROTECTED_OUTPUT ".repeat(120)),
+        "non-protected tool output should not be preserved verbatim in the summarizer prompt"
+    );
+
+    let continued = &sent[1];
+    assert!(
+        continued.iter().any(|message| message
+            .content
+            .contains("<compaction_summary tail_start_id=")),
+        "continued request includes the compaction summary metadata message"
+    );
+    assert!(
+        continued.iter().any(|message| message
+            .content
+            .contains("Reply with exactly the protected token.")),
+        "original user request is replayed automatically after compaction"
     );
 }
 

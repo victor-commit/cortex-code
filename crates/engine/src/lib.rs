@@ -40,7 +40,7 @@ pub use compaction::{
 };
 pub use context::SystemContext;
 pub use environment::{EnvironmentBlock, GitStatus};
-pub use event::{RunError, RunOutcome, RunnerEvent};
+pub use event::{CompactionRecord, RunError, RunOutcome, RunnerEvent};
 pub use family::ModelFamily;
 pub use history::{HistoryMessage, project_history, project_role};
 pub use runner::{DEFAULT_MAX_STEPS, SessionRunner, Turn};
