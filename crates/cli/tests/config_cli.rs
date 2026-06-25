@@ -374,7 +374,7 @@ fn missing_env_var_yields_a_clear_diagnostic() {
 #[test]
 fn file_substitution_resolves_in_report() {
     let scratch = Scratch::new();
-    scratch.write("home/proj/sub/secret.txt", "  file-secret\n\n");
+    scratch.write("home/proj/secret.txt", "  file-secret\n\n");
     scratch.write_project(r#"secret = "{file:./secret.txt}""#);
     let report = scratch.report(&[], None);
     assert_eq!(report["secret"], "file-secret");

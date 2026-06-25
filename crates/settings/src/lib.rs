@@ -20,9 +20,11 @@
 //! After merging, two passes run over the effective table:
 //!
 //! - **Substitution** (see [`subst`]): a string value that is exactly `{env:NAME}` or
-//!   `{file:PATH}` is replaced by the environment variable's value, or the file's trimmed
-//!   contents. An unset variable or unreadable file is a hard error with a clear diagnostic;
-//!   the literal token is never silently leaked into an effective value.
+//!   `{file:PATH}` (or embeds those tokens inside surrounding text) is resolved to the
+//!   environment variable's value or the file's trimmed contents. File tokens are resolved
+//!   relative to the config file they came from; paths beginning with `~` expand to HOME.
+//!   An unset variable or unreadable file is a hard error with a clear diagnostic; the literal
+//!   token is never silently leaked into an effective value.
 //! - **Type validation** (see [`schema`]): the small set of typed keys (`model`/`agent` are
 //!   strings, `max_steps` an integer) is checked, so a wrongly-typed value yields a clear diagnostic
 //!   naming the offending key and its expected type rather than mis-driving the tool.
@@ -207,21 +209,41 @@ pub fn load(inputs: ConfigInputs) -> Result<EffectiveConfig, ConfigError> {
         cli_overrides,
     } = inputs;
 
+    let environment: BTreeMap<String, String> = env.iter().cloned().collect();
     let mut table = default_table();
 
+    reject_json_jsonc_layers(home.as_deref(), xdg_config_home.as_deref(), &cwd)?;
+
     for path in discovery::config_files(home.as_deref(), xdg_config_home.as_deref(), &cwd) {
-        if let Some(layer) = read_layer(&path)? {
+        if let Some(mut layer) = read_layer(&path)? {
+            let base_dir = path.parent().unwrap_or(&cwd);
+            subst::substitute(&mut layer, &environment, base_dir, home.as_deref())?;
             merge::merge_into(&mut table, layer);
         }
     }
 
-    // Resolve `{env:}` tokens against the full environment, so capture it before the env layer
-    // (which only maps `CORTEX_*`) consumes the list.
-    let environment: BTreeMap<String, String> = env.iter().cloned().collect();
+    let source_options = source_options_from(&table, &cwd, home.as_deref())?;
+    if let Some(remote) =
+        load_remote_well_known_layer(&source_options, home.as_deref(), xdg_config_home.as_deref())?
+    {
+        merge::merge_into(&mut table, remote);
+    }
+    let managed_layer = load_managed_layer(&source_options, &cwd, home.as_deref())?;
+    if let Some(managed) = managed_layer.as_ref() {
+        merge::merge_into(&mut table, managed.clone());
+    }
+
+    if let Some(mut inline) = inline_content_layer(&environment)? {
+        subst::substitute(&mut inline, &environment, &cwd, home.as_deref())?;
+        merge::merge_into(&mut table, inline);
+    }
+
     apply_string_overrides(&mut table, env::overrides_from(env));
     apply_string_overrides(&mut table, cli_overrides);
-
-    subst::substitute(&mut table, &environment, &cwd)?;
+    subst::substitute(&mut table, &environment, &cwd, home.as_deref())?;
+    if let Some(managed) = managed_layer.as_ref() {
+        apply_managed_locks(&mut table, managed, &source_options.managed_locked_keys);
+    }
     schema::validate(&mut table)?;
 
     Ok(EffectiveConfig { table })
@@ -450,6 +472,292 @@ pub fn layer_tables(inputs: &ConfigInputs) -> Result<Vec<ConfigLayer>, ConfigErr
     Ok(layers)
 }
 
+const CONFIG_CONTENT_ENV: &str = "CORTEX_CONFIG_CONTENT";
+
+#[derive(Debug, Clone, Default)]
+struct SourceOptions {
+    remote_well_known_url: Option<String>,
+    managed_file: Option<String>,
+    managed_locked_keys: Vec<String>,
+}
+
+fn reject_json_jsonc_layers(
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+    cwd: &Path,
+) -> Result<(), ConfigError> {
+    if let Some(path) = discovery::json_config_files(home, xdg_config_home, cwd)
+        .into_iter()
+        .find(|path| path.is_file())
+    {
+        return Err(ConfigError::UnsupportedFormat {
+            path: path.clone(),
+            expected: "TOML (cortex.toml or .cortex/config.toml)",
+        });
+    }
+    Ok(())
+}
+
+fn inline_content_layer(
+    environment: &BTreeMap<String, String>,
+) -> Result<Option<Table>, ConfigError> {
+    let Some(raw) = environment.get(CONFIG_CONTENT_ENV) else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let parsed = toml::from_str(raw).map_err(|error| ConfigError::Parse {
+        path: PathBuf::from(CONFIG_CONTENT_ENV),
+        message: error.to_string(),
+    })?;
+    Ok(Some(parsed))
+}
+
+fn source_options_from(
+    table: &Table,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<SourceOptions, ConfigError> {
+    let mut options = SourceOptions::default();
+    let source_table = match table.get("config_sources") {
+        Some(Value::Table(config_sources)) => Some(config_sources),
+        Some(other) => {
+            return Err(ConfigError::type_mismatch(
+                "config_sources",
+                "a table",
+                other,
+            ));
+        }
+        None => None,
+    };
+
+    options.remote_well_known_url = string_option(
+        source_table.and_then(|table| table.get("remote_well_known_url")),
+        "config_sources.remote_well_known_url",
+    )?
+    .or(string_option(
+        table.get("remote_well_known_url"),
+        "remote_well_known_url",
+    )?);
+
+    options.managed_file = string_option(
+        source_table.and_then(|table| table.get("managed_file")),
+        "config_sources.managed_file",
+    )?
+    .or(string_option(table.get("managed_file"), "managed_file")?)
+    .map(|value| resolve_path_value(&value, cwd, home));
+
+    options.managed_locked_keys = string_array_option(
+        source_table.and_then(|table| table.get("managed_locked_keys")),
+        "config_sources.managed_locked_keys",
+    )?
+    .or(string_array_option(
+        table.get("managed_locked_keys"),
+        "managed_locked_keys",
+    )?)
+    .unwrap_or_default();
+    Ok(options)
+}
+
+fn load_remote_well_known_layer(
+    options: &SourceOptions,
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+) -> Result<Option<Table>, ConfigError> {
+    let Some(url) = options.remote_well_known_url.as_deref() else {
+        return Ok(None);
+    };
+
+    if redaction::network_disabled() {
+        return Err(ConfigError::NetDisabled {
+            source: format!("remote well-known config {url}"),
+        });
+    }
+
+    let cache_path = remote_cache_path(url, home, xdg_config_home);
+    match fetch_remote(url) {
+        Ok(body) => {
+            if let Some(path) = cache_path.as_ref() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, &body);
+            }
+            parse_remote_layer(url, &body).map(Some)
+        }
+        Err(err) => {
+            if let Some(path) = cache_path
+                && let Ok(cached) = std::fs::read_to_string(&path)
+            {
+                return parse_remote_layer(url, &cached).map(Some);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn fetch_remote(url: &str) -> Result<String, ConfigError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|source| ConfigError::RemoteFetch {
+            url: url.to_owned(),
+            source: source.to_string(),
+        })?;
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|source| ConfigError::RemoteFetch {
+            url: url.to_owned(),
+            source: source.to_string(),
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ConfigError::RemoteFetch {
+            url: url.to_owned(),
+            source: format!("http status {status}"),
+        });
+    }
+    response.text().map_err(|source| ConfigError::RemoteFetch {
+        url: url.to_owned(),
+        source: source.to_string(),
+    })
+}
+
+fn parse_remote_layer(url: &str, body: &str) -> Result<Table, ConfigError> {
+    toml::from_str(body).map_err(|error| ConfigError::Parse {
+        path: PathBuf::from(url),
+        message: error.to_string(),
+    })
+}
+
+fn remote_cache_path(
+    url: &str,
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+) -> Option<PathBuf> {
+    let root = discovery::global_config_root(home, xdg_config_home)?;
+    Some(
+        root.join("cortex")
+            .join("cache")
+            .join("well_known")
+            .join(format!("{}.toml", hex_encode(url.as_bytes()))),
+    )
+}
+
+fn load_managed_layer(
+    options: &SourceOptions,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<Option<Table>, ConfigError> {
+    let Some(path) = options.managed_file.as_deref() else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(resolve_path_value(path, cwd, home));
+    read_layer(&path)
+}
+
+fn resolve_path_value(raw: &str, cwd: &Path, home: Option<&Path>) -> String {
+    let expanded = if raw == "~" {
+        home.map(|home| home.display().to_string())
+            .unwrap_or_else(|| "~".to_owned())
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.map(|home| home.join(rest).display().to_string())
+            .unwrap_or_else(|| raw.to_owned())
+    } else {
+        raw.to_owned()
+    };
+    let path = Path::new(&expanded);
+    if path.is_absolute() {
+        expanded
+    } else {
+        cwd.join(path).display().to_string()
+    }
+}
+
+fn apply_managed_locks(target: &mut Table, managed: &Table, locked_keys: &[String]) {
+    for key in locked_keys {
+        if key.trim().is_empty() {
+            continue;
+        }
+        let segments = key.split('.').collect::<Vec<_>>();
+        if let Some(value) = table_value_at(managed, &segments) {
+            set_table_value(target, &segments, value.clone());
+        }
+    }
+}
+
+fn table_value_at<'a>(table: &'a Table, path: &[&str]) -> Option<&'a Value> {
+    let mut current = table;
+    for (index, segment) in path.iter().enumerate() {
+        let value = current.get(*segment)?;
+        if index + 1 == path.len() {
+            return Some(value);
+        }
+        current = value.as_table()?;
+    }
+    None
+}
+
+fn set_table_value(table: &mut Table, path: &[&str], value: Value) {
+    if path.is_empty() {
+        return;
+    }
+    if path.len() == 1 {
+        table.insert(path[0].to_owned(), value);
+        return;
+    }
+
+    let entry = table
+        .entry(path[0].to_owned())
+        .or_insert_with(|| Value::Table(Table::new()));
+    if !entry.is_table() {
+        *entry = Value::Table(Table::new());
+    }
+    if let Value::Table(child) = entry {
+        set_table_value(child, &path[1..], value);
+    }
+}
+
+fn string_option(value: Option<&Value>, key: &str) -> Result<Option<String>, ConfigError> {
+    value
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| ConfigError::type_mismatch(key, "a string", value))
+        })
+        .transpose()
+}
+
+fn string_array_option(
+    value: Option<&Value>,
+    key: &str,
+) -> Result<Option<Vec<String>>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let array = value
+        .as_array()
+        .ok_or_else(|| ConfigError::type_mismatch(key, "an array of strings", value))?;
+    let mut out = Vec::with_capacity(array.len());
+    for (index, value) in array.iter().enumerate() {
+        out.push(value.as_str().map(str::to_owned).ok_or_else(|| {
+            ConfigError::type_mismatch_found(
+                format!("{key}[{index}]"),
+                "a string",
+                describe(value.type_str()),
+            )
+        })?);
+    }
+    Ok(Some(out))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The built-in defaults layer.
 fn default_table() -> Table {
     let mut table = Table::new();
@@ -486,6 +794,11 @@ pub enum ConfigError {
     Read { path: PathBuf, source: io::Error },
     /// A config file contained invalid TOML.
     Parse { path: PathBuf, message: String },
+    /// A config file format is present but unsupported by this loader.
+    UnsupportedFormat {
+        path: PathBuf,
+        expected: &'static str,
+    },
     /// A config file could not be written (e.g. by [`persist_global_string`]).
     Write { path: PathBuf, source: io::Error },
     /// No global config location could be resolved (neither `$XDG_CONFIG_HOME` nor `$HOME` set).
@@ -498,6 +811,10 @@ pub enum ConfigError {
         path: String,
         source: io::Error,
     },
+    /// A remote config source could not be fetched.
+    RemoteFetch { url: String, source: String },
+    /// Outbound networking is disabled while a remote source was requested.
+    NetDisabled { source: String },
     /// A typed config key held a value of the wrong type.
     TypeMismatch {
         key: String,
@@ -544,14 +861,18 @@ impl ConfigError {
     }
 
     /// Build a type-mismatch error, describing the found value from a TOML value.
-    fn type_mismatch(key: &str, expected: &'static str, found: &Value) -> Self {
+    fn type_mismatch(key: impl Into<String>, expected: &'static str, found: &Value) -> Self {
         Self::type_mismatch_found(key, expected, describe(found.type_str()))
     }
 
     /// Build a type-mismatch error with an explicit description of what was found.
-    fn type_mismatch_found(key: &str, expected: &'static str, found: impl Into<String>) -> Self {
+    fn type_mismatch_found(
+        key: impl Into<String>,
+        expected: &'static str,
+        found: impl Into<String>,
+    ) -> Self {
         Self::TypeMismatch {
-            key: key.to_owned(),
+            key: key.into(),
             expected,
             found: found.into(),
         }
@@ -561,12 +882,15 @@ impl ConfigError {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Read { path, .. } | Self::Parse { path, .. } | Self::Write { path, .. } => {
-                Some(path)
-            }
+            Self::Read { path, .. }
+            | Self::Parse { path, .. }
+            | Self::Write { path, .. }
+            | Self::UnsupportedFormat { path, .. } => Some(path),
             Self::EnvMissing { .. }
             | Self::FileRead { .. }
             | Self::TypeMismatch { .. }
+            | Self::RemoteFetch { .. }
+            | Self::NetDisabled { .. }
             | Self::NoConfigHome => None,
         }
     }
@@ -599,6 +923,13 @@ impl fmt::Display for ConfigError {
                     path.display()
                 )
             }
+            Self::UnsupportedFormat { path, expected } => {
+                write!(
+                    formatter,
+                    "unsupported config file format at {}: expected {expected}",
+                    path.display()
+                )
+            }
             Self::Write { path, source } => {
                 write!(
                     formatter,
@@ -624,6 +955,18 @@ impl fmt::Display for ConfigError {
                     "config key `{key}`: cannot read substitution file `{path}`: {source}"
                 )
             }
+            Self::RemoteFetch { url, source } => {
+                write!(
+                    formatter,
+                    "failed to fetch remote well-known config `{url}`: {source}"
+                )
+            }
+            Self::NetDisabled { source } => {
+                write!(
+                    formatter,
+                    "network is disabled by CORTEX_NO_NET=1 while loading {source}"
+                )
+            }
             Self::TypeMismatch {
                 key,
                 expected,
@@ -645,8 +988,11 @@ impl std::error::Error for ConfigError {
             | Self::FileRead { source, .. }
             | Self::Write { source, .. } => Some(source),
             Self::Parse { .. }
+            | Self::UnsupportedFormat { .. }
             | Self::EnvMissing { .. }
             | Self::TypeMismatch { .. }
+            | Self::RemoteFetch { .. }
+            | Self::NetDisabled { .. }
             | Self::NoConfigHome => None,
         }
     }

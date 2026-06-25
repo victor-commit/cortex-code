@@ -19,6 +19,10 @@ const PROJECT_CONFIG_FILE: &str = "cortex.toml";
 /// The `.cortex/` project config directory and the file inside it.
 const PROJECT_CONFIG_DIR: &str = ".cortex";
 const CONFIG_FILE: &str = "config.toml";
+const JSON_CONFIG_FILE: &str = "cortex.json";
+const JSONC_CONFIG_FILE: &str = "cortex.jsonc";
+const NESTED_JSON_CONFIG_FILE: &str = "config.json";
+const NESTED_JSONC_CONFIG_FILE: &str = "config.jsonc";
 
 /// Candidate config file paths in ascending precedence order (lowest first).
 ///
@@ -42,6 +46,35 @@ pub fn config_files(
     files
 }
 
+/// Candidate JSON/JSONC config file paths in ascending precedence order (lowest first).
+///
+/// These are not loaded as config layers today (Cortex settings are TOML), but the loader uses
+/// this list to produce a clear migration diagnostic instead of silently ignoring these files.
+pub fn json_config_files(
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    if let Some(dir) = global_config_dir(home, xdg_config_home) {
+        let root = dir.join("cortex");
+        files.push(root.join(JSON_CONFIG_FILE));
+        files.push(root.join(JSONC_CONFIG_FILE));
+        files.push(root.join(PROJECT_CONFIG_DIR).join(NESTED_JSON_CONFIG_FILE));
+        files.push(root.join(PROJECT_CONFIG_DIR).join(NESTED_JSONC_CONFIG_FILE));
+    }
+
+    for dir in project_chain(home, cwd) {
+        files.push(dir.join(JSON_CONFIG_FILE));
+        files.push(dir.join(JSONC_CONFIG_FILE));
+        files.push(dir.join(PROJECT_CONFIG_DIR).join(NESTED_JSON_CONFIG_FILE));
+        files.push(dir.join(PROJECT_CONFIG_DIR).join(NESTED_JSONC_CONFIG_FILE));
+    }
+
+    files
+}
+
 /// The user's global config file (`<config>/cortex/config.toml`), if a config home exists.
 ///
 /// This is the durable destination for interactively-set user preferences (e.g. the TUI theme
@@ -49,6 +82,11 @@ pub fn config_files(
 /// load. Returns `None` only when neither `$XDG_CONFIG_HOME` nor `$HOME` is available.
 pub fn global_config_file(home: Option<&Path>, xdg_config_home: Option<&Path>) -> Option<PathBuf> {
     global_config_dir(home, xdg_config_home).map(|dir| dir.join("cortex").join(CONFIG_FILE))
+}
+
+/// The root config directory (`$XDG_CONFIG_HOME` or `$HOME/.config`), when available.
+pub fn global_config_root(home: Option<&Path>, xdg_config_home: Option<&Path>) -> Option<PathBuf> {
+    global_config_dir(home, xdg_config_home)
 }
 
 /// The directory holding the global config tree (`<config>/cortex/config.toml`).
@@ -137,6 +175,27 @@ mod tests {
                 PathBuf::from("/home/u/proj/sub/cortex.toml"),
                 PathBuf::from("/home/u/proj/sub/.cortex/config.toml"),
             ],
+        );
+    }
+
+    #[test]
+    fn json_config_candidates_cover_global_project_and_nested_paths() {
+        let files = json_config_files(
+            Some(Path::new("/home/u")),
+            None,
+            Path::new("/home/u/proj/sub"),
+        );
+        assert!(
+            files.contains(&PathBuf::from("/home/u/.config/cortex/cortex.json")),
+            "global JSON candidate is present"
+        );
+        assert!(
+            files.contains(&PathBuf::from("/home/u/proj/cortex.jsonc")),
+            "project JSONC candidate is present"
+        );
+        assert!(
+            files.contains(&PathBuf::from("/home/u/proj/sub/.cortex/config.json")),
+            "nested .cortex JSON candidate is present"
         );
     }
 }

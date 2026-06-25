@@ -192,7 +192,13 @@ fn auth_server(args: McpAuthArgs) -> Exit {
             return Exit::Config;
         }
     };
-    let servers = crate::run::mcp_servers_from_config(&effective);
+    let servers = match crate::run::mcp_servers_from_config(&effective) {
+        Ok(servers) => servers,
+        Err(err) => {
+            eprintln!("cortex mcp auth: {err}");
+            return Exit::Config;
+        }
+    };
     let Some(server) = servers.get(&args.name) else {
         eprintln!(
             "cortex mcp auth: no MCP server named '{}' is configured",
@@ -428,7 +434,13 @@ fn list_servers(args: McpListArgs) -> Exit {
         }
     };
 
-    let servers = crate::run::mcp_servers_from_config(&effective);
+    let servers = match crate::run::mcp_servers_from_config(&effective) {
+        Ok(servers) => servers,
+        Err(err) => {
+            eprintln!("cortex mcp list: {err}");
+            return Exit::Config;
+        }
+    };
     if servers
         .values()
         .any(|server| server.enabled && server.transport == mcp::McpTransport::Remote)

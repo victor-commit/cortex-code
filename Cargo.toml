@@ -80,7 +80,7 @@ acp = { path = "crates/acp" }
 agent-client-protocol = "=0.15.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rmcp = { version = "1.7", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "reqwest", "macros"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "blocking"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util", "io-std", "net"] }
 tokio-test = "0.4"
 eventsource-stream = "0.2"

@@ -12,3 +12,4 @@ workspace = true
 redaction = { workspace = true }
 toml = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }

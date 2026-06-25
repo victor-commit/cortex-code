@@ -106,8 +106,8 @@ fn missing_env_var_is_a_clear_non_leaking_error() {
 #[test]
 fn file_substitution_resolves_trimmed_contents() {
     let scratch = Scratch::new();
-    // The file lives in the nested CWD; the relative token is anchored there.
-    scratch.write("home/proj/sub/secret.txt", "  file-secret\n\n");
+    // The file lives next to the config file; the relative token is anchored to that config file.
+    scratch.write("home/proj/secret.txt", "  file-secret\n\n");
     scratch.write_project(r#"secret = "{file:./secret.txt}""#);
     let config = load(scratch.inputs(&[])).expect("loads");
     assert_eq!(
@@ -195,4 +195,32 @@ fn env_numeric_string_coerces_for_integer_key() {
     let scratch = Scratch::new();
     let config = load(scratch.inputs(&[("CORTEX_MAX_STEPS", "40")])).expect("loads");
     assert_eq!(config.max_steps(), 40);
+}
+
+#[test]
+fn embedded_tokens_resolve_inside_larger_strings() {
+    let scratch = Scratch::new();
+    scratch.write("home/proj/chunk.txt", "segment");
+    scratch.write_project(
+        r#"
+message = "prefix-{env:EMBED_VAR}-{file:./chunk.txt}-suffix"
+"#,
+    );
+    let config = load(scratch.inputs(&[("EMBED_VAR", "value")])).expect("loads");
+    assert_eq!(
+        config.get("message").and_then(|v| v.as_str()),
+        Some("prefix-value-segment-suffix")
+    );
+}
+
+#[test]
+fn tilde_expands_to_home_for_path_values() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"cache_path = "~/cache/data.txt""#);
+    let config = load(scratch.inputs(&[])).expect("loads");
+    let expected = scratch.home().join("cache/data.txt");
+    assert_eq!(
+        config.get("cache_path").and_then(|v| v.as_str()),
+        Some(expected.to_string_lossy().as_ref())
+    );
 }

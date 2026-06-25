@@ -2123,30 +2123,30 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
     Ok(RunConfig {
         model,
         provider_config,
-        mcp_servers: mcp_servers_from_config(&effective),
+        mcp_servers: mcp_servers_from_config(&effective)?,
         formatter_config,
         plugins,
         websearch,
     })
 }
 
-/// Extract the configured MCP servers from the effective config's `mcp` table. A malformed `mcp`
-/// entry is surfaced as a stderr warning and skipped rather than failing the whole run, so a broken
-/// server definition never blocks an otherwise-valid turn.
+/// Extract the configured MCP servers from the effective config's `mcp` table.
 pub(crate) fn mcp_servers_from_config(
     effective: &EffectiveConfig,
-) -> std::collections::BTreeMap<String, mcp::McpServerConfig> {
+) -> Result<std::collections::BTreeMap<String, mcp::McpServerConfig>, ConfigError> {
     let Some(value) = effective.get("mcp") else {
-        return std::collections::BTreeMap::new();
+        return Ok(std::collections::BTreeMap::new());
     };
-    let json = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-    match mcp::servers_from_value(&json) {
-        Ok(servers) => servers,
-        Err(err) => {
-            eprintln!("cortex run: ignoring invalid MCP configuration: {err}");
-            std::collections::BTreeMap::new()
-        }
-    }
+    let json = serde_json::to_value(value).map_err(|err| ConfigError::TypeMismatch {
+        key: "mcp".to_owned(),
+        expected: "a valid MCP server configuration",
+        found: err.to_string(),
+    })?;
+    mcp::servers_from_value(&json).map_err(|err| ConfigError::TypeMismatch {
+        key: "mcp".to_owned(),
+        expected: "a valid MCP server configuration",
+        found: err.to_string(),
+    })
 }
 
 /// Resolve the effective model for the turn (a thin wrapper over [`resolve_run_config`]).

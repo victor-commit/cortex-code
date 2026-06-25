@@ -14,6 +14,7 @@ const RESERVED_SUFFIXES: &[&str] = &[
     "NO_NET",
     "CONFIG_FILE",
     "CONFIG_DIR",
+    "CONFIG_CONTENT",
     "CONFIG_HOME",
     "HOME",
     "DATA_DIR",
@@ -77,6 +78,7 @@ mod tests {
             ("CORTEX_NO_NET", "1"),
             ("CORTEX_PURE", "1"),
             ("CORTEX_CONFIG_FILE", "/x"),
+            ("CORTEX_CONFIG_CONTENT", "model = \"x\""),
             ("CORTEX_STREAM_IDLE_TIMEOUT_MS", "50"),
             ("CORTEX_", "empty-suffix"),
         ]));
