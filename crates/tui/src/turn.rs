@@ -20,16 +20,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
+use crate::permission::{PermissionAsk, UiResponder};
+use crate::tooling::TurnDispatcher;
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn,
 };
 use events::Event;
 use llm::Message;
 use redaction::guard_outbound;
-use settings::EffectiveConfig;
-
-use crate::permission::{PermissionAsk, UiResponder};
-use crate::tooling::TurnDispatcher;
 #[allow(dead_code)]
 #[path = "../../cli/src/custom_agents.rs"]
 mod custom_agents;
@@ -422,6 +420,8 @@ fn build_turn(
     let effective = settings::load(inputs.clone()).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
+    let provider_config = providers::ProviderConfigSet::from_table(effective.table())
+        .map_err(|err| format!("invalid provider configuration: {err}"))?;
     let plugin_config =
         plugins::PluginConfig::from_toml_value(effective.get("plugin"), &plugin_cwd)
             .map_err(|message| format!("invalid plugin configuration: {message}"))?;
@@ -435,7 +435,9 @@ fn build_turn(
 
     // Run against the active model the UI shows (set from config at launch, updated by `/models`),
     // so a per-session model choice governs the turn directly rather than via a config round-trip.
-    let model = providers::resolve_model(Some(active_model));
+    let model = provider_config
+        .resolve_model(providers::Catalogue::embedded(), Some(active_model))
+        .map_err(|err| err.to_string())?;
     validate_model_id(&model.model_id)?;
     policy::enforce_provider_use(&inputs, &model.provider_id).map_err(|err| {
         if err.is_config() {
@@ -445,14 +447,25 @@ fn build_turn(
         }
     })?;
 
-    let credentials =
-        providers::CredentialInputs::openrouter_from_process(openrouter_api_key(&effective));
-    let provider = providers::resolve_openrouter_with_options(
-        &credentials,
-        openrouter_base_url_override(&effective).as_deref(),
-        None,
-    )
-    .map_err(|diag| diag.to_string())?;
+    let credentials = provider_config.credential_inputs(&model.provider_id);
+    let provider = if model.provider_id == providers::OPENROUTER_ID {
+        let base_url_override = provider_config.provider_base_url(&model.provider_id);
+        providers::resolve_openrouter_with_options(&credentials, base_url_override.as_deref(), None)
+            .map_err(|diag| diag.to_string())?
+    } else {
+        let base_url = provider_config
+            .resolve_provider_base_url(&model.provider_id)
+            .map_err(|err| err.to_string())?;
+        let headers = provider_config.provider_headers(&model.provider_id);
+        providers::resolve_openai_compatible_with_options(
+            &model.provider_id,
+            &credentials,
+            &base_url,
+            (!headers.is_empty()).then_some(headers.as_slice()),
+            None,
+        )
+        .map_err(|diag| diag.to_string())?
+    };
 
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
@@ -465,6 +478,10 @@ fn build_turn(
     let mut turn = Turn::new(&model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction);
+    let request_params = provider_config.provider_params(&model.provider_id);
+    if !request_params.is_empty() {
+        turn = turn.with_extra_params(request_params);
+    }
     if let Some(temperature) = agent.temperature() {
         turn = turn.with_temperature(temperature);
     }
@@ -641,38 +658,6 @@ fn compaction_policy(model: &providers::ResolvedModel) -> CompactionPolicy {
         None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
     };
     CompactionPolicy::for_context_window(context, output)
-}
-
-/// The OpenRouter endpoint override, if configured (the flat `openrouter_base_url` key, settable via
-/// `CORTEX_OPENROUTER_BASE_URL`, wins over a nested `[provider.openrouter] base_url`).
-fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
-    top_level_string(effective, "openrouter_base_url")
-        .or_else(|| provider_openrouter_string(effective, "base_url"))
-}
-
-/// The OpenRouter API key supplied through configuration (the lowest-precedence credential layer,
-/// below the env var and the 0600 store).
-fn openrouter_api_key(effective: &EffectiveConfig) -> Option<String> {
-    provider_openrouter_string(effective, "api_key")
-        .or_else(|| top_level_string(effective, "api_key"))
-}
-
-/// A non-empty top-level string config value (trimmed), or `None`.
-fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get(key)
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
-}
-
-/// A non-empty string value under the `[provider.openrouter]` table (trimmed), or `None`.
-fn provider_openrouter_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get("provider")
-        .and_then(|provider| provider.get("openrouter"))
-        .and_then(|openrouter| openrouter.get(key))
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
 }
 
 /// Trim a candidate value and keep it only if non-empty after trimming.

@@ -18,6 +18,8 @@ use crate::credentials::{Credential, CredentialInputs, resolve_credential};
 
 /// The OpenRouter provider id, matching the catalogue and the credential store key.
 pub const OPENROUTER_ID: &str = "openrouter";
+/// Canonical OpenRouter API base URL.
+pub const OPENROUTER_API_BASE: &str = OPENROUTER_BASE_URL;
 
 /// The default OpenRouter model (architecture §7).
 pub const OPENROUTER_DEFAULT_MODEL: &str = DEFAULT_MODEL;
@@ -33,7 +35,7 @@ pub fn openrouter_base_url() -> String {
     Catalogue::embedded()
         .provider(OPENROUTER_ID)
         .and_then(|provider| provider.api.clone())
-        .unwrap_or_else(|| OPENROUTER_BASE_URL.to_owned())
+        .unwrap_or_else(|| OPENROUTER_API_BASE.to_owned())
 }
 
 /// Build a ready OpenRouter [`OpenAiCompatible`] provider from a resolved credential, targeting
@@ -80,15 +82,70 @@ pub fn openrouter_provider_with_options(
     base_url: &str,
     idle_timeout: Option<Duration>,
 ) -> Result<OpenAiCompatible, Diagnostic> {
-    let mut config = OpenAiConfig::openrouter(credential.expose());
-    config.base_url = base_url.to_owned();
+    openai_compatible_provider_with_options(
+        OPENROUTER_ID,
+        credential,
+        base_url,
+        Some(
+            [
+                (String::from("HTTP-Referer"), String::from(REFERER)),
+                (String::from("X-Title"), String::from(TITLE)),
+            ]
+            .as_slice(),
+        ),
+        idle_timeout,
+    )
+}
+
+/// Build a ready OpenAI-compatible provider for `provider_id` from a resolved credential.
+///
+/// `extra_headers` are merged into the request transport for every call.
+///
+/// # Errors
+/// Returns the normalized transport diagnostic if the client cannot be constructed.
+pub fn openai_compatible_provider_with_options(
+    provider_id: &str,
+    credential: &Credential,
+    base_url: &str,
+    extra_headers: Option<&[(String, String)]>,
+    idle_timeout: Option<Duration>,
+) -> Result<OpenAiCompatible, Diagnostic> {
+    let mut config = OpenAiConfig {
+        base_url: base_url.to_owned(),
+        api_key: credential.expose().to_owned(),
+        provider_name: provider_id.to_owned(),
+        extra_headers: extra_headers
+            .map(|headers| headers.to_vec())
+            .unwrap_or_default(),
+        include_usage: true,
+        transport: llm::TransportConfig::default(),
+    };
     if let Some(idle_timeout) = idle_timeout {
         config.transport.idle_timeout = idle_timeout;
     }
-    let config = config
-        .header("HTTP-Referer", REFERER)
-        .header("X-Title", TITLE);
     OpenAiCompatible::new(config).map_err(|error| error.to_diagnostic())
+}
+
+/// Resolve `provider_id`'s credential and build a configured OpenAI-compatible provider.
+///
+/// # Errors
+/// Returns [`Diagnostic::NoCredential`] when no key is available, or a normalized transport
+/// diagnostic if the client cannot be constructed.
+pub fn resolve_openai_compatible_with_options(
+    provider_id: &str,
+    inputs: &CredentialInputs,
+    base_url: &str,
+    extra_headers: Option<&[(String, String)]>,
+    idle_timeout: Option<Duration>,
+) -> Result<OpenAiCompatible, Diagnostic> {
+    let credential = resolve_credential(provider_id, inputs)?;
+    openai_compatible_provider_with_options(
+        provider_id,
+        &credential,
+        base_url,
+        extra_headers,
+        idle_timeout,
+    )
 }
 
 /// Resolve the OpenRouter credential across the documented precedence layers and build a provider

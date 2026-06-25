@@ -199,11 +199,19 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // so a refusal never touches the network even when a key is present. The refusal itself is a
     // blocked network attempt and is durable in the same structured audit sink as successful runs.
     if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
-        let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
+        let endpoint = run_config
+            .provider_config
+            .resolve_chat_endpoint(run_config.model.provider_id.as_str())
+            .unwrap_or_else(|_| {
+                format!(
+                    "{}/chat/completions",
+                    providers::openrouter_base_url().trim_end_matches('/')
+                )
+            });
         let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
         audit_sink.record_network_call(
             "llm",
-            Some(providers::OPENROUTER_ID),
+            Some(run_config.model.provider_id.as_str()),
             Some(&run_config.model.model_id),
             "POST",
             &host,
@@ -293,10 +301,20 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // persisted with the resumed session is NOT consulted; when absent a per-session model (if any)
     // governs the resume (VAL-CROSS-006).
     let explicit_model = args.model.is_some();
+    let embedded_catalogue = providers::Catalogue::embedded();
 
     let agent_model_selected = if !explicit_model {
         if let Some(model) = agent.model() {
-            run_config.model = providers::resolve_model(Some(model));
+            run_config.model = match run_config
+                .provider_config
+                .resolve_model(embedded_catalogue, Some(model))
+            {
+                Ok(model) => model,
+                Err(err) => {
+                    eprintln!("cortex run: {err}");
+                    return Exit::Config;
+                }
+            };
             true
         } else {
             false
@@ -323,7 +341,16 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             eprintln!("cortex run: {message}");
             return Exit::Failure;
         }
-        run_config.model = providers::resolve_model(Some(&model));
+        run_config.model = match run_config
+            .provider_config
+            .resolve_model(embedded_catalogue, Some(&model))
+        {
+            Ok(model) => model,
+            Err(err) => {
+                eprintln!("cortex run: {err}");
+                return Exit::Config;
+            }
+        };
     }
 
     // Reject a malformed model id locally, before any credential or socket, with an actionable
@@ -348,9 +375,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         };
     }
 
-    // The credential resolves through env > 0600 file > config indirection; an endpoint override
-    // (config `provider.openrouter.base_url` / `openrouter_base_url`, the latter settable via
-    // `CORTEX_OPENROUTER_BASE_URL`) retargets the transport for self-hosted gateways or tests.
+    // The credential resolves through env > 0600 file > config indirection for the selected
+    // provider. Provider config can retarget the endpoint and attach provider-scoped options.
+    let mut provider_extra_params = serde_json::Map::new();
     let (provider_base, provider_audit): (
         Arc<dyn llm::Provider>,
         Option<crate::subagent::ProviderAuditConfig>,
@@ -364,21 +391,64 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             (Arc::new(provider), None)
         }
         None => {
-            let endpoint = openrouter_chat_endpoint(run_config.base_url.as_deref());
-            let inputs = providers::CredentialInputs::openrouter_from_process(run_config.api_key);
-            match providers::resolve_openrouter_with_options(
-                &inputs,
-                run_config.base_url.as_deref(),
-                stream_idle_timeout(),
-            ) {
-                Ok(provider) => (
-                    Arc::new(provider),
-                    Some(crate::subagent::ProviderAuditConfig::new(
-                        providers::OPENROUTER_ID,
-                        endpoint,
-                    )),
-                ),
-                Err(diag) => return report_setup_diagnostic(&diag),
+            let provider_id = run_config.model.provider_id.clone();
+            let endpoint = match run_config
+                .provider_config
+                .resolve_chat_endpoint(&provider_id)
+            {
+                Ok(endpoint) => endpoint,
+                Err(err) => {
+                    eprintln!("cortex run: {err}");
+                    return Exit::Config;
+                }
+            };
+            let inputs = run_config.provider_config.credential_inputs(&provider_id);
+            provider_extra_params = run_config.provider_config.provider_params(&provider_id);
+
+            if provider_id == providers::OPENROUTER_ID {
+                let base_url_override = run_config.provider_config.provider_base_url(&provider_id);
+                match providers::resolve_openrouter_with_options(
+                    &inputs,
+                    base_url_override.as_deref(),
+                    stream_idle_timeout(),
+                ) {
+                    Ok(provider) => (
+                        Arc::new(provider),
+                        Some(crate::subagent::ProviderAuditConfig::new(
+                            provider_id,
+                            endpoint,
+                        )),
+                    ),
+                    Err(diag) => return report_setup_diagnostic(&diag),
+                }
+            } else {
+                let base_url = match run_config
+                    .provider_config
+                    .resolve_provider_base_url(&provider_id)
+                {
+                    Ok(base_url) => base_url,
+                    Err(err) => {
+                        eprintln!("cortex run: {err}");
+                        return Exit::Config;
+                    }
+                };
+                let headers = run_config.provider_config.provider_headers(&provider_id);
+                match providers::resolve_openai_compatible_with_options(
+                    &provider_id,
+                    &inputs,
+                    &base_url,
+                    (!headers.is_empty()).then_some(headers.as_slice()),
+                    stream_idle_timeout(),
+                ) {
+                    Ok(provider) => (
+                        Arc::new(provider),
+                        Some(crate::subagent::ProviderAuditConfig::new(
+                            provider_id,
+                            endpoint,
+                        )),
+                    ),
+                    Err(diag) => return report_setup_diagnostic(&diag),
+                }
             }
         }
     };
@@ -446,6 +516,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let mut turn = Turn::new(&model_id, system, prompt.clone())
         .with_history(history)
         .with_compaction(compaction);
+    if !provider_extra_params.is_empty() {
+        turn = turn.with_extra_params(provider_extra_params);
+    }
     if let Some(temperature) = agent.temperature() {
         turn = turn.with_temperature(temperature);
     }
@@ -2006,12 +2079,11 @@ fn configured_agent_name(inputs: &ConfigInputs) -> Result<Option<String>, Config
     Ok(non_empty(effective.agent()))
 }
 
-/// The configuration-derived inputs for a run: the resolved model plus the optional OpenRouter
-/// endpoint override and config-supplied credential (the lowest-precedence credential layer).
+/// The configuration-derived inputs for a run: the resolved model, typed provider policy/config,
+/// and additional local runtime integrations.
 struct RunConfig {
     model: ResolvedModel,
-    base_url: Option<String>,
-    api_key: Option<String>,
+    provider_config: providers::ProviderConfigSet,
     mcp_servers: std::collections::BTreeMap<String, mcp::McpServerConfig>,
     formatter_config: format::FormatterConfig,
     plugins: plugins::PluginConfig,
@@ -2020,7 +2092,7 @@ struct RunConfig {
 
 /// Resolve everything a run derives from configuration: merge every layer (the `--model` flag is
 /// carried as the CLI override inside `inputs`), resolve the winning model id against the provider
-/// catalogue, and extract the optional OpenRouter endpoint override and config-supplied API key.
+/// catalogue, and parse typed provider configuration and policy.
 ///
 /// # Errors
 /// Returns the underlying [`ConfigError`] when a configuration layer cannot be loaded (bad TOML,
@@ -2028,6 +2100,7 @@ struct RunConfig {
 fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
     let cwd = inputs.cwd.clone();
     let effective = settings::load(inputs)?;
+    let provider_config = provider_config_set(&effective)?;
     let formatter_config =
         format::FormatterConfig::from_table(effective.table()).map_err(|message| {
             ConfigError::TypeMismatch {
@@ -2044,10 +2117,12 @@ fn resolve_run_config(inputs: ConfigInputs) -> Result<RunConfig, ConfigError> {
         },
     )?;
     let websearch = websearch_config_from(&effective)?;
+    let model = provider_config
+        .resolve_model(providers::Catalogue::embedded(), Some(effective.model()))
+        .map_err(provider_config_error)?;
     Ok(RunConfig {
-        model: providers::resolve_model(Some(effective.model())),
-        base_url: openrouter_base_url_override(&effective),
-        api_key: openrouter_api_key(&effective),
+        model,
+        provider_config,
         mcp_servers: mcp_servers_from_config(&effective),
         formatter_config,
         plugins,
@@ -2083,31 +2158,18 @@ fn resolve_run_model(inputs: ConfigInputs) -> Result<ResolvedModel, ConfigError>
     Ok(resolve_run_config(inputs)?.model)
 }
 
-/// The OpenRouter endpoint override, if configured. The flat `openrouter_base_url` key (settable
-/// via the `CORTEX_OPENROUTER_BASE_URL` environment variable through the standard `CORTEX_<KEY>`
-/// mapping) wins over a nested `[provider.openrouter] base_url`, so an env/CLI override is
-/// authoritative. An empty/whitespace value is treated as absent.
-fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
-    top_level_string(effective, "openrouter_base_url")
-        .or_else(|| provider_openrouter_string(effective, "base_url"))
+fn provider_config_set(
+    effective: &EffectiveConfig,
+) -> Result<providers::ProviderConfigSet, ConfigError> {
+    providers::ProviderConfigSet::from_table(effective.table()).map_err(provider_config_error)
 }
 
-fn openrouter_chat_endpoint(base_url: Option<&str>) -> String {
-    format!(
-        "{}/chat/completions",
-        base_url
-            .map(str::to_owned)
-            .unwrap_or_else(providers::openrouter_base_url)
-            .trim_end_matches('/')
-    )
-}
-
-/// The OpenRouter API key supplied through configuration (the lowest-precedence credential layer,
-/// below the env var and the 0600 store). A nested `[provider.openrouter] api_key` wins over a
-/// flat `api_key`. Any `{env:}`/`{file:}` indirection has already been resolved by `settings`.
-fn openrouter_api_key(effective: &EffectiveConfig) -> Option<String> {
-    provider_openrouter_string(effective, "api_key")
-        .or_else(|| top_level_string(effective, "api_key"))
+fn provider_config_error(error: providers::ProviderConfigError) -> ConfigError {
+    ConfigError::TypeMismatch {
+        key: error.key,
+        expected: "a valid provider configuration",
+        found: error.message,
+    }
 }
 
 /// Resolve the optional websearch config. With no explicit enable flag this returns `None`, so the
@@ -2204,11 +2266,6 @@ fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
         .get(key)
         .and_then(|value| value.as_str())
         .and_then(non_empty)
-}
-
-/// A non-empty string value under the `[provider.openrouter]` table (trimmed), or `None`.
-fn provider_openrouter_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
-    provider_string(effective, "openrouter", key)
 }
 
 /// A non-empty string value under a `[provider.<name>]` table (trimmed), or `None`.
@@ -2702,7 +2759,10 @@ mod tests {
         let run_config =
             resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
         assert_eq!(
-            run_config.base_url.as_deref(),
+            run_config
+                .provider_config
+                .provider_base_url(providers::OPENROUTER_ID)
+                .as_deref(),
             Some("http://127.0.0.1:3250")
         );
     }
@@ -2720,7 +2780,10 @@ mod tests {
         ))
         .expect("resolve");
         assert_eq!(
-            run_config.base_url.as_deref(),
+            run_config
+                .provider_config
+                .provider_base_url(providers::OPENROUTER_ID)
+                .as_deref(),
             Some("http://127.0.0.1:3260")
         );
     }
@@ -2741,7 +2804,10 @@ mod tests {
         ))
         .expect("resolve");
         assert_eq!(
-            run_config.base_url.as_deref(),
+            run_config
+                .provider_config
+                .provider_base_url(providers::OPENROUTER_ID)
+                .as_deref(),
             Some("http://127.0.0.1:3299")
         );
     }
@@ -2752,8 +2818,19 @@ mod tests {
         let (base, proj) = scratch_tree("base-url-none");
         let run_config =
             resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
-        assert!(run_config.base_url.is_none());
-        assert!(run_config.api_key.is_none());
+        assert!(
+            run_config
+                .provider_config
+                .provider_base_url(providers::OPENROUTER_ID)
+                .is_none()
+        );
+        assert!(
+            run_config
+                .provider_config
+                .provider(providers::OPENROUTER_ID)
+                .and_then(|provider| provider.auth.api_key.clone())
+                .is_none()
+        );
         assert!(
             run_config.websearch.is_none(),
             "websearch must be default-off with no provider enabled"
@@ -2821,7 +2898,13 @@ mod tests {
         write_config(&proj, "[provider.openrouter]\napi_key = \"from-config\"\n");
         let run_config =
             resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
-        assert_eq!(run_config.api_key.as_deref(), Some("from-config"));
+        assert_eq!(
+            run_config
+                .provider_config
+                .provider(providers::OPENROUTER_ID)
+                .and_then(|provider| provider.auth.api_key.as_deref()),
+            Some("from-config")
+        );
     }
 
     // A flat `api_key` key is also accepted as the config-layer credential.
@@ -2831,7 +2914,13 @@ mod tests {
         write_config(&proj, "api_key = \"flat-config-key\"\n");
         let run_config =
             resolve_run_config(config_inputs(&base, &proj, &[], None)).expect("resolve");
-        assert_eq!(run_config.api_key.as_deref(), Some("flat-config-key"));
+        assert_eq!(
+            run_config
+                .provider_config
+                .provider(providers::OPENROUTER_ID)
+                .and_then(|provider| provider.auth.api_key.as_deref()),
+            Some("flat-config-key")
+        );
     }
 
     #[test]

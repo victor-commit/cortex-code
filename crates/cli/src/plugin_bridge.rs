@@ -768,6 +768,8 @@ pub(crate) struct ProviderDoc {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) config: Option<providers::ProviderReport>,
     pub(crate) models: Vec<ModelDoc>,
 }
 
@@ -777,6 +779,7 @@ impl ProviderDoc {
             id: provider.id.clone(),
             name: non_empty(&provider.name).unwrap_or_else(|| provider.id.clone()),
             source: "plugin",
+            config: None,
             models: provider
                 .models
                 .iter()

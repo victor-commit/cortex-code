@@ -8,6 +8,7 @@
 
 use errors::Exit;
 use serde::Serialize;
+use settings::ConfigInputs;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
@@ -27,18 +28,64 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
         }
     };
 
-    let builtin = if args.refresh {
-        match refresh_builtin_providers() {
-            Ok(providers) => providers,
+    let config_inputs = match ConfigInputs::from_process(BTreeMap::new()) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            eprintln!("cortex models: cannot determine configuration context: {err}");
+            return Exit::Failure;
+        }
+    };
+    let effective = match settings::load(config_inputs.clone()) {
+        Ok(effective) => effective,
+        Err(err) => {
+            eprintln!("cortex models: {err}");
+            return Exit::Config;
+        }
+    };
+    let provider_config = match providers::ProviderConfigSet::from_table(effective.table()) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("cortex models: {err}");
+            return Exit::Config;
+        }
+    };
+    let provider_report = provider_config.redacted_report();
+
+    let (builtin_catalogue, builtin_source) = if args.refresh {
+        match refresh_builtin_catalogue() {
+            Ok(catalogue) => catalogue,
             Err(exit) => return exit,
         }
     } else {
-        offline_builtin_providers()
+        offline_builtin_catalogue()
     };
+    let merged_catalogue = provider_config.merged_catalogue(&builtin_catalogue);
+    let default_model =
+        match provider_config.resolve_model(&merged_catalogue, Some(effective.model())) {
+            Ok(resolved) => resolved.model_id,
+            Err(err) => {
+                eprintln!("cortex models: {err}");
+                return Exit::Config;
+            }
+        };
 
-    let mut providers = builtin;
-    providers.extend(state.providers());
-    let providers = match filter_denied_providers(&providers) {
+    let mut providers = docs_from_catalogue(
+        &merged_catalogue,
+        &builtin_catalogue,
+        builtin_source,
+        &default_model,
+        &provider_report.providers,
+    );
+    let mut plugin_providers = state.providers();
+    for provider in &mut plugin_providers {
+        provider.config = provider_report.providers.get(&provider.id).cloned();
+    }
+    providers.extend(plugin_providers);
+    let providers = providers
+        .into_iter()
+        .filter(|provider| provider_config.provider_enabled(&provider.id))
+        .collect::<Vec<_>>();
+    let providers = match filter_denied_providers(&config_inputs, &providers) {
         Ok(providers) => providers,
         Err(err) => {
             eprintln!("cortex models: {err}");
@@ -49,15 +96,20 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
             };
         }
     };
-    emit(args.format.format, &providers)
+    emit(
+        args.format.format,
+        &providers,
+        &default_model,
+        &provider_report,
+    )
 }
 
-/// The offline builtin providers: the cache written by a prior `--refresh` when present and valid,
-/// otherwise the embedded snapshot. Either source is read from disk with no network access.
-fn offline_builtin_providers() -> Vec<ProviderDoc> {
+/// The offline builtin catalogue: the cache written by a prior `--refresh` when present and
+/// valid, otherwise the embedded snapshot. Either source is read from disk with no network access.
+fn offline_builtin_catalogue() -> (providers::Catalogue, &'static str) {
     match providers::load_cached_catalogue() {
-        Some(cached) => docs_from_catalogue(&cached, "cached"),
-        None => docs_from_catalogue(providers::Catalogue::embedded(), "builtin"),
+        Some(cached) => (cached, "cached"),
+        None => (providers::Catalogue::embedded().clone(), "builtin"),
     }
 }
 
@@ -67,7 +119,7 @@ fn offline_builtin_providers() -> Vec<ProviderDoc> {
 /// exit code with no socket opened. On a successful fetch the curated snapshot is cached (a write
 /// failure is non-fatal) and listed; on a fetch failure it returns the mapped failure exit with a
 /// clear diagnostic on stderr, leaving any existing cache (and the embedded snapshot) intact.
-fn refresh_builtin_providers() -> Result<Vec<ProviderDoc>, Exit> {
+fn refresh_builtin_catalogue() -> Result<(providers::Catalogue, &'static str), Exit> {
     if let Err(diag) = redaction::guard_outbound("models.dev catalog refresh") {
         eprintln!("cortex models --refresh: {diag}");
         return Err(diag.exit());
@@ -93,7 +145,7 @@ fn refresh_builtin_providers() -> Result<Vec<ProviderDoc>, Exit> {
                     "cortex models --refresh: warning: could not cache the refreshed catalog: {err}"
                 );
             }
-            Ok(docs_from_catalogue(&catalogue, "models.dev"))
+            Ok((catalogue, "models.dev"))
         }
         Err(diag) => {
             eprintln!("cortex models --refresh: {diag}");
@@ -103,13 +155,24 @@ fn refresh_builtin_providers() -> Result<Vec<ProviderDoc>, Exit> {
 }
 
 /// Project a catalogue into the `cortex models` document shape, tagging each entry's `source`.
-fn docs_from_catalogue(catalogue: &providers::Catalogue, source: &'static str) -> Vec<ProviderDoc> {
+fn docs_from_catalogue(
+    catalogue: &providers::Catalogue,
+    builtin_catalogue: &providers::Catalogue,
+    builtin_source: &'static str,
+    default_model: &str,
+    provider_reports: &BTreeMap<String, providers::ProviderReport>,
+) -> Vec<ProviderDoc> {
     catalogue
         .providers()
         .map(|provider| ProviderDoc {
             id: provider.id.clone(),
             name: provider.name.clone(),
-            source,
+            source: if builtin_catalogue.provider(&provider.id).is_some() {
+                builtin_source
+            } else {
+                "config"
+            },
+            config: provider_reports.get(&provider.id).cloned(),
             models: provider
                 .models
                 .values()
@@ -117,8 +180,7 @@ fn docs_from_catalogue(catalogue: &providers::Catalogue, source: &'static str) -
                     id: model.id.clone(),
                     name: model.name.clone(),
                     provider: provider.id.clone(),
-                    default: provider.id == providers::DEFAULT_PROVIDER
-                        && model.id == providers::DEFAULT_MODEL,
+                    default: model.id == default_model,
                     attachment: model.attachment,
                     tool_call: model.tool_call,
                     reasoning: model.reasoning,
@@ -128,7 +190,11 @@ fn docs_from_catalogue(catalogue: &providers::Catalogue, source: &'static str) -
                     },
                     context_length: model.limit.context,
                     max_output_tokens: model.limit.output,
-                    source,
+                    source: if builtin_catalogue.model(&provider.id, &model.id).is_some() {
+                        builtin_source
+                    } else {
+                        "config"
+                    },
                 })
                 .collect(),
         })
@@ -136,16 +202,11 @@ fn docs_from_catalogue(catalogue: &providers::Catalogue, source: &'static str) -
 }
 
 fn filter_denied_providers(
+    inputs: &settings::ConfigInputs,
     providers: &[ProviderDoc],
 ) -> Result<Vec<ProviderDoc>, policy::ProviderPolicyError> {
-    let inputs = settings::ConfigInputs::from_process(BTreeMap::new()).map_err(|err| {
-        policy::ProviderPolicyError::Invalid {
-            source: None,
-            message: format!("cannot determine configuration context: {err}"),
-        }
-    })?;
     providers.iter().try_fold(Vec::new(), |mut acc, provider| {
-        if policy::provider_use_action(&inputs, &provider.id)? != permissions::Action::Deny {
+        if policy::provider_use_action(inputs, &provider.id)? != permissions::Action::Deny {
             acc.push(provider.clone());
         }
         Ok(acc)
@@ -156,9 +217,15 @@ fn filter_denied_providers(
 struct ModelsDocument<'a> {
     default_model: &'a str,
     providers: &'a [ProviderDoc],
+    provider_config: &'a providers::ProviderConfigReport,
 }
 
-fn emit(format: OutputFormat, providers: &[ProviderDoc]) -> Exit {
+fn emit(
+    format: OutputFormat,
+    providers: &[ProviderDoc],
+    default_model: &str,
+    provider_config: &providers::ProviderConfigReport,
+) -> Exit {
     match format {
         OutputFormat::Text => {
             let stdout = io::stdout();
@@ -190,8 +257,9 @@ fn emit(format: OutputFormat, providers: &[ProviderDoc]) -> Exit {
         }
         OutputFormat::Json | OutputFormat::Jsonl => {
             let document = ModelsDocument {
-                default_model: ::providers::DEFAULT_MODEL,
+                default_model,
                 providers,
+                provider_config,
             };
             match serde_json::to_string(&document) {
                 Ok(line) => {

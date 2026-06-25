@@ -115,15 +115,21 @@ pub struct CredentialInputs {
 }
 
 impl CredentialInputs {
+    /// Build resolution inputs from the current process for an arbitrary provider.
+    #[must_use]
+    pub fn from_process(provider_env: Option<&str>, config_value: Option<String>) -> Self {
+        Self {
+            env_value: provider_env.and_then(non_empty_env),
+            credential_file: AuthPathInputs::from_process().resolve(),
+            config_value,
+        }
+    }
+
     /// Build OpenRouter resolution inputs from the current process: the `OPENROUTER_API_KEY` env
     /// var, the default auth-file path, and the given config-supplied value.
     #[must_use]
     pub fn openrouter_from_process(config_value: Option<String>) -> Self {
-        Self {
-            env_value: non_empty_env(OPENROUTER_ENV),
-            credential_file: AuthPathInputs::from_process().resolve(),
-            config_value,
-        }
+        Self::from_process(Some(OPENROUTER_ENV), config_value)
     }
 }
 

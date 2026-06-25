@@ -1,5 +1,6 @@
 //! `cortex auth`: login/list/logout for the local provider credential store.
 
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Read, Write};
 
 use errors::Exit;
@@ -8,6 +9,7 @@ use providers::{
 };
 use redaction::PLACEHOLDER;
 use serde::Serialize;
+use settings::ConfigInputs;
 
 use crate::cli::{
     AuthArgs, AuthCommand, AuthListArgs, AuthLoginArgs, AuthLogoutArgs, OutputFormat,
@@ -29,7 +31,7 @@ fn login(args: AuthLoginArgs) -> Exit {
     let Some(secret) = resolve_login_secret(&args, &provider) else {
         eprintln!(
             "cortex auth login: no API key provided (use --api-key, --api-key-env, {default_env}, or pipe on stdin)",
-            default_env = provider_default_env(&provider).unwrap_or("<env>")
+            default_env = provider_default_env(&provider).unwrap_or_else(|| "<env>".to_owned())
         );
         return Exit::MissingInput;
     };
@@ -152,8 +154,16 @@ fn normalized_provider(raw: &str) -> Option<String> {
     }
 }
 
-fn provider_default_env(provider: &str) -> Option<&'static str> {
-    (provider == providers::OPENROUTER_ID).then_some(providers::OPENROUTER_ENV)
+fn provider_default_env(provider: &str) -> Option<String> {
+    let inputs = ConfigInputs::from_process(BTreeMap::new()).ok()?;
+    let effective = settings::load(inputs).ok()?;
+    let provider_config = providers::ProviderConfigSet::from_table(effective.table()).ok()?;
+    provider_config
+        .provider(provider)
+        .and_then(|configured| configured.auth.api_key_env.clone())
+        .or_else(|| {
+            (provider == providers::OPENROUTER_ID).then(|| providers::OPENROUTER_ENV.to_owned())
+        })
 }
 
 fn credential_source(args: &AuthLoginArgs, provider: &str) -> String {
@@ -179,7 +189,7 @@ fn credential_source(args: &AuthLoginArgs, provider: &str) -> String {
         }
     }
     if let Some(default_env) = provider_default_env(provider) {
-        if std::env::var(default_env)
+        if std::env::var(&default_env)
             .ok()
             .and_then(|value| non_empty(Some(&value)))
             .is_some()
@@ -210,7 +220,7 @@ fn resolve_login_secret(args: &AuthLoginArgs, provider: &str) -> Option<String> 
         }
     }
     if let Some(default_env) = provider_default_env(provider) {
-        if let Ok(value) = std::env::var(default_env) {
+        if let Ok(value) = std::env::var(&default_env) {
             if let Some(secret) = non_empty(Some(&value)) {
                 return Some(secret);
             }

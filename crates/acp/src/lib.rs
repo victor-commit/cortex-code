@@ -419,9 +419,12 @@ impl AcpService {
 
         let system =
             SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
-        let turn = Turn::new(&resolved.model_id, system, prompt.text.clone())
+        let mut turn = Turn::new(&resolved.model_id, system, prompt.text.clone())
             .with_history(history)
             .with_compaction(compaction_policy(&resolved.model));
+        if !resolved.request_params.is_empty() {
+            turn = turn.with_extra_params(resolved.request_params.clone());
+        }
         let permissions = match permission_engine_for_turn(
             self.state.event_bus.clone(),
             &prompt.session_id,
@@ -537,10 +540,16 @@ impl AcpService {
     ) -> Result<ResolvedProvider, String> {
         let config_inputs = settings::ConfigInputs::from_process(BTreeMap::new())
             .map_err(|err| format!("cannot load configuration context: {err}"))?;
+        let effective = settings::load(config_inputs.clone())
+            .map_err(|err| format!("cannot load configuration: {err}"))?;
+        let provider_config = providers::ProviderConfigSet::from_table(effective.table())
+            .map_err(|err| format!("cannot parse provider configuration: {err}"))?;
         match &self.state.provider {
             #[cfg(test)]
             ProviderSource::Fixed { model_id, provider } => {
-                let model = providers::resolve_model(Some(model_id));
+                let model = provider_config
+                    .resolve_model(providers::Catalogue::embedded(), Some(model_id))
+                    .map_err(|err| err.to_string())?;
                 policy::enforce_provider_use(&config_inputs, &model.provider_id).map_err(
                     |err| {
                         if err.is_config() {
@@ -550,21 +559,23 @@ impl AcpService {
                         }
                     },
                 )?;
+                let request_params = provider_config.provider_params(&model.provider_id);
                 Ok(ResolvedProvider {
                     model_id: model.model_id.clone(),
                     model,
                     provider: provider.clone(),
+                    request_params,
                 })
             }
             ProviderSource::OpenRouter => {
-                let effective = settings::load(config_inputs.clone())
-                    .map_err(|err| format!("cannot load configuration: {err}"))?;
                 let model_id = session_model
                     .map(str::trim)
                     .filter(|model| !model.is_empty())
                     .unwrap_or_else(|| effective.model());
                 validate_model_id(model_id)?;
-                let model = providers::resolve_model(Some(model_id));
+                let model = provider_config
+                    .resolve_model(providers::Catalogue::embedded(), Some(model_id))
+                    .map_err(|err| err.to_string())?;
                 policy::enforce_provider_use(&config_inputs, &model.provider_id).map_err(
                     |err| {
                         if err.is_config() {
@@ -574,18 +585,31 @@ impl AcpService {
                         }
                     },
                 )?;
-                let inputs = providers::CredentialInputs::openrouter_from_process(
-                    openrouter_api_key(&effective),
-                );
-                let provider = providers::resolve_openrouter_with(
-                    &inputs,
-                    openrouter_base_url_override(&effective).as_deref(),
-                )
-                .map_err(|diagnostic| diagnostic.to_string())?;
+                let inputs = provider_config.credential_inputs(&model.provider_id);
+                let provider = if model.provider_id == providers::OPENROUTER_ID {
+                    let base_url_override = provider_config.provider_base_url(&model.provider_id);
+                    providers::resolve_openrouter_with(&inputs, base_url_override.as_deref())
+                        .map_err(|diagnostic| diagnostic.to_string())?
+                } else {
+                    let base_url = provider_config
+                        .resolve_provider_base_url(&model.provider_id)
+                        .map_err(|err| err.to_string())?;
+                    let headers = provider_config.provider_headers(&model.provider_id);
+                    providers::resolve_openai_compatible_with_options(
+                        &model.provider_id,
+                        &inputs,
+                        &base_url,
+                        (!headers.is_empty()).then_some(headers.as_slice()),
+                        None,
+                    )
+                    .map_err(|diagnostic| diagnostic.to_string())?
+                };
+                let request_params = provider_config.provider_params(&model.provider_id);
                 Ok(ResolvedProvider {
                     model_id: model.model_id.clone(),
                     model,
                     provider: Arc::new(provider),
+                    request_params,
                 })
             }
         }
@@ -600,6 +624,7 @@ struct ResolvedProvider {
     model_id: String,
     model: ResolvedModel,
     provider: Arc<dyn Provider>,
+    request_params: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct JsonRpcWriter<W> {
@@ -1203,38 +1228,6 @@ impl tools::TodoStore for AcpTodoStore {
             .replace_for_session(session_id, items)
             .map_err(|err| err.to_string())
     }
-}
-
-fn top_level_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get(key)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn provider_openrouter_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get("provider")
-        .and_then(|value| value.as_table())
-        .and_then(|table| table.get("openrouter"))
-        .and_then(|value| value.as_table())
-        .and_then(|table| table.get(key))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn openrouter_base_url_override(effective: &settings::EffectiveConfig) -> Option<String> {
-    top_level_string(effective, "openrouter_base_url")
-        .or_else(|| provider_openrouter_string(effective, "base_url"))
-}
-
-fn openrouter_api_key(effective: &settings::EffectiveConfig) -> Option<String> {
-    provider_openrouter_string(effective, "api_key")
-        .or_else(|| top_level_string(effective, "api_key"))
 }
 
 #[cfg(test)]

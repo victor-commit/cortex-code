@@ -1620,17 +1620,28 @@ async fn run_message_turn(
         effective_config.model(),
     )
     .map_err(ApiError::bad_request)?;
+    let provider_config = providers::ProviderConfigSet::from_table(effective_config.table())
+        .map_err(provider_config_api_error)?;
+    let resolved_for_guard = provider_config
+        .resolve_model(providers::Catalogue::embedded(), Some(&selected_model))
+        .map_err(provider_config_api_error)?;
     let audit_sink = audit_sink_for(&state, &session_id);
 
     // The kill-switch wins before credential resolution, prompt persistence, or any outbound
     // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
     if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
-        let endpoint =
-            openrouter_chat_endpoint(openrouter_base_url_override(&effective_config).as_deref());
+        let endpoint = provider_config
+            .resolve_chat_endpoint(&resolved_for_guard.provider_id)
+            .unwrap_or_else(|_| {
+                format!(
+                    "{}/chat/completions",
+                    providers::openrouter_base_url().trim_end_matches('/')
+                )
+            });
         let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
         audit_sink.record_network_call(
             "llm",
-            Some(providers::OPENROUTER_ID),
+            Some(&resolved_for_guard.provider_id),
             Some(&selected_model),
             "POST",
             &host,
@@ -1659,7 +1670,7 @@ async fn run_message_turn(
     let resolved = resolve_turn_provider(
         &state.provider,
         &selected_model,
-        &effective_config,
+        &provider_config,
         &config_inputs,
     )?;
     let history = load_history(&db, &session_id)?;
@@ -1687,6 +1698,9 @@ async fn run_message_turn(
     let mut turn = Turn::new(&resolved.model_id, system, prompt)
         .with_history(history)
         .with_compaction(compaction_policy(&resolved.model));
+    if !resolved.request_params.is_empty() {
+        turn = turn.with_extra_params(resolved.request_params.clone());
+    }
     if let Some(temperature) = selected_agent.temperature() {
         turn = turn.with_temperature(temperature);
     }
@@ -1789,17 +1803,20 @@ struct ResolvedTurnProvider {
     model_id: String,
     model: ResolvedModel,
     provider: Arc<dyn Provider>,
+    request_params: serde_json::Map<String, serde_json::Value>,
 }
 
 fn resolve_turn_provider(
     source: &ProviderSource,
     model_id: &str,
-    effective_config: &settings::EffectiveConfig,
+    provider_config: &providers::ProviderConfigSet,
     config_inputs: &settings::ConfigInputs,
 ) -> Result<ResolvedTurnProvider, ApiError> {
     match source {
         ProviderSource::OpenRouter => {
-            let resolved = providers::resolve_model(Some(model_id));
+            let resolved = provider_config
+                .resolve_model(providers::Catalogue::embedded(), Some(model_id))
+                .map_err(provider_config_api_error)?;
             policy::enforce_provider_use(config_inputs, &resolved.provider_id).map_err(|err| {
                 if err.is_config() {
                     ApiError::new(
@@ -1810,29 +1827,52 @@ fn resolve_turn_provider(
                     ApiError::new(StatusCode::FORBIDDEN, err.to_string())
                 }
             })?;
-            let inputs = providers::CredentialInputs::openrouter_from_process(openrouter_api_key(
-                effective_config,
-            ));
-            let provider = providers::resolve_openrouter_with(
-                &inputs,
-                openrouter_base_url_override(effective_config).as_deref(),
-            )
-            .map_err(|diagnostic| {
-                let status = match diagnostic.kind() {
-                    "no-credential" => StatusCode::UNAUTHORIZED,
-                    "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
-                    _ => StatusCode::BAD_GATEWAY,
-                };
-                ApiError::diagnostic(status, diagnostic)
-            })?;
+            let inputs = provider_config.credential_inputs(&resolved.provider_id);
+            let provider = if resolved.provider_id == providers::OPENROUTER_ID {
+                let base_url_override = provider_config.provider_base_url(&resolved.provider_id);
+                providers::resolve_openrouter_with(&inputs, base_url_override.as_deref()).map_err(
+                    |diagnostic| {
+                        let status = match diagnostic.kind() {
+                            "no-credential" => StatusCode::UNAUTHORIZED,
+                            "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
+                            _ => StatusCode::BAD_GATEWAY,
+                        };
+                        ApiError::diagnostic(status, diagnostic)
+                    },
+                )?
+            } else {
+                let base_url = provider_config
+                    .resolve_provider_base_url(&resolved.provider_id)
+                    .map_err(provider_config_api_error)?;
+                let headers = provider_config.provider_headers(&resolved.provider_id);
+                providers::resolve_openai_compatible_with_options(
+                    &resolved.provider_id,
+                    &inputs,
+                    &base_url,
+                    (!headers.is_empty()).then_some(headers.as_slice()),
+                    None,
+                )
+                .map_err(|diagnostic| {
+                    let status = match diagnostic.kind() {
+                        "no-credential" => StatusCode::UNAUTHORIZED,
+                        "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
+                        _ => StatusCode::BAD_GATEWAY,
+                    };
+                    ApiError::diagnostic(status, diagnostic)
+                })?
+            };
+            let request_params = provider_config.provider_params(&resolved.provider_id);
             Ok(ResolvedTurnProvider {
                 model_id: resolved.model_id.clone(),
                 model: resolved,
                 provider: Arc::new(provider),
+                request_params,
             })
         }
         ProviderSource::Fixed { provider } => {
-            let resolved = providers::resolve_model(Some(model_id));
+            let resolved = provider_config
+                .resolve_model(providers::Catalogue::embedded(), Some(model_id))
+                .map_err(provider_config_api_error)?;
             policy::enforce_provider_use(config_inputs, &resolved.provider_id).map_err(|err| {
                 if err.is_config() {
                     ApiError::new(
@@ -1843,10 +1883,12 @@ fn resolve_turn_provider(
                     ApiError::new(StatusCode::FORBIDDEN, err.to_string())
                 }
             })?;
+            let request_params = provider_config.provider_params(&resolved.provider_id);
             Ok(ResolvedTurnProvider {
                 model_id: resolved.model_id.clone(),
                 model: resolved,
                 provider: provider.clone(),
+                request_params,
             })
         }
     }
@@ -2068,6 +2110,13 @@ fn config_api_error(err: settings::ConfigError) -> ApiError {
     )
 }
 
+fn provider_config_api_error(err: providers::ProviderConfigError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("invalid provider configuration: {err}"),
+    )
+}
+
 fn plugin_config_error(message: String) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -2080,41 +2129,6 @@ fn plugin_runtime_error(err: plugins::PluginRuntimeError) -> ApiError {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("plugin runtime error: {err}"),
     )
-}
-
-fn openrouter_base_url_override(effective: &settings::EffectiveConfig) -> Option<String> {
-    top_level_string(effective, "openrouter_base_url")
-        .or_else(|| provider_openrouter_string(effective, "base_url"))
-}
-
-fn openrouter_chat_endpoint(base_url_override: Option<&str>) -> String {
-    let base = base_url_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(providers::openrouter_base_url);
-    format!("{}/chat/completions", base.trim_end_matches('/'))
-}
-
-fn openrouter_api_key(effective: &settings::EffectiveConfig) -> Option<String> {
-    provider_openrouter_string(effective, "api_key")
-        .or_else(|| top_level_string(effective, "api_key"))
-}
-
-fn top_level_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get(key)
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
-}
-
-fn provider_openrouter_string(effective: &settings::EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get("provider")
-        .and_then(|provider| provider.get("openrouter"))
-        .and_then(|openrouter| openrouter.get(key))
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
 }
 
 struct ServerPermissionResponder {

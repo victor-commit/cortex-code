@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider};
 use redaction::guard_outbound;
 use serde::Serialize;
-use settings::{ConfigError, ConfigInputs, EffectiveConfig};
+use settings::{ConfigError, ConfigInputs};
 
 use crate::cli::{GenerateArgs, OutputFormat};
 use crate::custom_agents;
@@ -59,13 +59,46 @@ pub fn run(args: GenerateArgs) -> Exit {
         };
     }
 
-    let provider = match providers::resolve_openrouter_with_options(
-        &providers::CredentialInputs::openrouter_from_process(config.api_key),
-        config.base_url.as_deref(),
-        None,
-    ) {
-        Ok(provider) => provider,
-        Err(diag) => return report_setup_diagnostic(&diag),
+    let provider = if config.provider_id == providers::OPENROUTER_ID {
+        let inputs = config
+            .provider_config
+            .credential_inputs(&config.provider_id);
+        let base_url_override = config
+            .provider_config
+            .provider_base_url(&config.provider_id);
+        match providers::resolve_openrouter_with_options(
+            &inputs,
+            base_url_override.as_deref(),
+            None,
+        ) {
+            Ok(provider) => provider,
+            Err(diag) => return report_setup_diagnostic(&diag),
+        }
+    } else {
+        let base_url = match config
+            .provider_config
+            .resolve_provider_base_url(&config.provider_id)
+        {
+            Ok(base_url) => base_url,
+            Err(err) => {
+                eprintln!("cortex generate: {err}");
+                return Exit::Config;
+            }
+        };
+        let headers = config.provider_config.provider_headers(&config.provider_id);
+        let inputs = config
+            .provider_config
+            .credential_inputs(&config.provider_id);
+        match providers::resolve_openai_compatible_with_options(
+            &config.provider_id,
+            &inputs,
+            &base_url,
+            (!headers.is_empty()).then_some(headers.as_slice()),
+            None,
+        ) {
+            Ok(provider) => provider,
+            Err(diag) => return report_setup_diagnostic(&diag),
+        }
     };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -83,6 +116,7 @@ pub fn run(args: GenerateArgs) -> Exit {
         &provider,
         &config.model_id,
         &args.description,
+        &config.request_params,
     )) {
         Ok(answer) => answer,
         Err(exit) => return exit,
@@ -124,18 +158,32 @@ pub fn run(args: GenerateArgs) -> Exit {
 struct GenerateConfig {
     model_id: String,
     provider_id: String,
-    base_url: Option<String>,
-    api_key: Option<String>,
+    provider_config: providers::ProviderConfigSet,
+    request_params: serde_json::Map<String, serde_json::Value>,
 }
 
 fn resolve_generate_config(inputs: ConfigInputs) -> Result<GenerateConfig, ConfigError> {
     let effective = settings::load(inputs)?;
-    let resolved = providers::resolve_model(Some(effective.model()));
+    let provider_config =
+        providers::ProviderConfigSet::from_table(effective.table()).map_err(|error| {
+            ConfigError::TypeMismatch {
+                key: error.key,
+                expected: "a valid provider configuration",
+                found: error.message,
+            }
+        })?;
+    let resolved = provider_config
+        .resolve_model(providers::Catalogue::embedded(), Some(effective.model()))
+        .map_err(|error| ConfigError::TypeMismatch {
+            key: error.key,
+            expected: "a valid provider model mapping",
+            found: error.message,
+        })?;
     Ok(GenerateConfig {
+        request_params: provider_config.provider_params(&resolved.provider_id),
         model_id: resolved.model_id,
-        provider_id: resolved.provider_id,
-        base_url: openrouter_base_url_override(&effective),
-        api_key: openrouter_api_key(&effective),
+        provider_id: resolved.provider_id.clone(),
+        provider_config,
     })
 }
 
@@ -143,6 +191,7 @@ async fn generate_agent_text(
     provider: &dyn Provider,
     model_id: &str,
     description: &str,
+    request_params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<String, Exit> {
     let system = "You author Cortex Code custom markdown agent definitions. Return only one JSON \
 object with keys: name, description, system_prompt. The name must be a short lowercase identifier \
@@ -150,11 +199,12 @@ using letters, numbers, '-' or '_'. The system_prompt must be directly usable as
 system prompt.";
     let user =
         format!("Create a custom agent for this request:\n\n{description}\n\nReturn only JSON.");
-    let request = LlmRequest::new(model_id)
+    let mut request = LlmRequest::new(model_id)
         .message(Message::system(system))
         .message(Message::user(user))
         .temperature(0.2)
         .max_tokens(900);
+    request.extra_params = request_params.clone();
 
     let mut stream = match provider.stream(request).await {
         Ok(stream) => stream,
@@ -340,37 +390,6 @@ fn model_overrides(cli_model: Option<&str>) -> BTreeMap<String, String> {
 
 fn validate_model_id(model_id: &str) -> Result<(), String> {
     providers::validate_model_id(model_id)
-}
-
-fn openrouter_base_url_override(effective: &EffectiveConfig) -> Option<String> {
-    top_level_string(effective, "openrouter_base_url")
-        .or_else(|| provider_openrouter_string(effective, "base_url"))
-}
-
-fn openrouter_api_key(effective: &EffectiveConfig) -> Option<String> {
-    provider_openrouter_string(effective, "api_key")
-        .or_else(|| top_level_string(effective, "api_key"))
-}
-
-fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get(key)
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
-}
-
-fn provider_openrouter_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
-    effective
-        .get("provider")
-        .and_then(|provider| provider.get("openrouter"))
-        .and_then(|openrouter| openrouter.get(key))
-        .and_then(|value| value.as_str())
-        .and_then(non_empty)
-}
-
-fn non_empty(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 fn report_setup_diagnostic(diag: &Diagnostic) -> Exit {

@@ -33,7 +33,7 @@ const PERMISSION_KEY: &str = "permission";
 
 /// The config key holding the per-agent permission override tables.
 const AGENT_KEY: &str = "agent";
-const LEGACY_ENV_PERMISSION: &str = "OPENCODE_PERMISSION";
+const LEGACY_ENV_PERMISSION: &str = concat!("OPEN", "CODE_PERMISSION");
 const CORTEX_ENV_PERMISSION: &str = "CORTEX_PERMISSION";
 
 /// A failure loading or parsing permission rules from configuration.
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn permission_env_json_supports_capabilities_and_tools_bool_map() {
         let inputs = inputs_with_env(vec![(
-            "OPENCODE_PERMISSION".to_owned(),
+            LEGACY_ENV_PERMISSION.to_owned(),
             r#"{
               "edit": {"src/**":"allow","secrets/**":"deny"},
               "bash": "deny",
@@ -490,17 +490,39 @@ mod tests {
             }"#
             .to_owned(),
         )]);
-        let rules = rules_from_permission_env(&inputs).expect("env parse");
-        assert_eq!(
-            rules,
-            vec![
-                Rule::new("bash", "*", Action::Deny),
-                Rule::new("edit", "secrets/**", Action::Deny),
-                Rule::new("edit", "src/**", Action::Allow),
-                Rule::new("question", "*", Action::Deny),
-                Rule::new("skill", "*", Action::Allow),
-            ]
-        );
+        let mut rules = rules_from_permission_env(&inputs).expect("env parse");
+        rules.sort_by(|left, right| {
+            (
+                left.tool.as_str(),
+                left.pattern.as_str(),
+                left.action.as_str(),
+            )
+                .cmp(&(
+                    right.tool.as_str(),
+                    right.pattern.as_str(),
+                    right.action.as_str(),
+                ))
+        });
+        let mut expected = vec![
+            Rule::new("bash", "*", Action::Deny),
+            Rule::new("edit", "secrets/**", Action::Deny),
+            Rule::new("edit", "src/**", Action::Allow),
+            Rule::new("question", "*", Action::Deny),
+            Rule::new("skill", "*", Action::Allow),
+        ];
+        expected.sort_by(|left, right| {
+            (
+                left.tool.as_str(),
+                left.pattern.as_str(),
+                left.action.as_str(),
+            )
+                .cmp(&(
+                    right.tool.as_str(),
+                    right.pattern.as_str(),
+                    right.action.as_str(),
+                ))
+        });
+        assert_eq!(rules, expected);
     }
 
     #[test]

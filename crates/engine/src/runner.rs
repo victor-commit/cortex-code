@@ -24,6 +24,7 @@
 use errors::Diagnostic;
 use futures_util::StreamExt;
 use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -92,6 +93,10 @@ pub struct Turn {
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
+    /// Provider-specific request params merged into each provider request for this turn.
+    pub extra_params: JsonMap<String, JsonValue>,
+    /// Request-scoped headers merged into each provider request for this turn.
+    pub extra_headers: Vec<(String, String)>,
     /// The context-compaction policy applied before each send and on overflow recovery.
     pub compaction: CompactionPolicy,
 }
@@ -111,6 +116,8 @@ impl Turn {
             user_input: user_input.into(),
             max_tokens: None,
             temperature: None,
+            extra_params: JsonMap::new(),
+            extra_headers: Vec::new(),
             compaction: CompactionPolicy::default(),
         }
     }
@@ -133,6 +140,20 @@ impl Turn {
     #[must_use]
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set provider-specific request params (builder style).
+    #[must_use]
+    pub fn with_extra_params(mut self, extra_params: JsonMap<String, JsonValue>) -> Self {
+        self.extra_params = extra_params;
+        self
+    }
+
+    /// Set request-scoped headers (builder style).
+    #[must_use]
+    pub fn with_extra_headers(mut self, extra_headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = extra_headers;
         self
     }
 
@@ -573,6 +594,8 @@ impl SessionRunner {
         request.tools = tools.to_vec();
         request.max_tokens = turn.max_tokens;
         request.temperature = turn.temperature;
+        request.extra_params = turn.extra_params.clone();
+        request.extra_headers = turn.extra_headers.clone();
         request
     }
 
