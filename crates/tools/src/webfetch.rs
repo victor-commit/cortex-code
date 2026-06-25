@@ -86,10 +86,8 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
         return ToolOutput::error("webfetch: the 'url' argument must not be empty");
     }
 
-    if !ctx.permits("webfetch", raw_url) {
-        return ToolOutput::error(redaction::redact(&format!(
-            "webfetch: permission denied for {raw_url}"
-        )));
+    if let Err(message) = ctx.ensure_permitted("webfetch", raw_url) {
+        return ToolOutput::error(redaction::redact(&message));
     }
 
     let url = match parse_http_url(raw_url) {

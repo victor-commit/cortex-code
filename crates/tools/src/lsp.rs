@@ -76,8 +76,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         .as_deref()
         .or(request.query.as_deref())
         .unwrap_or("workspace");
-    if !ctx.permits("lsp", permission_target) {
-        return ToolOutput::error(format!("lsp: permission denied for {permission_target}"));
+    if let Err(message) = ctx.ensure_permitted("lsp", permission_target) {
+        return ToolOutput::error(message);
     }
 
     let Some(service) = ctx.lsp_service() else {

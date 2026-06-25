@@ -73,8 +73,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     let path = string_arg(arguments, "path");
     let root_display = path.as_deref().unwrap_or(".");
-    if !ctx.permits("glob", root_display) {
-        return ToolOutput::error(format!("glob: permission denied for {root_display}"));
+    if let Err(message) = ctx.ensure_permitted("glob", root_display) {
+        return ToolOutput::error(message);
     }
     let root = match &path {
         Some(path) => ctx.resolve(path),

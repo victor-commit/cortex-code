@@ -103,10 +103,8 @@ impl Tool for TaskTool {
                 return ToolOutput::error("task: the 'prompt' argument must not be empty");
             }
 
-            if !ctx.permits("task", agent) {
-                return ToolOutput::error(format!(
-                    "task: permission denied for subagent `{agent}` (subagent not spawned)"
-                ));
+            if let Err(message) = ctx.ensure_permitted("task", agent) {
+                return ToolOutput::error(format!("{message} (subagent not spawned)"));
             }
 
             let Some(runner) = ctx.task_runner() else {

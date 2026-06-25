@@ -380,6 +380,45 @@ pub trait TaskRunner: Send + Sync {
     fn run_task<'a>(&'a self, request: TaskRequest) -> BoxFuture<'a, ToolOutput>;
 }
 
+/// Result of checking whether one tool action is permitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionCheck {
+    /// Whether the action is permitted to proceed.
+    pub allowed: bool,
+    /// Model-visible deny message when `allowed` is false.
+    pub message: Option<String>,
+    /// Optional corrective feedback carried with the deny.
+    pub feedback: Option<String>,
+}
+
+impl PermissionCheck {
+    #[must_use]
+    fn allowed() -> Self {
+        Self {
+            allowed: true,
+            message: None,
+            feedback: None,
+        }
+    }
+
+    #[must_use]
+    fn denied(tool: &str, target: &str, feedback: Option<String>) -> Self {
+        let feedback = feedback
+            .map(|text| redaction::redact(&text))
+            .filter(|text| !text.is_empty());
+        let mut message = format!("{tool}: permission denied for {target}");
+        if let Some(text) = feedback.as_deref() {
+            message.push_str("\nCorrection from user: ");
+            message.push_str(text);
+        }
+        Self {
+            allowed: false,
+            message: Some(message),
+            feedback,
+        }
+    }
+}
+
 /// The per-session execution context shared across every tool call in a turn.
 ///
 /// It resolves relative paths against the session working directory, tracks which files have been
@@ -657,9 +696,28 @@ impl ToolContext {
     /// scoped by the tool (a file tool scopes by path) and resolved to allow/deny.
     #[must_use]
     pub fn permits(&self, tool: &str, target: &str) -> bool {
+        self.permission_check(tool, target).allowed
+    }
+
+    /// Require permission for `tool` acting on `target`, returning a model-visible deny message
+    /// when blocked.
+    pub fn ensure_permitted(&self, tool: &str, target: &str) -> Result<(), String> {
+        let check = self.permission_check(tool, target);
+        if check.allowed {
+            Ok(())
+        } else {
+            Err(check
+                .message
+                .unwrap_or_else(|| format!("{tool}: permission denied for {target}")))
+        }
+    }
+
+    /// Resolve permission for one action and return both the decision and any corrective feedback.
+    #[must_use]
+    pub fn permission_check(&self, tool: &str, target: &str) -> PermissionCheck {
         match &self.permissions {
-            Some(engine) => self.permits_with_engine(engine, tool, target),
-            None => true,
+            Some(engine) => self.permission_check_with_engine(engine, tool, target),
+            None => PermissionCheck::allowed(),
         }
     }
 
@@ -667,24 +725,38 @@ impl ToolContext {
         self.permission_subject_for_resolved_path(path)
     }
 
-    fn permits_with_engine(&self, engine: &PermissionEngine, tool: &str, target: &str) -> bool {
+    fn permission_check_with_engine(
+        &self,
+        engine: &PermissionEngine,
+        tool: &str,
+        target: &str,
+    ) -> PermissionCheck {
         if matches!(scope_of(tool), Some(ToolScope::Path)) {
             let resolved = self.resolve(target);
-            if !self.permit_external_directory(engine, &resolved) {
-                return false;
+            if let Some(denied) = self.permit_external_directory(engine, &resolved) {
+                return PermissionCheck::denied(tool, target, denied.feedback);
             }
             let scoped_target = self.permission_subject_for_resolved_path(&resolved);
             let request = request_for(tool, &scoped_target);
-            return self.evaluate_permission(engine, request);
+            let evaluation = self.evaluate_permission(engine, request);
+            if evaluation.outcome.is_allowed() {
+                return PermissionCheck::allowed();
+            }
+            return PermissionCheck::denied(tool, target, evaluation.feedback);
         }
-        self.evaluate_permission(engine, request_for(tool, target))
+        let evaluation = self.evaluate_permission(engine, request_for(tool, target));
+        if evaluation.outcome.is_allowed() {
+            PermissionCheck::allowed()
+        } else {
+            PermissionCheck::denied(tool, target, evaluation.feedback)
+        }
     }
 
     fn evaluate_permission(
         &self,
         engine: &PermissionEngine,
         request: permissions::PermissionRequest,
-    ) -> bool {
+    ) -> permissions::PermissionEvaluation {
         let evaluation = engine.evaluate_detail(&request);
         if let Some(audit) = &self.audit {
             audit.record_permission_decision(
@@ -695,12 +767,16 @@ impl ToolContext {
                 evaluation.outcome.as_str(),
             );
         }
-        evaluation.outcome.is_allowed()
+        evaluation
     }
 
-    fn permit_external_directory(&self, engine: &PermissionEngine, resolved: &Path) -> bool {
+    fn permit_external_directory(
+        &self,
+        engine: &PermissionEngine,
+        resolved: &Path,
+    ) -> Option<permissions::PermissionEvaluation> {
         if resolved.starts_with(&self.cwd) || self.is_allowlisted_external_path(resolved) {
-            return true;
+            return None;
         }
         let boundary = if resolved.is_dir() {
             resolved.to_path_buf()
@@ -711,7 +787,9 @@ impl ToolContext {
                 .unwrap_or_else(|| resolved.to_path_buf())
         };
         let resource = boundary.join("*").to_string_lossy().to_string();
-        self.evaluate_permission(engine, request_for("external_directory", &resource))
+        let evaluation =
+            self.evaluate_permission(engine, request_for("external_directory", &resource));
+        (!evaluation.outcome.is_allowed()).then_some(evaluation)
     }
 
     fn permission_subject_for_resolved_path(&self, path: &Path) -> String {
@@ -897,7 +975,10 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use permissions::{Action, PermissionEngine, Rule, Ruleset};
+    use permissions::{
+        Action, Decision, PermissionEngine, PermissionRequest, Responder, Rule, Ruleset,
+        ScopedDecision,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -954,6 +1035,35 @@ mod tests {
                 && record["decision"] == "deny"
                 && record["outcome"] == "denied"
         }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ensure_permitted_includes_deny_feedback_from_responder() {
+        struct FeedbackResponder;
+
+        impl Responder for FeedbackResponder {
+            fn respond(&self, _request: &PermissionRequest) -> Decision {
+                Decision::Deny
+            }
+
+            fn respond_scoped(&self, _request: &PermissionRequest) -> ScopedDecision {
+                ScopedDecision::once(Decision::Deny).with_feedback("Use ls before deleting.")
+            }
+        }
+
+        let dir = temp_dir("permission-feedback");
+        let engine = Arc::new(
+            PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Ask)]))
+                .with_responder(Arc::new(FeedbackResponder)),
+        );
+        let ctx = ToolContext::new(dir.clone()).with_permissions(engine);
+
+        let denied = ctx
+            .ensure_permitted("bash", "rm target.txt")
+            .expect_err("permission should be denied");
+        assert!(denied.contains("bash: permission denied for rm target.txt"));
+        assert!(denied.contains("Correction from user: Use ls before deleting."));
         let _ = std::fs::remove_dir_all(dir);
     }
 

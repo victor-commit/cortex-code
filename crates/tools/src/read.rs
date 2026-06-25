@@ -97,8 +97,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     // Gate the read through the permission engine when one is attached (a no-op until enforcement
     // wires a real engine in); a denied read returns protected nothing.
-    if !ctx.permits("read", path) {
-        return ToolOutput::error(format!("read: permission denied for {path}"));
+    if let Err(message) = ctx.ensure_permitted("read", path) {
+        return ToolOutput::error(message);
     }
 
     let resolved = ctx.resolve(path);

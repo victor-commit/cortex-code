@@ -1,7 +1,8 @@
 //! The permission engine: resolve a gated action to allow/deny, surfacing asks observably and
 //! failing closed when an ask cannot be answered.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
 
 use events::{EventBus, PermissionDecision};
 use serde::{Deserialize, Serialize};
@@ -73,12 +74,14 @@ pub enum DecisionScope {
 }
 
 /// A responder's answer to an `ask`: the decision plus whether to save it for matching actions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopedDecision {
     /// Allow or deny the action.
     pub decision: Decision,
     /// Whether the decision is saved for later matching actions.
     pub scope: DecisionScope,
+    /// Optional corrective feedback carried with a denial, surfaced back to the running turn.
+    pub feedback: Option<String>,
 }
 
 impl ScopedDecision {
@@ -88,6 +91,7 @@ impl ScopedDecision {
         Self {
             decision,
             scope: DecisionScope::Once,
+            feedback: None,
         }
     }
 
@@ -97,7 +101,17 @@ impl ScopedDecision {
         Self {
             decision,
             scope: DecisionScope::Always,
+            feedback: None,
         }
+    }
+
+    /// Attach corrective feedback text to this decision.
+    ///
+    /// Empty or whitespace-only feedback is ignored.
+    #[must_use]
+    pub fn with_feedback(mut self, feedback: impl Into<String>) -> Self {
+        self.feedback = normalize_feedback(Some(feedback.into()));
+        self
     }
 }
 
@@ -136,6 +150,8 @@ pub struct PermissionEvaluation {
     pub pattern: String,
     /// The final verdict after responder and override hooks.
     pub outcome: Outcome,
+    /// Optional corrective feedback carried with a denied ask.
+    pub feedback: Option<String>,
 }
 
 /// The seam through which an `ask` is answered.
@@ -190,6 +206,48 @@ pub struct PermissionEngine {
     override_hook: Option<Arc<dyn DecisionOverride>>,
     bus: Option<Arc<EventBus>>,
     event_context: Option<PermissionEventContext>,
+    in_flight_asks: InFlightAsks,
+}
+
+#[derive(Clone, Default)]
+struct InFlightAsks {
+    state: Arc<Mutex<InFlightAskMap>>,
+}
+
+type AskKey = (String, String);
+type InFlightAskMap = HashMap<AskKey, Arc<InFlightAsk>>;
+
+struct InFlightAsk {
+    reply: Mutex<Option<ScopedDecision>>,
+    ready: Condvar,
+}
+
+impl InFlightAsk {
+    fn new() -> Self {
+        Self {
+            reply: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn wait(&self) -> ScopedDecision {
+        let mut guard = self.reply.lock().expect("in-flight ask lock");
+        loop {
+            if let Some(reply) = guard.clone() {
+                return reply;
+            }
+            guard = self.ready.wait(guard).expect("in-flight ask wait");
+        }
+    }
+
+    fn resolve(&self, reply: ScopedDecision) {
+        if let Ok(mut guard) = self.reply.lock()
+            && guard.is_none()
+        {
+            *guard = Some(reply);
+        }
+        self.ready.notify_all();
+    }
 }
 
 #[derive(Clone)]
@@ -211,6 +269,7 @@ impl PermissionEngine {
             override_hook: None,
             bus: None,
             event_context: None,
+            in_flight_asks: InFlightAsks::default(),
         }
     }
 
@@ -329,24 +388,21 @@ impl PermissionEngine {
                 Decision::Allow => PermissionDecision::Allow,
                 Decision::Deny => PermissionDecision::Deny,
             };
-            self.publish_permission_replied(request, &pattern, event_decision);
+            self.publish_permission_replied(request, &pattern, event_decision, None);
             return PermissionEvaluation {
                 action,
                 pattern,
                 outcome: decision.outcome(),
+                feedback: None,
             };
         }
+        let mut feedback = None;
         let outcome = match action {
             Action::Allow => Outcome::Allowed,
             Action::Deny => Outcome::Denied,
             Action::Ask => {
                 self.publish_permission_asked(request, &pattern);
-
-                // No responder (headless) → fail closed: deny without waiting, and never save.
-                let reply = match &self.responder {
-                    Some(responder) => responder.respond_scoped(request),
-                    None => ScopedDecision::once(Decision::Deny),
-                };
+                let reply = self.resolve_ask(request);
 
                 if reply.scope == DecisionScope::Always {
                     if let Some(saved) = &self.saved {
@@ -358,7 +414,13 @@ impl PermissionEngine {
                     Decision::Allow => PermissionDecision::Allow,
                     Decision::Deny => PermissionDecision::Deny,
                 };
-                self.publish_permission_replied(request, &pattern, outcome_decision);
+                self.publish_permission_replied(
+                    request,
+                    &pattern,
+                    outcome_decision,
+                    reply.feedback.as_deref(),
+                );
+                feedback = normalize_feedback(reply.feedback.clone());
                 reply.decision.outcome()
             }
         };
@@ -366,7 +428,49 @@ impl PermissionEngine {
             action,
             pattern,
             outcome,
+            feedback: if outcome == Outcome::Denied {
+                feedback
+            } else {
+                None
+            },
         }
+    }
+
+    fn resolve_ask(&self, request: &PermissionRequest) -> ScopedDecision {
+        let key = (request.tool.clone(), request.subject.clone());
+        let (pending, leader) = {
+            let mut state = self
+                .in_flight_asks
+                .state
+                .lock()
+                .expect("in-flight asks map lock");
+            if let Some(existing) = state.get(&key) {
+                (existing.clone(), false)
+            } else {
+                let pending = Arc::new(InFlightAsk::new());
+                state.insert(key.clone(), pending.clone());
+                (pending, true)
+            }
+        };
+
+        if !leader {
+            return pending.wait();
+        }
+
+        // No responder (headless) -> fail closed: deny without waiting, and never save.
+        let reply = match &self.responder {
+            Some(responder) => responder.respond_scoped(request),
+            None => ScopedDecision::once(Decision::Deny),
+        };
+        let reply = ScopedDecision {
+            feedback: normalize_feedback(reply.feedback),
+            ..reply
+        };
+        pending.resolve(reply.clone());
+        if let Ok(mut state) = self.in_flight_asks.state.lock() {
+            state.remove(&key);
+        }
+        reply
     }
 
     /// The effective action and the pattern that classified it, combining hard-deny constraints,
@@ -435,6 +539,7 @@ impl PermissionEngine {
         request: &PermissionRequest,
         pattern: &str,
         decision: PermissionDecision,
+        feedback: Option<&str>,
     ) {
         let event = match &self.event_context {
             Some(context) => events::Event::permission_replied_for_turn(
@@ -444,24 +549,36 @@ impl PermissionEngine {
                 pattern,
                 &request.subject,
                 decision,
+                feedback,
             ),
             None => events::Event::permission_replied(
                 &request.tool,
                 pattern,
                 &request.subject,
                 decision,
+                feedback,
             ),
         };
         self.publish(event);
     }
 }
 
+fn normalize_feedback(feedback: Option<String>) -> Option<String> {
+    feedback
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+
     use super::*;
     use crate::rule::Rule;
 
-    /// A responder that always returns a fixed decision, recording the requests it saw.
+    /// A responder that always returns a fixed decision.
     struct FixedResponder {
         decision: Decision,
     }
@@ -469,6 +586,31 @@ mod tests {
     impl Responder for FixedResponder {
         fn respond(&self, _request: &PermissionRequest) -> Decision {
             self.decision
+        }
+    }
+
+    struct ScopedResponder {
+        reply: ScopedDecision,
+        calls: AtomicUsize,
+    }
+
+    impl ScopedResponder {
+        fn new(reply: ScopedDecision) -> Self {
+            Self {
+                reply,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl Responder for ScopedResponder {
+        fn respond(&self, _request: &PermissionRequest) -> Decision {
+            self.reply.decision
+        }
+
+        fn respond_scoped(&self, _request: &PermissionRequest) -> ScopedDecision {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.reply.clone()
         }
     }
 
@@ -493,7 +635,6 @@ mod tests {
 
     #[test]
     fn default_ask_with_no_responder_fails_closed() {
-        // Empty ruleset → default ask; no responder → fail closed (deny), no hang.
         let engine = PermissionEngine::new(Ruleset::empty());
         let outcome = engine.evaluate(&PermissionRequest::new("bash", "rm target.txt"));
         assert_eq!(outcome, Outcome::Denied);
@@ -517,6 +658,77 @@ mod tests {
             }));
         let outcome = engine.evaluate(&PermissionRequest::new("write", "src/a.txt"));
         assert_eq!(outcome, Outcome::Denied);
+    }
+
+    #[test]
+    fn deny_feedback_is_returned_with_denied_evaluation() {
+        let responder = Arc::new(ScopedResponder::new(
+            ScopedDecision::once(Decision::Deny).with_feedback("Use ls first."),
+        ));
+        let engine = PermissionEngine::new(Ruleset::empty()).with_responder(responder);
+
+        let evaluation = engine.evaluate_detail(&PermissionRequest::new("bash", "rm target.txt"));
+        assert_eq!(evaluation.outcome, Outcome::Denied);
+        assert_eq!(evaluation.feedback.as_deref(), Some("Use ls first."));
+    }
+
+    #[test]
+    fn concurrent_identical_asks_share_one_reply_with_feedback() {
+        struct BlockingResponder {
+            inner: Arc<ScopedResponder>,
+            entered: mpsc::Sender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+
+        impl Responder for BlockingResponder {
+            fn respond(&self, request: &PermissionRequest) -> Decision {
+                self.inner.respond(request)
+            }
+
+            fn respond_scoped(&self, request: &PermissionRequest) -> ScopedDecision {
+                let _ = self.entered.send(());
+                let _ = self.release.lock().expect("release lock").recv();
+                self.inner.respond_scoped(request)
+            }
+        }
+
+        let responder = Arc::new(ScopedResponder::new(
+            ScopedDecision::once(Decision::Deny).with_feedback("Inspect before deleting."),
+        ));
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let blocking = Arc::new(BlockingResponder {
+            inner: responder.clone(),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        });
+        let engine = Arc::new(PermissionEngine::new(Ruleset::empty()).with_responder(blocking));
+        let request = PermissionRequest::new("bash", "rm target.txt");
+
+        let first = {
+            let engine = engine.clone();
+            let request = request.clone();
+            thread::spawn(move || engine.evaluate_detail(&request))
+        };
+        entered_rx.recv().expect("first ask reached responder");
+        let second = {
+            let engine = engine.clone();
+            thread::spawn(move || engine.evaluate_detail(&request))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = release_tx.send(());
+
+        let first_eval = first.join().expect("first evaluation");
+        let second_eval = second.join().expect("second evaluation");
+        assert_eq!(
+            first_eval.feedback.as_deref(),
+            Some("Inspect before deleting.")
+        );
+        assert_eq!(
+            second_eval.feedback.as_deref(),
+            Some("Inspect before deleting.")
+        );
+        assert_eq!(responder.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

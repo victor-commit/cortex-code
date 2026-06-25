@@ -273,10 +273,8 @@ async fn run(arguments: Value, ctx: &ToolContext, config: &WebSearchConfig) -> T
         return ToolOutput::error("websearch: the 'query' argument must not be empty");
     }
 
-    if !ctx.permits("websearch", query) {
-        return ToolOutput::error(redaction::redact(&format!(
-            "websearch: permission denied for query `{query}`"
-        )));
+    if let Err(message) = ctx.ensure_permitted("websearch", query) {
+        return ToolOutput::error(redaction::redact(&message));
     }
 
     let options = match options_from(&arguments, config) {

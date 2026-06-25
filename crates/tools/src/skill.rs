@@ -80,8 +80,8 @@ impl Tool for SkillTool {
                         .join(", ")
                 ));
             };
-            if !ctx.permits("skill", &skill.name) {
-                return ToolOutput::error(format!("skill: permission denied for `{}`", skill.name));
+            if let Err(message) = ctx.ensure_permitted("skill", &skill.name) {
+                return ToolOutput::error(message);
             }
 
             ToolOutput::text(format!(

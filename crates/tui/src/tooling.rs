@@ -235,8 +235,7 @@ impl ToolDispatcher for TurnDispatcher {
                     || manager.has_resource(&call.name)
                     || manager.has_prompt(&call.name)
                 {
-                    if !self.context.permits(&call.name, &call.name) {
-                        let message = format!("{}: permission denied", call.name);
+                    if let Err(message) = self.context.ensure_permitted(&call.name, &call.name) {
                         return ToolDispatchResult {
                             content: message.clone(),
                             parts: vec![protocol::ToolResultPart::text(message)],

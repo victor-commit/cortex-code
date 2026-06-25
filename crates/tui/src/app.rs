@@ -92,8 +92,10 @@ struct QueuedPrompt {
 struct PendingPermission {
     /// The ask carrying the gated tool, its subject, and the reply channel to the worker.
     ask: PermissionAsk,
-    /// The highlighted option: 0 = Allow, 1 = Deny.
+    /// The highlighted option: 0 = Allow once, 1 = Allow always, 2 = Deny.
     selected: usize,
+    /// Optional corrective feedback entered when denying.
+    feedback: String,
 }
 
 /// One rendered transcript entry.
@@ -1222,20 +1224,29 @@ impl App {
     /// The number of selectable options in the permission prompt: Allow once, Allow always, Deny.
     const PERMISSION_OPTIONS: usize = 3;
 
-    /// The open permission prompt's `(tool, subject, selected)` for rendering, or `None` when no
-    /// ask is pending (`selected`: 0 = Allow once, 1 = Allow always, 2 = Deny).
+    /// The open permission prompt's `(tool, subject, selected, feedback)` for rendering, or `None`
+    /// when no ask is pending (`selected`: 0 = Allow once, 1 = Allow always, 2 = Deny).
     #[must_use]
-    pub fn permission_prompt(&self) -> Option<(&str, &str, usize)> {
-        self.pending_permission
-            .as_ref()
-            .map(|p| (p.ask.tool.as_str(), p.ask.subject.as_str(), p.selected))
+    pub fn permission_prompt(&self) -> Option<(&str, &str, usize, &str)> {
+        self.pending_permission.as_ref().map(|p| {
+            (
+                p.ask.tool.as_str(),
+                p.ask.subject.as_str(),
+                p.selected,
+                p.feedback.as_str(),
+            )
+        })
     }
 
     /// Surface an ask-gated tool's permission request as a modal prompt, defaulting the highlight to
     /// Allow once. The worker thread stays blocked until [`answer_permission`](App::answer_permission)
     /// replies, so the dialog draws over the (still-busy) turn until the user decides.
     fn open_permission(&mut self, ask: PermissionAsk) {
-        self.pending_permission = Some(PendingPermission { ask, selected: 0 });
+        self.pending_permission = Some(PendingPermission {
+            ask,
+            selected: 0,
+            feedback: String::new(),
+        });
         self.pin_to_bottom();
     }
 
@@ -1254,15 +1265,42 @@ impl App {
     /// Confirm the highlighted permission option (Enter), answering with the matching scoped
     /// decision: Allow once, Allow always (remembered), or Deny.
     fn confirm_permission(&mut self) {
-        let selected = self
+        let (selected, feedback) = self
             .pending_permission
             .as_ref()
-            .map_or(0, |pending| pending.selected);
+            .map_or((0, String::new()), |pending| {
+                (pending.selected, pending.feedback.clone())
+            });
         self.answer_permission(match selected {
             1 => ScopedDecision::always(Decision::Allow),
-            2 => ScopedDecision::once(Decision::Deny),
+            2 => {
+                let feedback = feedback.trim();
+                if feedback.is_empty() {
+                    ScopedDecision::once(Decision::Deny)
+                } else {
+                    ScopedDecision::once(Decision::Deny).with_feedback(feedback)
+                }
+            }
             _ => ScopedDecision::once(Decision::Allow),
         });
+    }
+
+    /// Append one feedback character while the Deny option is selected.
+    fn permission_feedback_input(&mut self, ch: char) {
+        if let Some(pending) = self.pending_permission.as_mut()
+            && pending.selected == 2
+        {
+            pending.feedback.push(ch);
+        }
+    }
+
+    /// Remove one feedback character while the Deny option is selected.
+    fn permission_feedback_backspace(&mut self) {
+        if let Some(pending) = self.pending_permission.as_mut()
+            && pending.selected == 2
+        {
+            pending.feedback.pop();
+        }
     }
 
     /// Answer the pending permission prompt, unblocking the turn worker and recording the outcome.
@@ -1279,14 +1317,25 @@ impl App {
         };
         let tool = pending.ask.tool.clone();
         let subject = pending.ask.subject.clone();
+        let feedback = decision
+            .feedback
+            .as_deref()
+            .map(redaction::redact)
+            .filter(|text| !text.is_empty());
+        let outcome_decision = decision.decision;
+        let scope = decision.scope;
         pending.ask.answer(decision);
-        let (label, level) = match (decision.decision, decision.scope) {
-            (Decision::Allow, permissions::DecisionScope::Always) => (
+        let (label, level) = match (outcome_decision, scope, feedback) {
+            (Decision::Allow, permissions::DecisionScope::Always, _) => (
                 format!("Always allowed {tool}: {subject}"),
                 ToastLevel::Success,
             ),
-            (Decision::Allow, _) => (format!("Approved {tool}: {subject}"), ToastLevel::Success),
-            (Decision::Deny, _) => (format!("Denied {tool}: {subject}"), ToastLevel::Warning),
+            (Decision::Allow, _, _) => (format!("Approved {tool}: {subject}"), ToastLevel::Success),
+            (Decision::Deny, _, Some(feedback)) => (
+                format!("Denied {tool}: {subject} (feedback: {feedback})"),
+                ToastLevel::Warning,
+            ),
+            (Decision::Deny, _, None) => (format!("Denied {tool}: {subject}"), ToastLevel::Warning),
         };
         self.push_toast(level, label.clone());
         self.transcript.push(Entry::Notice(label));
@@ -2909,9 +2958,10 @@ impl App {
 
         // An interactive permission prompt is the most modal state: the turn worker is blocked
         // awaiting the decision, so it owns every key until answered. `y` approves once, `a` approves
-        // and remembers ("always allow"), `n`/`d` deny, the arrows move the highlight and Enter
-        // confirms it, and Esc denies (the turn then continues gracefully). Ctrl+C still quits so the
-        // user is never trapped.
+        // and remembers ("always allow"), `n`/`d` deny, and while Deny is highlighted printable keys
+        // are captured as corrective feedback text carried back to the running turn. Arrows move the
+        // highlight, Enter confirms, and Esc denies (the turn then continues gracefully). Ctrl+C
+        // still quits so the user is never trapped.
         if self.permission_open() {
             match key.code {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
@@ -2921,9 +2971,26 @@ impl App {
                 KeyCode::Char('a') if !ctrl && !alt => {
                     self.answer_permission(ScopedDecision::always(Decision::Allow));
                 }
-                KeyCode::Char('n' | 'd') if !ctrl && !alt => {
+                KeyCode::Char('n' | 'd')
+                    if !ctrl
+                        && !alt
+                        && self.pending_permission.as_ref().is_some_and(|pending| {
+                            pending.selected != 2 || pending.feedback.is_empty()
+                        }) =>
+                {
                     self.answer_permission(ScopedDecision::once(Decision::Deny));
                 }
+                KeyCode::Char(ch)
+                    if !ctrl
+                        && !alt
+                        && self
+                            .pending_permission
+                            .as_ref()
+                            .is_some_and(|pending| pending.selected == 2) =>
+                {
+                    self.permission_feedback_input(ch);
+                }
+                KeyCode::Backspace => self.permission_feedback_backspace(),
                 KeyCode::Left | KeyCode::Up => self.permission_step(false),
                 KeyCode::Right | KeyCode::Down => self.permission_step(true),
                 KeyCode::Enter => self.confirm_permission(),
@@ -3633,7 +3700,7 @@ mod tests {
         let mut a = app();
         let _wait = deliver_permission(&mut a, "write", "marker.txt");
         assert!(a.permission_open());
-        assert_eq!(a.permission_prompt(), Some(("write", "marker.txt", 0)));
+        assert_eq!(a.permission_prompt(), Some(("write", "marker.txt", 0, "")));
     }
 
     // Pressing `y` approves the ask once: the decision is a one-shot Allow, the prompt is dismissed,
@@ -3686,6 +3753,34 @@ mod tests {
         );
     }
 
+    // When Deny is highlighted, typed text is captured as corrective feedback and returned with the
+    // deny decision so the running turn can recover with a corrected action.
+    #[test]
+    fn deny_can_include_corrective_feedback() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "bash", "rm -rf .");
+        a.on_key(key(KeyCode::Right));
+        a.on_key(key(KeyCode::Right));
+        for ch in "Use ls first".chars() {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.permission_prompt(),
+            Some(("bash", "rm -rf .", 2, "Use ls first"))
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            wait.recv().unwrap(),
+            ScopedDecision::once(Decision::Deny).with_feedback("Use ls first")
+        );
+        assert!(
+            a.transcript.iter().any(
+                |e| matches!(e, Entry::Notice(text) if text.contains("feedback: Use ls first"))
+            ),
+            "feedback should be visible in transcript notices"
+        );
+    }
+
     // Esc denies the ask (so the turn continues gracefully rather than the dialog lingering).
     #[test]
     fn esc_denies_the_ask() {
@@ -3704,12 +3799,11 @@ mod tests {
         let mut a = app();
         let deny = deliver_permission(&mut a, "edit", "a.rs");
         a.on_key(key(KeyCode::Right));
-        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 1)));
+        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 1, "")));
         a.on_key(key(KeyCode::Right));
-        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 2)));
-        // The highlight clamps at the last option rather than wrapping.
+        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 2, "")));
         a.on_key(key(KeyCode::Right));
-        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 2)));
+        assert_eq!(a.permission_prompt(), Some(("edit", "a.rs", 2, "")));
         a.on_key(key(KeyCode::Enter));
         assert_eq!(deny.recv().unwrap(), ScopedDecision::once(Decision::Deny));
 
@@ -3721,7 +3815,7 @@ mod tests {
         let mut c = app();
         let always = deliver_permission(&mut c, "edit", "c.rs");
         c.on_key(key(KeyCode::Right));
-        assert_eq!(c.permission_prompt(), Some(("edit", "c.rs", 1)));
+        assert_eq!(c.permission_prompt(), Some(("edit", "c.rs", 1, "")));
         c.on_key(key(KeyCode::Enter));
         assert_eq!(
             always.recv().unwrap(),

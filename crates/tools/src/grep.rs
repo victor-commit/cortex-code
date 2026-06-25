@@ -76,8 +76,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         .filter(|value| !value.trim().is_empty());
 
     let root_display = path.as_deref().unwrap_or(".");
-    if !ctx.permits("grep", root_display) {
-        return ToolOutput::error(format!("grep: permission denied for {root_display}"));
+    if let Err(message) = ctx.ensure_permitted("grep", root_display) {
+        return ToolOutput::error(message);
     }
     let root = match &path {
         Some(path) => ctx.resolve(path),

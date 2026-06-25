@@ -148,6 +148,9 @@ pub struct PermissionReplied {
     pub request: String,
     /// Whether the action was allowed to proceed or blocked.
     pub decision: PermissionDecision,
+    /// Optional corrective feedback supplied with a deny decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
 }
 
 /// A connected MCP server's advertised tool set changed at runtime (the server sent a
@@ -430,6 +433,7 @@ impl Event {
         pattern: impl Into<String>,
         request: impl Into<String>,
         decision: PermissionDecision,
+        feedback: Option<&str>,
     ) -> Self {
         Event::PermissionReplied(PermissionReplied {
             session_id: None,
@@ -438,6 +442,7 @@ impl Event {
             pattern: pattern.into(),
             request: request.into(),
             decision,
+            feedback: feedback.map(ToOwned::to_owned),
         })
     }
 
@@ -450,6 +455,7 @@ impl Event {
         pattern: impl Into<String>,
         request: impl Into<String>,
         decision: PermissionDecision,
+        feedback: Option<&str>,
     ) -> Self {
         Event::PermissionReplied(PermissionReplied {
             session_id: Some(session_id.into()),
@@ -458,6 +464,7 @@ impl Event {
             pattern: pattern.into(),
             request: request.into(),
             decision,
+            feedback: feedback.map(ToOwned::to_owned),
         })
     }
 
@@ -706,6 +713,7 @@ mod tests {
             "secrets/**",
             "secrets/k.txt",
             PermissionDecision::Deny,
+            None,
         );
         assert_eq!(event.kind(), "permission.replied");
 
@@ -715,6 +723,20 @@ mod tests {
         assert_eq!(value["pattern"], "secrets/**");
         assert_eq!(value["request"], "secrets/k.txt");
         assert_eq!(value["decision"], "deny");
+        assert!(value.get("feedback").is_none());
+    }
+
+    #[test]
+    fn permission_replied_serializes_optional_feedback() {
+        let event = Event::permission_replied(
+            "bash",
+            "rm *",
+            "rm target.txt",
+            PermissionDecision::Deny,
+            Some("Use a dry-run command first."),
+        );
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["feedback"], "Use a dry-run command first.");
     }
 
     #[test]

@@ -80,8 +80,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     // Gate the write through the permission engine when one is attached (a no-op until enforcement
     // wires a real engine in); a denied write touches nothing on disk.
-    if !ctx.permits("write", &path) {
-        return ToolOutput::error(format!("write: permission denied for {path}"));
+    if let Err(message) = ctx.ensure_permitted("write", &path) {
+        return ToolOutput::error(message);
     }
 
     let resolved = ctx.resolve(&path);

@@ -1164,8 +1164,8 @@ impl Tool for PluginTool {
     ) -> BoxFuture<'a, ToolOutput> {
         Box::pin(async move {
             let subject = serde_json::to_string(&arguments).unwrap_or_default();
-            if !ctx.permits(self.name(), &subject) {
-                return ToolOutput::error(format!("{}: permission denied", self.name()));
+            if let Err(message) = ctx.ensure_permitted(self.name(), &subject) {
+                return ToolOutput::error(message);
             }
             match self
                 .host

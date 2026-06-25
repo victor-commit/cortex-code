@@ -113,10 +113,8 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     // tree-sitter and refuse the whole command if any segment is not permitted, before anything
     // runs (so a denied command produces no side effect).
     for segment in parse::extract_commands(command) {
-        if !ctx.permits("bash", &segment) {
-            return ToolOutput::error(format!(
-                "bash: permission denied for `{segment}` (command not run)"
-            ));
+        if let Err(message) = ctx.ensure_permitted("bash", &segment) {
+            return ToolOutput::error(format!("{message} (command not run)"));
         }
     }
 

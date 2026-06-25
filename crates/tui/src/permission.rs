@@ -71,8 +71,12 @@ impl PermissionAsk {
 /// retry stays denied without nagging the user).
 pub struct UiResponder {
     events: Sender<TurnMessage>,
-    answered: Mutex<HashMap<(String, String), ScopedDecision>>,
+    answered: Mutex<HashMap<AskKey, ScopedDecision>>,
+    pending: Mutex<PendingAskMap>,
 }
+
+type AskKey = (String, String);
+type PendingAskMap = HashMap<AskKey, Vec<Sender<ScopedDecision>>>;
 
 impl UiResponder {
     /// Build a responder that forwards asks over `events` (the turn worker's channel to the UI).
@@ -81,6 +85,7 @@ impl UiResponder {
         Self {
             events,
             answered: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -89,13 +94,45 @@ impl UiResponder {
         self.answered
             .lock()
             .ok()
-            .and_then(|cache| cache.get(key).copied())
+            .and_then(|cache| cache.get(key).cloned())
     }
 
     /// Remember `decision` for `key` so an identical later ask this turn reuses it.
     fn remember(&self, key: (String, String), decision: ScopedDecision) {
         if let Ok(mut cache) = self.answered.lock() {
             cache.insert(key, decision);
+        }
+    }
+
+    /// Register this request as pending. Returns `None` for the leader ask that should be
+    /// forwarded to the UI, or a receiver for a correlated follower that should wait for the
+    /// leader's answer.
+    fn register_pending(
+        &self,
+        key: &(String, String),
+    ) -> Option<std::sync::mpsc::Receiver<ScopedDecision>> {
+        let mut pending = self.pending.lock().ok()?;
+        if let Some(waiters) = pending.get_mut(key) {
+            let (tx, rx) = mpsc::channel();
+            waiters.push(tx);
+            Some(rx)
+        } else {
+            pending.insert(key.clone(), Vec::new());
+            None
+        }
+    }
+
+    /// Resolve a pending request and fan the answer out to correlated followers.
+    fn resolve_pending(&self, key: (String, String), decision: ScopedDecision) {
+        let waiters = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&key));
+        if let Some(waiters) = waiters {
+            for waiter in waiters {
+                let _ = waiter.send(decision.clone());
+            }
         }
     }
 }
@@ -111,6 +148,12 @@ impl Responder for UiResponder {
             return decision;
         }
 
+        if let Some(wait) = self.register_pending(&key) {
+            return wait
+                .recv()
+                .unwrap_or_else(|_| ScopedDecision::once(Decision::Deny));
+        }
+
         let (reply, wait) = mpsc::channel();
         let ask = PermissionAsk::new(request.tool.clone(), request.subject.clone(), reply);
         // The UI is gone (closed during the turn): fail closed rather than block forever.
@@ -119,6 +162,7 @@ impl Responder for UiResponder {
             .send(TurnMessage::Permission(Box::new(ask)))
             .is_err()
         {
+            self.resolve_pending(key.clone(), ScopedDecision::once(Decision::Deny));
             return ScopedDecision::once(Decision::Deny);
         }
 
@@ -126,7 +170,8 @@ impl Responder for UiResponder {
         let decision = wait
             .recv()
             .unwrap_or_else(|_| ScopedDecision::once(Decision::Deny));
-        self.remember(key, decision);
+        self.remember(key.clone(), decision.clone());
+        self.resolve_pending(key, decision.clone());
         decision
     }
 }
@@ -240,6 +285,40 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "a cached ask must not forward a second prompt"
+        );
+    }
+
+    // Concurrent identical asks are correlated: one UI prompt is shown and the answered decision
+    // (including deny feedback) fans out to all waiting callers.
+    #[test]
+    fn concurrent_identical_asks_share_one_prompt_and_feedback() {
+        let (tx, rx) = channel();
+        let responder = Arc::new(UiResponder::new(tx));
+        let gate = Arc::new(std::sync::Barrier::new(3));
+
+        let worker = |responder: Arc<UiResponder>, gate: Arc<std::sync::Barrier>| {
+            thread::spawn(move || {
+                gate.wait();
+                responder.respond_scoped(&request("bash", "rm target.txt"))
+            })
+        };
+        let first = worker(responder.clone(), gate.clone());
+        let second = worker(responder.clone(), gate.clone());
+        gate.wait();
+
+        let TurnMessage::Permission(ask) = rx.recv().expect("single forwarded ask") else {
+            panic!("expected permission ask");
+        };
+        ask.answer(ScopedDecision::once(Decision::Deny).with_feedback("Use ls first."));
+
+        let decision_one = first.join().expect("first decision");
+        let decision_two = second.join().expect("second decision");
+        let expected = ScopedDecision::once(Decision::Deny).with_feedback("Use ls first.");
+        assert_eq!(decision_one, expected);
+        assert_eq!(decision_two, expected);
+        assert!(
+            rx.try_recv().is_err(),
+            "only one prompt should be forwarded for correlated asks"
         );
     }
 }

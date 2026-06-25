@@ -177,10 +177,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     // whole operation with no partial application.
     for (action, display) in &plan {
         for path in action_paths(action) {
-            if !ctx.permits("apply_patch", &path.to_string_lossy()) {
-                return ToolOutput::error(format!(
-                    "apply_patch: permission denied for {display} (no changes made)"
-                ));
+            if let Err(message) = ctx.ensure_permitted("apply_patch", &path.to_string_lossy()) {
+                return ToolOutput::error(format!("{message} ({display}, no changes made)"));
             }
         }
     }

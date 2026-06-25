@@ -108,8 +108,8 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
 
     // Gate the edit through the permission engine when one is attached (a no-op until enforcement
     // wires a real engine in); a denied edit touches nothing on disk.
-    if !ctx.permits("edit", &path) {
-        return ToolOutput::error(format!("edit: permission denied for {path}"));
+    if let Err(message) = ctx.ensure_permitted("edit", &path) {
+        return ToolOutput::error(message);
     }
 
     let resolved = ctx.resolve(&path);

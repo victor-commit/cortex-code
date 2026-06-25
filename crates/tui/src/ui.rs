@@ -1358,7 +1358,7 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
 /// Render the interactive permission prompt: a centered modal naming the ask-gated tool and its
 /// target with selectable Allow/Deny options, drawn over everything while a decision is pending.
 fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    let Some((tool, subject, selected)) = app.permission_prompt() else {
+    let Some((tool, subject, selected, feedback)) = app.permission_prompt() else {
         return;
     };
     if area.width < 8 || area.height < 6 {
@@ -1383,9 +1383,24 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
         Span::raw("  "),
         option("Deny", 2, theme.error),
     ]);
-    let hint = "y once · a always · n deny · ←/→ select · Enter confirm · Esc deny";
+    let hint = "y once · a always · n deny · ←/→ select · type feedback on Deny · Enter confirm · Esc deny";
 
-    let rows: Vec<Line<'static>> = vec![
+    let feedback_line = if selected == 2 || !feedback.is_empty() {
+        Some(Line::from(vec![
+            Span::styled(
+                "Feedback: ",
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(feedback.to_owned(), Style::default().fg(theme.text)),
+            Span::styled("▏", Style::default().fg(theme.warning)),
+        ]))
+    } else {
+        None
+    };
+
+    let mut rows: Vec<Line<'static>> = vec![
         Line::from(vec![
             Span::styled(
                 tool.to_owned(),
@@ -1400,12 +1415,18 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
         ]),
         Line::from(Span::styled(
             format!("  {subject}"),
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text),
         )),
         Line::from(""),
         options,
-        Line::from(Span::styled(hint, Style::default().fg(theme.text_dim))),
     ];
+    if let Some(feedback_line) = feedback_line {
+        rows.push(feedback_line);
+    }
+    rows.push(Line::from(Span::styled(
+        hint,
+        Style::default().fg(theme.text_dim),
+    )));
 
     let content_w = rows.iter().map(Line::width).max().unwrap_or(0);
     let max_w = (area.width as usize) * 9 / 10;
