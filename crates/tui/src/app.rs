@@ -2966,21 +2966,6 @@ impl App {
         if self.permission_open() {
             match key.code {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
-                KeyCode::Char('y') if !ctrl && !alt => {
-                    self.answer_permission(ScopedDecision::once(Decision::Allow));
-                }
-                KeyCode::Char('a') if !ctrl && !alt => {
-                    self.answer_permission(ScopedDecision::always(Decision::Allow));
-                }
-                KeyCode::Char('n' | 'd')
-                    if !ctrl
-                        && !alt
-                        && self.pending_permission.as_ref().is_some_and(|pending| {
-                            pending.selected != 2 || pending.feedback.is_empty()
-                        }) =>
-                {
-                    self.answer_permission(ScopedDecision::once(Decision::Deny));
-                }
                 KeyCode::Char(ch)
                     if !ctrl
                         && !alt
@@ -2990,6 +2975,15 @@ impl App {
                             .is_some_and(|pending| pending.selected == 2) =>
                 {
                     self.permission_feedback_input(ch);
+                }
+                KeyCode::Char('y') if !ctrl && !alt => {
+                    self.answer_permission(ScopedDecision::once(Decision::Allow));
+                }
+                KeyCode::Char('a') if !ctrl && !alt => {
+                    self.answer_permission(ScopedDecision::always(Decision::Allow));
+                }
+                KeyCode::Char('n' | 'd') if !ctrl && !alt => {
+                    self.answer_permission(ScopedDecision::once(Decision::Deny));
                 }
                 KeyCode::Backspace => self.permission_feedback_backspace(),
                 KeyCode::Left | KeyCode::Up => self.permission_step(false),
@@ -3771,6 +3765,32 @@ mod tests {
                 |e| matches!(e, Entry::Notice(text) if text.contains("feedback: Use ls first"))
             ),
             "feedback should be visible in transcript notices"
+        );
+    }
+
+    // While Deny is selected, printable keys are feedback text and must never trigger Allow
+    // hotkeys, even for `y`/`a`.
+    #[test]
+    fn deny_feedback_mode_treats_y_and_a_as_text() {
+        let mut a = app();
+        let wait = deliver_permission(&mut a, "bash", "rm -rf .");
+
+        a.on_key(key(KeyCode::Right));
+        a.on_key(key(KeyCode::Right));
+        assert_eq!(a.permission_prompt(), Some(("bash", "rm -rf .", 2, "")));
+
+        a.on_key(key(KeyCode::Char('y')));
+        assert!(a.permission_open());
+        assert_eq!(a.permission_prompt(), Some(("bash", "rm -rf .", 2, "y")));
+
+        a.on_key(key(KeyCode::Char('a')));
+        assert!(a.permission_open());
+        assert_eq!(a.permission_prompt(), Some(("bash", "rm -rf .", 2, "ya")));
+
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            wait.recv().unwrap(),
+            ScopedDecision::once(Decision::Deny).with_feedback("ya")
         );
     }
 
