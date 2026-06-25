@@ -816,13 +816,73 @@ impl ToolContext {
     }
 }
 
-/// Canonicalize `path` for identity comparisons, falling back to the nearest existing ancestor when
-/// the full path does not yet exist (for example, a future write target).
+/// Canonicalize `path` for identity comparisons, including symlink aliases that point at a target
+/// path that does not exist yet (for example, a future write target behind a dangling symlink).
 fn canonicalize_identity_path(path: &Path) -> PathBuf {
     if let Ok(canonical) = fs::canonicalize(path) {
         return canonical;
     }
+    resolve_symlink_alias_path(path).unwrap_or_else(|| canonicalize_via_existing_ancestor(path))
+}
 
+const MAX_SYMLINK_EXPANSIONS: usize = 40;
+
+/// Resolve symlink aliases even when the final target does not exist yet, returning an absolute
+/// path that can be used for permission matching and read-ledger identity.
+fn resolve_symlink_alias_path(path: &Path) -> Option<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    resolve_symlink_alias_path_inner(absolute, 0)
+}
+
+fn resolve_symlink_alias_path_inner(path: PathBuf, depth: usize) -> Option<PathBuf> {
+    if depth > MAX_SYMLINK_EXPANSIONS {
+        return None;
+    }
+
+    let mut resolved = PathBuf::new();
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        use std::path::Component;
+
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                resolved.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                if let Ok(metadata) = fs::symlink_metadata(&candidate)
+                    && metadata.file_type().is_symlink()
+                {
+                    let target = fs::read_link(&candidate).ok()?;
+                    let mut rerooted = if target.is_absolute() {
+                        target
+                    } else {
+                        resolved.join(target)
+                    };
+                    for remaining in components {
+                        rerooted.push(remaining.as_os_str());
+                    }
+                    return resolve_symlink_alias_path_inner(rerooted, depth + 1);
+                }
+                resolved.push(name);
+            }
+        }
+    }
+
+    Some(resolved)
+}
+
+/// Fallback canonicalization by resolving the nearest existing ancestor and appending the
+/// unresolved suffix.
+fn canonicalize_via_existing_ancestor(path: &Path) -> PathBuf {
     let mut probe = path.to_path_buf();
     let mut suffix = Vec::new();
     while !probe.exists() {
@@ -1190,6 +1250,105 @@ mod tests {
         assert_eq!(ctx.resolve("~/cortex-home-path"), expected);
         assert_eq!(ctx.resolve("$HOME/cortex-home-path"), expected);
         assert_eq!(ctx.resolve("${HOME}/cortex-home-path"), expected);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_targets_resolve_before_external_directory_matching() {
+        let workspace = workspace_dir("external-broken-link");
+        let outside_root = workspace
+            .parent()
+            .expect("workspace has parent")
+            .join(format!(
+                "outside-broken-{}",
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&outside_root).expect("create outside root");
+        let outside_target = outside_root.join("new-secret.txt");
+        let alias = workspace.join("escape-link.txt");
+        std::os::unix::fs::symlink(&outside_target, &alias).expect("create dangling symlink");
+
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("*", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Ask),
+        ])));
+        let ctx = ToolContext::new(workspace.clone()).with_permissions(engine);
+        let alias_arg = alias.to_string_lossy().to_string();
+
+        assert_eq!(
+            ctx.resolve(&alias_arg),
+            outside_target,
+            "dangling symlink should resolve to its outside target path"
+        );
+        assert!(
+            !ctx.permits("write", &alias_arg),
+            "write through dangling outside symlink should require external_directory permission"
+        );
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(outside_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_parent_paths_resolve_before_external_directory_matching() {
+        let workspace = workspace_dir("external-parent-symlink");
+        let outside_root = workspace
+            .parent()
+            .expect("workspace has parent")
+            .join(format!(
+                "outside-parent-{}",
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&outside_root).expect("create outside root");
+        let alias_dir = workspace.join("outside-dir");
+        std::os::unix::fs::symlink(&outside_root, &alias_dir).expect("create dir symlink");
+        let alias_file = alias_dir.join("created-by-alias.txt");
+        let outside_target = outside_root.join("created-by-alias.txt");
+
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("*", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Ask),
+        ])));
+        let ctx = ToolContext::new(workspace.clone()).with_permissions(engine);
+        let alias_arg = alias_file.to_string_lossy().to_string();
+
+        assert_eq!(
+            ctx.resolve(&alias_arg),
+            outside_target,
+            "paths under a symlinked parent should resolve to the outside target path"
+        );
+        assert!(
+            !ctx.permits("apply_patch", &alias_arg),
+            "apply_patch through symlinked outside parent should require external_directory permission"
+        );
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(outside_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inside_workspace_symlink_targets_stay_allowed() {
+        let workspace = workspace_dir("inside-symlink");
+        let target = workspace.join("real.txt");
+        std::fs::write(&target, "inside").expect("seed inside target");
+        let alias = workspace.join("alias.txt");
+        std::os::unix::fs::symlink(&target, &alias).expect("create inside symlink");
+
+        let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("*", "*", Action::Allow),
+            Rule::new("external_directory", "*", Action::Ask),
+        ])));
+        let ctx = ToolContext::new(workspace.clone()).with_permissions(engine);
+        let alias_arg = alias.to_string_lossy().to_string();
+
+        assert!(
+            ctx.permits("read", &alias_arg),
+            "inside-workspace symlink target should not trip external_directory gating"
+        );
+
         let _ = std::fs::remove_dir_all(workspace);
     }
 }

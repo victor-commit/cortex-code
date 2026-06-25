@@ -608,6 +608,227 @@ async fn home_aliases_and_symlink_escape_are_resolved_before_permission_matching
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn inside_workspace_symlink_targets_continue_to_work() {
+    let workspace = workspace_dir("symlink-inside-workspace");
+    let real = workspace.join("real.txt");
+    fs::write(&real, "ORIGINAL\n").unwrap();
+    let alias = workspace.join("alias.txt");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+        Rule::new("*", "*", Action::Allow),
+        Rule::new("external_directory", "*", Action::Ask),
+    ])));
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(workspace.clone()).with_permissions(engine),
+    };
+
+    let events = run_session(
+        &dispatcher,
+        "google/gemini-2.5-flash",
+        vec![
+            tool_call_round(
+                "c1",
+                "read",
+                &serde_json::json!({ "path": alias.to_string_lossy() }).to_string(),
+            ),
+            tool_call_round(
+                "c2",
+                "write",
+                &serde_json::json!({
+                    "path": alias.to_string_lossy(),
+                    "content": "UPDATED\n"
+                })
+                .to_string(),
+            ),
+            tool_call_round(
+                "c3",
+                "read",
+                &serde_json::json!({ "path": real.to_string_lossy() }).to_string(),
+            ),
+            final_round("done"),
+        ],
+    )
+    .await;
+
+    let results = tool_results(&events);
+    assert_eq!(results.len(), 3, "three tool calls were dispatched");
+    assert!(
+        !results[0].2,
+        "inside symlink read should be allowed: {:?}",
+        results[0]
+    );
+    assert!(
+        results[0].1.contains("1: ORIGINAL"),
+        "first read should return original content: {:?}",
+        results[0]
+    );
+    assert!(
+        !results[1].2,
+        "inside symlink write should be allowed: {:?}",
+        results[1]
+    );
+    assert!(
+        !results[2].2,
+        "target read should be allowed: {:?}",
+        results[2]
+    );
+    assert!(
+        results[2].1.contains("1: UPDATED"),
+        "target read should show updated content: {:?}",
+        results[2]
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        "UPDATED\n",
+        "inside symlink write should update the inside target"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn denied_symlink_escape_mutations_do_not_touch_outside_targets() {
+    let workspace = workspace_dir("symlink-escape-mutations");
+    let outside_root = workspace
+        .parent()
+        .expect("workspace has parent")
+        .join(format!(
+            "outside-mutations-{}",
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+    let _ = fs::remove_dir_all(&outside_root);
+    fs::create_dir_all(&outside_root).unwrap();
+
+    let outside_existing = outside_root.join("existing.txt");
+    fs::write(&outside_existing, "OUTSIDE-KEEP\n").unwrap();
+    let broken_target = outside_root.join("created-through-link.txt");
+    let patched_target = outside_root.join("patched-through-link.txt");
+
+    let existing_alias = workspace.join("existing-alias.txt");
+    std::os::unix::fs::symlink(&outside_existing, &existing_alias).unwrap();
+    let broken_alias = workspace.join("broken-alias.txt");
+    std::os::unix::fs::symlink(&broken_target, &broken_alias).unwrap();
+    let outside_dir_alias = workspace.join("outside-dir");
+    std::os::unix::fs::symlink(&outside_root, &outside_dir_alias).unwrap();
+
+    let engine = Arc::new(PermissionEngine::new(Ruleset::new(vec![
+        Rule::new("*", "*", Action::Allow),
+        Rule::new("external_directory", "*", Action::Ask),
+    ])));
+    let dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::builtin(),
+        context: ToolContext::new(workspace.clone()).with_permissions(engine),
+    };
+    let stars = "*".repeat(3);
+    let apply_patch_payload = format!(
+        "{stars} Begin Patch\n{stars} Add File: outside-dir/patched-through-link.txt\n+PATCHED\n{stars} End Patch"
+    );
+
+    let events = run_session(
+        &dispatcher,
+        "google/gemini-2.5-flash",
+        vec![
+            tool_call_round(
+                "c1",
+                "edit",
+                &serde_json::json!({
+                    "path": existing_alias.to_string_lossy(),
+                    "oldString": "OUTSIDE-KEEP",
+                    "newString": "MUTATED"
+                })
+                .to_string(),
+            ),
+            tool_call_round(
+                "c2",
+                "write",
+                &serde_json::json!({
+                    "path": broken_alias.to_string_lossy(),
+                    "content": "CREATED\n"
+                })
+                .to_string(),
+            ),
+            final_round("done"),
+        ],
+    )
+    .await;
+
+    let mutation_results = tool_results(&events);
+    assert_eq!(
+        mutation_results.len(),
+        2,
+        "two mutation attempts were dispatched"
+    );
+    for result in &mutation_results {
+        assert!(result.2, "mutation should be denied: {result:?}");
+        assert!(
+            result.1.to_lowercase().contains("permission denied"),
+            "deny should surface as permission denied: {result:?}"
+        );
+    }
+
+    let patch_dispatcher = RegistryDispatcher {
+        registry: ToolRegistry::gpt(),
+        context: ToolContext::new(workspace.clone()).with_permissions(Arc::new(
+            PermissionEngine::new(Ruleset::new(vec![
+                Rule::new("*", "*", Action::Allow),
+                Rule::new("external_directory", "*", Action::Ask),
+            ])),
+        )),
+    };
+    let patch_events = run_session(
+        &patch_dispatcher,
+        "openai/gpt-4.1",
+        vec![
+            tool_call_round(
+                "c3",
+                "apply_patch",
+                &serde_json::json!({ "patch": apply_patch_payload }).to_string(),
+            ),
+            final_round("done"),
+        ],
+    )
+    .await;
+    let patch_results = tool_results(&patch_events);
+    assert_eq!(
+        patch_results.len(),
+        1,
+        "one apply_patch attempt was dispatched"
+    );
+    assert!(
+        patch_results[0].2,
+        "apply_patch should be denied: {:?}",
+        patch_results[0]
+    );
+    assert!(
+        patch_results[0]
+            .1
+            .to_lowercase()
+            .contains("permission denied"),
+        "apply_patch deny should surface permission denied: {:?}",
+        patch_results[0]
+    );
+
+    assert_eq!(
+        fs::read_to_string(&outside_existing).unwrap(),
+        "OUTSIDE-KEEP\n",
+        "denied edit escape must not mutate outside existing target"
+    );
+    assert!(
+        !broken_target.exists(),
+        "denied write escape must not create outside target"
+    );
+    assert!(
+        !patched_target.exists(),
+        "denied apply_patch escape must not create outside target"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+    let _ = fs::remove_dir_all(outside_root);
+}
+
 /// Toggle the read-only bit on `path` so tests can exercise the OS-unwritable guard.
 fn set_readonly(path: &Path, readonly: bool) {
     let mut perms = fs::metadata(path).unwrap().permissions();
