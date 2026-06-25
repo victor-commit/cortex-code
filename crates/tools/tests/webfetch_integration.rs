@@ -127,7 +127,13 @@ async fn webfetch_bounds_large_text_with_a_truncation_signal() {
     let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
 
     let output = WebFetchTool
-        .execute(serde_json::json!({ "url": url }), &ctx)
+        .execute(
+            serde_json::json!({
+                "url": url,
+                "max_bytes": 4096
+            }),
+            &ctx,
+        )
         .await;
 
     let _ = server.join().expect("server thread");
@@ -146,7 +152,7 @@ async fn webfetch_bounds_large_text_with_a_truncation_signal() {
 }
 
 #[tokio::test]
-async fn webfetch_reports_binary_content_without_mojibake() {
+async fn webfetch_returns_binary_images_as_attachments() {
     let _guard = WEBFETCH_TEST_LOCK.lock().await;
     let (url, server) = serve_once("image/png", b"\x89PNG\r\n\x1a\n\x00\xff\x00\xff".to_vec());
     let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
@@ -157,10 +163,105 @@ async fn webfetch_reports_binary_content_without_mojibake() {
 
     let _ = server.join().expect("server thread");
     assert!(!output.is_error, "got error: {}", output.model_content());
+    let image_part = output
+        .parts
+        .iter()
+        .find(|part| matches!(part, protocol::ToolResultPart::Image { .. }))
+        .expect("image attachment part");
     let rendered = output.model_content();
     assert!(rendered.contains("Content-Type: image/png"), "{rendered}");
-    assert!(rendered.contains("non-HTML"), "{rendered}");
+    assert!(rendered.contains("attachment"), "{rendered}");
     assert!(!rendered.contains('\u{fffd}'), "{rendered}");
+    assert!(
+        matches!(
+            image_part,
+            protocol::ToolResultPart::Image { media_type, path }
+                if media_type == "image/png" && path.starts_with("http://127.0.0.1:")
+        ),
+        "{image_part:?}"
+    );
+}
+
+#[tokio::test]
+async fn webfetch_returns_pdf_as_document_attachment() {
+    let _guard = WEBFETCH_TEST_LOCK.lock().await;
+    let (url, server) = serve_once("application/pdf", b"%PDF-1.4\n%fixture\n".to_vec());
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebFetchTool
+        .execute(serde_json::json!({ "url": url }), &ctx)
+        .await;
+
+    let _ = server.join().expect("server thread");
+    assert!(!output.is_error, "got error: {}", output.model_content());
+    let document_part = output
+        .parts
+        .iter()
+        .find(|part| matches!(part, protocol::ToolResultPart::Document { .. }))
+        .expect("document attachment part");
+    let rendered = output.model_content();
+    assert!(
+        rendered.contains("Content-Type: application/pdf"),
+        "{rendered}"
+    );
+    assert!(
+        matches!(
+            document_part,
+            protocol::ToolResultPart::Document { media_type, path }
+                if media_type == "application/pdf" && path.starts_with("http://127.0.0.1:")
+        ),
+        "{document_part:?}"
+    );
+}
+
+#[tokio::test]
+async fn webfetch_honors_format_text_and_html() {
+    let _guard = WEBFETCH_TEST_LOCK.lock().await;
+    let html = br#"
+        <!doctype html>
+        <html>
+          <body>
+            <h1>Format Fixture</h1>
+            <p>Visible <strong>content</strong>.</p>
+          </body>
+        </html>
+    "#;
+    let (url, server) = serve_once("text/html; charset=utf-8", html.to_vec());
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let html_output = WebFetchTool
+        .execute(serde_json::json!({ "url": url, "format": "html" }), &ctx)
+        .await;
+    let _ = server.join().expect("server thread");
+    assert!(
+        !html_output.is_error,
+        "got error: {}",
+        html_output.model_content()
+    );
+    let html_rendered = html_output.model_content();
+    assert!(html_rendered.contains("~~~~html"), "{html_rendered}");
+    assert!(
+        html_rendered.contains("<h1>Format Fixture</h1>"),
+        "{html_rendered}"
+    );
+
+    let (url, server) = serve_once("text/html; charset=utf-8", html.to_vec());
+    let text_output = WebFetchTool
+        .execute(serde_json::json!({ "url": url, "format": "text" }), &ctx)
+        .await;
+    let _ = server.join().expect("server thread");
+    assert!(
+        !text_output.is_error,
+        "got error: {}",
+        text_output.model_content()
+    );
+    let text_rendered = text_output.model_content();
+    assert!(text_rendered.contains("Format Fixture"), "{text_rendered}");
+    assert!(
+        text_rendered.contains("Visible content."),
+        "{text_rendered}"
+    );
+    assert!(!text_rendered.contains("<h1>"), "{text_rendered}");
 }
 
 #[tokio::test]

@@ -154,6 +154,134 @@ async fn duckduckgo_provider_returns_bounded_real_result_entries() {
 }
 
 #[tokio::test]
+async fn websearch_accepts_num_results_alias_and_caps_context() {
+    let _guard = WEBSEARCH_TEST_LOCK.lock().await;
+    let body = serde_json::json!({
+        "RelatedTopics": [
+            {
+                "FirstURL": "https://example.com/one",
+                "Text": "One - abcdefghijklmnopqrstuvwxyz"
+            },
+            {
+                "FirstURL": "https://example.com/two",
+                "Text": "Two - 0123456789abcdefghijklmnopqrstuvwxyz"
+            },
+            {
+                "FirstURL": "https://example.com/three",
+                "Text": "Three - should-not-appear"
+            }
+        ]
+    })
+    .to_string()
+    .into_bytes();
+    let (endpoint, server) = serve_once(200, "application/json", body);
+    let config = WebSearchConfig::duckduckgo()
+        .with_endpoint(Some(endpoint))
+        .expect("endpoint config")
+        .with_max_results(Some(10))
+        .expect("max results config");
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebSearchTool::new(config)
+        .execute(
+            serde_json::json!({
+                "query": "Rust",
+                "numResults": 2,
+                "livecrawl": true,
+                "contextMaxCharacters": 12
+            }),
+            &ctx,
+        )
+        .await;
+
+    let request = server.join().expect("server thread");
+    assert!(!output.is_error, "got error: {}", output.model_content());
+    let rendered = output.model_content();
+    assert!(rendered.contains("1. One"), "{rendered}");
+    assert!(rendered.contains("2. Two"), "{rendered}");
+    assert!(!rendered.contains("3. Three"), "{rendered}");
+    assert!(rendered.contains("Snippet: abcdefghijkl"), "{rendered}");
+    assert!(!rendered.contains("Snippet: abcdefghijklm"), "{rendered}");
+    assert!(
+        request.contains("q=Rust"),
+        "request should carry the real query:\n{request}"
+    );
+}
+
+#[tokio::test]
+async fn websearch_livecrawl_false_omits_hydrated_snippets() {
+    let _guard = WEBSEARCH_TEST_LOCK.lock().await;
+    let body = serde_json::json!({
+        "RelatedTopics": [
+            {
+                "FirstURL": "https://example.com/one",
+                "Text": "One - hydrated context should be hidden"
+            }
+        ]
+    })
+    .to_string()
+    .into_bytes();
+    let (endpoint, server) = serve_once(200, "application/json", body);
+    let config = WebSearchConfig::duckduckgo()
+        .with_endpoint(Some(endpoint))
+        .expect("endpoint config");
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebSearchTool::new(config)
+        .execute(
+            serde_json::json!({
+                "query": "Rust",
+                "livecrawl": false
+            }),
+            &ctx,
+        )
+        .await;
+
+    let _ = server.join().expect("server thread");
+    assert!(!output.is_error, "got error: {}", output.model_content());
+    let rendered = output.model_content();
+    assert!(rendered.contains("1. One"), "{rendered}");
+    assert!(!rendered.contains("Snippet:"), "{rendered}");
+}
+
+#[tokio::test]
+async fn websearch_type_parameter_shapes_provider_request() {
+    let _guard = WEBSEARCH_TEST_LOCK.lock().await;
+    let body = serde_json::json!({
+        "RelatedTopics": [
+            {
+                "FirstURL": "https://example.com/news",
+                "Text": "News - Result"
+            }
+        ]
+    })
+    .to_string()
+    .into_bytes();
+    let (endpoint, server) = serve_once(200, "application/json", body);
+    let config = WebSearchConfig::duckduckgo()
+        .with_endpoint(Some(endpoint))
+        .expect("endpoint config");
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebSearchTool::new(config)
+        .execute(
+            serde_json::json!({
+                "query": "Rust",
+                "type": "news"
+            }),
+            &ctx,
+        )
+        .await;
+
+    let request = server.join().expect("server thread");
+    assert!(!output.is_error, "got error: {}", output.model_content());
+    assert!(
+        request.contains("ia=news"),
+        "request should carry the selected type:\n{request}"
+    );
+}
+
+#[tokio::test]
 async fn brave_missing_key_is_clear_and_actionable() {
     let _guard = WEBSEARCH_TEST_LOCK.lock().await;
     let config = WebSearchConfig::new(WebSearchProvider::Brave);

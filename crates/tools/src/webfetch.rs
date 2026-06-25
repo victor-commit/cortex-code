@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use protocol::ToolResultPart;
 use redaction::guard_outbound;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
@@ -25,13 +26,20 @@ scripts/styles are omitted. Large and non-HTML responses are bounded and clearly
 guess page contents when a URL is available, call webfetch first.";
 
 const OUTBOUND_OPERATION: &str = "webfetch HTTP request";
-const DEFAULT_TIMEOUT_MS: u64 = 8_000;
-const MAX_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
 const MIN_TIMEOUT_MS: u64 = 50;
-const DEFAULT_MAX_BYTES: usize = 128 * 1024;
-const MAX_MAX_BYTES: usize = 512 * 1024;
+const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
+const MAX_MAX_BYTES: usize = 5 * 1024 * 1024;
 const MIN_MAX_BYTES: usize = 1024;
 const MAX_REDIRECTS: usize = 5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseFormat {
+    Markdown,
+    Text,
+    Html,
+}
 
 /// Fetch a web page and return markdown.
 pub struct WebFetchTool;
@@ -53,13 +61,22 @@ impl Tool for WebFetchTool {
                     "type": "string",
                     "description": "The absolute http:// or https:// URL to retrieve."
                 },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "text", "html"],
+                    "description": "Optional output format. markdown converts HTML to markdown (default), text returns plain text, and html returns raw HTML when available."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout in seconds (compatibility alias), clamped between 1 and 120. Defaults to 30."
+                },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Optional total timeout in milliseconds, clamped between 50 and 30000. Defaults to 8000."
+                    "description": "Optional total timeout in milliseconds, clamped between 50 and 120000. Defaults to 30000."
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Optional maximum response bytes to read before truncating, clamped between 1024 and 524288. Defaults to 131072."
+                    "description": "Optional maximum response bytes to read before truncating, clamped between 1024 and 5242880. Defaults to 5242880."
                 }
             },
             "required": ["url"],
@@ -101,7 +118,7 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     };
 
     match fetch(&url, options, ctx.audit_sink().map(|sink| sink.as_ref())).await {
-        Ok(markdown) => ToolOutput::text(markdown),
+        Ok(output) => output,
         Err(message) => ToolOutput::error(message),
     }
 }
@@ -110,6 +127,7 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
 struct FetchOptions {
     timeout: Duration,
     max_bytes: usize,
+    format: ResponseFormat,
 }
 
 impl Default for FetchOptions {
@@ -117,19 +135,40 @@ impl Default for FetchOptions {
         Self {
             timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
             max_bytes: DEFAULT_MAX_BYTES,
+            format: ResponseFormat::Markdown,
         }
     }
 }
 
 fn options_from(arguments: &Value) -> Result<FetchOptions, String> {
     let mut options = FetchOptions::default();
-    if let Some(value) = arguments.get("timeout_ms") {
+    if let Some(value) = arguments.get("format") {
+        let Some(raw_format) = value.as_str() else {
+            return Err(
+                "webfetch: 'format' must be one of `markdown`, `text`, or `html`".to_owned(),
+            );
+        };
+        options.format = parse_format(raw_format)?;
+    }
+    if let Some(value) = arguments
+        .get("timeout_ms")
+        .or_else(|| arguments.get("timeoutMs"))
+    {
         let Some(ms) = value.as_u64() else {
             return Err("webfetch: 'timeout_ms' must be an integer".to_owned());
         };
         options.timeout = Duration::from_millis(ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
+    } else if let Some(value) = arguments.get("timeout") {
+        let Some(seconds) = value.as_u64() else {
+            return Err("webfetch: 'timeout' must be an integer number of seconds".to_owned());
+        };
+        let timeout_ms = seconds.saturating_mul(1000);
+        options.timeout = Duration::from_millis(timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
     }
-    if let Some(value) = arguments.get("max_bytes") {
+    if let Some(value) = arguments
+        .get("max_bytes")
+        .or_else(|| arguments.get("maxBytes"))
+    {
         let Some(max_bytes) = value.as_u64() else {
             return Err("webfetch: 'max_bytes' must be an integer".to_owned());
         };
@@ -139,11 +178,20 @@ fn options_from(arguments: &Value) -> Result<FetchOptions, String> {
     Ok(options)
 }
 
+fn parse_format(raw: &str) -> Result<ResponseFormat, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "markdown" | "md" => Ok(ResponseFormat::Markdown),
+        "text" | "txt" => Ok(ResponseFormat::Text),
+        "html" => Ok(ResponseFormat::Html),
+        _ => Err("webfetch: 'format' must be one of `markdown`, `text`, or `html`".to_owned()),
+    }
+}
+
 async fn fetch(
     url: &Url,
     options: FetchOptions,
     audit: Option<&audit::AuditSink>,
-) -> Result<String, String> {
+) -> Result<ToolOutput, String> {
     if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
         record_network(audit, url, None, "blocked");
         return Err(format!("webfetch: {diagnostic}"));
@@ -221,7 +269,13 @@ async fn fetch(
     }
 
     record_network(audit, &final_url, Some(status), "success");
-    Ok(render_response(&final_url, status, &content_type, &body))
+    Ok(render_response(
+        &final_url,
+        status,
+        &content_type,
+        &body,
+        options.format,
+    ))
 }
 
 fn record_network(
@@ -338,11 +392,12 @@ fn render_response(
     status: StatusCode,
     content_type: &str,
     body: &FetchedBody,
-) -> String {
+    format: ResponseFormat,
+) -> ToolOutput {
     if is_html_response(content_type, &body.bytes) {
-        render_html_response(url, status, content_type, body)
+        render_html_response(url, status, content_type, body, format)
     } else {
-        render_non_html_response(url, status, content_type, body)
+        render_non_html_response(url, status, content_type, body, format)
     }
 }
 
@@ -351,7 +406,8 @@ fn render_html_response(
     status: StatusCode,
     content_type: &str,
     body: &FetchedBody,
-) -> String {
+    format: ResponseFormat,
+) -> ToolOutput {
     let html = decode_lossy(&body.bytes);
     let markdown = html_to_markdown(&html, Some(url));
     let mut full = response_header(url, status, content_type);
@@ -361,9 +417,32 @@ fn render_html_response(
             body.bytes.len()
         ));
     }
-    full.push_str("\n\n");
-    full.push_str(&markdown);
-    bound_markdown(&redaction::redact(&full))
+    match format {
+        ResponseFormat::Markdown => {
+            full.push_str("\n\n");
+            full.push_str(&markdown);
+        }
+        ResponseFormat::Text => {
+            let text = html_to_plain_text(&html);
+            full.push_str("\n\n[webfetch: HTML converted to plain text]\n\n");
+            full.push_str("~~~~text\n");
+            full.push_str(&text);
+            if !text.ends_with('\n') {
+                full.push('\n');
+            }
+            full.push_str("~~~~");
+        }
+        ResponseFormat::Html => {
+            full.push_str("\n\n[webfetch: raw HTML response]\n\n");
+            full.push_str("~~~~html\n");
+            full.push_str(&html);
+            if !html.ends_with('\n') {
+                full.push('\n');
+            }
+            full.push_str("~~~~");
+        }
+    }
+    ToolOutput::text(bound_markdown(&redaction::redact(&full)))
 }
 
 fn render_non_html_response(
@@ -371,38 +450,53 @@ fn render_non_html_response(
     status: StatusCode,
     content_type: &str,
     body: &FetchedBody,
-) -> String {
+    format: ResponseFormat,
+) -> ToolOutput {
     let mut full = response_header(url, status, content_type);
     if is_binary_content_type(content_type) || is_probably_binary(&body.bytes) {
-        full.push_str(&format!(
-            "\n\n[webfetch: non-HTML response omitted; Content-Type `{}` appears binary; {} bytes read]",
-            content_type,
-            body.bytes.len()
-        ));
+        full.push_str("\n\n[webfetch: binary response returned as attachment]");
         if body.truncated {
             full.push_str(&format!(
                 "\n[webfetch: response truncated after {} bytes]",
                 body.bytes.len()
             ));
         }
-        return bound_markdown(&redaction::redact(&full));
+        let message = bound_markdown(&redaction::redact(&full));
+        if let Some(attachment) = binary_attachment_part(content_type, safe_url(url)) {
+            return ToolOutput::parts(vec![ToolResultPart::text(message), attachment]);
+        }
+        return ToolOutput::text(message);
     }
 
     let text = decode_lossy(&body.bytes);
-    full.push_str("\n\n[webfetch: non-HTML text response]\n\n");
-    if body.truncated {
-        full.push_str(&format!(
-            "[webfetch: response truncated after {} bytes; content may be incomplete]\n\n",
-            body.bytes.len()
-        ));
+    match format {
+        ResponseFormat::Text => {
+            full.push_str("\n\n");
+            if body.truncated {
+                full.push_str(&format!(
+                    "[webfetch: response truncated after {} bytes; content may be incomplete]\n\n",
+                    body.bytes.len()
+                ));
+            }
+            full.push_str(&text);
+        }
+        ResponseFormat::Markdown | ResponseFormat::Html => {
+            full.push_str("\n\n[webfetch: non-HTML text response]\n\n");
+            if body.truncated {
+                full.push_str(&format!(
+                    "[webfetch: response truncated after {} bytes; content may be incomplete]\n\n",
+                    body.bytes.len()
+                ));
+            }
+            full.push_str("~~~~text\n");
+            full.push_str(&text);
+            if !text.ends_with('\n') {
+                full.push('\n');
+            }
+            full.push_str("~~~~");
+        }
     }
-    full.push_str("~~~~text\n");
-    full.push_str(&text);
-    if !text.ends_with('\n') {
-        full.push('\n');
-    }
-    full.push_str("~~~~");
-    bound_markdown(&redaction::redact(&full))
+    ToolOutput::text(bound_markdown(&redaction::redact(&full)))
 }
 
 fn response_header(url: &Url, status: StatusCode, content_type: &str) -> String {
@@ -481,6 +575,17 @@ fn media_type(content_type: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn binary_attachment_part(content_type: &str, path: String) -> Option<ToolResultPart> {
+    let media_type = media_type(content_type);
+    if media_type.starts_with("image/") {
+        Some(ToolResultPart::image(media_type, path))
+    } else if media_type == "application/pdf" {
+        Some(ToolResultPart::document(media_type, path))
+    } else {
+        None
+    }
+}
+
 fn is_probably_binary(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -500,6 +605,31 @@ fn is_probably_binary(bytes: &[u8]) -> bool {
 
 fn decode_lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn html_to_plain_text(html: &str) -> String {
+    let stripped = strip_html_tags(html);
+    let decoded = decode_entities(&stripped);
+    let text = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.trim().is_empty() {
+        "(no visible text found after HTML conversion)".to_owned()
+    } else {
+        text
+    }
+}
+
+fn strip_html_tags(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut in_tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(ch),
+            _ => {}
+        }
+    }
+    output
 }
 
 fn html_to_markdown(html: &str, base: Option<&Url>) -> String {

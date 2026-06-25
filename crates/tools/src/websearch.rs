@@ -31,6 +31,8 @@ const MIN_TIMEOUT_MS: u64 = 50;
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS: usize = 10;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const DEFAULT_CONTEXT_MAX_CHARACTERS: usize = 10_000;
+const MAX_CONTEXT_MAX_CHARACTERS: usize = 200_000;
 const BRAVE_DEFAULT_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const DUCKDUCKGO_DEFAULT_ENDPOINT: &str = "https://api.duckduckgo.com/";
 
@@ -244,6 +246,22 @@ impl Tool for WebSearchTool {
                     "type": "integer",
                     "description": "Optional number of results to return, 1-10 and capped by config. Defaults to the configured max_results."
                 },
+                "numResults": {
+                    "type": "integer",
+                    "description": "Compatibility alias for count."
+                },
+                "livecrawl": {
+                    "type": "boolean",
+                    "description": "When true (default), include hydrated snippet/context fields. When false, return titles and URLs only."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Optional search category hint, for example `web`, `news`, `images`, or `videos`."
+                },
+                "contextMaxCharacters": {
+                    "type": "integer",
+                    "description": "Maximum snippet/context characters per result when livecrawl is enabled. Defaults to 10000."
+                },
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Optional total timeout in milliseconds, clamped between 50 and 30000. Defaults to the configured timeout."
@@ -295,10 +313,13 @@ async fn run(arguments: Value, ctx: &ToolContext, config: &WebSearchConfig) -> T
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SearchOptions {
     timeout: Duration,
     count: usize,
+    livecrawl: bool,
+    search_type: Option<String>,
+    context_max_characters: usize,
 }
 
 fn options_from(arguments: &Value, config: &WebSearchConfig) -> Result<SearchOptions, String> {
@@ -311,19 +332,60 @@ fn options_from(arguments: &Value, config: &WebSearchConfig) -> Result<SearchOpt
     }
 
     let mut count = config.max_results;
-    if let Some(value) = arguments.get("count").or_else(|| arguments.get("limit")) {
+    if let Some(value) = arguments
+        .get("numResults")
+        .or_else(|| arguments.get("num_results"))
+        .or_else(|| arguments.get("count"))
+        .or_else(|| arguments.get("limit"))
+    {
         let Some(raw_count) = value.as_u64() else {
-            return Err("websearch: 'count' must be an integer".to_owned());
+            return Err("websearch: 'count'/'numResults' must be an integer".to_owned());
         };
         if raw_count == 0 {
-            return Err("websearch: 'count' must be at least 1".to_owned());
+            return Err("websearch: 'count'/'numResults' must be at least 1".to_owned());
         }
         count = (raw_count as usize)
             .min(MAX_RESULTS)
             .min(config.max_results);
     }
 
-    Ok(SearchOptions { timeout, count })
+    let mut livecrawl = true;
+    if let Some(value) = arguments
+        .get("livecrawl")
+        .or_else(|| arguments.get("live_crawl"))
+    {
+        livecrawl = parse_bool_arg(value, "livecrawl")?;
+    }
+
+    let search_type = arguments
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+
+    let mut context_max_characters = DEFAULT_CONTEXT_MAX_CHARACTERS;
+    if let Some(value) = arguments
+        .get("contextMaxCharacters")
+        .or_else(|| arguments.get("context_max_characters"))
+    {
+        let Some(raw_context_max_characters) = value.as_u64() else {
+            return Err("websearch: 'contextMaxCharacters' must be an integer".to_owned());
+        };
+        if raw_context_max_characters == 0 {
+            return Err("websearch: 'contextMaxCharacters' must be at least 1".to_owned());
+        }
+        context_max_characters =
+            (raw_context_max_characters as usize).min(MAX_CONTEXT_MAX_CHARACTERS);
+    }
+
+    Ok(SearchOptions {
+        timeout,
+        count,
+        livecrawl,
+        search_type,
+        context_max_characters,
+    })
 }
 
 async fn search(
@@ -352,11 +414,13 @@ async fn search(
 
     let results = match config.provider {
         WebSearchProvider::DuckDuckGo => {
-            duckduckgo_search(&client, config, query, options, audit).await
+            duckduckgo_search(&client, config, query, &options, audit).await
         }
-        WebSearchProvider::Brave => brave_search(&client, config, query, options, audit).await,
+        WebSearchProvider::Brave => brave_search(&client, config, query, &options, audit).await,
     }?;
 
+    let mut results = results;
+    apply_compat_options(&mut results, &options);
     if results.is_empty() {
         return Err(redaction::redact(&format!(
             "websearch: provider {} returned no results for `{query}`",
@@ -364,14 +428,14 @@ async fn search(
         )));
     }
 
-    Ok(render_results(config.provider, query, &results))
+    Ok(render_results(config.provider, query, &results, options))
 }
 
 async fn duckduckgo_search(
     client: &reqwest::Client,
     config: &WebSearchConfig,
     query: &str,
-    options: SearchOptions,
+    options: &SearchOptions,
     audit: Option<&audit::AuditSink>,
 ) -> Result<Vec<SearchResult>, String> {
     let mut url = endpoint_url(config)?;
@@ -380,6 +444,9 @@ async fn duckduckgo_search(
         .append_pair("format", "json")
         .append_pair("no_html", "1")
         .append_pair("skip_disambig", "1");
+    if let Some(search_type) = options.search_type.as_deref() {
+        url.query_pairs_mut().append_pair("ia", search_type);
+    }
     let endpoint = url.clone();
 
     let json = send_json(
@@ -404,7 +471,7 @@ async fn brave_search(
     client: &reqwest::Client,
     config: &WebSearchConfig,
     query: &str,
-    options: SearchOptions,
+    options: &SearchOptions,
     audit: Option<&audit::AuditSink>,
 ) -> Result<Vec<SearchResult>, String> {
     let Some(api_key) = config.api_key.as_deref() else {
@@ -420,6 +487,9 @@ async fn brave_search(
         .append_pair("q", query)
         .append_pair("count", &options.count.to_string())
         .append_pair("text_decorations", "false");
+    if let Some(search_type) = options.search_type.as_deref() {
+        url.query_pairs_mut().append_pair("type", search_type);
+    }
     let endpoint = url.clone();
 
     let mut headers = HeaderMap::new();
@@ -775,7 +845,32 @@ fn is_http_url(raw: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn render_results(provider: WebSearchProvider, query: &str, results: &[SearchResult]) -> String {
+fn apply_compat_options(results: &mut [SearchResult], options: &SearchOptions) {
+    for result in results {
+        if !options.livecrawl {
+            result.snippet = None;
+            continue;
+        }
+        result.snippet = result
+            .snippet
+            .take()
+            .map(|snippet| truncate_text(&snippet, options.context_max_characters));
+    }
+}
+
+fn truncate_text(value: &str, max_characters: usize) -> String {
+    if value.chars().count() <= max_characters {
+        return value.to_owned();
+    }
+    value.chars().take(max_characters).collect()
+}
+
+fn render_results(
+    provider: WebSearchProvider,
+    query: &str,
+    results: &[SearchResult],
+    options: SearchOptions,
+) -> String {
     let mut rendered = format!(
         "websearch results for \"{}\" via {} ({} result{}):",
         clean_text(query),
@@ -783,6 +878,12 @@ fn render_results(provider: WebSearchProvider, query: &str, results: &[SearchRes
         results.len(),
         if results.len() == 1 { "" } else { "s" }
     );
+    rendered.push_str(&format!(
+        "\nOptions: livecrawl={}, contextMaxCharacters={}, type={}",
+        options.livecrawl,
+        options.context_max_characters,
+        options.search_type.as_deref().unwrap_or("web")
+    ));
     for (index, result) in results.iter().enumerate() {
         rendered.push_str(&format!(
             "\n{}. {}\n   URL: {}",
@@ -795,6 +896,22 @@ fn render_results(provider: WebSearchProvider, query: &str, results: &[SearchRes
         }
     }
     bound_output(&rendered, OutputLimits::default(), "websearch").text
+}
+
+fn parse_bool_arg(value: &Value, key: &str) -> Result<bool, String> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" | "" => Ok(false),
+            _ => Err(format!(
+                "websearch: '{key}' must be a boolean or truthy/falsy string"
+            )),
+        },
+        _ => Err(format!(
+            "websearch: '{key}' must be a boolean or truthy/falsy string"
+        )),
+    }
 }
 
 fn json_string(value: &Value, key: &str) -> Option<String> {
@@ -946,7 +1063,18 @@ mod tests {
             url: "https://www.rust-lang.org/".to_owned(),
             snippet: Some("Official site".to_owned()),
         }];
-        let rendered = render_results(WebSearchProvider::DuckDuckGo, "Rust", &results);
+        let rendered = render_results(
+            WebSearchProvider::DuckDuckGo,
+            "Rust",
+            &results,
+            SearchOptions {
+                timeout: Duration::from_secs(1),
+                count: 1,
+                livecrawl: true,
+                search_type: Some("web".to_owned()),
+                context_max_characters: DEFAULT_CONTEXT_MAX_CHARACTERS,
+            },
+        );
         assert!(rendered.contains("websearch results for \"Rust\""));
         assert!(rendered.contains("1. Rust Programming Language"));
         assert!(rendered.contains("URL: https://www.rust-lang.org/"));
