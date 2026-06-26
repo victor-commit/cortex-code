@@ -13,7 +13,9 @@ use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
 use tui_components::toast::ToastLevel;
 
-use crate::app::{App, AssistantTurn, Dialog, DialogKind, Entry, UsageSummary};
+use crate::app::{
+    App, AssistantTurn, Dialog, DialogKind, DiffViewMode, DiffViewerFocus, Entry, UsageSummary,
+};
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
@@ -37,6 +39,8 @@ const SIDEBAR_WIDTH: u16 = 30;
 
 /// Maximum number of toasts drawn at once in the overlay (matches the app's retention cap).
 const MAX_VISIBLE_TOASTS: usize = 4;
+/// Width of the left file-tree pane in the `/diff` viewer.
+const DIFF_TREE_WIDTH: u16 = 32;
 
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -81,6 +85,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(frame, app, sidebar, &theme);
     }
+    // The dedicated `/diff` viewer is a modal overlay for file-tree + hunk navigation and revert.
+    draw_diff_viewer(frame, app, area, &theme);
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area, &theme);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
@@ -1304,6 +1310,356 @@ fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static
         ]));
     }
     lines
+}
+
+/// Render the `/diff` viewer overlay: a file tree on the left and a per-file diff pane on the
+/// right, with unified/split toggle, hunk navigation, and revert hinting.
+fn draw_diff_viewer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let Some(viewer) = app.diff_viewer() else {
+        return;
+    };
+    if area.width < 20 || area.height < 10 {
+        return;
+    }
+
+    let width = (((area.width as usize) * 94) / 100).clamp(60, area.width as usize) as u16;
+    let height = (((area.height as usize) * 88) / 100).clamp(14, area.height as usize) as u16;
+    let popup = centered_rect(width, height, area);
+    let block = Block::default()
+        .style(Style::default().bg(theme.surface[1]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border_focus))
+        .title(" Diff viewer ")
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    if inner.width < 8 || inner.height < 4 {
+        return;
+    }
+
+    let tree_width = DIFF_TREE_WIDTH.min(inner.width.saturating_sub(8)).max(20);
+    let cols =
+        Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(1)]).split(inner);
+
+    draw_diff_file_tree(frame, viewer, cols[0], theme);
+    draw_diff_file_pane(frame, viewer, cols[1], theme);
+}
+
+fn draw_diff_file_tree(
+    frame: &mut Frame,
+    viewer: &crate::app::DiffViewer,
+    area: Rect,
+    theme: &style::ThemeColors,
+) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Files ");
+    let inner = block.inner(area);
+
+    let mut rows: Vec<Line<'static>> = if viewer.files.is_empty() {
+        vec![Line::from(Span::styled(
+            "  (no file diffs)",
+            Style::default()
+                .fg(theme.text_dim)
+                .add_modifier(Modifier::ITALIC),
+        ))]
+    } else {
+        viewer
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| {
+                let marker = if index == viewer.selected_file {
+                    "▸ "
+                } else {
+                    "  "
+                };
+                let label = format!(
+                    "{} (+{} -{}, {} hunk{})",
+                    file.path,
+                    file.additions,
+                    file.removals,
+                    file.hunks.len(),
+                    if file.hunks.len() == 1 { "" } else { "s" }
+                );
+                let active_focus =
+                    viewer.focus == DiffViewerFocus::Files && index == viewer.selected_file;
+                let style = if index == viewer.selected_file {
+                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                let row_style = if active_focus {
+                    style.bg(theme.surface[2])
+                } else {
+                    style
+                };
+                Line::from(vec![
+                    Span::styled(marker, Style::default().fg(theme.info)),
+                    Span::styled(label, row_style),
+                ])
+            })
+            .collect()
+    };
+
+    let budget = inner.height.saturating_sub(1) as usize;
+    let visible = budget.max(1).min(rows.len().max(1));
+    let selected = viewer.selected_file.min(rows.len().saturating_sub(1));
+    let offset = selected.saturating_sub(visible.saturating_sub(1));
+    let end = (offset + visible).min(rows.len());
+    rows = rows[offset..end].to_vec();
+    rows.push(Line::from(Span::styled(
+        "  ↑↓ file · Tab focus",
+        Style::default().fg(theme.text_dim),
+    )));
+
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(rows).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
+}
+
+fn draw_diff_file_pane(
+    frame: &mut Frame,
+    viewer: &crate::app::DiffViewer,
+    area: Rect,
+    theme: &style::ThemeColors,
+) {
+    if area.width < 6 || area.height < 4 {
+        return;
+    }
+    let Some(file) = viewer.selected_file() else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Diff ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new("No selected diff").style(Style::default().fg(theme.text_dim)),
+            inner,
+        );
+        return;
+    };
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
+    let mode = match viewer.mode {
+        DiffViewMode::Unified => "Unified",
+        DiffViewMode::Split => "Split",
+    };
+    let hunk_count = file.hunks.len();
+    let hunk_label = if hunk_count == 0 {
+        "No hunks".to_owned()
+    } else {
+        format!("Hunk {}/{}", viewer.selected_hunk + 1, hunk_count)
+    };
+    let focus_label = match viewer.focus {
+        DiffViewerFocus::Files => "Files",
+        DiffViewerFocus::Hunks => "Hunks",
+    };
+    let status = format!(
+        "{mode} · {hunk_label} · focus {focus_label} · ↑↓ navigate · Tab switch · v mode · r revert · Esc close"
+    );
+    frame.render_widget(
+        Paragraph::new(status).style(
+            Style::default()
+                .fg(theme.text_dim)
+                .bg(theme.surface[1])
+                .add_modifier(Modifier::ITALIC),
+        ),
+        rows[0],
+    );
+
+    match viewer.mode {
+        DiffViewMode::Unified => draw_unified_diff_pane(frame, viewer, file, rows[1], theme),
+        DiffViewMode::Split => draw_split_diff_pane(frame, viewer, file, rows[1], theme),
+    }
+}
+
+fn draw_unified_diff_pane(
+    frame: &mut Frame,
+    viewer: &crate::app::DiffViewer,
+    file: &FileDiff,
+    area: Rect,
+    theme: &style::ThemeColors,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(format!(" {} ", file.path));
+    let inner = block.inner(area);
+    let mut lines = file.render_with_theme(theme);
+    let ranges = file.hunk_line_ranges();
+    let selected_start = ranges
+        .get(viewer.selected_hunk)
+        .map_or(0, |range| range.start);
+    if let Some(range) = ranges.get(viewer.selected_hunk) {
+        let highlight = if viewer.focus == DiffViewerFocus::Hunks {
+            theme.surface[2]
+        } else {
+            theme.surface[1]
+        };
+        for index in range.clone() {
+            if let Some(line) = lines.get(index).cloned() {
+                lines[index] =
+                    apply_row_bg(&line, highlight, inner.width.saturating_sub(1) as usize);
+            }
+        }
+    }
+    let budget = inner.height as usize;
+    let visible = budget.max(1).min(lines.len().max(1));
+    let offset = selected_start.saturating_sub(visible.saturating_sub(1));
+    let end = (offset + visible).min(lines.len());
+    let shown: Vec<Line<'static>> = lines[offset..end].to_vec();
+
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        inner,
+    );
+}
+
+fn draw_split_diff_pane(
+    frame: &mut Frame,
+    viewer: &crate::app::DiffViewer,
+    file: &FileDiff,
+    area: Rect,
+    theme: &style::ThemeColors,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(format!(" {} ", file.path));
+    let inner = block.inner(area);
+    let panes =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
+
+    let rows = file.split_rows();
+    let ranges = file.split_hunk_row_ranges();
+    let selected_start = ranges
+        .get(viewer.selected_hunk)
+        .map_or(0, |range| range.start);
+    let budget = panes[0].height as usize;
+    let visible = budget.max(1).min(rows.len().max(1));
+    let offset = selected_start.saturating_sub(visible.saturating_sub(1));
+    let end = (offset + visible).min(rows.len());
+    let focus_highlight = if viewer.focus == DiffViewerFocus::Hunks {
+        theme.surface[2]
+    } else {
+        theme.surface[1]
+    };
+
+    let mut left_lines = Vec::new();
+    let mut right_lines = Vec::new();
+    for (index, row) in rows[offset..end].iter().enumerate() {
+        let absolute = offset + index;
+        let selected = ranges
+            .get(viewer.selected_hunk)
+            .is_some_and(|range| range.contains(&absolute));
+        let left_style = split_style(row.kind, true, theme);
+        let right_style = split_style(row.kind, false, theme);
+        let mut left = Line::from(Span::styled(
+            prefix_split_text(&row.left, row.kind, true),
+            left_style,
+        ));
+        let mut right = Line::from(Span::styled(
+            prefix_split_text(&row.right, row.kind, false),
+            right_style,
+        ));
+        if selected {
+            left = apply_row_bg(
+                &left,
+                focus_highlight,
+                panes[0].width.saturating_sub(2) as usize,
+            );
+            right = apply_row_bg(
+                &right,
+                focus_highlight,
+                panes[1].width.saturating_sub(2) as usize,
+            );
+        }
+        left_lines.push(left);
+        right_lines.push(right);
+    }
+
+    frame.render_widget(block, area);
+    let left_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Before ");
+    let right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(" After ");
+    frame.render_widget(
+        Paragraph::new(left_lines).style(Style::default().bg(theme.surface[1])),
+        left_block.inner(panes[0]),
+    );
+    frame.render_widget(
+        Paragraph::new(right_lines).style(Style::default().bg(theme.surface[1])),
+        right_block.inner(panes[1]),
+    );
+    frame.render_widget(left_block, panes[0]);
+    frame.render_widget(right_block, panes[1]);
+}
+
+fn split_style(kind: crate::diff::DiffLineKind, left: bool, theme: &style::ThemeColors) -> Style {
+    match kind {
+        crate::diff::DiffLineKind::Header => {
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+        }
+        crate::diff::DiffLineKind::Context => Style::default().fg(theme.text_dim),
+        crate::diff::DiffLineKind::Removed => {
+            if left {
+                Style::default().fg(theme.error)
+            } else {
+                Style::default().fg(theme.text_dim)
+            }
+        }
+        crate::diff::DiffLineKind::Added => {
+            if left {
+                Style::default().fg(theme.text_dim)
+            } else {
+                Style::default().fg(theme.success)
+            }
+        }
+    }
+}
+
+fn prefix_split_text(text: &str, kind: crate::diff::DiffLineKind, left: bool) -> String {
+    match kind {
+        crate::diff::DiffLineKind::Header => text.to_owned(),
+        crate::diff::DiffLineKind::Context => format!("  {text}"),
+        crate::diff::DiffLineKind::Removed => {
+            if left {
+                format!("- {text}")
+            } else {
+                String::new()
+            }
+        }
+        crate::diff::DiffLineKind::Added => {
+            if left {
+                String::new()
+            } else {
+                format!("+ {text}")
+            }
+        }
+    }
 }
 
 /// Render the open modal dialog as a centered bordered popup over the whole frame. The list scrolls

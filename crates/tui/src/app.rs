@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -172,6 +172,74 @@ impl Dialog {
             0
         } else {
             self.selected.min(self.items.len() - 1)
+        }
+    }
+}
+
+/// Diff viewer render mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewMode {
+    /// Traditional unified diff (`+` / `-` in one stream).
+    Unified,
+    /// Side-by-side split diff (before | after).
+    Split,
+}
+
+/// Which pane currently owns keyboard navigation in the diff viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewerFocus {
+    /// Left file tree (select file).
+    Files,
+    /// Right diff pane (select hunk).
+    Hunks,
+}
+
+/// Modal state for the `/diff` viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffViewer {
+    /// File diffs shown in the file tree (one per path, latest change wins).
+    pub files: Vec<crate::diff::FileDiff>,
+    /// Selected file index in `files`.
+    pub selected_file: usize,
+    /// Selected hunk index in the selected file.
+    pub selected_hunk: usize,
+    /// Active render mode.
+    pub mode: DiffViewMode,
+    /// Active keyboard focus pane.
+    pub focus: DiffViewerFocus,
+}
+
+impl DiffViewer {
+    fn new(files: Vec<crate::diff::FileDiff>) -> Self {
+        Self {
+            files,
+            selected_file: 0,
+            selected_hunk: 0,
+            mode: DiffViewMode::Unified,
+            focus: DiffViewerFocus::Files,
+        }
+    }
+
+    #[must_use]
+    pub fn selected_file(&self) -> Option<&crate::diff::FileDiff> {
+        self.files.get(self.selected_file)
+    }
+
+    fn clamp_selection(&mut self) {
+        if self.files.is_empty() {
+            self.selected_file = 0;
+            self.selected_hunk = 0;
+            return;
+        }
+        self.selected_file = self.selected_file.min(self.files.len() - 1);
+        let hunk_count = self
+            .files
+            .get(self.selected_file)
+            .map_or(0, |file| file.hunks.len());
+        if hunk_count == 0 {
+            self.selected_hunk = 0;
+        } else {
+            self.selected_hunk = self.selected_hunk.min(hunk_count - 1);
         }
     }
 }
@@ -420,6 +488,9 @@ pub struct App {
     /// The open modal dialog (a picker or status view), or `None` when no dialog is shown. While
     /// set it captures navigation/dismissal keys so the prompt is not edited beneath it.
     dialog: Option<Dialog>,
+    /// The open `/diff` viewer overlay, or `None` when closed. While set it is modal: keys drive
+    /// file/hunk navigation, view-mode toggling, and targeted revert actions.
+    diff_viewer: Option<DiffViewer>,
     /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
@@ -556,6 +627,7 @@ impl App {
             expand_tools: false,
             slash_selected: 0,
             dialog: None,
+            diff_viewer: None,
             mention: None,
             plugin_text_complete: None,
             pending_text_completion: None,
@@ -1898,6 +1970,7 @@ impl App {
                 "/review — reviewing the current code…",
                 REVIEW_PROMPT,
             ),
+            "diff" => self.open_diff_viewer(),
             "compact" => self.start_compaction(),
             "sessions" => self.open_sessions_dialog(),
             "models" => self.open_models_dialog(),
@@ -2248,6 +2321,217 @@ impl App {
     /// Open a modal dialog, replacing any currently-open one and closing the slash menu.
     fn open_dialog(&mut self, dialog: Dialog) {
         self.dialog = Some(dialog);
+    }
+
+    /// Open the `/diff` viewer over the most recent file diffs in the transcript (one entry per
+    /// path, latest change wins). If no file diffs exist, surface a clear notice instead of opening
+    /// an empty modal.
+    fn open_diff_viewer(&mut self) {
+        let mut files: Vec<crate::diff::FileDiff> = Vec::new();
+        let mut seen_paths: BTreeSet<String> = BTreeSet::new();
+        for entry in self.transcript.iter().rev() {
+            if let Entry::Diff(diff) = entry
+                && seen_paths.insert(diff.path.clone())
+            {
+                files.push(diff.clone());
+            }
+        }
+        files.reverse();
+        if files.is_empty() {
+            self.transcript.push(Entry::Notice(
+                "No file changes yet, run an edit first.".to_owned(),
+            ));
+            self.push_toast(ToastLevel::Info, "No diffs to show");
+            return;
+        }
+        self.diff_viewer = Some(DiffViewer::new(files));
+    }
+
+    /// The open `/diff` viewer state, if any.
+    #[must_use]
+    pub fn diff_viewer(&self) -> Option<&DiffViewer> {
+        self.diff_viewer.as_ref()
+    }
+
+    /// Whether the `/diff` viewer is currently open.
+    #[must_use]
+    pub fn diff_viewer_open(&self) -> bool {
+        self.diff_viewer.is_some()
+    }
+
+    /// Close the open `/diff` viewer.
+    fn close_diff_viewer(&mut self) {
+        self.diff_viewer = None;
+    }
+
+    fn diff_select_next_file(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            if viewer.files.is_empty() {
+                return;
+            }
+            viewer.selected_file = (viewer.selected_file + 1) % viewer.files.len();
+            viewer.selected_hunk = 0;
+            viewer.clamp_selection();
+        }
+    }
+
+    fn diff_select_prev_file(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            if viewer.files.is_empty() {
+                return;
+            }
+            let len = viewer.files.len();
+            viewer.selected_file = (viewer.selected_file + len - 1) % len;
+            viewer.selected_hunk = 0;
+            viewer.clamp_selection();
+        }
+    }
+
+    fn diff_select_next_hunk(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            let hunk_count = viewer.selected_file().map_or(0, |file| file.hunks.len());
+            if hunk_count == 0 {
+                return;
+            }
+            viewer.selected_hunk = (viewer.selected_hunk + 1) % hunk_count;
+        }
+    }
+
+    fn diff_select_prev_hunk(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            let hunk_count = viewer.selected_file().map_or(0, |file| file.hunks.len());
+            if hunk_count == 0 {
+                return;
+            }
+            viewer.selected_hunk = (viewer.selected_hunk + hunk_count - 1) % hunk_count;
+        }
+    }
+
+    fn diff_toggle_mode(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            viewer.mode = match viewer.mode {
+                DiffViewMode::Unified => DiffViewMode::Split,
+                DiffViewMode::Split => DiffViewMode::Unified,
+            };
+        }
+    }
+
+    fn diff_toggle_focus(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            viewer.focus = match viewer.focus {
+                DiffViewerFocus::Files => DiffViewerFocus::Hunks,
+                DiffViewerFocus::Hunks => DiffViewerFocus::Files,
+            };
+        }
+    }
+
+    /// Revert the selected file or hunk from the open `/diff` viewer. Selection scope follows the
+    /// active focus pane: file-tree focus reverts the whole file diff, hunk focus reverts only the
+    /// selected hunk. The write is conflict-checked against the viewer's expected post-edit content.
+    fn revert_diff_selection(&mut self) {
+        if self.is_busy() {
+            self.push_toast(ToastLevel::Warning, "Cannot revert while a turn is running");
+            return;
+        }
+        let Some(viewer) = self.diff_viewer.as_ref() else {
+            return;
+        };
+        let Some(diff) = viewer.selected_file().cloned() else {
+            return;
+        };
+        let selected_hunk = viewer.selected_hunk;
+        let focus = viewer.focus;
+        let target = match focus {
+            DiffViewerFocus::Files => None,
+            DiffViewerFocus::Hunks => Some(selected_hunk),
+        };
+        match apply_diff_revert(&diff, target) {
+            Ok(changed) => {
+                if changed {
+                    let scope = match target {
+                        Some(index) => format!("hunk {} in {}", index + 1, diff.path),
+                        None => format!("file {}", diff.path),
+                    };
+                    self.transcript
+                        .push(Entry::Notice(format!("Reverted {scope}.")));
+                    self.push_toast(ToastLevel::Success, "Revert applied");
+                    self.refresh_diff_viewer_file(&diff.path);
+                } else {
+                    self.push_toast(ToastLevel::Info, "Nothing changed");
+                }
+            }
+            Err(err) => {
+                self.transcript
+                    .push(Entry::Notice(format!("Cannot revert {}: {err}", diff.path)));
+                self.push_toast(ToastLevel::Error, "Revert failed");
+            }
+        }
+    }
+
+    /// Recompute one file's diff entry in the open viewer from disk after a revert action. If the
+    /// file is now fully reverted, remove it from the viewer; when no files remain, close the view.
+    fn refresh_diff_viewer_file(&mut self, path: &str) {
+        let Some(viewer) = self.diff_viewer.as_mut() else {
+            return;
+        };
+        let Some(index) = viewer.files.iter().position(|file| file.path == path) else {
+            return;
+        };
+        let before = viewer.files[index].before.clone();
+        let resolved = resolve_diff_path(path);
+        let after = match resolved {
+            Ok(path) => std::fs::read_to_string(path).ok(),
+            Err(_) => None,
+        };
+        let updated = crate::diff::compute_file_diff(path, before.as_deref(), after.as_deref());
+        if let Some(updated) = updated {
+            viewer.files[index] = updated;
+            viewer.clamp_selection();
+        } else {
+            viewer.files.remove(index);
+            viewer.clamp_selection();
+            if viewer.files.is_empty() {
+                self.close_diff_viewer();
+                self.transcript
+                    .push(Entry::Notice("All diffs reverted.".to_owned()));
+            }
+        }
+    }
+
+    /// Key handling for the open `/diff` viewer modal.
+    fn on_diff_viewer_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        let focus = self
+            .diff_viewer
+            .as_ref()
+            .map(|viewer| viewer.focus)
+            .unwrap_or(DiffViewerFocus::Files);
+        match key.code {
+            KeyCode::Esc => self.close_diff_viewer(),
+            KeyCode::Tab => self.diff_toggle_focus(),
+            KeyCode::Char('v') if !ctrl => self.diff_toggle_mode(),
+            KeyCode::Char('r') if !ctrl => self.revert_diff_selection(),
+            KeyCode::Char('u') if !ctrl => self.undo(),
+            KeyCode::Enter => {
+                if focus == DiffViewerFocus::Files {
+                    self.diff_toggle_focus();
+                }
+            }
+            KeyCode::Up => match focus {
+                DiffViewerFocus::Files => self.diff_select_prev_file(),
+                DiffViewerFocus::Hunks => self.diff_select_prev_hunk(),
+            },
+            KeyCode::Down => match focus {
+                DiffViewerFocus::Files => self.diff_select_next_file(),
+                DiffViewerFocus::Hunks => self.diff_select_next_hunk(),
+            },
+            KeyCode::Left if focus == DiffViewerFocus::Hunks => self.diff_toggle_focus(),
+            KeyCode::Right if focus == DiffViewerFocus::Files => self.diff_toggle_focus(),
+            _ => {}
+        }
     }
 
     /// The open modal dialog, if any (for rendering).
@@ -3347,6 +3631,13 @@ impl App {
             return;
         }
 
+        // The `/diff` viewer is modal while open: it owns file/hunk navigation, mode toggles, and
+        // targeted revert actions. Keys are swallowed so the prompt is never edited beneath it.
+        if self.diff_viewer_open() {
+            self.on_diff_viewer_key(key, ctrl);
+            return;
+        }
+
         // A modal dialog (picker/status view) is modal: it owns navigation and dismissal, and
         // swallows other keys so the prompt is not edited beneath it. Ctrl+C still quits so the
         // user is never trapped, and Esc/Enter both close the dialog and return focus to the prompt.
@@ -3826,6 +4117,113 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn resolve_diff_path(path: &str) -> Result<PathBuf, String> {
+    let rel = PathBuf::from(path);
+    if rel.is_absolute() {
+        return Err("absolute paths are not revertable from the diff viewer".to_owned());
+    }
+    if rel.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err("path escapes the current workspace".to_owned());
+    }
+    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+    Ok(cwd.join(rel))
+}
+
+fn split_text_lines(content: &str) -> (Vec<String>, bool) {
+    if content.is_empty() {
+        return (Vec::new(), false);
+    }
+    let trailing_newline = content.ends_with('\n');
+    let mut lines: Vec<String> = content.split('\n').map(str::to_owned).collect();
+    if trailing_newline {
+        let _ = lines.pop();
+    }
+    (lines, trailing_newline)
+}
+
+fn join_text_lines(lines: &[String], trailing_newline: bool) -> String {
+    let mut out = lines.join("\n");
+    if trailing_newline {
+        out.push('\n');
+    }
+    out
+}
+
+fn apply_diff_revert(diff: &crate::diff::FileDiff, hunk: Option<usize>) -> Result<bool, String> {
+    let path = resolve_diff_path(&diff.path)?;
+    let current = std::fs::read_to_string(&path).ok();
+    if current.as_deref() != diff.after.as_deref() {
+        return Err("file changed since the diff was captured".to_owned());
+    }
+
+    match hunk {
+        None => {
+            if current.as_deref() == diff.before.as_deref() {
+                return Ok(false);
+            }
+            match &diff.before {
+                Some(before) => {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+                    }
+                    std::fs::write(&path, before).map_err(|err| err.to_string())?;
+                }
+                None => {
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|err| err.to_string())?;
+                    }
+                }
+            }
+            Ok(true)
+        }
+        Some(hunk_index) => {
+            let hunk = diff
+                .hunks
+                .get(hunk_index)
+                .ok_or_else(|| "selected hunk no longer exists".to_owned())?;
+            let after = diff
+                .after
+                .as_deref()
+                .ok_or_else(|| "missing post-edit content".to_owned())?;
+            let (mut lines, trailing_newline) = split_text_lines(after);
+            let start = hunk.new_start.saturating_sub(1);
+            let end = start.saturating_add(hunk.new_len);
+            if end > lines.len() {
+                return Err("hunk range is out of bounds for the current file".to_owned());
+            }
+
+            let replacement = hunk.old_lines.clone();
+            if lines[start..end] == replacement[..] {
+                return Ok(false);
+            }
+            lines.splice(start..end, replacement.iter().cloned());
+            let reverted = join_text_lines(&lines, trailing_newline);
+            if current.as_deref() == Some(reverted.as_str()) {
+                return Ok(false);
+            }
+
+            if diff.before.is_none() && reverted.is_empty() {
+                if path.exists() {
+                    std::fs::remove_file(&path).map_err(|err| err.to_string())?;
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            }
+            std::fs::write(&path, reverted).map_err(|err| err.to_string())?;
+            Ok(true)
+        }
+    }
+}
+
 /// Map an undo/redo [`RestoreOutcome`] to the user-facing `(transcript notice, toast level, toast
 /// message)` triple. Pure so the wording (and the graceful "nothing to do" path) is unit-testable
 /// without a real store. `redo` selects the redo phrasing.
@@ -4058,6 +4456,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static ATTACH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static DIFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -4086,6 +4485,21 @@ mod tests {
         let path = std::env::temp_dir().join(name);
         std::fs::write(&path, bytes).expect("write temp attachment");
         path
+    }
+
+    fn temp_relative_diff_file(before: &str, after: &str) -> (String, PathBuf) {
+        let rel = format!(
+            "target/cortex-tui-diff-{}-{}.txt",
+            std::process::id(),
+            DIFF_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = PathBuf::from(&rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create diff test dir");
+        }
+        std::fs::write(&path, after).expect("write current file bytes");
+        assert_ne!(before, after, "fixture must be a real diff");
+        (rel, path)
     }
 
     /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
@@ -6054,6 +6468,104 @@ mod tests {
             }
             other => panic!("expected a share notice, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dispatching_diff_without_changes_shows_a_clear_notice() {
+        let mut a = app();
+        dispatch(&mut a, "diff");
+        assert!(!a.diff_viewer_open(), "no viewer opens without file diffs");
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Notice(text)) if text.contains("No file changes")),
+            "a clear no-diff notice is shown"
+        );
+    }
+
+    #[test]
+    fn dispatching_diff_opens_the_viewer_with_file_tree_entries() {
+        let before = "alpha\nbeta\ngamma\n";
+        let after = "alpha\nBETA\ngamma\n";
+        let (rel, path) = temp_relative_diff_file(before, after);
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(before), Some(after)).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+
+        dispatch(&mut a, "diff");
+        assert!(a.diff_viewer_open(), "the diff viewer opens");
+        let viewer = a.diff_viewer().expect("open diff viewer");
+        assert_eq!(viewer.files.len(), 1, "one file row in the tree");
+        assert_eq!(viewer.files[0].path, rel);
+        assert_eq!(
+            viewer.mode,
+            DiffViewMode::Unified,
+            "unified is the default mode"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn diff_viewer_toggles_between_unified_and_split_modes() {
+        let before = "alpha\nbeta\ngamma\n";
+        let after = "alpha\nBETA\ngamma\n";
+        let (rel, path) = temp_relative_diff_file(before, after);
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(before), Some(after)).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+        dispatch(&mut a, "diff");
+        assert_eq!(a.diff_viewer().unwrap().mode, DiffViewMode::Unified);
+
+        a.on_key(key(KeyCode::Char('v')));
+        assert_eq!(
+            a.diff_viewer().unwrap().mode,
+            DiffViewMode::Split,
+            "`v` toggles to split mode"
+        );
+        a.on_key(key(KeyCode::Char('v')));
+        assert_eq!(
+            a.diff_viewer().unwrap().mode,
+            DiffViewMode::Unified,
+            "`v` toggles back to unified mode"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn diff_viewer_hunk_revert_changes_only_the_selected_hunk() {
+        let before = "line 1\nalpha\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nomega\nline 12\n";
+        let after = "line 1\nALPHA\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nOMEGA\nline 12\n";
+        let expected_after_revert = "line 1\nALPHA\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nomega\nline 12\n";
+        let (rel, path) = temp_relative_diff_file(before, after);
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(before), Some(after)).expect("a diff");
+        assert_eq!(diff.hunks.len(), 2, "fixture should produce two hunks");
+        a.transcript.push(Entry::Diff(diff));
+        dispatch(&mut a, "diff");
+        assert!(a.diff_viewer_open());
+
+        a.on_key(key(KeyCode::Tab)); // file tree -> hunks
+        a.on_key(key(KeyCode::Down)); // first hunk -> second hunk
+        a.on_key(key(KeyCode::Char('r'))); // revert selected hunk
+
+        let disk = std::fs::read_to_string(&path).expect("read reverted file");
+        assert_eq!(
+            disk, expected_after_revert,
+            "only the selected hunk is reverted on disk"
+        );
+
+        let viewer = a.diff_viewer().expect("viewer remains open");
+        let file = viewer.selected_file().expect("selected file");
+        assert_eq!(
+            file.hunks.len(),
+            1,
+            "one hunk remains after targeted revert"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -12,6 +12,7 @@
 use frame::style::ThemeColors;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
 /// Unchanged context lines kept around each change run.
 pub const CONTEXT_LINES: usize = 3;
@@ -79,6 +80,12 @@ pub struct FileDiff {
     pub additions: usize,
     /// Number of removed lines.
     pub removals: usize,
+    /// File contents before this change (None when the file was created).
+    pub before: Option<String>,
+    /// File contents after this change.
+    pub after: Option<String>,
+    /// Structured hunk data (ranges + body) for navigation and targeted revert.
+    pub hunks: Vec<DiffHunk>,
     /// The header + hunk lines, in order.
     pub lines: Vec<DiffLine>,
 }
@@ -100,6 +107,112 @@ impl FileDiff {
             .map(|line| render_line(line, theme))
             .collect()
     }
+
+    /// The line ranges (in `self.lines`) occupied by each hunk, including that hunk's header.
+    #[must_use]
+    pub fn hunk_line_ranges(&self) -> Vec<Range<usize>> {
+        let mut cursor = 1usize; // 0 = file path header.
+        self.hunks
+            .iter()
+            .map(|hunk| {
+                let start = cursor;
+                cursor += 1 + hunk.lines.len();
+                start..cursor
+            })
+            .collect()
+    }
+
+    /// Split-view rows (before | after) for side-by-side rendering.
+    ///
+    /// The first row is the file header. Each hunk contributes one header row and then body rows:
+    /// context appears in both columns, removals in the left column, additions in the right column.
+    #[must_use]
+    pub fn split_rows(&self) -> Vec<SplitDiffRow> {
+        let mut rows = vec![SplitDiffRow {
+            kind: DiffLineKind::Header,
+            left: self
+                .lines
+                .first()
+                .map_or(String::new(), |line| line.content.clone()),
+            right: String::new(),
+        }];
+        for hunk in &self.hunks {
+            rows.push(SplitDiffRow {
+                kind: DiffLineKind::Header,
+                left: hunk.header(),
+                right: String::new(),
+            });
+            for line in &hunk.lines {
+                let (left, right) = match line.kind {
+                    DiffLineKind::Context => (line.content.clone(), line.content.clone()),
+                    DiffLineKind::Removed => (line.content.clone(), String::new()),
+                    DiffLineKind::Added => (String::new(), line.content.clone()),
+                    DiffLineKind::Header => (line.content.clone(), String::new()),
+                };
+                rows.push(SplitDiffRow {
+                    kind: line.kind,
+                    left,
+                    right,
+                });
+            }
+        }
+        rows
+    }
+
+    /// The row ranges (in `split_rows`) occupied by each hunk, including that hunk's header.
+    #[must_use]
+    pub fn split_hunk_row_ranges(&self) -> Vec<Range<usize>> {
+        let mut cursor = 1usize; // 0 = file path header.
+        self.hunks
+            .iter()
+            .map(|hunk| {
+                let start = cursor;
+                cursor += 1 + hunk.lines.len();
+                start..cursor
+            })
+            .collect()
+    }
+}
+
+/// One unified-diff hunk with structured line ranges and body rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiffHunk {
+    /// 1-based old-file start line (0 only when old_len is 0).
+    pub old_start: usize,
+    /// Number of old-file lines in this hunk.
+    pub old_len: usize,
+    /// 1-based new-file start line (0 only when new_len is 0).
+    pub new_start: usize,
+    /// Number of new-file lines in this hunk.
+    pub new_len: usize,
+    /// Body lines (no hunk-header line), in unified order.
+    pub lines: Vec<DiffLine>,
+    /// The old-side text lines covered by this hunk (context + removed).
+    pub old_lines: Vec<String>,
+    /// The new-side text lines covered by this hunk (context + added).
+    pub new_lines: Vec<String>,
+}
+
+impl DiffHunk {
+    /// The canonical `@@ -old,len +new,len @@` header for this hunk.
+    #[must_use]
+    pub fn header(&self) -> String {
+        format!(
+            "@@ -{},{} +{},{} @@",
+            self.old_start, self.old_len, self.new_start, self.new_len
+        )
+    }
+}
+
+/// One split-view row (`left` = old, `right` = new).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitDiffRow {
+    /// Semantic row kind used for coloring.
+    pub kind: DiffLineKind,
+    /// Old-side text for the row.
+    pub left: String,
+    /// New-side text for the row.
+    pub right: String,
 }
 
 fn render_line(line: &DiffLine, theme: &ThemeColors) -> Line<'static> {
@@ -147,6 +260,7 @@ pub fn compute_file_diff(
         return None;
     }
 
+    let hunks = hunk_lines(&old_lines, &new_lines, &ops);
     let mut lines = Vec::new();
     let header = if is_new {
         format!("{path} (new file)")
@@ -154,13 +268,19 @@ pub fn compute_file_diff(
         path.to_owned()
     };
     lines.push(DiffLine::header(header));
-    lines.extend(hunk_lines(&old_lines, &new_lines, &ops));
+    for hunk in &hunks {
+        lines.push(DiffLine::header(hunk.header()));
+        lines.extend(hunk.lines.iter().cloned());
+    }
 
     Some(FileDiff {
         path: path.to_owned(),
         is_new,
         additions,
         removals,
+        before: before.map(str::to_owned),
+        after: Some(after.to_owned()),
+        hunks,
         lines,
     })
 }
@@ -191,8 +311,8 @@ fn split_lines(content: &str) -> Vec<&str> {
 
 /// Build the hunk body (with `@@` headers) from the op sequence, keeping up to [`CONTEXT_LINES`]
 /// unchanged lines around each change run and merging runs separated by a small gap.
-fn hunk_lines(old: &[&str], new: &[&str], ops: &[Op]) -> Vec<DiffLine> {
-    let mut out: Vec<DiffLine> = Vec::new();
+fn hunk_lines(old: &[&str], new: &[&str], ops: &[Op]) -> Vec<DiffHunk> {
+    let mut out: Vec<DiffHunk> = Vec::new();
     let mut old_index = 0usize;
     let mut new_index = 0usize;
     let mut cursor = 0usize;
@@ -269,10 +389,25 @@ fn hunk_lines(old: &[&str], new: &[&str], ops: &[Op]) -> Vec<DiffLine> {
         } else {
             hunk_new_start + 1
         };
-        out.push(DiffLine::header(format!(
-            "@@ -{old_display_start},{hunk_old_len} +{new_display_start},{hunk_new_len} @@"
-        )));
-        out.extend(body);
+        let old_lines = body
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Added)
+            .map(|line| line.content.clone())
+            .collect();
+        let new_lines = body
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Removed)
+            .map(|line| line.content.clone())
+            .collect();
+        out.push(DiffHunk {
+            old_start: old_display_start,
+            old_len: hunk_old_len,
+            new_start: new_display_start,
+            new_len: hunk_new_len,
+            lines: body,
+            old_lines,
+            new_lines,
+        });
     }
 
     out
@@ -456,5 +591,42 @@ mod tests {
         assert_eq!(kinds(&diff, DiffLineKind::Added), vec!["inserted"]);
         // Context anchors the insertion.
         assert!(!kinds(&diff, DiffLineKind::Context).is_empty());
+    }
+
+    #[test]
+    fn hunk_ranges_align_with_rendered_lines() {
+        let before = "one\ntwo\nthree\nfour\nfive\n";
+        let after = "ONE\ntwo\nthree\nFOUR\nfive\n";
+        let diff = compute_file_diff("f.txt", Some(before), Some(after)).expect("a diff");
+        let ranges = diff.hunk_line_ranges();
+        assert!(!ranges.is_empty());
+        for range in ranges {
+            assert!(
+                range.start < range.end && range.end <= diff.lines.len(),
+                "hunk range should index rendered lines: {range:?} vs {}",
+                diff.lines.len()
+            );
+            assert_eq!(diff.lines[range.start].kind, DiffLineKind::Header);
+        }
+    }
+
+    #[test]
+    fn split_rows_place_additions_and_removals_in_separate_columns() {
+        let before = "alpha\nbeta\ngamma\n";
+        let after = "alpha\nBETA\ngamma\n";
+        let diff = compute_file_diff("f.txt", Some(before), Some(after)).expect("a diff");
+        let rows = diff.split_rows();
+        let removed = rows
+            .iter()
+            .find(|row| row.kind == DiffLineKind::Removed)
+            .expect("a removed row");
+        assert!(!removed.left.is_empty());
+        assert!(removed.right.is_empty());
+        let added = rows
+            .iter()
+            .find(|row| row.kind == DiffLineKind::Added)
+            .expect("an added row");
+        assert!(added.left.is_empty());
+        assert!(!added.right.is_empty());
     }
 }

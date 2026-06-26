@@ -58,6 +58,10 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Run a code review",
     },
     SlashCommand {
+        name: "diff",
+        description: "Open the diff viewer",
+    },
+    SlashCommand {
         name: "compact",
         description: "Compact the conversation",
     },
