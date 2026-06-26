@@ -75,36 +75,33 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn write_executable(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::write(path, body).expect("write script");
-        let mut permissions = fs::metadata(path).expect("script metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).expect("chmod script");
-    }
-
-    #[cfg(unix)]
     #[test]
     fn tui_bridge_formats_before_delegating_diagnostics() {
         let dir = temp_dir("order");
-        let script = dir.join("formatter.sh");
-        write_executable(
-            &script,
-            "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'formatted for diagnostics\\n' > \"$file\"\n",
-        );
         let path = dir.join("demo.foo");
         fs::write(&path, "raw\n").expect("write raw input");
-        let config = format::FormatterConfig::from_table(
-            toml::from_str::<toml::Value>(&format!(
-                "[formatter.custom]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
-                script.display()
-            ))
-            .expect("parse toml")
-            .as_table()
-            .expect("formatter table"),
-        )
-        .expect("parse formatter config");
+        let mut custom = toml::value::Table::new();
+        custom.insert(
+            "command".to_owned(),
+            toml::Value::Array(vec![
+                toml::Value::String("/bin/sh".to_owned()),
+                toml::Value::String("-ceu".to_owned()),
+                toml::Value::String(
+                    "file=\"$1\"; printf 'formatted for diagnostics\\n' > \"$file\"".to_owned(),
+                ),
+                toml::Value::String("format-bridge".to_owned()),
+                toml::Value::String("$FILE".to_owned()),
+            ]),
+        );
+        custom.insert(
+            "extensions".to_owned(),
+            toml::Value::Array(vec![toml::Value::String(".foo".to_owned())]),
+        );
+        let mut formatter = toml::value::Table::new();
+        formatter.insert("custom".to_owned(), toml::Value::Table(custom));
+        let mut root = toml::value::Table::new();
+        root.insert("formatter".to_owned(), toml::Value::Table(formatter));
+        let config = format::FormatterConfig::from_table(&root).expect("parse formatter config");
         let hooks = PostMutationHooks::with_config(&dir, config, Arc::new(ContentDiagnostics));
 
         assert!(
