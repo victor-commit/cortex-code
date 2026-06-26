@@ -12,6 +12,7 @@
 //! Tests for table rendering functionality.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use ratatui::style::{Color, Style};
     use ratatui::text::Span;

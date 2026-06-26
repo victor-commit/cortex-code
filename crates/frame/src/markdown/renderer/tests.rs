@@ -12,6 +12,7 @@
 //! Tests for the markdown renderer.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use pulldown_cmark::HeadingLevel;
 

@@ -477,21 +477,19 @@ async fn message_route_fires_plugin_event_hook_with_serve_surface() {
     let marker = workspace.join("plugin-events.log");
     std::fs::write(
         workspace.join("plugin.mjs"),
-        format!(
-            r#"
-import {{ appendFile }} from "node:fs/promises";
+        r#"
+import { appendFile } from "node:fs/promises";
 
-export default async function plugin(input, options) {{
-  return {{
-    async event(event) {{
-      if (event.kind === "turn.started") {{
-        await appendFile(options.marker, `${{event.surface}}:${{event.kind}}\n`);
-      }}
-    }}
-  }};
-}}
+export default async function plugin(input, options) {
+  return {
+    async event(event) {
+      if (event.kind === "turn.started") {
+        await appendFile(options.marker, `${event.surface}:${event.kind}\n`);
+      }
+    }
+  };
+}
 "#,
-        ),
     )
     .expect("write plugin");
     std::fs::write(

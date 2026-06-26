@@ -357,8 +357,7 @@ prompt_cache_ttl_seconds = 3600
         .iter()
         .filter(|message| message["role"] == "user")
         .flat_map(|message| message["content"].as_array().into_iter().flatten())
-        .filter(|block| block["type"] == "text")
-        .last()
+        .rfind(|block| block["type"] == "text")
         .expect("at least one user text block");
     assert_eq!(last_user_text["cache_control"]["type"], "ephemeral");
     assert!(

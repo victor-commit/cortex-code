@@ -79,7 +79,7 @@ fn persisting_preserves_other_keys_and_overwrites_the_same_key() {
     // A pre-existing key in the global file must survive the theme upsert.
     fs::create_dir_all(scratch.global_config().parent().unwrap()).unwrap();
     fs::write(
-        &scratch.global_config(),
+        scratch.global_config(),
         "model = \"anthropic/claude-sonnet-4\"\n",
     )
     .unwrap();

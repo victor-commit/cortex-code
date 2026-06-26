@@ -1333,12 +1333,7 @@ mod tests {
             "inside workspace path should stay allowed"
         );
         let _ = std::fs::remove_dir_all(workspace);
-        let _ = std::fs::remove_dir_all(
-            outside
-                .parent()
-                .expect("outside file has parent")
-                .to_path_buf(),
-        );
+        let _ = std::fs::remove_dir_all(outside.parent().expect("outside file has parent"));
     }
 
     #[test]
@@ -1365,12 +1360,7 @@ mod tests {
             "temp path should bypass external_directory ask via allowlist"
         );
         let _ = std::fs::remove_dir_all(workspace);
-        let _ = std::fs::remove_dir_all(
-            temp_file
-                .parent()
-                .expect("temp file has parent")
-                .to_path_buf(),
-        );
+        let _ = std::fs::remove_dir_all(temp_file.parent().expect("temp file has parent"));
     }
 
     #[test]
