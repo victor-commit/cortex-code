@@ -403,12 +403,17 @@ impl FeedbackManager {
             };
         }
 
+        let supports_workspace_pull = matches!(
+            self.servers.get(&language_id),
+            Some(ServerSlot::Running { client, .. }) if client.supports_workspace_diagnostics_pull()
+        );
+        if !supports_workspace_pull {
+            return self.collect_workspace_via_document_pull(&language_id, &absolute);
+        }
+
         let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
             return WorkspaceDiagnosticsOutcome::Unavailable;
         };
-        if !client.supports_workspace_diagnostics_pull() {
-            return WorkspaceDiagnosticsOutcome::Unsupported;
-        }
         let entries = match client.workspace_diagnostics() {
             Ok(entries) => entries,
             Err(crate::LspError::ServerError {
@@ -449,6 +454,87 @@ impl FeedbackManager {
             .collect::<Vec<_>>();
         diagnostics.sort_by(|left, right| left.path.cmp(&right.path));
         WorkspaceDiagnosticsOutcome::Diagnostics(diagnostics)
+    }
+
+    fn collect_workspace_via_document_pull(
+        &mut self,
+        language_id: &str,
+        requested_path: &Path,
+    ) -> WorkspaceDiagnosticsOutcome {
+        let mut files = self.workspace_language_files(language_id);
+        if requested_path.is_file()
+            && self
+                .config
+                .resolve_for_path(requested_path)
+                .is_some_and(|server| server.language_id() == language_id)
+            && !files.iter().any(|candidate| candidate == requested_path)
+        {
+            files.push(requested_path.to_path_buf());
+        }
+        files.sort();
+        files.dedup();
+
+        let mut workspace = Vec::new();
+        for file in files {
+            match self.collect(&file) {
+                FeedbackOutcome::Diagnostics(diagnostics) => {
+                    if diagnostics.is_empty() {
+                        continue;
+                    }
+                    workspace.push(WorkspaceFileDiagnostics {
+                        path: file.to_string_lossy().into_owned(),
+                        diagnostics,
+                    });
+                }
+                FeedbackOutcome::NoServer => {}
+                FeedbackOutcome::Unavailable => return WorkspaceDiagnosticsOutcome::Unavailable,
+            }
+        }
+        workspace.sort_by(|left, right| left.path.cmp(&right.path));
+        WorkspaceDiagnosticsOutcome::Diagnostics(workspace)
+    }
+
+    fn workspace_language_files(&self, language_id: &str) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        self.collect_workspace_language_files(&self.root, language_id, &mut files);
+        files
+    }
+
+    fn collect_workspace_language_files(
+        &self,
+        root: &Path,
+        language_id: &str,
+        files: &mut Vec<PathBuf>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if should_skip_workspace_dir(&path) {
+                    continue;
+                }
+                self.collect_workspace_language_files(&path, language_id, files);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if self
+                .config
+                .resolve_for_path(&path)
+                .is_some_and(|server| server.language_id() == language_id)
+            {
+                files.push(path);
+            }
+        }
     }
 
     /// Execute a read-only navigation request against the real language server. A missing or dead
@@ -1254,6 +1340,25 @@ fn uri_to_stable_path(uri: &str) -> String {
         .and_then(|url| url.to_file_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| uri.to_owned())
+}
+
+fn should_skip_workspace_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                ".git"
+                    | ".hg"
+                    | ".svn"
+                    | "target"
+                    | "node_modules"
+                    | ".next"
+                    | ".cortex"
+                    | "dist"
+                    | "build"
+            )
+        })
 }
 
 #[cfg(test)]

@@ -101,6 +101,8 @@ def scan_workspace():
                 pass
     return discovered
 
+mode = sys.argv[1] if len(sys.argv) > 1 else "workspace_pull"
+
 while True:
     message = read_message()
     if message is None:
@@ -108,6 +110,7 @@ while True:
     method = message.get("method")
     if method == "initialize" and "id" in message:
         root_uri = message.get("params", {}).get("rootUri")
+        workspace_pull = mode == "workspace_pull"
         send({
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -116,7 +119,7 @@ while True:
                     "textDocumentSync": 1,
                     "diagnosticProvider": {
                         "interFileDependencies": True,
-                        "workspaceDiagnostics": True,
+                        "workspaceDiagnostics": workspace_pull,
                     },
                 },
                 "serverInfo": {"name": "fake-lsp"},
@@ -137,17 +140,24 @@ while True:
         items = diagnostic("pull BAD diagnostic") if "BAD" in text else []
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": items}})
     elif method == "workspace/diagnostic" and "id" in message:
-        items = []
-        for uri, text in sorted(scan_workspace().items()):
-            diags = diagnostic(f"workspace BAD diagnostic from {uri.rsplit('/', 1)[-1]}") if "BAD" in text else []
-            items.append({"uri": uri, "version": 1, "kind": "full", "items": diags})
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {"items": items}})
+        if mode == "workspace_pull":
+            items = []
+            for uri, text in sorted(scan_workspace().items()):
+                diags = diagnostic(f"workspace BAD diagnostic from {uri.rsplit('/', 1)[-1]}") if "BAD" in text else []
+                items.append({"uri": uri, "version": 1, "kind": "full", "items": diags})
+            send({"jsonrpc": "2.0", "id": message["id"], "result": {"items": items}})
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "Method not found"}})
     elif "id" in message:
         send({"jsonrpc": "2.0", "id": message["id"], "result": None})
 "#
 }
 
 fn write_fake_pull_workspace_lsp_config(dir: &Path) {
+    write_fake_pull_workspace_lsp_config_with_mode(dir, "workspace_pull");
+}
+
+fn write_fake_pull_workspace_lsp_config_with_mode(dir: &Path, mode: &str) {
     let script = dir.join("fake_pull_workspace_lsp.py");
     std::fs::write(&script, fake_pull_workspace_lsp_script()).expect("write fake lsp script");
     make_executable(&script);
@@ -157,10 +167,11 @@ fn write_fake_pull_workspace_lsp_config(dir: &Path) {
             r#"
 [lsp.servers.fake]
 program = "python3"
-args = ["{}"]
+args = ["{}", "{}"]
 extensions = ["fake"]
 "#,
-            toml_string(&script)
+            toml_string(&script),
+            mode
         ),
     )
     .expect("write fake lsp config");
@@ -543,5 +554,104 @@ fn workspace_diagnostics_request_aggregates_multiple_files() {
     assert!(
         second_rendered.contains("workspace BAD diagnostic from beta.fake"),
         "workspace diagnostics should retain beta, got {second_rendered}"
+    );
+}
+
+#[test]
+fn workspace_diagnostics_fall_back_to_document_pull_when_workspace_pull_is_not_advertised() {
+    if !has_command("python3") {
+        eprintln!("skipping workspace fallback diagnostics CLI test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("workspace-fallback");
+    write_fake_pull_workspace_lsp_config_with_mode(&dir, "document_pull_only");
+    let alpha = dir.join("alpha.fake");
+    let beta = dir.join("beta.fake");
+    std::fs::write(&alpha, "BAD alpha\n").expect("write alpha");
+    std::fs::write(&beta, "BAD beta\n").expect("write beta");
+
+    let mut command = cortex_in(&dir);
+    command.args([
+        "lsp",
+        "diagnostics",
+        "alpha.fake",
+        "--workspace",
+        "--format",
+        "json",
+    ]);
+    command
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let first_output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        first_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    let first_doc: serde_json::Value =
+        serde_json::from_slice(&first_output.stdout).expect("json output");
+    assert_eq!(
+        first_doc["status"], "diagnostics",
+        "workspace fallback should aggregate per-file diagnostics instead of reporting unsupported: {first_doc}"
+    );
+    let mut first_paths = first_doc["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|diagnostic| diagnostic.get("path").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    first_paths.sort();
+    first_paths.dedup();
+    assert_eq!(
+        first_paths,
+        vec![
+            alpha.to_string_lossy().into_owned(),
+            beta.to_string_lossy().into_owned()
+        ],
+        "workspace fallback should include both same-language files with stable paths"
+    );
+
+    std::fs::write(&alpha, "GOOD alpha\n").expect("clear alpha");
+    let mut rerun = cortex_in(&dir);
+    rerun.args([
+        "lsp",
+        "diagnostics",
+        "alpha.fake",
+        "--workspace",
+        "--format",
+        "json",
+    ]);
+    rerun
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let second_output = run(rerun, Duration::from_secs(30));
+    assert_eq!(
+        second_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    let second_doc: serde_json::Value =
+        serde_json::from_slice(&second_output.stdout).expect("json output");
+    let mut second_paths = second_doc["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|diagnostic| diagnostic.get("path").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    second_paths.sort();
+    second_paths.dedup();
+    assert_eq!(
+        second_paths,
+        vec![beta.to_string_lossy().into_owned()],
+        "clearing one file should only remove that file from fallback workspace diagnostics"
     );
 }

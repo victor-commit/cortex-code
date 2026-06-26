@@ -157,6 +157,7 @@ while True:
     method = message.get("method")
     if method == "initialize" and "id" in message:
         root_uri = message.get("params", {}).get("rootUri")
+        workspace_pull = mode == "workspace_pull"
         send({
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -165,7 +166,7 @@ while True:
                     "textDocumentSync": 1,
                     "diagnosticProvider": {
                         "interFileDependencies": True,
-                        "workspaceDiagnostics": True,
+                        "workspaceDiagnostics": workspace_pull,
                     },
                 },
                 "serverInfo": {"name": "fake-lsp"},
@@ -186,13 +187,20 @@ while True:
             },
         })
     elif method == "workspace/diagnostic" and "id" in message:
-        send({
-            "jsonrpc": "2.0",
-            "id": message["id"],
-            "result": {
-                "items": workspace_items(),
-            },
-        })
+        if mode == "workspace_pull":
+            send({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "items": workspace_items(),
+                },
+            })
+        else:
+            send({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "error": {"code": -32601, "message": "Method not found"},
+            })
     elif method in ("textDocument/didOpen", "textDocument/didChange"):
         text_document = message["params"].get("textDocument", {})
         uri = text_document["uri"]
@@ -512,6 +520,57 @@ fn workspace_pull_diagnostics_aggregate_multiple_files_and_clear_incrementally()
     assert!(
         second_rendered.contains("workspace BAD diagnostic from beta.fake"),
         "clearing alpha must keep beta diagnostics, got {second_rendered}"
+    );
+}
+
+#[test]
+fn workspace_diagnostics_fall_back_to_document_pull_when_workspace_pull_is_not_advertised() {
+    if !has_command("python3") {
+        eprintln!("skipping workspace fallback diagnostics test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("workspace-fallback");
+    let alpha = dir.join("alpha.fake");
+    let beta = dir.join("beta.fake");
+    std::fs::write(&alpha, "BAD alpha\n").expect("write alpha");
+    std::fs::write(&beta, "BAD beta\n").expect("write beta");
+
+    let mut manager = FeedbackManager::new(&dir, fake_config(&dir, "pull_only"))
+        .with_budget(Duration::from_secs(4));
+
+    let first = workspace_diagnostics_for(manager.collect_workspace(&alpha));
+    let mut first_paths = first
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    first_paths.sort();
+    assert_eq!(
+        first_paths,
+        vec![
+            alpha.to_string_lossy().into_owned(),
+            beta.to_string_lossy().into_owned()
+        ],
+        "fallback workspace diagnostics should aggregate same-language files with stable sorted paths"
+    );
+    assert!(
+        first.iter().all(|entry| entry
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "pull BAD diagnostic")),
+        "fallback workspace diagnostics should use per-file document diagnostics: {first:?}"
+    );
+
+    std::fs::write(&alpha, "GOOD alpha\n").expect("clear alpha");
+    let second = workspace_diagnostics_for(manager.collect_workspace(&alpha));
+    let second_paths = second
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        second_paths,
+        vec![beta.to_string_lossy().into_owned()],
+        "clearing one file must remove only that file's fallback diagnostics: {second:?}"
     );
 }
 
