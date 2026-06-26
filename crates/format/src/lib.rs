@@ -15,6 +15,44 @@ use toml::Value;
 /// A formatter family Cortex knows how to run after a file mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FormatterKind {
+    /// `gofmt -w`.
+    Gofmt,
+    /// `biome format --write`.
+    Biome,
+    /// `mix format`.
+    Mix,
+    /// `clang-format -i`.
+    ClangFormat,
+    /// `zig fmt`.
+    ZigFmt,
+    /// `ktlint -F`.
+    Ktlint,
+    /// `dart format`.
+    DartFormat,
+    /// `terraform fmt`.
+    TerraformFmt,
+    /// `shfmt -w`.
+    Shfmt,
+    /// `nixfmt`.
+    Nixfmt,
+    /// `ocamlformat -i`.
+    Ocamlformat,
+    /// `rubocop --autocorrect`.
+    Rubocop,
+    /// `standardrb --fix`.
+    Standardrb,
+    /// `htmlbeautifier`.
+    Erb,
+    /// `gleam format`.
+    Gleam,
+    /// `cljfmt fix --quiet`.
+    Cljfmt,
+    /// `ormolu -i`.
+    Ormolu,
+    /// `latexindent -w -s`.
+    Latexindent,
+    /// `air format`.
+    Air,
     /// `rustfmt --edition 2024`.
     Rustfmt,
     /// `prettier --write`.
@@ -30,6 +68,25 @@ impl FormatterKind {
     #[must_use]
     pub fn binary(self) -> &'static str {
         match self {
+            Self::Gofmt => "gofmt",
+            Self::Biome => "biome",
+            Self::Mix => "mix",
+            Self::ClangFormat => "clang-format",
+            Self::ZigFmt => "zig",
+            Self::Ktlint => "ktlint",
+            Self::DartFormat => "dart",
+            Self::TerraformFmt => "terraform",
+            Self::Shfmt => "shfmt",
+            Self::Nixfmt => "nixfmt",
+            Self::Ocamlformat => "ocamlformat",
+            Self::Rubocop => "rubocop",
+            Self::Standardrb => "standardrb",
+            Self::Erb => "htmlbeautifier",
+            Self::Gleam => "gleam",
+            Self::Cljfmt => "cljfmt",
+            Self::Ormolu => "ormolu",
+            Self::Latexindent => "latexindent",
+            Self::Air => "air",
             Self::Rustfmt => "rustfmt",
             Self::Prettier => "prettier",
             Self::Ruff => "ruff",
@@ -41,6 +98,25 @@ impl FormatterKind {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::Gofmt => "gofmt",
+            Self::Biome => "biome",
+            Self::Mix => "mix",
+            Self::ClangFormat => "clang-format",
+            Self::ZigFmt => "zig fmt",
+            Self::Ktlint => "ktlint",
+            Self::DartFormat => "dart format",
+            Self::TerraformFmt => "terraform fmt",
+            Self::Shfmt => "shfmt",
+            Self::Nixfmt => "nixfmt",
+            Self::Ocamlformat => "ocamlformat",
+            Self::Rubocop => "rubocop",
+            Self::Standardrb => "standardrb",
+            Self::Erb => "erb formatter",
+            Self::Gleam => "gleam format",
+            Self::Cljfmt => "cljfmt",
+            Self::Ormolu => "ormolu",
+            Self::Latexindent => "latexindent",
+            Self::Air => "air",
             Self::Rustfmt => "rustfmt",
             Self::Prettier => "prettier",
             Self::Ruff => "ruff",
@@ -217,7 +293,7 @@ impl FormatterConfig {
     ///
     /// `[[formatter.custom]]` and named subtables under `[formatter.custom.<name>]` are also
     /// accepted for multiple custom formatters. Built-ins can be disabled with
-    /// `[formatter.prettier] disabled = true` (and likewise `rustfmt` / `ruff`).
+    /// `[formatter.<name>] disabled = true` (for example `prettier`, `biome`, `gofmt`).
     ///
     /// # Errors
     /// Returns a human-readable config error if a present formatter config has the wrong shape.
@@ -307,43 +383,42 @@ impl FormatterRunner {
             });
         }
 
-        let Some(kind) = kind_for_path(path) else {
-            return Err(SkipReason::UnsupportedExtension);
-        };
-        if !self.config.builtin_enabled(kind) {
+        let kinds = kinds_for_path(path);
+        if kinds.is_empty() {
             return Err(SkipReason::UnsupportedExtension);
         }
-        let builtin_override = self.config.builtin_override(kind);
-        if builtin_override.command.is_none() && !binary_available(kind.binary()) {
-            return Err(SkipReason::MissingBinary {
-                binary: kind.binary(),
-            });
-        }
-        let current_dir = match kind {
-            FormatterKind::Rustfmt => self.root.clone(),
-            FormatterKind::Prettier => marker_dir(path, &self.root, has_prettier_marker).ok_or(
-                SkipReason::MissingConfigMarker {
-                    formatter: FormatterKind::Prettier,
-                },
-            )?,
-            FormatterKind::Ruff => marker_dir(path, &self.root, has_ruff_marker).ok_or(
-                SkipReason::MissingConfigMarker {
-                    formatter: FormatterKind::Ruff,
-                },
-            )?,
-            FormatterKind::Custom => {
-                unreachable!("custom formatters return before built-in selection")
+
+        let mut last_error = SkipReason::UnsupportedExtension;
+        for kind in kinds {
+            if !self.config.builtin_enabled(kind) {
+                continue;
             }
-        };
-        Ok(FormatterSelection {
-            kind,
-            current_dir,
-            command: FormatterCommand::Builtin {
-                kind,
-                command: builtin_override.command,
-                env: builtin_override.env,
-            },
-        })
+            let builtin_override = self.config.builtin_override(kind);
+            if builtin_override.command.is_none() && !binary_available(kind.binary()) {
+                last_error = SkipReason::MissingBinary {
+                    binary: kind.binary(),
+                };
+                continue;
+            }
+            match current_dir_for_kind(path, &self.root, kind) {
+                Ok(current_dir) => {
+                    return Ok(FormatterSelection {
+                        kind,
+                        current_dir,
+                        command: FormatterCommand::Builtin {
+                            kind,
+                            command: builtin_override.command,
+                            env: builtin_override.env,
+                        },
+                    });
+                }
+                Err(reason) => {
+                    last_error = reason;
+                }
+            }
+        }
+
+        Err(last_error)
     }
 
     /// Run the applicable formatter in-place over `path`.
@@ -414,6 +489,63 @@ fn run_builtin_formatter(
         .envs(env);
 
     match kind {
+        FormatterKind::Gofmt => {
+            command.arg("-w").arg(path);
+        }
+        FormatterKind::Biome => {
+            command.arg("format").arg("--write").arg(path);
+        }
+        FormatterKind::Mix => {
+            command.arg("format").arg(path);
+        }
+        FormatterKind::ClangFormat => {
+            command.arg("-i").arg(path);
+        }
+        FormatterKind::ZigFmt => {
+            command.arg("fmt").arg(path);
+        }
+        FormatterKind::Ktlint => {
+            command.arg("-F").arg(path);
+        }
+        FormatterKind::DartFormat => {
+            command.arg("format").arg(path);
+        }
+        FormatterKind::TerraformFmt => {
+            command.arg("fmt").arg(path);
+        }
+        FormatterKind::Shfmt => {
+            command.arg("-w").arg(path);
+        }
+        FormatterKind::Nixfmt => {
+            command.arg(path);
+        }
+        FormatterKind::Ocamlformat => {
+            command.arg("-i").arg(path);
+        }
+        FormatterKind::Rubocop => {
+            command.arg("--autocorrect").arg(path);
+        }
+        FormatterKind::Standardrb => {
+            command.arg("--fix").arg(path);
+        }
+        FormatterKind::Erb => {
+            command.arg(path);
+        }
+        FormatterKind::Gleam => {
+            command.arg("format").arg(path);
+        }
+        FormatterKind::Cljfmt => {
+            command.arg("fix").arg("--quiet").arg(path);
+        }
+        FormatterKind::Ormolu => {
+            command.arg("-i").arg(path);
+        }
+        FormatterKind::Latexindent => {
+            command.arg("-w").arg("-s").arg(path);
+        }
+        FormatterKind::Air => {
+            command.arg("format").arg(path);
+        }
         FormatterKind::Rustfmt => {
             command.arg("--edition").arg("2024").arg(path);
         }
@@ -520,6 +652,25 @@ fn parse_builtin_overrides(
 ) -> Result<BTreeMap<FormatterKind, FormatterOverride>, String> {
     let mut overrides = BTreeMap::new();
     for (name, kind) in [
+        ("gofmt", FormatterKind::Gofmt),
+        ("biome", FormatterKind::Biome),
+        ("mix", FormatterKind::Mix),
+        ("clang_format", FormatterKind::ClangFormat),
+        ("zig_fmt", FormatterKind::ZigFmt),
+        ("ktlint", FormatterKind::Ktlint),
+        ("dart", FormatterKind::DartFormat),
+        ("terraform", FormatterKind::TerraformFmt),
+        ("shfmt", FormatterKind::Shfmt),
+        ("nixfmt", FormatterKind::Nixfmt),
+        ("ocamlformat", FormatterKind::Ocamlformat),
+        ("rubocop", FormatterKind::Rubocop),
+        ("standardrb", FormatterKind::Standardrb),
+        ("erb", FormatterKind::Erb),
+        ("gleam", FormatterKind::Gleam),
+        ("cljfmt", FormatterKind::Cljfmt),
+        ("ormolu", FormatterKind::Ormolu),
+        ("latexindent", FormatterKind::Latexindent),
+        ("air", FormatterKind::Air),
         ("rustfmt", FormatterKind::Rustfmt),
         ("prettier", FormatterKind::Prettier),
         ("ruff", FormatterKind::Ruff),
@@ -695,21 +846,129 @@ fn normalize_extension(extension: &str) -> String {
     format!(".{body}")
 }
 
-fn kind_for_path(path: &Path) -> Option<FormatterKind> {
-    let ext = path.extension().and_then(OsStr::to_str)?;
-    if ext.eq_ignore_ascii_case("rs") {
-        return Some(FormatterKind::Rustfmt);
+fn kinds_for_path(path: &Path) -> Vec<FormatterKind> {
+    let file_name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(|name| name.to_ascii_lowercase());
+    let extension = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(|ext| ext.to_ascii_lowercase());
+    let mut kinds = Vec::new();
+
+    match extension.as_deref() {
+        Some("go") => kinds.push(FormatterKind::Gofmt),
+        Some("ex" | "exs" | "eex" | "heex" | "leex" | "neex" | "sface") => {
+            kinds.push(FormatterKind::Mix);
+        }
+        Some(
+            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "html" | "htm" | "css"
+            | "scss" | "sass" | "less" | "vue" | "svelte" | "json" | "jsonc" | "yaml" | "yml"
+            | "toml" | "xml" | "md" | "mdx" | "graphql" | "gql",
+        ) => {
+            kinds.push(FormatterKind::Biome);
+            kinds.push(FormatterKind::Prettier);
+        }
+        Some("zig" | "zon") => kinds.push(FormatterKind::ZigFmt),
+        Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "ino") => {
+            kinds.push(FormatterKind::ClangFormat);
+        }
+        Some("kt" | "kts") => kinds.push(FormatterKind::Ktlint),
+        Some("py" | "pyi") => kinds.push(FormatterKind::Ruff),
+        Some("r") => kinds.push(FormatterKind::Air),
+        Some("rb" | "ru") => {
+            kinds.push(FormatterKind::Rubocop);
+            kinds.push(FormatterKind::Standardrb);
+        }
+        Some("erb") => kinds.push(FormatterKind::Erb),
+        Some("dart") => kinds.push(FormatterKind::DartFormat),
+        Some("ml" | "mli") => kinds.push(FormatterKind::Ocamlformat),
+        Some("tf" | "tfvars") => kinds.push(FormatterKind::TerraformFmt),
+        Some("tex") => kinds.push(FormatterKind::Latexindent),
+        Some("gleam") => kinds.push(FormatterKind::Gleam),
+        Some("sh" | "bash") => kinds.push(FormatterKind::Shfmt),
+        Some("nix") => kinds.push(FormatterKind::Nixfmt),
+        Some("rs") => kinds.push(FormatterKind::Rustfmt),
+        Some("hs") => kinds.push(FormatterKind::Ormolu),
+        Some("clj" | "cljs" | "cljc" | "edn") => kinds.push(FormatterKind::Cljfmt),
+        _ => {}
     }
-    if matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "json" | "css"
-    ) {
-        return Some(FormatterKind::Prettier);
+
+    if matches!(file_name.as_deref(), Some("rakefile")) {
+        kinds.push(FormatterKind::Rubocop);
+        kinds.push(FormatterKind::Standardrb);
     }
-    if ext.eq_ignore_ascii_case("py") {
-        return Some(FormatterKind::Ruff);
+    if matches!(file_name.as_deref(), Some(name) if name.ends_with(".rake") || name.ends_with(".gemspec"))
+    {
+        kinds.push(FormatterKind::Rubocop);
+        kinds.push(FormatterKind::Standardrb);
     }
-    None
+    if matches!(file_name.as_deref(), Some(name) if name.ends_with(".html.erb")) {
+        kinds.push(FormatterKind::Erb);
+    }
+
+    let mut deduped = Vec::new();
+    for kind in kinds {
+        if !deduped.contains(&kind) {
+            deduped.push(kind);
+        }
+    }
+    deduped
+}
+
+fn current_dir_for_kind(
+    path: &Path,
+    root: &Path,
+    kind: FormatterKind,
+) -> Result<PathBuf, SkipReason> {
+    match kind {
+        FormatterKind::Gofmt
+        | FormatterKind::Mix
+        | FormatterKind::ZigFmt
+        | FormatterKind::Ktlint
+        | FormatterKind::DartFormat
+        | FormatterKind::TerraformFmt
+        | FormatterKind::Shfmt
+        | FormatterKind::Nixfmt
+        | FormatterKind::Rubocop
+        | FormatterKind::Standardrb
+        | FormatterKind::Erb
+        | FormatterKind::Gleam
+        | FormatterKind::Cljfmt
+        | FormatterKind::Ormolu
+        | FormatterKind::Latexindent
+        | FormatterKind::Air
+        | FormatterKind::Rustfmt => Ok(root.to_path_buf()),
+        FormatterKind::Biome => {
+            marker_dir(path, root, has_biome_marker).ok_or(SkipReason::MissingConfigMarker {
+                formatter: FormatterKind::Biome,
+            })
+        }
+        FormatterKind::ClangFormat => {
+            marker_dir(path, root, has_clang_format_marker).ok_or(SkipReason::MissingConfigMarker {
+                formatter: FormatterKind::ClangFormat,
+            })
+        }
+        FormatterKind::Ocamlformat => {
+            marker_dir(path, root, has_ocamlformat_marker).ok_or(SkipReason::MissingConfigMarker {
+                formatter: FormatterKind::Ocamlformat,
+            })
+        }
+        FormatterKind::Prettier => {
+            marker_dir(path, root, has_prettier_marker).ok_or(SkipReason::MissingConfigMarker {
+                formatter: FormatterKind::Prettier,
+            })
+        }
+        FormatterKind::Ruff => {
+            marker_dir(path, root, has_ruff_marker).ok_or(SkipReason::MissingConfigMarker {
+                formatter: FormatterKind::Ruff,
+            })
+        }
+        FormatterKind::Custom => {
+            unreachable!("custom formatters return before built-in selection")
+        }
+    }
 }
 
 fn marker_dir(path: &Path, root: &Path, has_marker: impl Fn(&Path) -> bool) -> Option<PathBuf> {
@@ -741,6 +1000,18 @@ fn has_prettier_marker(dir: &Path) -> bool {
         "prettier.config.mjs",
     ];
     FILE_MARKERS.iter().any(|name| dir.join(name).is_file()) || package_json_has_prettier(dir)
+}
+
+fn has_biome_marker(dir: &Path) -> bool {
+    dir.join("biome.json").is_file() || dir.join("biome.jsonc").is_file()
+}
+
+fn has_clang_format_marker(dir: &Path) -> bool {
+    dir.join(".clang-format").is_file()
+}
+
+fn has_ocamlformat_marker(dir: &Path) -> bool {
+    dir.join(".ocamlformat").is_file()
 }
 
 fn package_json_has_prettier(dir: &Path) -> bool {
@@ -905,6 +1176,105 @@ mod tests {
             assert_eq!(
                 runner.select(&dir.join("demo.py")).expect("selection").kind,
                 FormatterKind::Ruff
+            );
+        }
+    }
+
+    #[test]
+    fn biome_requires_a_project_marker() {
+        let dir = temp_dir("biome-marker");
+        let runner = FormatterRunner::new(&dir);
+
+        let selected = runner.select(&dir.join("demo.ts"));
+        if binary_available("biome") {
+            assert_eq!(
+                selected,
+                Err(SkipReason::MissingConfigMarker {
+                    formatter: FormatterKind::Biome
+                })
+            );
+        } else {
+            assert!(
+                matches!(
+                    selected,
+                    Err(SkipReason::MissingBinary { binary: "biome" })
+                        | Err(SkipReason::MissingConfigMarker {
+                            formatter: FormatterKind::Prettier
+                        })
+                ),
+                "expected a clean skip when biome is unavailable, got {selected:?}"
+            );
+        }
+
+        fs::write(dir.join("biome.json"), "{}").expect("write biome marker");
+        if binary_available("biome") {
+            assert_eq!(
+                runner.select(&dir.join("demo.ts")).expect("selection").kind,
+                FormatterKind::Biome
+            );
+        }
+    }
+
+    #[test]
+    fn clang_format_requires_a_project_marker() {
+        let dir = temp_dir("clang-format-marker");
+        let runner = FormatterRunner::new(&dir);
+
+        let selected = runner.select(&dir.join("demo.c"));
+        if binary_available("clang-format") {
+            assert_eq!(
+                selected,
+                Err(SkipReason::MissingConfigMarker {
+                    formatter: FormatterKind::ClangFormat
+                })
+            );
+        } else {
+            assert_eq!(
+                selected,
+                Err(SkipReason::MissingBinary {
+                    binary: "clang-format"
+                })
+            );
+        }
+
+        fs::write(dir.join(".clang-format"), "BasedOnStyle: LLVM\n")
+            .expect("write clang-format marker");
+        if binary_available("clang-format") {
+            assert_eq!(
+                runner.select(&dir.join("demo.c")).expect("selection").kind,
+                FormatterKind::ClangFormat
+            );
+        }
+    }
+
+    #[test]
+    fn ocamlformat_requires_a_project_marker() {
+        let dir = temp_dir("ocamlformat-marker");
+        let runner = FormatterRunner::new(&dir);
+
+        let selected = runner.select(&dir.join("demo.ml"));
+        if binary_available("ocamlformat") {
+            assert_eq!(
+                selected,
+                Err(SkipReason::MissingConfigMarker {
+                    formatter: FormatterKind::Ocamlformat
+                })
+            );
+        } else {
+            assert_eq!(
+                selected,
+                Err(SkipReason::MissingBinary {
+                    binary: "ocamlformat"
+                })
+            );
+        }
+
+        fs::write(dir.join(".ocamlformat"), "version = 0.26.1\n")
+            .expect("write ocamlformat marker");
+        if binary_available("ocamlformat") {
+            assert_eq!(
+                runner.select(&dir.join("demo.ml")).expect("selection").kind,
+                FormatterKind::Ocamlformat
             );
         }
     }

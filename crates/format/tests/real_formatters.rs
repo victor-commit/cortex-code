@@ -73,6 +73,29 @@ fn ruff_expected(raw: &str) -> String {
     fs::read_to_string(path).expect("read ruff output")
 }
 
+fn gofmt_expected(raw: &str) -> String {
+    let dir = temp_dir("gofmt-expected");
+    let path = dir.join("expected.go");
+    fs::write(&path, raw).expect("write gofmt input");
+    run_manual(Command::new("gofmt").arg("-w").arg(&path));
+    fs::read_to_string(path).expect("read gofmt output")
+}
+
+fn biome_expected(raw: &str, ext: &str) -> String {
+    let dir = temp_dir("biome-expected");
+    fs::write(dir.join("biome.json"), "{}").expect("write biome marker");
+    let path = dir.join(format!("expected.{ext}"));
+    fs::write(&path, raw).expect("write biome input");
+    run_manual(
+        Command::new("biome")
+            .current_dir(&dir)
+            .arg("format")
+            .arg("--write")
+            .arg(&path),
+    );
+    fs::read_to_string(path).expect("read biome output")
+}
+
 fn assert_unchanged(path: &Path, expected: &str) {
     assert_eq!(
         fs::read_to_string(path).expect("read unformatted file"),
@@ -93,6 +116,17 @@ fn write_executable(path: &Path, body: &str) {
     let mut permissions = fs::metadata(path).expect("script metadata").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("chmod executable script");
+}
+
+#[cfg(unix)]
+fn formatter_override_config(name: &str, script: &Path) -> FormatterConfig {
+    let table = toml::from_str::<toml::Value>(&format!(
+        "[formatter.{name}]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ))
+    .expect("valid formatter config");
+    FormatterConfig::from_table(table.as_table().expect("table root"))
+        .expect("parse formatter config")
 }
 
 #[test]
@@ -191,6 +225,65 @@ fn ruff_formats_python_only_when_project_config_indicates_ruff() {
     );
 }
 
+#[test]
+fn gofmt_formats_go_files_when_available() {
+    if !binary_available("gofmt") {
+        eprintln!("skipping real formatter test: gofmt is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("gofmt");
+    let path = dir.join("main.go");
+    let raw = "package main\nfunc main(){println(\"hi\")}\n";
+    fs::write(&path, raw).expect("write go file");
+
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Gofmt));
+    assert_ne!(fs::read_to_string(&path).expect("read go file"), raw);
+    assert_eq!(
+        fs::read_to_string(&path).expect("read go file"),
+        gofmt_expected(raw)
+    );
+}
+
+#[test]
+fn biome_formats_supported_files_only_when_marker_and_binary_are_present() {
+    let no_marker_dir = temp_dir("biome-no-marker");
+    let no_marker_path = no_marker_dir.join("demo.ts");
+    let raw = "const value={foo:\"bar\",answer:42};\n";
+    fs::write(&no_marker_path, raw).expect("write ts file");
+
+    let no_marker_outcome = FormatterRunner::new(&no_marker_dir).format_path(&no_marker_path);
+    assert!(
+        !matches!(
+            no_marker_outcome,
+            FormatOutcome::Formatted(FormatterKind::Biome)
+        ),
+        "biome must not run without a marker: {no_marker_outcome:?}"
+    );
+    assert_unchanged(&no_marker_path, raw);
+
+    if !binary_available("biome") {
+        eprintln!("skipping configured biome proof: biome is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("biome-marker");
+    fs::write(dir.join("biome.json"), "{}").expect("write biome marker");
+    let path = dir.join("demo.ts");
+    fs::write(&path, raw).expect("write ts file");
+
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Biome));
+    assert_ne!(fs::read_to_string(&path).expect("read ts file"), raw);
+    assert_eq!(
+        fs::read_to_string(&path).expect("read ts file"),
+        biome_expected(raw, "ts")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn custom_formatter_override_from_config_is_used_for_matching_extension() {
@@ -251,6 +344,212 @@ fn custom_formatter_override_takes_precedence_over_builtin_detection() {
         fs::read_to_string(&path).expect("read custom formatted rust"),
         "FN CUSTOM() {}\n",
         "custom override must replace built-in rustfmt detection"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn extended_formatter_matrix_uses_declared_shipped_paths() {
+    struct Case {
+        config_key: &'static str,
+        kind: FormatterKind,
+        file_name: &'static str,
+        marker: Option<(&'static str, &'static str)>,
+    }
+
+    let cases = vec![
+        Case {
+            config_key: "gofmt",
+            kind: FormatterKind::Gofmt,
+            file_name: "demo.go",
+            marker: None,
+        },
+        Case {
+            config_key: "biome",
+            kind: FormatterKind::Biome,
+            file_name: "demo.ts",
+            marker: Some(("biome.json", "{}\n")),
+        },
+        Case {
+            config_key: "mix",
+            kind: FormatterKind::Mix,
+            file_name: "demo.ex",
+            marker: None,
+        },
+        Case {
+            config_key: "clang_format",
+            kind: FormatterKind::ClangFormat,
+            file_name: "demo.c",
+            marker: Some((".clang-format", "BasedOnStyle: LLVM\n")),
+        },
+        Case {
+            config_key: "zig_fmt",
+            kind: FormatterKind::ZigFmt,
+            file_name: "demo.zig",
+            marker: None,
+        },
+        Case {
+            config_key: "ktlint",
+            kind: FormatterKind::Ktlint,
+            file_name: "demo.kt",
+            marker: None,
+        },
+        Case {
+            config_key: "dart",
+            kind: FormatterKind::DartFormat,
+            file_name: "demo.dart",
+            marker: None,
+        },
+        Case {
+            config_key: "terraform",
+            kind: FormatterKind::TerraformFmt,
+            file_name: "demo.tf",
+            marker: None,
+        },
+        Case {
+            config_key: "shfmt",
+            kind: FormatterKind::Shfmt,
+            file_name: "demo.sh",
+            marker: None,
+        },
+        Case {
+            config_key: "nixfmt",
+            kind: FormatterKind::Nixfmt,
+            file_name: "demo.nix",
+            marker: None,
+        },
+        Case {
+            config_key: "ocamlformat",
+            kind: FormatterKind::Ocamlformat,
+            file_name: "demo.ml",
+            marker: Some((".ocamlformat", "version = 0.26.1\n")),
+        },
+        Case {
+            config_key: "rubocop",
+            kind: FormatterKind::Rubocop,
+            file_name: "demo.rb",
+            marker: None,
+        },
+        Case {
+            config_key: "standardrb",
+            kind: FormatterKind::Standardrb,
+            file_name: "demo.rb",
+            marker: None,
+        },
+        Case {
+            config_key: "erb",
+            kind: FormatterKind::Erb,
+            file_name: "demo.erb",
+            marker: None,
+        },
+        Case {
+            config_key: "gleam",
+            kind: FormatterKind::Gleam,
+            file_name: "demo.gleam",
+            marker: None,
+        },
+        Case {
+            config_key: "cljfmt",
+            kind: FormatterKind::Cljfmt,
+            file_name: "demo.clj",
+            marker: None,
+        },
+        Case {
+            config_key: "ormolu",
+            kind: FormatterKind::Ormolu,
+            file_name: "demo.hs",
+            marker: None,
+        },
+        Case {
+            config_key: "latexindent",
+            kind: FormatterKind::Latexindent,
+            file_name: "demo.tex",
+            marker: None,
+        },
+        Case {
+            config_key: "air",
+            kind: FormatterKind::Air,
+            file_name: "demo.R",
+            marker: None,
+        },
+    ];
+
+    for case in cases {
+        let dir = temp_dir(case.config_key);
+        let script = dir.join(format!("fake-{}.sh", case.config_key));
+        write_executable(
+            &script,
+            "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'formatted by registry\\n' > \"$file\"\n",
+        );
+        if let Some((marker, contents)) = case.marker {
+            fs::write(dir.join(marker), contents).expect("write marker");
+        }
+        let path = dir.join(case.file_name);
+        fs::write(&path, "raw\n").expect("write raw input");
+        let config = formatter_override_config(case.config_key, &script);
+
+        let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+        assert_eq!(
+            outcome,
+            FormatOutcome::Formatted(case.kind),
+            "expected formatter {:?} for {}",
+            case.kind,
+            case.file_name
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read formatted output"),
+            "formatted by registry\n"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_formatter_binary_is_reported_cleanly_without_mutating_bytes() {
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .arg("--exact")
+        .arg("missing_formatter_binary_child")
+        .arg("--nocapture")
+        .env("CORTEX_FORMAT_MISSING_BINARY_CHILD", "1")
+        .env("PATH", "");
+    let output = command
+        .output()
+        .expect("spawn missing-binary child formatter test");
+    assert!(
+        output.status.success(),
+        "missing-binary child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_formatter_binary_child() {
+    if std::env::var("CORTEX_FORMAT_MISSING_BINARY_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+
+    let dir = temp_dir("missing-binary-child");
+    let path = dir.join("demo.sh");
+    let raw = "#!/usr/bin/env sh\necho hi\n";
+    fs::write(&path, raw).expect("write shell fixture");
+
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert!(
+        matches!(
+            outcome,
+            FormatOutcome::Skipped(format::SkipReason::MissingBinary { binary: "shfmt" })
+        ),
+        "expected clean missing-binary status, got {outcome:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read untouched file"),
+        raw,
+        "missing formatter should leave bytes unchanged"
     );
 }
 

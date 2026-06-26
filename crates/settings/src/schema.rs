@@ -168,7 +168,30 @@ fn validate_formatter(table: &Table) -> Result<(), ConfigError> {
             if let Some(custom) = formatter.get("custom") {
                 validate_formatter_custom(custom, "formatter.custom")?;
             }
-            for builtin in ["rustfmt", "prettier", "ruff"] {
+            for builtin in [
+                "gofmt",
+                "biome",
+                "mix",
+                "clang_format",
+                "zig_fmt",
+                "ktlint",
+                "dart",
+                "terraform",
+                "shfmt",
+                "nixfmt",
+                "ocamlformat",
+                "rubocop",
+                "standardrb",
+                "erb",
+                "gleam",
+                "cljfmt",
+                "ormolu",
+                "latexindent",
+                "air",
+                "rustfmt",
+                "prettier",
+                "ruff",
+            ] {
                 if let Some(config) = formatter.get(builtin) {
                     let config = expect_table(config, &format!("formatter.{builtin}"), "a table")?;
                     if let Some(disabled) = config.get("disabled") {

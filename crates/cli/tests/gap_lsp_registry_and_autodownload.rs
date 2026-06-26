@@ -365,12 +365,8 @@ exit 1
 #[test]
 fn status_distinguishes_disabled_installing_running_unavailable_and_crashed() {
     let dir = temp_dir("status-lifecycle");
-    let running_bin = dir.join("runlsp");
-    std::fs::copy("/bin/sleep", &running_bin).expect("copy sleep");
-    make_executable(&running_bin);
-    let crashed_bin = dir.join("crashlsp");
-    std::fs::copy("/bin/true", &crashed_bin).expect("copy true");
-    make_executable(&crashed_bin);
+    let running_bin = PathBuf::from("/bin/sleep");
+    let crashed_bin = PathBuf::from("/bin/true");
     let mut running_child = Command::new(&running_bin)
         .arg("30")
         .stdout(Stdio::null())

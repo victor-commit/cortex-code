@@ -26,6 +26,12 @@ impl FormatterHooks {
             runner: format::FormatterRunner::new(root),
         }
     }
+
+    fn with_config(root: &Path, config: format::FormatterConfig) -> Self {
+        Self {
+            runner: format::FormatterRunner::with_config(root, config),
+        }
+    }
 }
 
 impl MutationHooks for FormatterHooks {
@@ -106,6 +112,11 @@ fn context_with_formatters(dir: &Path) -> ToolContext {
     ToolContext::new(dir.to_path_buf()).with_hooks(Arc::new(FormatterHooks::new(dir)))
 }
 
+fn context_with_formatters_config(dir: &Path, config: format::FormatterConfig) -> ToolContext {
+    ToolContext::new(dir.to_path_buf())
+        .with_hooks(Arc::new(FormatterHooks::with_config(dir, config)))
+}
+
 fn context_with_fake_formatter(
     dir: &Path,
     hooks: Arc<dyn MutationHooks>,
@@ -141,6 +152,22 @@ fn rustfmt_expected(raw: &str) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     fs::read_to_string(path).expect("read rustfmt output")
+}
+
+fn formatter_config_from_toml(toml: &str) -> format::FormatterConfig {
+    let value = toml::from_str::<toml::Value>(toml).expect("valid formatter config");
+    format::FormatterConfig::from_table(value.as_table().expect("formatter table"))
+        .expect("parse formatter config")
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, body).expect("write executable script");
+    let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod executable script");
 }
 
 #[tokio::test]
@@ -226,6 +253,163 @@ async fn apply_patch_formats_written_rust_and_leaves_unknown_extensions_verbatim
     assert_eq!(
         fs::read_to_string(dir.join("note.unknownext")).expect("read unknown"),
         unknown
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_runs_gofmt_formatter_for_go_files() {
+    let dir = temp_dir("write-gofmt");
+    let script = dir.join("fake-gofmt.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'package main\\n\\nfunc main() {}\\n' > \"$file\"\n",
+    );
+    let config = formatter_config_from_toml(&format!(
+        "[formatter.gofmt]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ));
+    let ctx = context_with_formatters_config(&dir, config);
+    let args = serde_json::json!({
+        "path": "main.go",
+        "content": "package main\nfunc main(){println(\"hi\")}\n"
+    })
+    .to_string();
+
+    let output = ToolRegistry::builtin().execute("write", &args, &ctx).await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    assert_eq!(
+        fs::read_to_string(dir.join("main.go")).expect("read formatted go"),
+        "package main\n\nfunc main() {}\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn edit_runs_gofmt_formatter_for_go_files() {
+    let dir = temp_dir("edit-gofmt");
+    let script = dir.join("fake-gofmt.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'package main\\n\\nfunc main() {}\\n' > \"$file\"\n",
+    );
+    let config = formatter_config_from_toml(&format!(
+        "[formatter.gofmt]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ));
+    let ctx = context_with_formatters_config(&dir, config);
+    let path = dir.join("main.go");
+    fs::write(&path, "package main\nfunc main() {}\n").expect("seed go file");
+    ctx.record_read(&path);
+    let args = serde_json::json!({
+        "path": "main.go",
+        "oldString": "func main() {}\n",
+        "newString": "func main(){println(\"hi\")}\n"
+    })
+    .to_string();
+
+    let output = ToolRegistry::builtin().execute("edit", &args, &ctx).await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read formatted go"),
+        "package main\n\nfunc main() {}\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_patch_runs_gofmt_formatter_for_go_files() {
+    let dir = temp_dir("apply-gofmt");
+    let script = dir.join("fake-gofmt.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'package main\\n\\nfunc main() {}\\n' > \"$file\"\n",
+    );
+    let config = formatter_config_from_toml(&format!(
+        "[formatter.gofmt]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ));
+    let ctx = context_with_formatters_config(&dir, config);
+    let stars = "*".repeat(3);
+    let patch = format!(
+        "{stars} Begin Patch\n\
+{stars} Add File: main.go\n\
++package main\n\
++func main(){{println(\"hi\")}}\n\
+{stars} End Patch"
+    );
+    let args = serde_json::json!({ "patch": patch }).to_string();
+
+    let output = ToolRegistry::gpt()
+        .execute("apply_patch", &args, &ctx)
+        .await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    assert_eq!(
+        fs::read_to_string(dir.join("main.go")).expect("read formatted go"),
+        "package main\n\nfunc main() {}\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn biome_formats_ts_files_when_marker_exists() {
+    let dir = temp_dir("write-biome");
+    let script = dir.join("fake-biome.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'const value = { answer: 42 };\\n' > \"$file\"\n",
+    );
+    fs::write(dir.join("biome.json"), "{}\n").expect("write biome marker");
+    let config = formatter_config_from_toml(&format!(
+        "[formatter.biome]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ));
+    let ctx = context_with_formatters_config(&dir, config);
+    let args = serde_json::json!({
+        "path": "demo.ts",
+        "content": "const value={answer:42};\n"
+    })
+    .to_string();
+
+    let output = ToolRegistry::builtin().execute("write", &args, &ctx).await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    assert_eq!(
+        fs::read_to_string(dir.join("demo.ts")).expect("read formatted ts"),
+        "const value = { answer: 42 };\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn biome_skips_ts_files_without_marker_and_keeps_raw_bytes() {
+    let dir = temp_dir("write-biome-no-marker");
+    let script = dir.join("fake-biome.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'const value = { answer: 42 };\\n' > \"$file\"\n",
+    );
+    let config = formatter_config_from_toml(&format!(
+        "[formatter.biome]\ncommand = [\"{}\", \"$FILE\"]\n",
+        script.display()
+    ));
+    let ctx = context_with_formatters_config(&dir, config);
+    let raw = "const value={answer:42};\n";
+    let args = serde_json::json!({
+        "path": "demo.ts",
+        "content": raw
+    })
+    .to_string();
+
+    let output = ToolRegistry::builtin().execute("write", &args, &ctx).await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    assert_eq!(
+        fs::read_to_string(dir.join("demo.ts")).expect("read unformatted ts"),
+        raw
     );
 }
 
