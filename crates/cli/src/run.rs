@@ -29,9 +29,11 @@
 //! the run fails with the canonical `no-credential` diagnostic; in neither case is any partial
 //! answer written to stdout.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use checkpoints::TurnRecorder;
@@ -44,10 +46,11 @@ use engine::{
 use errors::{Diagnostic, Exit};
 use events::{Event, EventBus};
 use futures_util::future::BoxFuture;
-use llm::{LlmError, LlmRequest, LlmStream, Provider, ToolDef};
+use llm::{LlmError, LlmRequest, LlmStream, MessageContentPart, Provider, ToolDef};
 use protocol::{MessagePart, MessagePartBody, ToolResultPart};
 use providers::ResolvedModel;
 use redaction::guard_outbound;
+use regex::Regex;
 use serde::Serialize;
 use settings::{ConfigError, ConfigInputs, EffectiveConfig};
 
@@ -537,7 +540,8 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Ok(history) => history,
         Err(exit) => return exit,
     };
-    let user_parts = vec![MessagePart::text(prompt.clone())];
+    let user_parts = prompt_message_parts(&prompt, &cwd);
+    let user_media_parts = extract_message_media_parts(&user_parts);
     let user_message =
         match db
             .messages()
@@ -576,6 +580,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     );
     let mut turn = Turn::new(&model_id, system, prompt.clone())
         .with_history(history)
+        .with_user_parts(user_media_parts)
         .with_compaction(compaction)
         .with_small_model(small_model_id.clone());
     if !provider_extra_params.is_empty() {
@@ -1055,6 +1060,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
                     if memory_provenance_from_content(&message.content) {
                         return None;
                     }
+                    let media_parts = extract_message_media_parts(&message.parts);
                     let content = if let Some(summary) =
                         legacy_compaction_summary_from_content(&message.content)
                     {
@@ -1073,7 +1079,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
                     } else {
                         message.content.clone()
                     };
-                    Some(HistoryMessage::new(message.role, content))
+                    Some(HistoryMessage::new(message.role, content).with_parts(media_parts))
                 })
                 .collect();
             Ok(project_history(&history))
@@ -1082,6 +1088,174 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
             eprintln!("cortex run: failed to load session history: {err}");
             Err(Exit::Failure)
         }
+    }
+}
+
+fn prompt_message_parts(prompt: &str, cwd: &Path) -> Vec<MessagePart> {
+    let mut parts = vec![MessagePart::text(prompt.to_owned())];
+    parts.extend(markdown_media_message_parts(prompt, cwd));
+    parts
+}
+
+fn markdown_media_message_parts(prompt: &str, cwd: &Path) -> Vec<MessagePart> {
+    let mut seen = BTreeSet::new();
+    let mut parts = Vec::new();
+    for captures in markdown_image_link_regex().captures_iter(prompt) {
+        let Some(raw_target) = captures.get(1).map(|capture| capture.as_str()) else {
+            continue;
+        };
+        let Some((path, media_type)) = resolve_media_reference(raw_target, cwd) else {
+            continue;
+        };
+        let key = format!("{media_type}|{}", path.display());
+        if !seen.insert(key) {
+            continue;
+        }
+        parts.push(MessagePart {
+            id: String::new(),
+            created_at: None,
+            body: MessagePartBody::File {
+                path: path.to_string_lossy().into_owned(),
+                media_type: Some(media_type),
+                source: Some("markdown".to_owned()),
+            },
+        });
+    }
+    parts
+}
+
+fn markdown_image_link_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"!\[[^\]]*\]\(([^)]+)\)").expect("valid image-link regex"))
+}
+
+fn resolve_media_reference(target: &str, cwd: &Path) -> Option<(PathBuf, String)> {
+    let mut value = target.trim();
+    if value.len() >= 2 && value.starts_with('<') && value.ends_with('>') {
+        value = &value[1..value.len() - 1];
+    }
+    if value.chars().any(char::is_whitespace) {
+        value = value.split_whitespace().next().unwrap_or(value);
+    }
+    if value.is_empty()
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("data:")
+        || value.starts_with('#')
+    {
+        return None;
+    }
+    let path = Path::new(value);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    if !resolved.is_file() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    let media_type = media_type_for_path(&canonical)?;
+    Some((canonical, media_type.to_owned()))
+}
+
+fn media_type_for_path(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.trim().to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
+}
+
+fn extract_message_media_parts(parts: &[MessagePart]) -> Vec<MessageContentPart> {
+    let mut seen = BTreeSet::new();
+    let mut media = Vec::new();
+    for part in parts {
+        match &part.body {
+            MessagePartBody::File {
+                path, media_type, ..
+            } => {
+                if let Some(media_part) = message_media_part_for_file(path, media_type.as_deref())
+                    .or_else(|| {
+                        media_type_for_path(Path::new(path))
+                            .and_then(|kind| message_media_part_for_file(path, Some(kind)))
+                    })
+                {
+                    push_unique_media_part(&mut media, &mut seen, media_part);
+                }
+            }
+            MessagePartBody::Tool { attachments, .. } => {
+                for attachment in attachments {
+                    let media_part = match attachment {
+                        ToolResultPart::Image { media_type, path } => {
+                            Some(MessageContentPart::Image {
+                                media_type: media_type.clone(),
+                                path: path.clone(),
+                            })
+                        }
+                        ToolResultPart::Document { media_type, path } => {
+                            Some(MessageContentPart::Document {
+                                media_type: media_type.clone(),
+                                path: path.clone(),
+                            })
+                        }
+                        ToolResultPart::Text { .. } => None,
+                    };
+                    if let Some(media_part) = media_part {
+                        push_unique_media_part(&mut media, &mut seen, media_part);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    media
+}
+
+fn message_media_part_for_file(path: &str, media_type: Option<&str>) -> Option<MessageContentPart> {
+    let kind = media_type?;
+    if kind.starts_with("image/") {
+        return Some(MessageContentPart::Image {
+            media_type: kind.to_owned(),
+            path: path.to_owned(),
+        });
+    }
+    if kind == "application/pdf" {
+        return Some(MessageContentPart::Document {
+            media_type: kind.to_owned(),
+            path: path.to_owned(),
+        });
+    }
+    Some(MessageContentPart::File {
+        path: path.to_owned(),
+        media_type: Some(kind.to_owned()),
+    })
+}
+
+fn push_unique_media_part(
+    media: &mut Vec<MessageContentPart>,
+    seen: &mut BTreeSet<String>,
+    part: MessageContentPart,
+) {
+    let key = match &part {
+        MessageContentPart::Image { media_type, path } => {
+            format!("image|{media_type}|{path}")
+        }
+        MessageContentPart::Document { media_type, path } => {
+            format!("document|{media_type}|{path}")
+        }
+        MessageContentPart::File { path, media_type } => {
+            format!("file|{}|{path}", media_type.as_deref().unwrap_or(""))
+        }
+    };
+    if seen.insert(key) {
+        media.push(part);
     }
 }
 

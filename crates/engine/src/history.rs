@@ -6,7 +6,7 @@
 //! from the persistence layer: callers pass simple [`HistoryMessage`] records (e.g. mapped from
 //! `db::Message`), keeping `engine` independent of the storage schema.
 
-use llm::{Message, Role};
+use llm::{Message, MessageContentPart, Role};
 
 /// A stored conversation entry to be projected into a canonical message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +15,8 @@ pub struct HistoryMessage {
     pub role: String,
     /// The message content.
     pub content: String,
+    /// Optional non-text media attachments associated with the message.
+    pub parts: Vec<MessageContentPart>,
 }
 
 impl HistoryMessage {
@@ -24,7 +26,15 @@ impl HistoryMessage {
         Self {
             role: role.into(),
             content: content.into(),
+            parts: Vec::new(),
         }
+    }
+
+    /// Attach typed media parts to this history entry.
+    #[must_use]
+    pub fn with_parts(mut self, parts: Vec<MessageContentPart>) -> Self {
+        self.parts = parts;
+        self
     }
 }
 
@@ -51,6 +61,7 @@ pub fn project_history(history: &[HistoryMessage]) -> Vec<Message> {
         .map(|entry| Message {
             role: project_role(&entry.role),
             content: entry.content.clone(),
+            parts: entry.parts.clone(),
             tool_call_id: None,
             tool_calls: Vec::new(),
         })

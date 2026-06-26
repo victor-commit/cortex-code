@@ -28,7 +28,7 @@ pub use event::{FinishReason, LlmEvent, ToolCall, ToolResult, Usage};
 pub use openai::FrameStream;
 pub use openai::{OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig, normalize_chat_sse};
 pub use provider::{LlmStream, Provider};
-pub use request::{LlmRequest, Message, Role, ToolDef};
+pub use request::{LlmRequest, Message, MessageContentPart, Role, ToolDef};
 pub use transport::{
     ByteStream, HttpTransport, TransportConfig, classify_upstream, sse_data_frames,
 };

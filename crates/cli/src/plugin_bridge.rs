@@ -1533,14 +1533,12 @@ fn plugin_provider_events(
 
     if let Some(usage) = usage_without_cost
         && let Some(cost) = plugin_usage_cost(model, &usage)
-    {
-        if let Some(LlmEvent::Usage(existing)) = events
+        && let Some(LlmEvent::Usage(existing)) = events
             .iter_mut()
             .find(|event| matches!(event, LlmEvent::Usage(_)))
-            && existing.cost.is_none()
-        {
-            existing.cost = Some(cost);
-        }
+        && existing.cost.is_none()
+    {
+        existing.cost = Some(cost);
     }
 
     if !saw_done {
@@ -1939,6 +1937,16 @@ impl PluginModelProvider {
 impl Provider for PluginModelProvider {
     fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
         Box::pin(async move {
+            let has_media = request
+                .messages
+                .iter()
+                .any(|message| !message.parts.is_empty());
+            if has_media && !self.model.attachment {
+                return Err(LlmError::upstream(format!(
+                    "plugin model `{}` declares attachment=false and rejects media/file/image parts",
+                    self.model.id
+                )));
+            }
             let messages = serde_json::to_value(&request.messages)
                 .map_err(|err| LlmError::decode(err.to_string()))?;
             let completion = self

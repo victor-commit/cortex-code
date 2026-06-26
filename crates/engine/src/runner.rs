@@ -23,7 +23,7 @@
 
 use errors::Diagnostic;
 use futures_util::StreamExt;
-use llm::{LlmEvent, LlmRequest, Message, Provider, Role, ToolCall, ToolDef};
+use llm::{LlmEvent, LlmRequest, Message, MessageContentPart, Provider, Role, ToolCall, ToolDef};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -91,6 +91,8 @@ pub struct Turn {
     pub history: Vec<Message>,
     /// The new user input for this turn.
     pub user_input: String,
+    /// Optional non-text media parts for the new user input.
+    pub user_parts: Vec<MessageContentPart>,
     /// Optional cap on generated tokens per round-trip.
     pub max_tokens: Option<u32>,
     /// Optional sampling temperature.
@@ -118,6 +120,7 @@ impl Turn {
             system: system.into(),
             history: Vec::new(),
             user_input: user_input.into(),
+            user_parts: Vec::new(),
             max_tokens: None,
             temperature: None,
             extra_params: JsonMap::new(),
@@ -131,6 +134,13 @@ impl Turn {
     #[must_use]
     pub fn with_history(mut self, history: Vec<Message>) -> Self {
         self.history = history;
+        self
+    }
+
+    /// Set non-text media parts for the new user input (builder style).
+    #[must_use]
+    pub fn with_user_parts(mut self, user_parts: Vec<MessageContentPart>) -> Self {
+        self.user_parts = user_parts;
         self
     }
 
@@ -274,7 +284,7 @@ impl SessionRunner {
             messages.push(Message::system(turn.system.clone()));
         }
         messages.extend(turn.history.iter().cloned());
-        messages.push(Message::user(turn.user_input.clone()));
+        messages.push(Message::user(turn.user_input.clone()).with_parts(turn.user_parts.clone()));
 
         let mut answer = String::new();
         let mut total_usage = None;
@@ -499,6 +509,7 @@ impl SessionRunner {
             messages.push(Message {
                 role: Role::Assistant,
                 content: round.text,
+                parts: Vec::new(),
                 tool_call_id: None,
                 tool_calls: round.tool_calls.clone(),
             });

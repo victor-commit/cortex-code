@@ -1655,6 +1655,7 @@ async fn compaction_summary_prunes_non_protected_tool_output_and_auto_continues(
         llm::Message {
             role: llm::Role::Assistant,
             content: String::new(),
+            parts: Vec::new(),
             tool_call_id: None,
             tool_calls: vec![skill_call.clone(), grep_call.clone()],
         },

@@ -31,6 +31,12 @@ pub struct Message {
     /// The text content of the message (may be empty for an assistant turn that only made tool
     /// calls).
     pub content: String,
+    /// Optional non-text media parts associated with this message.
+    ///
+    /// OpenAI-compatible providers ignore this field today; plugin providers receive it verbatim
+    /// so hook code can observe attachment-aware requests.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub parts: Vec<MessageContentPart>,
     /// For [`Role::Tool`] messages: the [`ToolCall::id`] this result answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -64,19 +70,44 @@ impl Message {
         Self {
             role: Role::Tool,
             content: content.into(),
+            parts: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_calls: Vec::new(),
         }
+    }
+
+    /// Attach non-text media parts to this message (builder style).
+    #[must_use]
+    pub fn with_parts(mut self, parts: Vec<MessageContentPart>) -> Self {
+        self.parts = parts;
+        self
     }
 
     fn text(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
             content: content.into(),
+            parts: Vec::new(),
             tool_call_id: None,
             tool_calls: Vec::new(),
         }
     }
+}
+
+/// A typed non-text content part attached to a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessageContentPart {
+    /// An image attachment (for example `image/png`).
+    Image { media_type: String, path: String },
+    /// A document attachment (for example `application/pdf`).
+    Document { media_type: String, path: String },
+    /// A generic file attachment.
+    File {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+    },
 }
 
 /// A tool the model is permitted to call, described by a JSON-schema parameter definition.
