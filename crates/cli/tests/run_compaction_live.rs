@@ -493,10 +493,8 @@ fn jsonl_shows_compaction_then_auto_continued_answer() {
     );
     let answer_text: String = events
         .iter()
-        .filter_map(|event| {
-            (event["type"] == "text_delta")
-                .then(|| event["text"].as_str().unwrap_or_default().to_owned())
-        })
+        .filter(|event| event["type"] == "text_delta")
+        .map(|event| event["text"].as_str().unwrap_or_default().to_owned())
         .collect();
     assert!(
         answer_text.contains(&nonce),

@@ -1,7 +1,8 @@
 //! Black-box proof for `cortex models`: the offline catalogue listing drawn from the embedded
 //! models.dev snapshot. Covers VAL-FINISH-001..004 and VAL-FINISH-008 — a fully offline listing of
-//! >=10 recognizable models that surfaces per-model pricing, context window, and the default model,
-//! plus a strict structured JSON form with no human chatter interleaved on stdout.
+//! at least 10 recognizable models that surfaces per-model pricing, context window, and the default
+//! model,
+//! and a strict structured JSON form with no human chatter interleaved on stdout.
 
 use std::io::{BufRead, Read};
 use std::path::PathBuf;

@@ -347,9 +347,7 @@ mod tests {
 
     #[test]
     fn parse_ripgrep_json_returns_empty_for_no_matches() {
-        let payload = concat!(
-            "{\"type\":\"summary\",\"data\":{\"elapsed_total\":{\"secs\":0,\"nanos\":1,\"human\":\"0.000001s\"},\"stats\":{\"searches\":1,\"searches_with_match\":0,\"bytes_searched\":0,\"bytes_printed\":0,\"matched_lines\":0,\"matches\":0}}}\n"
-        );
+        let payload = "{\"type\":\"summary\",\"data\":{\"elapsed_total\":{\"secs\":0,\"nanos\":1,\"human\":\"0.000001s\"},\"stats\":{\"searches\":1,\"searches_with_match\":0,\"bytes_searched\":0,\"bytes_printed\":0,\"matched_lines\":0,\"matches\":0}}}\n";
         let matches = parse_ripgrep_json(payload.as_bytes()).expect("parse");
         assert!(matches.is_empty());
     }

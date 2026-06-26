@@ -1234,10 +1234,11 @@ fn params_to_json(request: &LlmRequest) -> JsonValue {
     if let Some(max_tokens) = request.max_tokens {
         params.insert("max_tokens".to_owned(), JsonValue::from(max_tokens));
     }
-    if let Some(temperature) = request.temperature {
-        if let Some(number) = serde_json::Number::from_f64(f64::from(temperature)) {
-            params.insert("temperature".to_owned(), JsonValue::Number(number));
-        }
+    if let Some(number) = request
+        .temperature
+        .and_then(|temperature| serde_json::Number::from_f64(f64::from(temperature)))
+    {
+        params.insert("temperature".to_owned(), JsonValue::Number(number));
     }
     params.extend(request.extra_params.clone());
     JsonValue::Object(params)
