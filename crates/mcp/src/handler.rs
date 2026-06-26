@@ -174,5 +174,5 @@ fn redacted_json(value: &serde_json::Value) -> serde_json::Value {
         Err(_) => return serde_json::Value::String(redaction::PLACEHOLDER.to_owned()),
     };
     let redacted = redaction::redact(&serialized);
-    serde_json::from_str(&redacted).unwrap_or_else(|_| serde_json::Value::String(redacted))
+    serde_json::from_str(&redacted).unwrap_or(serde_json::Value::String(redacted))
 }
