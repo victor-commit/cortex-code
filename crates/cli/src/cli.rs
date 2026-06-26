@@ -168,6 +168,10 @@ pub struct LspDiagnosticsArgs {
     #[arg(value_name = "FILE")]
     pub file: String,
 
+    /// Request workspace-level pull diagnostics (where supported) instead of only the target file.
+    #[arg(long, default_value_t = false)]
+    pub workspace: bool,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -962,6 +966,31 @@ mod tests {
                 command: LspCommand::Diagnostics(args),
             })) => {
                 assert_eq!(args.file, "src/main.rs");
+                assert!(!args.workspace);
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected lsp diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lsp_workspace_diagnostics_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "cortex",
+            "lsp",
+            "diagnostics",
+            "src/main.rs",
+            "--workspace",
+            "--format",
+            "json",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Command::Lsp(LspArgs {
+                command: LspCommand::Diagnostics(args),
+            })) => {
+                assert_eq!(args.file, "src/main.rs");
+                assert!(args.workspace);
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected lsp diagnostics, got {other:?}"),

@@ -137,6 +137,27 @@ impl ServerCapabilities {
     pub const fn raw(&self) -> &Value {
         &self.raw
     }
+
+    /// Whether the server advertises support for `textDocument/diagnostic`.
+    #[must_use]
+    pub fn supports_document_diagnostics(&self) -> bool {
+        match self.raw.get("diagnosticProvider") {
+            Some(Value::Bool(enabled)) => *enabled,
+            Some(Value::Object(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether the server advertises support for `workspace/diagnostic`.
+    #[must_use]
+    pub fn supports_workspace_diagnostics(&self) -> bool {
+        self.raw
+            .get("diagnosticProvider")
+            .and_then(Value::as_object)
+            .and_then(|provider| provider.get("workspaceDiagnostics"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 /// The parsed result of a successful `initialize` request.
@@ -208,5 +229,29 @@ mod tests {
             InitializeResult::from_result_value(json!({"serverInfo":{"name":"x"}})),
             Err(LspError::Protocol)
         );
+    }
+
+    #[test]
+    fn server_capabilities_parse_diagnostics_support_flags() {
+        let result = InitializeResult::from_result_value(json!({
+            "capabilities": {
+                "diagnosticProvider": {
+                    "interFileDependencies": true,
+                    "workspaceDiagnostics": true
+                }
+            }
+        }))
+        .expect("initialize result");
+        assert!(result.capabilities().supports_document_diagnostics());
+        assert!(result.capabilities().supports_workspace_diagnostics());
+
+        let no_workspace = InitializeResult::from_result_value(json!({
+            "capabilities": {
+                "diagnosticProvider": true
+            }
+        }))
+        .expect("initialize result");
+        assert!(no_workspace.capabilities().supports_document_diagnostics());
+        assert!(!no_workspace.capabilities().supports_workspace_diagnostics());
     }
 }

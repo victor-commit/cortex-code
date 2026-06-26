@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::LspError;
 use crate::diagnostics::{
     Diagnostic, DiagnosticStore, PUBLISH_DIAGNOSTICS_METHOD, Position, PublishDiagnosticsParams,
+    WorkspaceDiagnosticEntry, document_diagnostics_from_value, workspace_diagnostics_from_value,
 };
 use crate::navigation::{
     self, CallHierarchyItem, DocumentSymbol, Hover, IncomingCall, Location, OutgoingCall,
@@ -30,6 +31,8 @@ const DIAGNOSTICS_IDLE_INTERVAL: Duration = Duration::from_millis(1200);
 // is still computing semantic diagnostics for the same generation. Keep empty didChange results
 // alive slightly longer so post-mutation feedback does not miss the delayed real error.
 const EMPTY_DID_CHANGE_DIAGNOSTICS_IDLE_INTERVAL: Duration = Duration::from_millis(2500);
+const DOCUMENT_DIAGNOSTIC_METHOD: &str = "textDocument/diagnostic";
+const WORKSPACE_DIAGNOSTIC_METHOD: &str = "workspace/diagnostic";
 
 /// Configuration describing how to launch one server child process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,6 +165,8 @@ pub struct LspClient {
     diagnostics: DiagnosticStore,
     diagnostic_generation: u64,
     minimum_diagnostic_versions: BTreeMap<String, i64>,
+    supports_document_diagnostics_pull: bool,
+    supports_workspace_diagnostics_pull: bool,
     request_timeout: Duration,
     shutdown_timeout: Duration,
 }
@@ -210,6 +215,8 @@ impl LspClient {
             diagnostics: DiagnosticStore::new(),
             diagnostic_generation: 0,
             minimum_diagnostic_versions: BTreeMap::new(),
+            supports_document_diagnostics_pull: false,
+            supports_workspace_diagnostics_pull: false,
             request_timeout: config.request_timeout,
             shutdown_timeout: config.shutdown_timeout,
         })
@@ -228,7 +235,13 @@ impl LspClient {
                 return Err(error);
             }
         };
-        InitializeResult::from_result_value(result).inspect_err(|_| self.force_reap())
+        let parsed =
+            InitializeResult::from_result_value(result).inspect_err(|_| self.force_reap())?;
+        self.supports_document_diagnostics_pull =
+            parsed.capabilities().supports_document_diagnostics();
+        self.supports_workspace_diagnostics_pull =
+            parsed.capabilities().supports_workspace_diagnostics();
+        Ok(parsed)
     }
 
     /// Send the `initialized` notification.
@@ -237,6 +250,18 @@ impl LspClient {
     /// Returns an I/O error if the notification cannot be written.
     pub fn initialized(&mut self) -> Result<(), LspError> {
         self.send_notification("initialized", Value::Object(Map::new()))
+    }
+
+    /// Whether the server advertised `textDocument/diagnostic` support.
+    #[must_use]
+    pub const fn supports_document_diagnostics_pull(&self) -> bool {
+        self.supports_document_diagnostics_pull
+    }
+
+    /// Whether the server advertised `workspace/diagnostic` support.
+    #[must_use]
+    pub const fn supports_workspace_diagnostics_pull(&self) -> bool {
+        self.supports_workspace_diagnostics_pull
     }
 
     /// Send `textDocument/didOpen` with full text.
@@ -404,6 +429,39 @@ impl LspClient {
     #[must_use]
     pub const fn diagnostics(&self) -> &DiagnosticStore {
         &self.diagnostics
+    }
+
+    /// Request pull diagnostics for one document.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub fn document_diagnostics(&mut self, uri: &str) -> Result<Vec<Diagnostic>, LspError> {
+        let id = self.send_request(
+            DOCUMENT_DIAGNOSTIC_METHOD,
+            json!({
+                "textDocument": {"uri": uri}
+            }),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(document_diagnostics_from_value(&result))
+    }
+
+    /// Request workspace-level diagnostics across files.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete.
+    pub(crate) fn workspace_diagnostics(
+        &mut self,
+    ) -> Result<Vec<WorkspaceDiagnosticEntry>, LspError> {
+        let id = self.send_request(
+            WORKSPACE_DIAGNOSTIC_METHOD,
+            json!({
+                "identifier": "cortex",
+                "previousResultIds": []
+            }),
+        )?;
+        let result = self.await_response(id)?;
+        Ok(workspace_diagnostics_from_value(&result))
     }
 
     /// Child PID.

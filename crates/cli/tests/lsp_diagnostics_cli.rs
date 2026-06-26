@@ -37,6 +37,135 @@ fn toml_string(path: &Path) -> String {
         .replace('"', "\\\"")
 }
 
+fn fake_pull_workspace_lsp_script() -> &'static str {
+    r#"#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlparse, unquote
+
+documents = {}
+root_uri = None
+
+def read_message():
+    headers = {}
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+    while line not in (b"\r\n", b"\n", b""):
+        name, value = line.decode("ascii").split(":", 1)
+        headers[name.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+    length = int(headers.get("content-length", "0"))
+    if length <= 0:
+        return None
+    return json.loads(sys.stdin.buffer.read(length))
+
+def send(message):
+    body = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+def diagnostic(message):
+    return [{
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+        "severity": 1,
+        "code": "E_FAKE",
+        "source": "fake-lsp",
+        "message": message,
+    }]
+
+def uri_to_path(uri):
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path))
+
+def scan_workspace():
+    if not root_uri:
+        return dict(documents)
+    root = uri_to_path(root_uri)
+    if root is None:
+        return dict(documents)
+    discovered = {}
+    for current, _dirs, files in os.walk(root):
+        for name in files:
+            if not name.endswith(".fake"):
+                continue
+            path = Path(current) / name
+            try:
+                discovered[path.resolve().as_uri()] = path.read_text()
+            except Exception:
+                pass
+    return discovered
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get("method")
+    if method == "initialize" and "id" in message:
+        root_uri = message.get("params", {}).get("rootUri")
+        send({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "capabilities": {
+                    "textDocumentSync": 1,
+                    "diagnosticProvider": {
+                        "interFileDependencies": True,
+                        "workspaceDiagnostics": True,
+                    },
+                },
+                "serverInfo": {"name": "fake-lsp"},
+            },
+        })
+    elif method in ("textDocument/didOpen", "textDocument/didChange"):
+        text_document = message.get("params", {}).get("textDocument", {})
+        uri = text_document.get("uri", "")
+        if method == "textDocument/didOpen":
+            text = text_document.get("text", "")
+        else:
+            changes = message.get("params", {}).get("contentChanges", [])
+            text = changes[0].get("text", "") if changes else ""
+        documents[uri] = text
+    elif method == "textDocument/diagnostic" and "id" in message:
+        uri = message.get("params", {}).get("textDocument", {}).get("uri", "")
+        text = documents.get(uri, "")
+        items = diagnostic("pull BAD diagnostic") if "BAD" in text else []
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": items}})
+    elif method == "workspace/diagnostic" and "id" in message:
+        items = []
+        for uri, text in sorted(scan_workspace().items()):
+            diags = diagnostic(f"workspace BAD diagnostic from {uri.rsplit('/', 1)[-1]}") if "BAD" in text else []
+            items.append({"uri": uri, "version": 1, "kind": "full", "items": diags})
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"items": items}})
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+"#
+}
+
+fn write_fake_pull_workspace_lsp_config(dir: &Path) {
+    let script = dir.join("fake_pull_workspace_lsp.py");
+    std::fs::write(&script, fake_pull_workspace_lsp_script()).expect("write fake lsp script");
+    make_executable(&script);
+    std::fs::write(
+        dir.join("cortex.toml"),
+        format!(
+            r#"
+[lsp.servers.fake]
+program = "python3"
+args = ["{}"]
+extensions = ["fake"]
+"#,
+            toml_string(&script)
+        ),
+    )
+    .expect("write fake lsp config");
+}
+
 fn cortex_in(cwd: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(cwd);
@@ -301,5 +430,118 @@ CORTEX_LSP_MARKER = "{}"
         std::fs::read_to_string(&marker).expect("marker written"),
         "env-ok",
         "custom server process should receive configured env vars"
+    );
+}
+
+#[test]
+fn pull_diagnostics_are_returned_on_demand_when_server_does_not_publish() {
+    if !has_command("python3") {
+        eprintln!("skipping pull diagnostics CLI test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("pull-on-demand");
+    write_fake_pull_workspace_lsp_config(&dir);
+    std::fs::write(dir.join("main.fake"), "BAD\n").expect("write bad fixture");
+
+    let mut command = cortex_in(&dir);
+    command.args(["lsp", "diagnostics", "main.fake", "--format", "json"]);
+    command
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(doc["status"], "diagnostics");
+    let rendered = serde_json::to_string(&doc["diagnostics"]).expect("diagnostics json");
+    assert!(
+        rendered.contains("pull BAD diagnostic"),
+        "expected on-demand pull diagnostics output, got {rendered}"
+    );
+}
+
+#[test]
+fn workspace_diagnostics_request_aggregates_multiple_files() {
+    if !has_command("python3") {
+        eprintln!("skipping workspace diagnostics CLI test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("workspace-on-demand");
+    write_fake_pull_workspace_lsp_config(&dir);
+    std::fs::write(dir.join("alpha.fake"), "BAD alpha\n").expect("write alpha");
+    std::fs::write(dir.join("beta.fake"), "BAD beta\n").expect("write beta");
+
+    let mut command = cortex_in(&dir);
+    command.args([
+        "lsp",
+        "diagnostics",
+        "alpha.fake",
+        "--workspace",
+        "--format",
+        "json",
+    ]);
+    command
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let first_output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        first_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    let first_doc: serde_json::Value =
+        serde_json::from_slice(&first_output.stdout).expect("json output");
+    assert_eq!(first_doc["status"], "diagnostics");
+    let first_rendered =
+        serde_json::to_string(&first_doc["diagnostics"]).expect("diagnostics json");
+    assert!(
+        first_rendered.contains("alpha.fake") && first_rendered.contains("beta.fake"),
+        "workspace diagnostics should include both files, got {first_rendered}"
+    );
+
+    std::fs::write(dir.join("alpha.fake"), "GOOD alpha\n").expect("clear alpha");
+    let mut rerun = cortex_in(&dir);
+    rerun.args([
+        "lsp",
+        "diagnostics",
+        "alpha.fake",
+        "--workspace",
+        "--format",
+        "json",
+    ]);
+    rerun
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+    let second_output = run(rerun, Duration::from_secs(30));
+    assert_eq!(
+        second_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    let second_doc: serde_json::Value =
+        serde_json::from_slice(&second_output.stdout).expect("json output");
+    let second_rendered =
+        serde_json::to_string(&second_doc["diagnostics"]).expect("diagnostics json");
+    assert!(
+        !second_rendered.contains("workspace BAD diagnostic from alpha.fake"),
+        "clearing alpha should remove its diagnostics, got {second_rendered}"
+    );
+    assert!(
+        second_rendered.contains("workspace BAD diagnostic from beta.fake"),
+        "workspace diagnostics should retain beta, got {second_rendered}"
     );
 }

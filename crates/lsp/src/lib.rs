@@ -22,7 +22,8 @@ pub use diagnostics::{
 pub use error::LspError;
 pub use feedback::{
     FeedbackManager, FeedbackOutcome, FileDiagnostic, NavigationOutcome, NavigationRequest,
-    ServerRunState, ServerStatus, render_feedback_block,
+    ServerRunState, ServerStatus, WorkspaceDiagnosticsOutcome, WorkspaceFileDiagnostics,
+    render_feedback_block,
 };
 pub use navigation::{
     CallHierarchyItem, DocumentSymbol, Hover, IncomingCall, Location, OutgoingCall,

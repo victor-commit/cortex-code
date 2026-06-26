@@ -97,7 +97,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    fn from_value(value: &Value) -> Option<Self> {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
         let range = Range::from_value(value.get("range")?)?;
         let severity = value
             .get("severity")
@@ -129,6 +129,46 @@ impl Diagnostic {
     pub fn severity_label(&self) -> &'static str {
         self.severity.map_or("note", DiagnosticSeverity::label)
     }
+}
+
+pub(crate) fn diagnostics_from_items(value: &Value) -> Vec<Diagnostic> {
+    value
+        .as_array()
+        .map(|items| items.iter().filter_map(Diagnostic::from_value).collect())
+        .unwrap_or_default()
+}
+
+/// One workspace diagnostic entry from `workspace/diagnostic`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceDiagnosticEntry {
+    /// File URI.
+    pub uri: String,
+    /// Diagnostics for this URI.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+pub(crate) fn document_diagnostics_from_value(value: &Value) -> Vec<Diagnostic> {
+    if let Some(items) = value.get("items") {
+        return diagnostics_from_items(items);
+    }
+    diagnostics_from_items(value)
+}
+
+pub(crate) fn workspace_diagnostics_from_value(value: &Value) -> Vec<WorkspaceDiagnosticEntry> {
+    let Some(items) = value.get("items").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let uri = item.get("uri")?.as_str()?.to_owned();
+            let diagnostics = item
+                .get("items")
+                .map(diagnostics_from_items)
+                .unwrap_or_default();
+            Some(WorkspaceDiagnosticEntry { uri, diagnostics })
+        })
+        .collect()
 }
 
 /// Parsed params for `textDocument/publishDiagnostics`.

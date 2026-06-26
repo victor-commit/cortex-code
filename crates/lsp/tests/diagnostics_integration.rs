@@ -3,7 +3,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use lsp::{FeedbackManager, FeedbackOutcome, InstallPlan, LspConfigSet, LspServerConfig};
+use lsp::{
+    FeedbackManager, FeedbackOutcome, InstallPlan, LspConfigSet, LspServerConfig,
+    WorkspaceDiagnosticsOutcome,
+};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -30,15 +33,29 @@ fn diagnostics_for(outcome: FeedbackOutcome) -> Vec<lsp::FileDiagnostic> {
     }
 }
 
+fn workspace_diagnostics_for(
+    outcome: WorkspaceDiagnosticsOutcome,
+) -> Vec<lsp::WorkspaceFileDiagnostics> {
+    match outcome {
+        WorkspaceDiagnosticsOutcome::Diagnostics(diagnostics) => diagnostics,
+        other => panic!("expected workspace diagnostics outcome, got {other:?}"),
+    }
+}
+
 fn fake_lsp_script() -> &'static str {
     r#"#!/usr/bin/env python3
 import json
+import os
 import sys
 import threading
 import time
+from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 mode = sys.argv[1]
 write_lock = threading.Lock()
+documents = {}
+root_uri = None
 
 def read_message():
     headers = {}
@@ -89,22 +106,93 @@ def delayed_publish(delay, uri, diagnostics, version=None):
         publish(uri, diagnostics, version)
     threading.Thread(target=worker, daemon=True).start()
 
+def uri_to_path(uri):
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path))
+
+def path_to_uri(path):
+    return path.resolve().as_uri()
+
+def workspace_documents():
+    if mode != "workspace_pull":
+        return dict(documents)
+    if not root_uri:
+        return dict(documents)
+    root = uri_to_path(root_uri)
+    if root is None:
+        return dict(documents)
+    discovered = {}
+    for current, _dirs, files in os.walk(root):
+        for name in files:
+            if not name.endswith(".fake"):
+                continue
+            path = Path(current) / name
+            try:
+                text = path.read_text()
+            except Exception:
+                continue
+            discovered[path_to_uri(path)] = text
+    return discovered
+
+def workspace_items():
+    items = []
+    for uri, text in sorted(workspace_documents().items()):
+        diagnostics = []
+        if "BAD" in text:
+            diagnostics = diagnostic(f"workspace BAD diagnostic from {uri.rsplit('/', 1)[-1]}")
+        items.append({
+            "uri": uri,
+            "version": 1,
+            "kind": "full",
+            "items": diagnostics,
+        })
+    return items
+
 while True:
     message = read_message()
     if message is None:
         break
     method = message.get("method")
     if method == "initialize" and "id" in message:
+        root_uri = message.get("params", {}).get("rootUri")
         send({
             "jsonrpc": "2.0",
             "id": message["id"],
             "result": {
-                "capabilities": {"textDocumentSync": 1},
+                "capabilities": {
+                    "textDocumentSync": 1,
+                    "diagnosticProvider": {
+                        "interFileDependencies": True,
+                        "workspaceDiagnostics": True,
+                    },
+                },
                 "serverInfo": {"name": "fake-lsp"},
             },
         })
     elif method == "initialized":
         pass
+    elif method == "textDocument/diagnostic" and "id" in message:
+        uri = message.get("params", {}).get("textDocument", {}).get("uri", "")
+        text = documents.get(uri, "")
+        diagnostics = diagnostic("pull BAD diagnostic") if "BAD" in text else []
+        send({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "kind": "full",
+                "items": diagnostics,
+            },
+        })
+    elif method == "workspace/diagnostic" and "id" in message:
+        send({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "items": workspace_items(),
+            },
+        })
     elif method in ("textDocument/didOpen", "textDocument/didChange"):
         text_document = message["params"].get("textDocument", {})
         uri = text_document["uri"]
@@ -114,8 +202,11 @@ while True:
         else:
             changes = message["params"].get("contentChanges", [])
             text = changes[0].get("text", "") if changes else ""
+        documents[uri] = text
 
-        if "BAD" in text and mode == "early_empty_then_delayed_bad":
+        if mode in ("pull_only", "workspace_pull"):
+            pass
+        elif "BAD" in text and mode == "early_empty_then_delayed_bad":
             publish(uri, [], version)
             delayed_publish(1.5, uri, diagnostic("delayed BAD diagnostic"), version)
         elif "BAD" in text:
@@ -245,9 +336,10 @@ fn warmed_open_document_waits_past_early_empty_publish_for_delayed_diagnostics()
     std::fs::write(&file, "BAD\n").expect("write bad fixture");
     let diagnostics = diagnostics_for(manager.collect(&file));
     assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "delayed BAD diagnostic"),
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "delayed BAD diagnostic"
+                || diagnostic.message == "pull BAD diagnostic"
+        }),
         "didChange must not treat the early empty target-URI publish as final; got {diagnostics:?}"
     );
 }
@@ -358,6 +450,68 @@ fn net_disabled_missing_installable_server_is_no_server_without_blocking_the_wri
     assert_eq!(
         std::fs::read_to_string(&file).expect("mutation persists without install"),
         "broken but persisted\n"
+    );
+}
+
+#[test]
+fn pull_diagnostics_request_reports_errors_without_publish_notifications() {
+    if !has_command("python3") {
+        eprintln!("skipping pull diagnostics test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("pull-only");
+    let file = dir.join("main.fake");
+    std::fs::write(&file, "BAD\n").expect("write bad fixture");
+    let mut manager = FeedbackManager::new(&dir, fake_config(&dir, "pull_only"))
+        .with_budget(Duration::from_secs(3));
+
+    let diagnostics = diagnostics_for(manager.collect(&file));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "pull BAD diagnostic"),
+        "expected pull diagnostics to surface without publish notifications, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn workspace_pull_diagnostics_aggregate_multiple_files_and_clear_incrementally() {
+    if !has_command("python3") {
+        eprintln!("skipping workspace diagnostics test: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("workspace-pull");
+    let alpha = dir.join("alpha.fake");
+    let beta = dir.join("beta.fake");
+    std::fs::write(&alpha, "BAD alpha\n").expect("write alpha");
+    std::fs::write(&beta, "BAD beta\n").expect("write beta");
+
+    let mut manager = FeedbackManager::new(&dir, fake_config(&dir, "workspace_pull"))
+        .with_budget(Duration::from_secs(4));
+
+    let first = workspace_diagnostics_for(manager.collect_workspace(&alpha));
+    let first_rendered = format!("{first:?}");
+    assert!(
+        first_rendered.contains("alpha.fake") && first_rendered.contains("beta.fake"),
+        "workspace diagnostics should include both files, got {first_rendered}"
+    );
+    assert!(
+        first_rendered.contains("workspace BAD diagnostic"),
+        "workspace diagnostics should include diagnostic messages, got {first_rendered}"
+    );
+
+    std::fs::write(&alpha, "GOOD alpha\n").expect("clear alpha");
+    let second = workspace_diagnostics_for(manager.collect_workspace(&alpha));
+    let second_rendered = format!("{second:?}");
+    assert!(
+        !second_rendered.contains("workspace BAD diagnostic from alpha.fake"),
+        "clearing alpha should remove only alpha diagnostics, got {second_rendered}"
+    );
+    assert!(
+        second_rendered.contains("workspace BAD diagnostic from beta.fake"),
+        "clearing alpha must keep beta diagnostics, got {second_rendered}"
     );
 }
 

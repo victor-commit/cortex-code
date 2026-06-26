@@ -31,6 +31,8 @@ struct DiagnosticsReport {
 
 #[derive(Serialize)]
 struct DiagnosticRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
     severity: String,
     line: u32,
     character: u32,
@@ -76,7 +78,15 @@ fn diagnostics(args: LspDiagnosticsArgs) -> Exit {
     };
     let server = config.resolve_for_path(&absolute).cloned();
     let mut manager = lsp::FeedbackManager::new(&cwd, config);
-    let report = diagnostics_report(&args.file, server.as_ref(), manager.collect(&input_path));
+    let report = if args.workspace {
+        workspace_diagnostics_report(
+            &args.file,
+            server.as_ref(),
+            manager.collect_workspace(&input_path),
+        )
+    } else {
+        diagnostics_report(&args.file, server.as_ref(), manager.collect(&input_path))
+    };
     emit_diagnostics_report(format, &report)
 }
 
@@ -103,7 +113,10 @@ fn diagnostics_report_with_no_net(
             };
             (
                 status.to_owned(),
-                diagnostics.into_iter().map(to_diagnostic_row).collect(),
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| to_diagnostic_row(None, diagnostic))
+                    .collect(),
                 None,
             )
         }
@@ -131,8 +144,66 @@ fn diagnostics_report_with_no_net(
     }
 }
 
-fn to_diagnostic_row(diagnostic: lsp::FileDiagnostic) -> DiagnosticRow {
+fn workspace_diagnostics_report(
+    shown_path: &str,
+    server: Option<&lsp::LspServerConfig>,
+    outcome: lsp::WorkspaceDiagnosticsOutcome,
+) -> DiagnosticsReport {
+    let (status, diagnostics, note) = match outcome {
+        lsp::WorkspaceDiagnosticsOutcome::Diagnostics(files) => {
+            let diagnostics = files
+                .into_iter()
+                .flat_map(|file| {
+                    file.diagnostics.into_iter().map(move |diagnostic| {
+                        to_diagnostic_row(Some(file.path.clone()), diagnostic)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let status = if diagnostics.is_empty() {
+                "clean"
+            } else {
+                "diagnostics"
+            };
+            (status.to_owned(), diagnostics, None)
+        }
+        lsp::WorkspaceDiagnosticsOutcome::NoServer => (
+            "no_server".to_owned(),
+            Vec::new(),
+            Some(no_server_note(
+                shown_path,
+                server,
+                redaction::network_disabled(),
+            )),
+        ),
+        lsp::WorkspaceDiagnosticsOutcome::Unsupported => (
+            "unsupported".to_owned(),
+            Vec::new(),
+            Some(format!(
+                "LSP workspace diagnostics unavailable for {shown_path}: this language server does not advertise workspace pull diagnostics"
+            )),
+        ),
+        lsp::WorkspaceDiagnosticsOutcome::Unavailable => (
+            "unavailable".to_owned(),
+            Vec::new(),
+            Some(format!(
+                "LSP workspace diagnostics unavailable for {shown_path}: language server stopped responding or failed to start"
+            )),
+        ),
+    };
+
+    DiagnosticsReport {
+        path: shown_path.to_owned(),
+        language: server.map(|server| server.language_id().to_owned()),
+        program: server.map(|server| server.program().to_owned()),
+        status,
+        diagnostics,
+        note,
+    }
+}
+
+fn to_diagnostic_row(path: Option<String>, diagnostic: lsp::FileDiagnostic) -> DiagnosticRow {
     DiagnosticRow {
+        path,
         severity: diagnostic.severity.to_owned(),
         line: diagnostic.line,
         character: diagnostic.character,
@@ -211,9 +282,14 @@ fn render_diagnostic_row(diagnostic: &DiagnosticRow) -> String {
         .as_deref()
         .map(|source| format!(" ({source})"))
         .unwrap_or_default();
+    let location_prefix = diagnostic
+        .path
+        .as_deref()
+        .map(|path| format!("{path}: "))
+        .unwrap_or_default();
     if diagnostic.line == diagnostic.end_line {
         format!(
-            "{}{code}{source} at line {}, character {}-{}: {}",
+            "{location_prefix}{}{code}{source} at line {}, character {}-{}: {}",
             diagnostic.severity,
             diagnostic.line,
             diagnostic.character,
@@ -222,7 +298,7 @@ fn render_diagnostic_row(diagnostic: &DiagnosticRow) -> String {
         )
     } else {
         format!(
-            "{}{code}{source} at line {}, character {} to line {}, character {}: {}",
+            "{location_prefix}{}{code}{source} at line {}, character {} to line {}, character {}: {}",
             diagnostic.severity,
             diagnostic.line,
             diagnostic.character,

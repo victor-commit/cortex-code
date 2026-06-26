@@ -24,12 +24,14 @@ pub const MAX_RENDERED_DIAGNOSTICS: usize = 20;
 /// Maximum characters from one diagnostic message.
 pub const MAX_MESSAGE_CHARS: usize = 500;
 const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
+const PULL_DIAGNOSTICS_WAIT_BEFORE_FALLBACK: Duration = Duration::from_millis(1200);
 // LSP cancellation/readiness errors that rust-analyzer may return while a just-opened workspace is
 // still loading or while it invalidates an in-flight query after didOpen/didChange. Treat these as
 // retryable for navigation only, without weakening fatal transport/process handling.
 const LSP_REQUEST_CANCELLED: i64 = -32800;
 const LSP_CONTENT_MODIFIED: i64 = -32801;
 const LSP_SERVER_CANCELLED: i64 = -32802;
+const LSP_METHOD_NOT_FOUND: i64 = -32601;
 
 /// One diagnostic projected to tool-result shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +63,28 @@ pub enum FeedbackOutcome {
     Unavailable,
     /// Diagnostics currently known for the file. Empty means the file is clean.
     Diagnostics(Vec<FileDiagnostic>),
+}
+
+/// One workspace diagnostic entry with a stable file path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceFileDiagnostics {
+    /// Stable file path for this diagnostic batch.
+    pub path: String,
+    /// Diagnostics for the file.
+    pub diagnostics: Vec<FileDiagnostic>,
+}
+
+/// Result of one workspace-level pull diagnostics request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceDiagnosticsOutcome {
+    /// No server applies, binary is missing, install was disabled, or startup failed.
+    NoServer,
+    /// A configured server exists but does not support workspace pull diagnostics.
+    Unsupported,
+    /// A previously running server died or stopped responding.
+    Unavailable,
+    /// Diagnostics currently known across files in the workspace.
+    Diagnostics(Vec<WorkspaceFileDiagnostics>),
 }
 
 /// A read-only LSP navigation request. Line and character inputs are 1-based because they are
@@ -276,11 +300,16 @@ impl FeedbackManager {
         let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
             return FeedbackOutcome::Unavailable;
         };
+        let wait_for_push = if client.supports_document_diagnostics_pull() {
+            remaining.min(PULL_DIAGNOSTICS_WAIT_BEFORE_FALLBACK)
+        } else {
+            remaining
+        };
         let fresh = match client.poll_fresh_diagnostics(
             &uri,
             document_version,
             baseline_generation,
-            remaining,
+            wait_for_push,
         ) {
             Ok(fresh) => fresh,
             Err(_) => {
@@ -288,23 +317,135 @@ impl FeedbackManager {
                 return FeedbackOutcome::Unavailable;
             }
         };
-        let diagnostics = fresh
-            .unwrap_or_default()
-            .iter()
-            .map(|diagnostic| FileDiagnostic {
-                severity: diagnostic
-                    .severity
-                    .map_or("note", DiagnosticSeverity::label),
-                line: diagnostic.range.start.line.saturating_add(1),
-                character: diagnostic.range.start.character.saturating_add(1),
-                end_line: diagnostic.range.end.line.saturating_add(1),
-                end_character: diagnostic.range.end.character.saturating_add(1),
-                source: diagnostic.source.clone(),
-                code: diagnostic.code.clone(),
-                message: diagnostic.message.clone(),
-            })
-            .collect();
+        let should_pull = client.supports_document_diagnostics_pull()
+            && fresh
+                .as_ref()
+                .is_none_or(|diagnostics| diagnostics.is_empty());
+        let pulled = if should_pull {
+            match client.document_diagnostics(&uri) {
+                Ok(diagnostics) => Some(diagnostics),
+                Err(crate::LspError::ServerError {
+                    code: LSP_METHOD_NOT_FOUND,
+                }) => None,
+                Err(_) => {
+                    self.mark_broken(&language_id);
+                    return FeedbackOutcome::Unavailable;
+                }
+            }
+        } else {
+            None
+        };
+        let diagnostics = if let Some(diagnostics) = fresh.as_ref().filter(|d| !d.is_empty()) {
+            diagnostics.clone()
+        } else if let Some(pulled) = pulled {
+            pulled
+        } else if let Some(fresh) = fresh {
+            fresh
+        } else {
+            client.diagnostics().for_file(&uri).to_vec()
+        }
+        .iter()
+        .map(|diagnostic| FileDiagnostic {
+            severity: diagnostic
+                .severity
+                .map_or("note", DiagnosticSeverity::label),
+            line: diagnostic.range.start.line.saturating_add(1),
+            character: diagnostic.range.start.character.saturating_add(1),
+            end_line: diagnostic.range.end.line.saturating_add(1),
+            end_character: diagnostic.range.end.character.saturating_add(1),
+            source: diagnostic.source.clone(),
+            code: diagnostic.code.clone(),
+            message: diagnostic.message.clone(),
+        })
+        .collect();
         FeedbackOutcome::Diagnostics(diagnostics)
+    }
+
+    /// Workspace-level pull diagnostics for files handled by the matching language server.
+    pub fn collect_workspace(&mut self, path: &Path) -> WorkspaceDiagnosticsOutcome {
+        let deadline = Instant::now() + self.budget;
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+        let Some(server) = self.config.resolve_for_path(&absolute).cloned() else {
+            return WorkspaceDiagnosticsOutcome::NoServer;
+        };
+        let language_id = server.language_id().to_owned();
+
+        match self.servers.get(&language_id) {
+            Some(ServerSlot::Missing | ServerSlot::Failed) => {
+                return WorkspaceDiagnosticsOutcome::NoServer;
+            }
+            Some(ServerSlot::Broken) => return WorkspaceDiagnosticsOutcome::Unavailable,
+            Some(ServerSlot::Running { .. }) | None => {}
+        }
+        if !self.servers.contains_key(&language_id) && !self.start_server(&server, deadline) {
+            return match self.servers.get(&language_id) {
+                Some(ServerSlot::Missing) => WorkspaceDiagnosticsOutcome::NoServer,
+                Some(ServerSlot::Failed | ServerSlot::Broken) => {
+                    WorkspaceDiagnosticsOutcome::Unavailable
+                }
+                Some(ServerSlot::Running { .. }) | None => WorkspaceDiagnosticsOutcome::NoServer,
+            };
+        }
+
+        if self.ensure_document(path, deadline).is_err() {
+            return match self.servers.get(&language_id) {
+                Some(ServerSlot::Broken | ServerSlot::Failed) => {
+                    WorkspaceDiagnosticsOutcome::Unavailable
+                }
+                _ => WorkspaceDiagnosticsOutcome::NoServer,
+            };
+        }
+
+        let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
+            return WorkspaceDiagnosticsOutcome::Unavailable;
+        };
+        if !client.supports_workspace_diagnostics_pull() {
+            return WorkspaceDiagnosticsOutcome::Unsupported;
+        }
+        let entries = match client.workspace_diagnostics() {
+            Ok(entries) => entries,
+            Err(crate::LspError::ServerError {
+                code: LSP_METHOD_NOT_FOUND,
+            }) => return WorkspaceDiagnosticsOutcome::Unsupported,
+            Err(_) => {
+                self.mark_broken(&language_id);
+                return WorkspaceDiagnosticsOutcome::Unavailable;
+            }
+        };
+
+        let mut diagnostics = entries
+            .into_iter()
+            .filter_map(|entry| {
+                if entry.diagnostics.is_empty() {
+                    return None;
+                }
+                Some(WorkspaceFileDiagnostics {
+                    path: uri_to_stable_path(&entry.uri),
+                    diagnostics: entry
+                        .diagnostics
+                        .into_iter()
+                        .map(|diagnostic| FileDiagnostic {
+                            severity: diagnostic
+                                .severity
+                                .map_or("note", DiagnosticSeverity::label),
+                            line: diagnostic.range.start.line.saturating_add(1),
+                            character: diagnostic.range.start.character.saturating_add(1),
+                            end_line: diagnostic.range.end.line.saturating_add(1),
+                            end_character: diagnostic.range.end.character.saturating_add(1),
+                            source: diagnostic.source,
+                            code: diagnostic.code,
+                            message: diagnostic.message,
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Vec<_>>();
+        diagnostics.sort_by(|left, right| left.path.cmp(&right.path));
+        WorkspaceDiagnosticsOutcome::Diagnostics(diagnostics)
     }
 
     /// Execute a read-only navigation request against the real language server. A missing or dead
@@ -921,6 +1062,14 @@ pub fn path_to_uri(path: &Path) -> String {
     Url::from_file_path(path)
         .map(|url| url.to_string())
         .unwrap_or_else(|()| format!("file://{}", path.display()))
+}
+
+fn uri_to_stable_path(uri: &str) -> String {
+    Url::parse(uri)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| uri.to_owned())
 }
 
 #[cfg(test)]
