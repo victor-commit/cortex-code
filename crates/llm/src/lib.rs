@@ -16,17 +16,24 @@
 //! There are no mocks in the shipped path: the live transport and the offline cassette tests run
 //! the exact same normalization code, differing only in where the SSE bytes come from.
 
+mod anthropic;
 mod error;
 mod event;
+mod gemini;
 mod openai;
 mod provider;
 mod request;
 mod transport;
 
+pub use anthropic::{ANTHROPIC_API_BASE, AnthropicConfig, AnthropicMessages};
 pub use error::LlmError;
 pub use event::{FinishReason, LlmEvent, ToolCall, ToolResult, Usage};
+pub use gemini::{GEMINI_API_BASE, GeminiConfig, GeminiProvider};
 pub use openai::FrameStream;
-pub use openai::{OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig, normalize_chat_sse};
+pub use openai::{
+    OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig, OpenAiResponses, OpenAiResponsesConfig,
+    normalize_chat_sse,
+};
 pub use provider::{LlmStream, Provider};
 pub use request::{LlmRequest, Message, MessageContentPart, Role, ToolDef};
 pub use transport::{

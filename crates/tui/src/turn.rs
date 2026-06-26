@@ -226,7 +226,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             // to cancel, the runner future is dropped here (closing the upstream
                             // stream) and the turn stops streaming at a safe boundary.
                             let cancelled = tokio::select! {
-                                _ = runner.run_with_tools(&setup.provider, setup.turn, &dispatcher, |event| {
+                                _ = runner.run_with_tools(setup.provider.as_ref(), setup.turn, &dispatcher, |event| {
                                     if let Some(remote) = &remote {
                                         remote.publish_runner_event(&event);
                                     }
@@ -382,7 +382,7 @@ fn monotonic_nanos() -> u128 {
 /// Returns a human-readable, secret-scrubbed message when the kill-switch refuses the turn, a
 /// configuration layer cannot be loaded, the model id is malformed, or no credential is available.
 struct TurnSetup {
-    provider: llm::OpenAiCompatible,
+    provider: Arc<dyn llm::Provider>,
     turn: Turn,
     model_id: String,
     agent: custom_agents::ActiveAgent,
@@ -453,25 +453,22 @@ fn build_turn(
         }
     })?;
 
-    let credentials = provider_config.credential_inputs(&model.provider_id);
-    let provider = if model.provider_id == providers::OPENROUTER_ID {
-        let base_url_override = provider_config.provider_base_url(&model.provider_id);
-        providers::resolve_openrouter_with_options(&credentials, base_url_override.as_deref(), None)
-            .map_err(|diag| diag.to_string())?
-    } else {
-        let base_url = provider_config
-            .resolve_provider_base_url(&model.provider_id)
-            .map_err(|err| err.to_string())?;
-        let headers = provider_config.provider_headers(&model.provider_id);
-        providers::resolve_openai_compatible_with_options(
-            &model.provider_id,
-            &credentials,
-            &base_url,
-            (!headers.is_empty()).then_some(headers.as_slice()),
-            None,
-        )
-        .map_err(|diag| diag.to_string())?
-    };
+    let provider = providers::resolve_runtime_provider_with_options(
+        &provider_config,
+        &model.provider_id,
+        &model.model_id,
+        None,
+    )
+    .map_err(|error| {
+        if let Some(config_error) = error.as_config() {
+            return config_error.to_string();
+        }
+        if let Some(diagnostic) = error.as_diagnostic() {
+            return diagnostic.to_string();
+        }
+        "failed to resolve runtime provider".to_owned()
+    })?
+    .provider;
 
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;

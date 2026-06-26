@@ -238,7 +238,10 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     if let Err(diag) = guard_outbound(OUTBOUND_OPERATION) {
         let endpoint = run_config
             .provider_config
-            .resolve_chat_endpoint(run_config.model.provider_id.as_str())
+            .resolve_stream_endpoint(
+                run_config.model.provider_id.as_str(),
+                run_config.model.model_id.as_str(),
+            )
             .unwrap_or_else(|_| {
                 format!(
                     "{}/chat/completions",
@@ -446,62 +449,29 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         }
         None => {
             let provider_id = run_config.model.provider_id.clone();
-            let endpoint = match run_config
-                .provider_config
-                .resolve_chat_endpoint(&provider_id)
-            {
-                Ok(endpoint) => endpoint,
-                Err(err) => {
-                    eprintln!("cortex run: {err}");
-                    return Exit::Config;
-                }
-            };
-            let inputs = run_config.provider_config.credential_inputs(&provider_id);
             provider_extra_params = run_config.provider_config.provider_params(&provider_id);
-
-            if provider_id == providers::OPENROUTER_ID {
-                let base_url_override = run_config.provider_config.provider_base_url(&provider_id);
-                match providers::resolve_openrouter_with_options(
-                    &inputs,
-                    base_url_override.as_deref(),
-                    stream_idle_timeout(),
-                ) {
-                    Ok(provider) => (
-                        Arc::new(provider),
-                        Some(crate::subagent::ProviderAuditConfig::new(
-                            provider_id,
-                            endpoint,
-                        )),
-                    ),
-                    Err(diag) => return report_setup_diagnostic(&diag),
-                }
-            } else {
-                let base_url = match run_config
-                    .provider_config
-                    .resolve_provider_base_url(&provider_id)
-                {
-                    Ok(base_url) => base_url,
-                    Err(err) => {
-                        eprintln!("cortex run: {err}");
+            match providers::resolve_runtime_provider_with_options(
+                &run_config.provider_config,
+                &provider_id,
+                run_config.model.model_id.as_str(),
+                stream_idle_timeout(),
+            ) {
+                Ok(resolved) => (
+                    resolved.provider,
+                    Some(crate::subagent::ProviderAuditConfig::new(
+                        provider_id,
+                        resolved.endpoint,
+                    )),
+                ),
+                Err(error) => {
+                    if let Some(config_error) = error.as_config() {
+                        eprintln!("cortex run: {config_error}");
                         return Exit::Config;
                     }
-                };
-                let headers = run_config.provider_config.provider_headers(&provider_id);
-                match providers::resolve_openai_compatible_with_options(
-                    &provider_id,
-                    &inputs,
-                    &base_url,
-                    (!headers.is_empty()).then_some(headers.as_slice()),
-                    stream_idle_timeout(),
-                ) {
-                    Ok(provider) => (
-                        Arc::new(provider),
-                        Some(crate::subagent::ProviderAuditConfig::new(
-                            provider_id,
-                            endpoint,
-                        )),
-                    ),
-                    Err(diag) => return report_setup_diagnostic(&diag),
+                    if let Some(diagnostic) = error.as_diagnostic() {
+                        return report_setup_diagnostic(diagnostic);
+                    }
+                    unreachable!("runtime provider error must be config or diagnostic");
                 }
             }
         }

@@ -7,9 +7,11 @@
 //! fixture-backed frame stream) in offline tests.
 
 mod normalize;
+mod responses;
 mod wire;
 
 pub use normalize::{FrameStream, normalize_chat_sse};
+pub use responses::{OpenAiResponses, OpenAiResponsesConfig};
 
 use std::fmt;
 

@@ -101,7 +101,7 @@ fn validate_provider_entry(provider_id: &str, table: &Table) -> Result<(), Confi
     for (key, value) in table {
         match key.as_str() {
             "enabled" => expect_bool(value, &format!("{base}.enabled"))?,
-            "base_url" | "api_key" | "api_key_env" => {
+            "base_url" | "api_key" | "api_key_env" | "protocol" => {
                 expect_string(value, &format!("{base}.{key}"))?;
             }
             "auth" => {

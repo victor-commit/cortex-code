@@ -585,30 +585,27 @@ impl AcpService {
                         }
                     },
                 )?;
-                let inputs = provider_config.credential_inputs(&model.provider_id);
-                let provider = if model.provider_id == providers::OPENROUTER_ID {
-                    let base_url_override = provider_config.provider_base_url(&model.provider_id);
-                    providers::resolve_openrouter_with(&inputs, base_url_override.as_deref())
-                        .map_err(|diagnostic| diagnostic.to_string())?
-                } else {
-                    let base_url = provider_config
-                        .resolve_provider_base_url(&model.provider_id)
-                        .map_err(|err| err.to_string())?;
-                    let headers = provider_config.provider_headers(&model.provider_id);
-                    providers::resolve_openai_compatible_with_options(
-                        &model.provider_id,
-                        &inputs,
-                        &base_url,
-                        (!headers.is_empty()).then_some(headers.as_slice()),
-                        None,
-                    )
-                    .map_err(|diagnostic| diagnostic.to_string())?
-                };
+                let provider = providers::resolve_runtime_provider_with_options(
+                    &provider_config,
+                    &model.provider_id,
+                    &model.model_id,
+                    None,
+                )
+                .map_err(|error| {
+                    if let Some(config_error) = error.as_config() {
+                        return config_error.to_string();
+                    }
+                    if let Some(diagnostic) = error.as_diagnostic() {
+                        return diagnostic.to_string();
+                    }
+                    "failed to resolve runtime provider".to_owned()
+                })?
+                .provider;
                 let request_params = provider_config.provider_params(&model.provider_id);
                 Ok(ResolvedProvider {
                     model_id: model.model_id.clone(),
                     model,
-                    provider: Arc::new(provider),
+                    provider,
                     request_params,
                 })
             }

@@ -59,45 +59,22 @@ pub fn run(args: GenerateArgs) -> Exit {
         };
     }
 
-    let provider = if config.provider_id == providers::OPENROUTER_ID {
-        let inputs = config
-            .provider_config
-            .credential_inputs(&config.provider_id);
-        let base_url_override = config
-            .provider_config
-            .provider_base_url(&config.provider_id);
-        match providers::resolve_openrouter_with_options(
-            &inputs,
-            base_url_override.as_deref(),
-            None,
-        ) {
-            Ok(provider) => provider,
-            Err(diag) => return report_setup_diagnostic(&diag),
-        }
-    } else {
-        let base_url = match config
-            .provider_config
-            .resolve_provider_base_url(&config.provider_id)
-        {
-            Ok(base_url) => base_url,
-            Err(err) => {
-                eprintln!("cortex generate: {err}");
+    let provider = match providers::resolve_runtime_provider_with_options(
+        &config.provider_config,
+        &config.provider_id,
+        &config.model_id,
+        None,
+    ) {
+        Ok(provider) => provider.provider,
+        Err(error) => {
+            if let Some(config_error) = error.as_config() {
+                eprintln!("cortex generate: {config_error}");
                 return Exit::Config;
             }
-        };
-        let headers = config.provider_config.provider_headers(&config.provider_id);
-        let inputs = config
-            .provider_config
-            .credential_inputs(&config.provider_id);
-        match providers::resolve_openai_compatible_with_options(
-            &config.provider_id,
-            &inputs,
-            &base_url,
-            (!headers.is_empty()).then_some(headers.as_slice()),
-            None,
-        ) {
-            Ok(provider) => provider,
-            Err(diag) => return report_setup_diagnostic(&diag),
+            if let Some(diagnostic) = error.as_diagnostic() {
+                return report_setup_diagnostic(diagnostic);
+            }
+            unreachable!("runtime provider error must be config or diagnostic");
         }
     };
 
@@ -113,7 +90,7 @@ pub fn run(args: GenerateArgs) -> Exit {
     };
 
     let answer = match runtime.block_on(generate_agent_text(
-        &provider,
+        provider.as_ref(),
         &config.model_id,
         &args.description,
         &config.request_params,

@@ -1688,7 +1688,10 @@ async fn run_message_turn(
     // provider setup, so `CORTEX_NO_NET=1` leaves the server healthy but produces no assistant.
     if let Err(diagnostic) = guard_outbound(OUTBOUND_OPERATION) {
         let endpoint = provider_config
-            .resolve_chat_endpoint(&resolved_for_guard.provider_id)
+            .resolve_stream_endpoint(
+                &resolved_for_guard.provider_id,
+                &resolved_for_guard.model_id,
+            )
             .unwrap_or_else(|_| {
                 format!(
                     "{}/chat/completions",
@@ -1913,45 +1916,34 @@ fn resolve_turn_provider(
                     ApiError::new(StatusCode::FORBIDDEN, err.to_string())
                 }
             })?;
-            let inputs = provider_config.credential_inputs(&resolved.provider_id);
-            let provider = if resolved.provider_id == providers::OPENROUTER_ID {
-                let base_url_override = provider_config.provider_base_url(&resolved.provider_id);
-                providers::resolve_openrouter_with(&inputs, base_url_override.as_deref()).map_err(
-                    |diagnostic| {
-                        let status = match diagnostic.kind() {
-                            "no-credential" => StatusCode::UNAUTHORIZED,
-                            "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
-                            _ => StatusCode::BAD_GATEWAY,
-                        };
-                        ApiError::diagnostic(status, diagnostic)
-                    },
-                )?
-            } else {
-                let base_url = provider_config
-                    .resolve_provider_base_url(&resolved.provider_id)
-                    .map_err(provider_config_api_error)?;
-                let headers = provider_config.provider_headers(&resolved.provider_id);
-                providers::resolve_openai_compatible_with_options(
-                    &resolved.provider_id,
-                    &inputs,
-                    &base_url,
-                    (!headers.is_empty()).then_some(headers.as_slice()),
-                    None,
-                )
-                .map_err(|diagnostic| {
+            let provider = providers::resolve_runtime_provider_with_options(
+                provider_config,
+                &resolved.provider_id,
+                &resolved.model_id,
+                None,
+            )
+            .map_err(|error| {
+                if let Some(config_error) = error.as_config() {
+                    return provider_config_api_error(config_error.clone());
+                }
+                if let Some(diagnostic) = error.as_diagnostic() {
                     let status = match diagnostic.kind() {
                         "no-credential" => StatusCode::UNAUTHORIZED,
                         "net-disabled" => StatusCode::SERVICE_UNAVAILABLE,
                         _ => StatusCode::BAD_GATEWAY,
                     };
-                    ApiError::diagnostic(status, diagnostic)
-                })?
-            };
+                    return ApiError::diagnostic(status, diagnostic.clone());
+                }
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to resolve runtime provider",
+                )
+            })?;
             let request_params = provider_config.provider_params(&resolved.provider_id);
             Ok(ResolvedTurnProvider {
                 model_id: resolved.model_id.clone(),
                 model: resolved,
-                provider: Arc::new(provider),
+                provider: provider.provider,
                 request_params,
             })
         }

@@ -36,6 +36,7 @@ const PROVIDER_API_KEY_KEY: &str = "api_key";
 const PROVIDER_API_KEY_ENV_KEY: &str = "api_key_env";
 const PROVIDER_AUTH_KEY: &str = "auth";
 const PROVIDER_OPTIONS_KEY: &str = "options";
+const PROVIDER_PROTOCOL_KEY: &str = "protocol";
 const PROVIDER_MODEL_OVERRIDES_KEY: &str = "model_overrides";
 const PROVIDER_MODELS_KEY: &str = "models";
 
@@ -75,12 +76,34 @@ pub struct ProviderOptionsConfig {
     pub params: JsonMap<String, JsonValue>,
 }
 
+/// The wire protocol used for a configured provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderProtocol {
+    OpenAiChat,
+    OpenAiResponses,
+    AnthropicMessages,
+    Gemini,
+}
+
+impl ProviderProtocol {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderProtocol::OpenAiChat => "openai-chat",
+            ProviderProtocol::OpenAiResponses => "openai-responses",
+            ProviderProtocol::AnthropicMessages => "anthropic-messages",
+            ProviderProtocol::Gemini => "gemini",
+        }
+    }
+}
+
 /// One typed provider entry (`[provider.<id>]`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProviderRuntimeConfig {
     pub id: String,
     pub enabled: bool,
     pub base_url: Option<String>,
+    pub protocol: Option<ProviderProtocol>,
     pub auth: ProviderAuthConfig,
     pub model_overrides: BTreeMap<String, String>,
     pub models: BTreeMap<String, ModelInfo>,
@@ -169,6 +192,19 @@ impl ProviderConfigSet {
     #[must_use]
     pub fn provider(&self, provider_id: &str) -> Option<&ProviderRuntimeConfig> {
         self.providers.get(provider_id)
+    }
+
+    /// The configured or inferred protocol for `provider_id`.
+    #[must_use]
+    pub fn provider_protocol(&self, provider_id: &str) -> ProviderProtocol {
+        if let Some(protocol) = self
+            .providers
+            .get(provider_id)
+            .and_then(|provider| provider.protocol)
+        {
+            return protocol;
+        }
+        infer_provider_protocol(provider_id)
     }
 
     /// Resolve the requested model id using global/per-provider model overrides and provider
@@ -323,6 +359,39 @@ impl ProviderConfigSet {
         ))
     }
 
+    /// Resolve the protocol-specific streaming endpoint URL for `provider_id` and `model_id`.
+    pub fn resolve_stream_endpoint(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<String, ProviderConfigError> {
+        let base_url = self.resolve_provider_base_url(provider_id)?;
+        let endpoint = match self.provider_protocol(provider_id) {
+            ProviderProtocol::OpenAiChat => {
+                format!("{}/chat/completions", base_url.trim_end_matches('/'))
+            }
+            ProviderProtocol::OpenAiResponses => {
+                format!("{}/responses", base_url.trim_end_matches('/'))
+            }
+            ProviderProtocol::AnthropicMessages => {
+                format!("{}/messages", base_url.trim_end_matches('/'))
+            }
+            ProviderProtocol::Gemini => {
+                let model = normalize_gemini_model_id(model_id);
+                let model_path = if model.starts_with("models/") {
+                    model
+                } else {
+                    format!("models/{model}")
+                };
+                format!(
+                    "{}/{model_path}:streamGenerateContent?alt=sse",
+                    base_url.trim_end_matches('/')
+                )
+            }
+        };
+        Ok(endpoint)
+    }
+
     /// Redacted provider-configuration report for machine-readable output.
     #[must_use]
     pub fn redacted_report(&self) -> ProviderConfigReport {
@@ -342,6 +411,9 @@ impl ProviderConfigSet {
                         ProviderReport {
                             enabled: provider.enabled,
                             base_url: provider.base_url.clone(),
+                            protocol: provider
+                                .protocol
+                                .map(|protocol| protocol.as_str().to_owned()),
                             auth: ProviderAuthReport {
                                 api_key: provider
                                     .auth
@@ -384,6 +456,8 @@ pub struct ProviderReport {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
     pub auth: ProviderAuthReport,
     pub model_overrides: BTreeMap<String, String>,
     pub model_count: usize,
@@ -499,6 +573,10 @@ fn parse_provider_entry(
         table.get(PROVIDER_BASE_URL_KEY),
         &format!("$.provider.{provider_id}.base_url"),
     )?;
+    let protocol = table
+        .get(PROVIDER_PROTOCOL_KEY)
+        .map(|value| parse_provider_protocol(value, &format!("$.provider.{provider_id}.protocol")))
+        .transpose()?;
     let api_key = parse_optional_string(
         table.get(PROVIDER_API_KEY_KEY),
         &format!("$.provider.{provider_id}.api_key"),
@@ -556,6 +634,7 @@ fn parse_provider_entry(
         id: provider_id.to_owned(),
         enabled,
         base_url,
+        protocol,
         auth,
         model_overrides,
         models,
@@ -811,6 +890,47 @@ fn parse_required_string(value: &Value, key_path: &str) -> Result<String, Provid
         .as_str()
         .ok_or_else(|| ProviderConfigError::type_mismatch(key_path, "a string", value))?;
     Ok(string.trim().to_owned())
+}
+
+fn parse_provider_protocol(
+    value: &Value,
+    key_path: &str,
+) -> Result<ProviderProtocol, ProviderConfigError> {
+    let raw = parse_required_string(value, key_path)?.to_ascii_lowercase();
+    match raw.as_str() {
+        "openai-chat" | "openai_chat" | "chat" => Ok(ProviderProtocol::OpenAiChat),
+        "openai-responses" | "openai_responses" | "responses" => {
+            Ok(ProviderProtocol::OpenAiResponses)
+        }
+        "anthropic-messages" | "anthropic_messages" | "anthropic" => {
+            Ok(ProviderProtocol::AnthropicMessages)
+        }
+        "gemini" | "google-gemini" | "gemini-native" => Ok(ProviderProtocol::Gemini),
+        _ => Err(ProviderConfigError::invalid(
+            key_path.to_owned(),
+            "expected one of: openai-chat, openai-responses, anthropic-messages, gemini",
+        )),
+    }
+}
+
+fn infer_provider_protocol(provider_id: &str) -> ProviderProtocol {
+    match provider_id {
+        "openai-responses" | "openai_responses" => ProviderProtocol::OpenAiResponses,
+        "anthropic" => ProviderProtocol::AnthropicMessages,
+        "google" | "gemini" => ProviderProtocol::Gemini,
+        _ => ProviderProtocol::OpenAiChat,
+    }
+}
+
+fn normalize_gemini_model_id(model_id: &str) -> String {
+    let Some((prefix, rest)) = model_id.split_once('/') else {
+        return model_id.to_owned();
+    };
+    if prefix.eq_ignore_ascii_case("google") || prefix.eq_ignore_ascii_case("gemini") {
+        rest.to_owned()
+    } else {
+        model_id.to_owned()
+    }
 }
 
 fn parse_bool(value: &Value, key_path: &str) -> Result<bool, ProviderConfigError> {

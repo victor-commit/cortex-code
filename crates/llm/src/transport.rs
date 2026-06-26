@@ -97,7 +97,32 @@ impl HttpTransport {
     ) -> Result<ByteStream, LlmError> {
         guard_outbound(OUTBOUND_OPERATION).map_err(LlmError::from_diagnostic)?;
 
-        let headers = request_headers(bearer_token, extra_headers)?;
+        let headers = request_headers(Some(bearer_token), extra_headers)?;
+        self.open_post_sse_with_header_map(url, headers, body).await
+    }
+
+    /// Open a streaming `POST` and return the raw response byte stream, using caller-provided
+    /// headers instead of an implicit bearer token.
+    ///
+    /// This is used by native providers whose auth scheme is not `Authorization: Bearer ...`
+    /// (for example Anthropic `x-api-key` or Gemini `x-goog-api-key`).
+    pub async fn open_post_sse_with_headers(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: String,
+    ) -> Result<ByteStream, LlmError> {
+        guard_outbound(OUTBOUND_OPERATION).map_err(LlmError::from_diagnostic)?;
+        let headers = request_headers(None, headers)?;
+        self.open_post_sse_with_header_map(url, headers, body).await
+    }
+
+    async fn open_post_sse_with_header_map(
+        &self,
+        url: &str,
+        headers: HeaderMap,
+        body: String,
+    ) -> Result<ByteStream, LlmError> {
         let mut retries_performed = 0_u32;
         loop {
             let response = self
@@ -200,7 +225,7 @@ fn jittered_exponential_backoff(retries_performed: u32) -> Duration {
 }
 
 fn request_headers(
-    bearer_token: &str,
+    bearer_token: Option<&str>,
     extra_headers: &[(String, String)],
 ) -> Result<HeaderMap, LlmError> {
     let mut headers = HeaderMap::new();
@@ -212,11 +237,14 @@ fn request_headers(
         reqwest::header::ACCEPT,
         HeaderValue::from_static("text/event-stream"),
     );
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {bearer_token}"))
-            .map_err(|err| LlmError::transport(format!("invalid authorization header: {err}")))?,
-    );
+    if let Some(bearer_token) = bearer_token {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {bearer_token}")).map_err(|err| {
+                LlmError::transport(format!("invalid authorization header: {err}"))
+            })?,
+        );
+    }
     for (name, value) in extra_headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|err| LlmError::transport(format!("invalid request header name: {err}")))?;
@@ -418,7 +446,7 @@ mod tests {
     #[test]
     fn extra_headers_override_prior_header_values() {
         let headers = request_headers(
-            "k",
+            Some("k"),
             &[
                 ("X-Cortex-Plugin".to_owned(), "old".to_owned()),
                 ("x-cortex-plugin".to_owned(), "new".to_owned()),

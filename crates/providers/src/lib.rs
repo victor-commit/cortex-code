@@ -21,6 +21,7 @@ mod credentials;
 mod openrouter;
 mod refresh;
 mod runtime_config;
+mod runtime_provider;
 
 pub use catalogue::{
     Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelInfo, ModelLimit, ProviderInfo,
@@ -44,6 +45,9 @@ pub use refresh::{
 };
 pub use runtime_config::{
     ProviderAuthConfig, ProviderAuthReport, ProviderConfigError, ProviderConfigReport,
-    ProviderConfigSet, ProviderOptionsConfig, ProviderOptionsReport, ProviderReport,
-    ProviderRuntimeConfig,
+    ProviderConfigSet, ProviderOptionsConfig, ProviderOptionsReport, ProviderProtocol,
+    ProviderReport, ProviderRuntimeConfig,
+};
+pub use runtime_provider::{
+    RuntimeProvider, RuntimeProviderError, resolve_runtime_provider_with_options,
 };
