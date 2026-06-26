@@ -32,7 +32,8 @@ use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
     Agent, CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
     RunError, RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult,
-    ToolDispatcher, Turn, TurnQueue, build_assistant_message_parts, project_history,
+    ToolDispatcher, Turn, TurnQueue, build_assistant_message_parts, extract_message_content_parts,
+    project_history,
 };
 use events::{Event, EventBus, LifecyclePhase, Surface};
 use futures_util::{future::BoxFuture, stream};
@@ -2138,6 +2139,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ap
     let history = messages
         .into_iter()
         .map(|message| {
+            let content_parts = extract_message_content_parts(&message.parts);
             let content = if message.content.trim().is_empty() {
                 message
                     .parts
@@ -2152,7 +2154,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ap
             } else {
                 message.content.clone()
             };
-            HistoryMessage::new(message.role, content)
+            HistoryMessage::new(message.role, content).with_parts(content_parts)
         })
         .collect::<Vec<_>>();
     Ok(project_history(&history))

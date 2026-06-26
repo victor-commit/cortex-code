@@ -165,6 +165,66 @@ async fn message_route_persists_rich_parts_and_reloads_them_after_restart() {
 }
 
 #[tokio::test]
+async fn message_route_replays_reasoning_signature_parts_in_follow_up_history() {
+    let scratch = Scratch::new("server-message-reasoning-replay");
+    let provider = Arc::new(ReasoningReplayProvider::default());
+    let app = server::app_with_provider(scratch.db_path(), provider.clone());
+    let session = create_session(&app).await;
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"first turn"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("first message response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"second turn"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("second message response");
+    assert_eq!(second.status(), StatusCode::OK);
+
+    let requests = provider.requests();
+    assert!(requests.len() >= 2, "expected two provider requests");
+    let replayed_reasoning = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.parts.iter())
+        .find_map(|part| match part {
+            llm::MessageContentPart::Reasoning {
+                provider,
+                text,
+                signature,
+            } => Some((provider.clone(), text.clone(), signature.clone())),
+            _ => None,
+        });
+    assert_eq!(
+        replayed_reasoning,
+        Some((
+            "anthropic".to_owned(),
+            "reasoning for replay".to_owned(),
+            Some("sig-server-replay".to_owned())
+        )),
+        "second request should replay persisted reasoning metadata/signature parts"
+    );
+}
+
+#[tokio::test]
 async fn message_route_model_parameter_selects_requested_model_for_turn() {
     let scratch = Scratch::new("server-message-model-param");
     let provider = Arc::new(EchoProvider::default());
@@ -2833,6 +2893,12 @@ struct RichPartsProvider {
     calls: AtomicUsize,
 }
 
+#[derive(Debug, Default)]
+struct ReasoningReplayProvider {
+    calls: AtomicUsize,
+    requests: Mutex<Vec<LlmRequest>>,
+}
+
 #[derive(Debug)]
 struct AbortableToolProvider {
     calls: AtomicUsize,
@@ -3178,6 +3244,69 @@ impl Provider for RichPartsProvider {
                         input_tokens: 12,
                         output_tokens: 4,
                         total_tokens: 16,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl ReasoningReplayProvider {
+    fn requests(&self) -> Vec<LlmRequest> {
+        self.requests.lock().expect("requests lock").clone()
+    }
+}
+
+impl Provider for ReasoningReplayProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = if call == 0 {
+                vec![
+                    LlmEvent::Reasoning {
+                        text: "reasoning for replay".to_owned(),
+                        metadata: Some(serde_json::json!({
+                            "provider": "anthropic",
+                            "signature": "sig-server-replay"
+                        })),
+                    },
+                    LlmEvent::TextDelta {
+                        text: "first answer".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 7,
+                        output_tokens: 3,
+                        total_tokens: 10,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "follow-up answer".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 8,
+                        output_tokens: 4,
+                        total_tokens: 12,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
                         reasoning_output_tokens: None,

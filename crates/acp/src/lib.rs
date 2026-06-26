@@ -21,7 +21,7 @@ use db::{Database, DbPathInputs};
 use engine::{
     CompactionPolicy, EnvironmentBlock, HistoryMessage, ModelFamily, PartLifecycleTracker,
     RunOutcome, RunnerEvent, SessionRunner, SystemContext, ToolDispatchResult, ToolDispatcher,
-    Turn, TurnQueue, build_assistant_message_parts, project_history,
+    Turn, TurnQueue, build_assistant_message_parts, extract_message_content_parts, project_history,
 };
 use errors::Exit;
 use events::{Event, EventBus};
@@ -1062,6 +1062,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, St
             messages
                 .into_iter()
                 .map(|message| {
+                    let content_parts = extract_message_content_parts(&message.parts);
                     let content = if message.content.trim().is_empty() {
                         message
                             .parts
@@ -1078,7 +1079,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, St
                     } else {
                         message.content.clone()
                     };
-                    HistoryMessage::new(message.role, content)
+                    HistoryMessage::new(message.role, content).with_parts(content_parts)
                 })
                 .collect::<Vec<_>>()
         })
@@ -1315,6 +1316,80 @@ mod tests {
     impl ContextProvider {
         fn requests(&self) -> Vec<LlmRequest> {
             self.requests.lock().expect("requests mutex").clone()
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ReasoningReplayProvider {
+        requests: Arc<StdMutex<Vec<LlmRequest>>>,
+    }
+
+    impl ReasoningReplayProvider {
+        fn requests(&self) -> Vec<LlmRequest> {
+            self.requests.lock().expect("requests mutex").clone()
+        }
+    }
+
+    impl Provider for ReasoningReplayProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let requests = self.requests.clone();
+            async move {
+                let call = {
+                    let mut guard = requests.lock().expect("requests mutex");
+                    let call = guard.len();
+                    guard.push(request);
+                    call
+                };
+                let events = if call == 0 {
+                    vec![
+                        LlmEvent::Reasoning {
+                            text: "reasoning for replay".to_owned(),
+                            metadata: Some(serde_json::json!({
+                                "provider": "anthropic",
+                                "signature": "sig-acp-replay"
+                            })),
+                        },
+                        LlmEvent::TextDelta {
+                            text: "first answer".to_owned(),
+                        },
+                        LlmEvent::Usage(Usage {
+                            input_tokens: 3,
+                            output_tokens: 2,
+                            total_tokens: 5,
+                            cache_creation_input_tokens: None,
+                            cache_read_input_tokens: None,
+                            reasoning_output_tokens: None,
+                            cost: Some(0.000002),
+                        }),
+                        LlmEvent::Done {
+                            reason: llm::FinishReason::Stop,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "follow-up answer".to_owned(),
+                        },
+                        LlmEvent::Usage(Usage {
+                            input_tokens: 4,
+                            output_tokens: 2,
+                            total_tokens: 6,
+                            cache_creation_input_tokens: None,
+                            cache_read_input_tokens: None,
+                            reasoning_output_tokens: None,
+                            cost: Some(0.000002),
+                        }),
+                        LlmEvent::Done {
+                            reason: llm::FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(stream::iter(events)) as LlmStream)
+            }
+            .boxed()
         }
     }
 
@@ -1872,6 +1947,79 @@ mod tests {
                 .any(|message| message.content.contains("marmalade")),
             "second provider request lacked prior session context: {:?}",
             requests[1].messages
+        );
+    }
+
+    #[tokio::test]
+    async fn prompts_replay_reasoning_signature_parts_in_follow_up_history() {
+        let provider = ReasoningReplayProvider::default();
+        let (service, buffer) = service_with_provider(Arc::new(provider.clone()));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+
+        service
+            .handle_value(
+                request(
+                    3,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "first turn" }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("first prompt");
+        wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(3)))
+        })
+        .await;
+
+        service
+            .handle_value(
+                request(
+                    4,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": "second turn" }]
+                    }),
+                ),
+                writer,
+            )
+            .expect("second prompt");
+        wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(4)))
+        })
+        .await;
+
+        let requests = provider.requests();
+        assert!(requests.len() >= 2, "expected two provider requests");
+        let replayed_reasoning = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| message.parts.iter())
+            .find_map(|part| match part {
+                llm::MessageContentPart::Reasoning {
+                    provider,
+                    text,
+                    signature,
+                } => Some((provider.clone(), text.clone(), signature.clone())),
+                _ => None,
+            });
+        assert_eq!(
+            replayed_reasoning,
+            Some((
+                "anthropic".to_owned(),
+                "reasoning for replay".to_owned(),
+                Some("sig-acp-replay".to_owned())
+            )),
+            "second request should replay persisted reasoning metadata/signature parts"
         );
     }
 

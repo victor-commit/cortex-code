@@ -45,7 +45,7 @@ pub use context::SystemContext;
 pub use environment::{EnvironmentBlock, GitStatus};
 pub use event::{CompactionRecord, RunError, RunOutcome, RunnerEvent};
 pub use family::ModelFamily;
-pub use history::{HistoryMessage, project_history, project_role};
+pub use history::{HistoryMessage, extract_message_content_parts, project_history, project_role};
 pub use message_parts::build_assistant_message_parts;
 pub use runner::{DEFAULT_MAX_STEPS, SessionRunner, Turn};
 pub use stream_lifecycle::{
