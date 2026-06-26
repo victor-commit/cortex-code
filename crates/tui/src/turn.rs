@@ -55,6 +55,7 @@ const OUTBOUND_OPERATION: &str = "LLM turn";
 /// Plain data needed to spawn one TUI turn worker.
 pub struct SpawnRequest {
     pub prompt: String,
+    pub user_parts: Vec<llm::MessageContentPart>,
     pub history: Vec<Message>,
     pub model: String,
     pub agent: String,
@@ -128,6 +129,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
     thread::spawn(move || {
         let SpawnRequest {
             prompt,
+            user_parts,
             history,
             model,
             agent,
@@ -138,7 +140,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
             db_path,
             cancel,
         } = request;
-        match build_turn(&prompt, history, &model, &agent, pure_plugins) {
+        match build_turn(&prompt, user_parts, history, &model, &agent, pure_plugins) {
             Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -395,6 +397,7 @@ struct TurnSetup {
 
 fn build_turn(
     prompt: &str,
+    user_parts: Vec<llm::MessageContentPart>,
     history: Vec<Message>,
     active_model: &str,
     active_agent: &str,
@@ -481,6 +484,7 @@ fn build_turn(
         &discovered_skill_list,
     );
     let mut turn = Turn::new(&model_id, system, prompt)
+        .with_user_parts(user_parts)
         .with_history(history)
         .with_compaction(compaction);
     let request_params = provider_config.provider_params(&model.provider_id);

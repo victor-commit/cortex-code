@@ -42,6 +42,14 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Open the theme picker",
     },
     SlashCommand {
+        name: "attach",
+        description: "Attach a local file (png, jpg, pdf, svg)",
+    },
+    SlashCommand {
+        name: "paste",
+        description: "Attach an image from the clipboard",
+    },
+    SlashCommand {
         name: "init",
         description: "Initialize the project (AGENTS.md)",
     },

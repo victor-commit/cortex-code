@@ -17,13 +17,15 @@ use std::time::{Duration, Instant};
 
 use checkpoints::{RestoreOutcome, ShadowStore};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use engine::{Agent, RunnerEvent};
-use llm::{Message, Usage};
+use engine::{Agent, RunnerEvent, extract_message_content_parts};
+use llm::{Message, MessageContentPart, Usage};
 use permissions::{Decision, ScopedDecision};
 use plugins::PluginEventHooks;
+use protocol::{MessagePart, MessagePartBody};
 use tui_components::toast::{Toast, ToastLevel};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
+use crate::attachments::InputAttachment;
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
 use crate::permission::PermissionAsk;
@@ -83,6 +85,8 @@ struct QueuedPrompt {
     header: Option<String>,
     /// The expanded prompt actually sent to the model.
     prompt: String,
+    /// Non-text attachments captured at submit-time for this queued message.
+    attachments: Vec<InputAttachment>,
 }
 
 /// An interactive permission prompt awaiting the user's decision.
@@ -137,6 +141,8 @@ pub enum DialogKind {
     Themes,
     /// The MCP status/list view (`/mcp`).
     Mcp,
+    /// Attachment file picker (`/attach`).
+    Attachments,
 }
 
 /// A modal list dialog (a picker or status view) floating over the transcript.
@@ -375,10 +381,14 @@ pub struct App {
     /// turn. For a flow this is the expanded instruction sent to the model, which may differ from
     /// the concise header shown in the transcript ([`App::pending_header`]).
     pending_prompt: Option<String>,
+    /// Attachments staged in the composer for the next submitted prompt.
+    composer_attachments: Vec<InputAttachment>,
     /// The user-visible header for the queued turn, set by a slash flow so the transcript shows a
     /// concise label (e.g. `/init`) rather than the verbose instruction. `None` for a plain chat
     /// prompt, where the typed text is shown verbatim.
     pending_header: Option<String>,
+    /// Attachments captured for the next turn waiting in `pending_prompt`.
+    pending_attachments: Vec<InputAttachment>,
     /// Whether the queued turn compacts the conversation into its summary on completion (set by the
     /// `/compact` flow). Consumed when the turn begins.
     pending_compaction: bool,
@@ -388,6 +398,8 @@ pub struct App {
     spinner_start: Option<Instant>,
     /// The user prompt of the in-flight turn, appended to history once the turn finishes.
     turn_prompt: Option<String>,
+    /// Attachments submitted with the in-flight user prompt.
+    turn_attachments: Vec<InputAttachment>,
     /// Whether the in-flight turn already surfaced an error (so finalization skips the answer).
     turn_errored: bool,
     /// The latest usage event for the in-flight turn, persisted once the turn settles.
@@ -528,11 +540,14 @@ impl App {
             transcript: Vec::new(),
             usage: UsageSummary::default(),
             pending_prompt: None,
+            composer_attachments: Vec::new(),
             pending_header: None,
+            pending_attachments: Vec::new(),
             pending_compaction: false,
             turn_rx: None,
             spinner_start: None,
             turn_prompt: None,
+            turn_attachments: Vec::new(),
             turn_errored: false,
             turn_usage: None,
             turn_compaction: false,
@@ -787,10 +802,22 @@ impl App {
         self.history.clone()
     }
 
+    /// Attachments currently staged in the prompt composer.
+    #[must_use]
+    pub fn composer_attachments(&self) -> &[InputAttachment] {
+        &self.composer_attachments
+    }
+
     /// Take the prompt accepted by `submit` (if any), clearing it so a turn starts exactly once.
     #[must_use]
     pub fn take_pending_prompt(&mut self) -> Option<String> {
         self.pending_prompt.take()
+    }
+
+    /// The queued turn's non-text media parts as an LLM request payload.
+    #[must_use]
+    pub fn pending_user_parts_for_turn(&self) -> Vec<MessageContentPart> {
+        attachments_to_message_content_parts(&self.pending_attachments)
     }
 
     /// Build the attached-server bridge for the next local TUI turn.
@@ -832,8 +859,12 @@ impl App {
         cancel: Arc<AtomicBool>,
     ) {
         let header = self.pending_header.take().unwrap_or_else(|| prompt.clone());
+        let attachments = std::mem::take(&mut self.pending_attachments);
         self.transcript
-            .push(Entry::User(redaction::redact(&header)));
+            .push(Entry::User(redaction::redact(&render_user_entry(
+                &header,
+                &attachments,
+            ))));
         self.transcript
             .push(Entry::Assistant(AssistantTurn::default()));
         self.turn_errored = false;
@@ -846,9 +877,11 @@ impl App {
         // summarization instruction is not part of the visible conversation, so it is not persisted
         // (the full pre-compaction transcript stays the durable record).
         if !self.turn_compaction {
-            self.persist_message("user", &prompt);
+            let user_parts = user_message_parts(&prompt, &attachments);
+            self.persist_message("user", &prompt, &user_parts);
         }
         self.turn_prompt = Some(prompt);
+        self.turn_attachments = attachments;
         self.turn_rx = Some(rx);
         self.cancel_flag = Some(cancel);
         self.spinner_start = Some(Instant::now());
@@ -1151,6 +1184,7 @@ impl App {
         self.cancel_flag = None;
         self.spinner_start = None;
         let prompt = self.turn_prompt.take();
+        let turn_attachments = std::mem::take(&mut self.turn_attachments);
         let errored = std::mem::take(&mut self.turn_errored);
         let turn_usage = self.turn_usage.take();
         let compaction = std::mem::take(&mut self.turn_compaction);
@@ -1174,14 +1208,17 @@ impl App {
         }
 
         if let Some(prompt) = prompt {
-            self.history.push(Message::user(prompt));
+            self.history.push(
+                Message::user(prompt)
+                    .with_parts(attachments_to_message_content_parts(&turn_attachments)),
+            );
             if !errored {
                 if let Some(answer) = self.latest_assistant_answer() {
                     self.history.push(Message::assistant(answer.clone()));
                     // Persist the assistant reply so a resumed session (headless or picker) sees the
                     // full exchange. The user message was persisted when the turn began; an errored
                     // turn has no answer to record, matching the headless runner.
-                    self.persist_message("assistant", &answer);
+                    self.persist_message("assistant", &answer, &[]);
                 }
                 if let Some(usage) = turn_usage.as_ref() {
                     self.persist_usage(usage);
@@ -1200,6 +1237,7 @@ impl App {
         if let Some(item) = self.queued_prompts.pop_front() {
             self.pending_header = item.header;
             self.pending_prompt = Some(item.prompt);
+            self.pending_attachments = item.attachments;
         }
     }
 
@@ -1222,11 +1260,15 @@ impl App {
         self.spinner_start = None;
         self.flush_stream_redactors();
         let prompt = self.turn_prompt.take();
+        let turn_attachments = std::mem::take(&mut self.turn_attachments);
         let errored = std::mem::take(&mut self.turn_errored);
         let _ = self.turn_usage.take();
         let _ = std::mem::take(&mut self.turn_compaction);
         if let Some(prompt) = prompt {
-            self.history.push(Message::user(prompt));
+            self.history.push(
+                Message::user(prompt)
+                    .with_parts(attachments_to_message_content_parts(&turn_attachments)),
+            );
             if !errored {
                 if let Some(answer) = self.latest_assistant_answer() {
                     self.history.push(Message::assistant(answer));
@@ -1861,6 +1903,10 @@ impl App {
             "models" => self.open_models_dialog(),
             "agents" => self.open_agents_dialog(),
             "themes" => self.open_themes_dialog(),
+            "attach" => self.open_attachments_dialog(),
+            "paste" => {
+                let _ = self.attach_from_clipboard_image();
+            }
             "mcp" => self.open_mcp_dialog(),
             "editor" => self.editor_requested = true,
             "share" => self.share_session(),
@@ -1978,6 +2024,95 @@ impl App {
             selected,
             empty: None,
         });
+    }
+
+    /// Open the attachment picker (`/attach`): project files, newest-first sorting not required.
+    ///
+    /// The picker intentionally lists every project file so selecting an unsupported file type
+    /// surfaces a visible validation error rather than silently hiding non-image/document files.
+    fn open_attachments_dialog(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let items = mention::list_project_files(&cwd);
+        self.open_dialog(Dialog {
+            kind: DialogKind::Attachments,
+            title: "Attach file (png, jpg, pdf, svg)".to_owned(),
+            items,
+            selected: 0,
+            empty: Some("No files in the current project.".to_owned()),
+        });
+    }
+
+    /// Confirm the currently highlighted attachment picker row, attempting to stage that file as an
+    /// input attachment.
+    fn confirm_attachment_selection(&mut self) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        if dialog.kind != DialogKind::Attachments {
+            return;
+        }
+        let Some(path) = dialog.items.get(dialog.selected()).cloned() else {
+            return;
+        };
+        let _ = self.attach_local_file_path(&path);
+    }
+
+    /// Try to stage a local file attachment in the composer.
+    ///
+    /// Returns `true` when an attachment was added, `false` on validation failure.
+    fn attach_local_file_path(&mut self, raw_path: &str) -> bool {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        match crate::attachments::resolve_local_file_attachment(&cwd, raw_path) {
+            Ok(attachment) => {
+                if self
+                    .composer_attachments
+                    .iter()
+                    .any(|existing| existing.path == attachment.path)
+                {
+                    self.push_toast(ToastLevel::Info, "Attachment already added");
+                    return true;
+                }
+                let label = attachment.chip_label();
+                self.composer_attachments.push(attachment);
+                self.push_toast(ToastLevel::Success, format!("Attached {label}"));
+                true
+            }
+            Err(err) => {
+                self.transcript
+                    .push(Entry::Error(format!("Attachment error: {err}")));
+                self.push_toast(ToastLevel::Error, "Attachment failed");
+                false
+            }
+        }
+    }
+
+    /// Try to stage a clipboard image attachment in the composer.
+    fn attach_from_clipboard_image(&mut self) -> bool {
+        match crate::attachments::capture_clipboard_image_attachment() {
+            Ok(attachment) => {
+                if self
+                    .composer_attachments
+                    .iter()
+                    .any(|existing| existing.path == attachment.path)
+                {
+                    self.push_toast(ToastLevel::Info, "Attachment already added");
+                    return true;
+                }
+                let label = attachment.chip_label();
+                self.composer_attachments.push(attachment);
+                self.push_toast(
+                    ToastLevel::Success,
+                    format!("Attached {label} from clipboard"),
+                );
+                true
+            }
+            Err(err) => {
+                self.transcript
+                    .push(Entry::Error(format!("Clipboard attachment error: {err}")));
+                self.push_toast(ToastLevel::Error, "Clipboard attachment failed");
+                false
+            }
+        }
     }
 
     /// Open the MCP status/list view (`/mcp`): the configured MCP servers and their status. With no
@@ -2251,6 +2386,9 @@ impl App {
                     self.load_session(&id);
                 }
             }
+            Some(DialogKind::Attachments) => {
+                self.confirm_attachment_selection();
+            }
             _ => {}
         }
         self.close_dialog();
@@ -2331,12 +2469,17 @@ impl App {
     /// Persist one conversation message under the active session, creating the session lazily if
     /// needed. Best-effort: a disabled/unopenable store or a write error leaves the turn rendered
     /// in-memory without aborting it (the answer has already been shown).
-    fn persist_message(&mut self, role: &str, content: &str) {
+    fn persist_message(&mut self, role: &str, content: &str, parts: &[MessagePart]) {
         let Some(id) = self.ensure_session_id() else {
             return;
         };
         if let Some(db) = self.open_store() {
-            if let Ok(message) = db.messages().create(&id, role, content) {
+            let persisted = if parts.is_empty() {
+                db.messages().create(&id, role, content)
+            } else {
+                db.messages().create_with_parts(&id, role, content, parts)
+            };
+            if let Ok(message) = persisted {
                 self.seen_message_ids.insert(message.id);
             }
         }
@@ -2498,10 +2641,16 @@ impl App {
     }
 
     fn append_loaded_message(&mut self, message: &db::Message) {
+        let media_parts = extract_message_content_parts(&message.parts);
+        let attachments = attachments_from_message_parts(&message.parts);
         match message.role.as_str() {
             "user" => {
-                self.transcript.push(Entry::User(message.content.clone()));
-                self.history.push(Message::user(message.content.clone()));
+                self.transcript.push(Entry::User(render_user_entry(
+                    &message.content,
+                    &attachments,
+                )));
+                self.history
+                    .push(Message::user(message.content.clone()).with_parts(media_parts));
             }
             "assistant" => {
                 self.transcript.push(Entry::Assistant(AssistantTurn {
@@ -2509,7 +2658,7 @@ impl App {
                     answer: message.content.clone(),
                 }));
                 self.history
-                    .push(Message::assistant(message.content.clone()));
+                    .push(Message::assistant(message.content.clone()).with_parts(media_parts));
             }
             _ => {}
         }
@@ -2555,6 +2704,9 @@ impl App {
         self.transcript.clear();
         self.history.clear();
         self.seen_message_ids.clear();
+        self.composer_attachments.clear();
+        self.pending_attachments.clear();
+        self.turn_attachments.clear();
         self.usage = UsageSummary::from_totals(session.usage);
         for message in &session.messages {
             self.seen_message_ids.insert(message.id.clone());
@@ -2715,6 +2867,10 @@ impl App {
         self.history.clear();
         self.seen_message_ids.clear();
         self.usage = UsageSummary::default();
+        self.composer_attachments.clear();
+        self.pending_attachments.clear();
+        self.turn_attachments.clear();
+        self.queued_prompts.clear();
         // Detach from the current durable session so the next turn creates a fresh one rather than
         // appending to the prior conversation; the footer returns to the "new" placeholder until it
         // is created.
@@ -3035,6 +3191,7 @@ impl App {
         self.transcript.push(Entry::Notice(notice.to_owned()));
         self.pending_header = Some(header.to_owned());
         self.pending_prompt = Some(prompt.to_owned());
+        self.pending_attachments.clear();
     }
 
     /// Start conversation compaction (`/compact`): queue a summarization turn whose summary replaces
@@ -3055,6 +3212,7 @@ impl App {
         ));
         self.pending_header = Some("/compact".to_owned());
         self.pending_prompt = Some(COMPACTION_PROMPT.to_owned());
+        self.pending_attachments.clear();
         self.pending_compaction = true;
     }
 
@@ -3459,9 +3617,13 @@ impl App {
             self.should_quit = true;
             return;
         }
+        if self.dispatch_prompt_attachment_command(trimmed) {
+            return;
+        }
         if trimmed.is_empty() {
             return;
         }
+        let attachments = std::mem::take(&mut self.composer_attachments);
         // Inline any `@`-mentioned file contents into the prompt sent to the model, while showing the
         // typed `@path` prompt in the transcript: the expanded text becomes the prompt (sent and
         // carried into history) and the typed text becomes the user-visible header.
@@ -3476,6 +3638,7 @@ impl App {
             self.queued_prompts.push_back(QueuedPrompt {
                 header,
                 prompt: expanded,
+                attachments,
             });
             self.mention = None;
             self.input.set_value("");
@@ -3490,11 +3653,37 @@ impl App {
             self.pending_header = Some(header);
         }
         self.pending_prompt = Some(expanded);
+        self.pending_attachments = attachments;
         self.mention = None;
         self.input.set_value("");
         // A new turn is about to append content; return to the latest and drop any stale
         // navigation focus so the streaming reply stays in view.
         self.reset_view();
+    }
+
+    /// Handle prompt-level attachment commands typed directly into the prompt.
+    ///
+    /// Returns `true` when the input was treated as an attachment command and should not be sent to
+    /// the model as a normal prompt.
+    fn dispatch_prompt_attachment_command(&mut self, trimmed: &str) -> bool {
+        if trimmed == "/attach" {
+            self.open_attachments_dialog();
+            self.input.set_value("");
+            return true;
+        }
+        if let Some(path) = trimmed.strip_prefix("/attach ") {
+            if self.attach_local_file_path(path) {
+                self.input.set_value("");
+            }
+            return true;
+        }
+        if trimmed == "/paste" {
+            if self.attach_from_clipboard_image() {
+                self.input.set_value("");
+            }
+            return true;
+        }
+        false
     }
 
     /// Whether the prompt is in `!` shell mode (rendered with a distinct affordance).
@@ -3531,6 +3720,47 @@ impl App {
 /// Builds [`TextAreaModifiers`] from a shift flag (ctrl/alt are never forwarded here).
 fn modifiers(shift: bool) -> TextAreaModifiers {
     TextAreaModifiers::new(shift, false, false)
+}
+
+fn attachments_to_message_content_parts(
+    attachments: &[InputAttachment],
+) -> Vec<MessageContentPart> {
+    attachments
+        .iter()
+        .map(InputAttachment::to_message_content_part)
+        .collect()
+}
+
+fn attachments_from_message_parts(parts: &[MessagePart]) -> Vec<InputAttachment> {
+    parts
+        .iter()
+        .filter_map(crate::attachments::attachment_from_message_part)
+        .collect()
+}
+
+fn user_message_parts(content: &str, attachments: &[InputAttachment]) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    if !content.trim().is_empty() {
+        parts.push(MessagePart {
+            id: String::new(),
+            created_at: None,
+            body: MessagePartBody::Text {
+                text: content.to_owned(),
+            },
+        });
+    }
+    parts.extend(attachments.iter().map(InputAttachment::to_message_part));
+    parts
+}
+
+fn render_user_entry(content: &str, attachments: &[InputAttachment]) -> String {
+    if attachments.is_empty() {
+        return content.to_owned();
+    }
+    let mut lines = Vec::with_capacity(1 + attachments.len());
+    lines.push(content.to_owned());
+    lines.extend(attachments.iter().map(InputAttachment::transcript_label));
+    lines.join("\n")
 }
 
 /// The plain-text content of a transcript entry, used when copying a message to the clipboard.
@@ -3825,6 +4055,9 @@ fn run_editor_with(editor: &str, seed: &str) -> io::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ATTACH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -3841,6 +4074,18 @@ mod tests {
             mode: "build".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    fn temp_attachment(ext: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let name = format!(
+            "cortex-tui-attachment-{}-{}.{}",
+            std::process::id(),
+            ATTACH_COUNTER.fetch_add(1, Ordering::Relaxed),
+            ext
+        );
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, bytes).expect("write temp attachment");
+        path
     }
 
     /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
@@ -5258,6 +5503,138 @@ mod tests {
         assert!(!a.slash_menu_open());
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.take_pending_prompt().as_deref(), Some("just chatting"));
+    }
+
+    #[test]
+    fn attach_command_rejects_unsupported_files_without_clearing_prompt_text() {
+        let mut a = app();
+        let file = temp_attachment("txt", b"not a supported attachment");
+        let command = format!("/attach {}", file.display());
+        a.set_input_value(&command);
+        a.on_key(key(KeyCode::Enter));
+
+        assert!(
+            a.composer_attachments().is_empty(),
+            "unsupported files must not be staged"
+        );
+        assert_eq!(
+            a.input_value(),
+            command,
+            "failed attachment keeps the typed prompt text intact"
+        );
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Error(message)) if message.contains("Attachment error")),
+            "a visible attachment error is surfaced"
+        );
+    }
+
+    #[test]
+    fn attach_command_stages_supported_media_in_the_composer() {
+        let mut a = app();
+        let png = temp_attachment(
+            "png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(key(KeyCode::Enter));
+
+        assert_eq!(a.input_value(), "", "successful attach clears the command");
+        assert_eq!(a.composer_attachments().len(), 1, "one attachment staged");
+        assert_eq!(a.composer_attachments()[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn submitting_with_staged_attachments_emits_pending_user_parts() {
+        let mut a = app();
+        let pdf = temp_attachment("pdf", b"%PDF-1.7\n");
+        a.set_input_value(&format!("/attach {}", pdf.display()));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.composer_attachments().len(), 1, "attachment staged");
+
+        a.set_input_value("What is in this file?");
+        a.on_key(key(KeyCode::Enter));
+
+        assert_eq!(
+            a.take_pending_prompt().as_deref(),
+            Some("What is in this file?")
+        );
+        let parts = a.pending_user_parts_for_turn();
+        assert!(
+            parts.iter().any(|part| matches!(
+                part,
+                MessageContentPart::Document { media_type, path }
+                    if media_type == "application/pdf" && path.ends_with(".pdf")
+            )),
+            "submitted turn carries a document content part: {parts:?}"
+        );
+        assert!(
+            a.composer_attachments().is_empty(),
+            "attachments move out of the composer once submitted"
+        );
+    }
+
+    #[test]
+    fn attachments_are_visible_in_transcript_and_history_after_turn_completion() {
+        let mut a = app();
+        let png = temp_attachment(
+            "png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(key(KeyCode::Enter));
+        a.set_input_value("Describe the attachment.");
+        a.on_key(key(KeyCode::Enter));
+        let prompt = a.take_pending_prompt().expect("queued turn prompt");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt, rx, flag());
+        assert!(
+            matches!(
+                a.transcript.last(),
+                Some(Entry::Assistant(AssistantTurn { .. }))
+            ),
+            "assistant placeholder is present"
+        );
+        assert!(
+            a.transcript
+                .iter()
+                .any(|entry| matches!(entry, Entry::User(text) if text.contains("📎 image/png:"))),
+            "user transcript entry surfaces the attachment reference"
+        );
+
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "Looks like a tiny PNG.".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        let history = a.history_snapshot();
+        assert!(
+            history.iter().any(|message| {
+                message.role == llm::Role::User
+                    && message.parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            MessageContentPart::Image { media_type, path }
+                                if media_type == "image/png" && path.ends_with(".png")
+                        )
+                    })
+            }),
+            "finalized history keeps the user image part for follow-up turns: {history:?}"
+        );
     }
 
     /// Run a complete throwaway turn so the app accumulates transcript + history state.

@@ -97,7 +97,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 /// Number of text rows the prompt box should show (clamped to available height).
 fn prompt_rows(app: &App, total_height: u16) -> u16 {
-    let logical = app.input.line_count().max(1);
+    let attachment_rows = if app.composer_attachments().is_empty() {
+        0
+    } else {
+        1
+    };
+    let logical = app.input.line_count().max(1) + attachment_rows;
     // Leave room for at least one transcript row, the prompt borders, and the footer.
     let budget = total_height.saturating_sub(1 + 2 + 1).max(1) as usize;
     logical.min(MAX_PROMPT_ROWS).min(budget).max(1) as u16
@@ -830,6 +835,34 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let (attachment_area, input_area) = if app.composer_attachments().is_empty() {
+        (None, inner)
+    } else if inner.height > 1 {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+        (Some(rows[0]), rows[1])
+    } else {
+        (Some(inner), inner)
+    };
+
+    if let Some(attachment_area) = attachment_area {
+        let chips = app
+            .composer_attachments()
+            .iter()
+            .map(|attachment| format!("📎 {}", attachment.chip_label()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                chips,
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            )),
+            attachment_area,
+        );
+    }
 
     let value = app.input_value();
     if value.is_empty() {
@@ -845,7 +878,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
                     .fg(theme.text_dim)
                     .add_modifier(Modifier::DIM),
             )),
-            inner,
+            input_area,
         );
     } else {
         let lines: Vec<Line> = app
@@ -854,15 +887,13 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             .iter()
             .map(|l| Line::from(l.clone()))
             .collect();
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines), input_area);
     }
 
-    if inner.width > 0 && inner.height > 0 {
-        let cursor = app.cursor();
-        let cx = inner.x + (cursor.col as u16).min(inner.width - 1);
-        let cy = inner.y + (cursor.row as u16).min(inner.height - 1);
-        frame.set_cursor_position((cx, cy));
-    }
+    let cursor = app.cursor();
+    let cx = input_area.x + (cursor.col as u16).min(input_area.width - 1);
+    let cy = input_area.y + (cursor.row as u16).min(input_area.height - 1);
+    frame.set_cursor_position((cx, cy));
 }
 
 /// Build the slash-command menu's rows for the current query, or `None` when the menu is closed.
@@ -1819,8 +1850,10 @@ mod tests {
     use super::*;
     use crate::app::{App, AssistantTurn, DialogKind, Status};
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
+
+    static ATTACH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn app() -> App {
         App::new(Status {
@@ -1829,6 +1862,26 @@ mod tests {
             mode: "build".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    fn temp_png() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "cortex-tui-ui-attach-{}-{}.png",
+            std::process::id(),
+            ATTACH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(
+            &path,
+            [
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        )
+        .expect("write temp png");
+        path
     }
 
     /// A fresh, unset interrupt flag for tests that begin a turn without a real worker.
@@ -2450,6 +2503,35 @@ mod tests {
         assert!(
             screen.contains("shell"),
             "shell affordance drawn in the prompt:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn prompt_renders_attachment_chips_above_the_input() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let png = temp_png();
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(a.composer_attachments().len(), 1, "attachment staged");
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            screen.contains("📎") && screen.contains("image/png"),
+            "composer chip line is visible in the prompt:\n{screen}"
         );
     }
 

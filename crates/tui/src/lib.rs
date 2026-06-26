@@ -7,6 +7,7 @@
 //! status footer — and exits cleanly via `/exit` or the quit keybind.
 
 mod app;
+mod attachments;
 mod checkpoint;
 mod diff;
 mod format_bridge;
@@ -343,11 +344,13 @@ fn event_loop<B: Backend + Write>(
         // and busy indicator appear before the first delta arrives. The shared cancel flag is the
         // interrupt seam: the UI sets it (Esc) to stop the turn gracefully.
         if let Some(prompt) = app.take_pending_prompt() {
+            let user_parts = app.pending_user_parts_for_turn();
             let cancel = Arc::new(AtomicBool::new(false));
             let (session_id, db_path) = app.tool_store_context_for_turn();
             let remote = app.remote_bridge_for_turn();
             let rx = turn::spawn(turn::SpawnRequest {
                 prompt: prompt.clone(),
+                user_parts,
                 history: app.history_snapshot(),
                 model: app.active_model(),
                 agent: app.active_agent(),
