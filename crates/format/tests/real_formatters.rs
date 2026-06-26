@@ -692,6 +692,54 @@ fn missing_formatter_binary_is_reported_cleanly_without_mutating_bytes() {
 
 #[cfg(unix)]
 #[test]
+fn gofmt_detection_does_not_require_a_version_flag() {
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .arg("--exact")
+        .arg("gofmt_detection_without_version_flag_child")
+        .arg("--nocapture")
+        .env("CORTEX_FORMAT_GOFMT_NO_VERSION_CHILD", "1")
+        .env("PATH", "");
+    let output = command
+        .output()
+        .expect("spawn gofmt no-version child formatter test");
+    assert!(
+        output.status.success(),
+        "gofmt no-version child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn gofmt_detection_without_version_flag_child() {
+    if std::env::var("CORTEX_FORMAT_GOFMT_NO_VERSION_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+
+    let dir = temp_dir("gofmt-no-version");
+    let bin_dir = dir.join(".cortex").join("formatter-toolchain").join("bin");
+    fs::create_dir_all(&bin_dir).expect("create local formatter bin directory");
+    let gofmt = bin_dir.join("gofmt");
+    write_executable(
+        &gofmt,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'unsupported\\n' >&2; exit 2; fi\nif [ \"$1\" = \"-w\" ]; then file=\"$2\"; printf 'package main\\n\\nfunc main() {}\\n' > \"$file\"; exit 0; fi\nprintf 'unexpected args\\n' >&2\nexit 9\n",
+    );
+
+    let path = dir.join("main.go");
+    fs::write(&path, "package main\nfunc main(){println(\"hi\")}\n").expect("write go fixture");
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Gofmt));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read formatted go"),
+        "package main\n\nfunc main() {}\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn missing_formatter_binary_child() {
     if std::env::var("CORTEX_FORMAT_MISSING_BINARY_CHILD").as_deref() != Ok("1") {
         return;

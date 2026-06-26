@@ -280,6 +280,7 @@ pub struct FormatterSelection {
     pub kind: FormatterKind,
     /// Directory to execute the formatter from so project config discovery is stable.
     pub current_dir: PathBuf,
+    search_root: PathBuf,
     command: FormatterCommand,
 }
 
@@ -509,8 +510,9 @@ impl FormatterRunner {
                 .command
                 .as_ref()
                 .and_then(|command| command.first())
-                .is_some_and(|program| !command_exists(program));
-            let binary_missing = override_.command.is_none() && !binary_available(kind.binary());
+                .is_some_and(|program| !command_exists_for_root(program, &self.root));
+            let binary_missing =
+                override_.command.is_none() && !binary_available_in_root(kind.binary(), &self.root);
             let state = if !self.config.builtin_enabled(kind) {
                 FormatterStatusState::Disabled
             } else if command_missing || binary_missing {
@@ -550,7 +552,7 @@ impl FormatterRunner {
             let missing = custom
                 .command
                 .first()
-                .is_none_or(|program| !command_exists(program));
+                .is_none_or(|program| !command_exists_for_root(program, &self.root));
             rows.push(FormatterStatus {
                 name,
                 formatter: FormatterKind::Custom,
@@ -607,6 +609,7 @@ impl FormatterRunner {
                 .map(|custom| FormatterSelection {
                     kind: FormatterKind::Custom,
                     current_dir: self.root.clone(),
+                    search_root: self.root.clone(),
                     command: FormatterCommand::Custom(custom),
                 })
                 .collect());
@@ -619,28 +622,36 @@ impl FormatterRunner {
 
         let mut selections = Vec::new();
         let mut last_error = SkipReason::UnsupportedExtension;
+        let mut record_error = |reason: SkipReason| {
+            if matches!(last_error, SkipReason::UnsupportedExtension) {
+                last_error = reason;
+            }
+        };
         for kind in kinds {
             if !self.config.builtin_enabled(kind) {
                 continue;
             }
             let builtin_override = self.config.builtin_override(kind);
-            if builtin_override.command.is_none() && !binary_available(kind.binary()) {
-                last_error = SkipReason::MissingBinary {
+            if builtin_override.command.is_none()
+                && !binary_available_in_root(kind.binary(), &self.root)
+            {
+                record_error(SkipReason::MissingBinary {
                     binary: kind.binary(),
-                };
+                });
                 continue;
             }
             match current_dir_for_kind(path, &self.root, kind) {
                 Ok(current_dir) => selections.push(FormatterSelection {
                     kind,
                     current_dir,
+                    search_root: self.root.clone(),
                     command: FormatterCommand::Builtin {
                         kind,
                         command: builtin_override.command,
                         env: builtin_override.env,
                     },
                 }),
-                Err(reason) => last_error = reason,
+                Err(reason) => record_error(reason),
             }
         }
         if selections.is_empty() {
@@ -651,24 +662,29 @@ impl FormatterRunner {
     }
 }
 
-/// Return whether `binary` is runnable from the current `PATH`.
+/// Return whether `binary` resolves to a runnable executable.
+///
+/// Resolution checks `PATH` and known project-local formatter toolchain bins.
 #[must_use]
 pub fn binary_available(binary: &str) -> bool {
-    let mut command = Command::new(binary);
-    configure_formatter_child(&mut command);
-    command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command.status().is_ok_and(|status| status.success())
+    let cwd = std::env::current_dir().ok();
+    resolve_program_path(binary, cwd.as_deref()).is_some()
+}
+
+fn binary_available_in_root(binary: &str, root: &Path) -> bool {
+    resolve_program_path(binary, Some(root)).is_some()
 }
 
 fn run_formatter_once(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
     match &selection.command {
-        FormatterCommand::Builtin { kind, command, env } => {
-            run_builtin_formatter(path, *kind, command.as_deref(), env, &selection.current_dir)
-        }
+        FormatterCommand::Builtin { kind, command, env } => run_builtin_formatter(
+            path,
+            *kind,
+            command.as_deref(),
+            env,
+            &selection.current_dir,
+            &selection.search_root,
+        ),
         FormatterCommand::Custom(custom) => {
             run_custom_formatter(path, custom, &selection.current_dir)
         }
@@ -681,12 +697,18 @@ fn run_builtin_formatter(
     command_override: Option<&[String]>,
     env: &BTreeMap<String, String>,
     current_dir: &Path,
+    search_root: &Path,
 ) -> FormatOutcome {
     if let Some(command_override) = command_override {
         return run_overridden_command(path, command_override, env, current_dir, kind);
     }
 
-    let mut command = Command::new(kind.binary());
+    let Some(program) = resolve_program_path(kind.binary(), Some(search_root)) else {
+        return FormatOutcome::Skipped(SkipReason::MissingBinary {
+            binary: kind.binary(),
+        });
+    };
+    let mut command = Command::new(program);
     configure_formatter_child(&mut command);
     command
         .current_dir(current_dir)
@@ -1273,29 +1295,102 @@ fn marker_presence_for_kind(kind: FormatterKind, root: &Path) -> Option<bool> {
     }
 }
 
-fn command_exists(program: &str) -> bool {
+fn command_exists_for_root(program: &str, root: &Path) -> bool {
+    resolve_program_path(program, Some(root)).is_some()
+}
+
+fn resolve_program_path(program: &str, root: Option<&Path>) -> Option<PathBuf> {
     if program.trim().is_empty() {
-        return false;
+        return None;
     }
 
     if program.contains(std::path::MAIN_SEPARATOR)
         || (cfg!(windows) && program.contains('/'))
         || (cfg!(windows) && program.contains('\\'))
     {
-        return Path::new(program).is_file();
+        let candidate = PathBuf::from(program);
+        return is_executable_file(&candidate).then_some(candidate);
     }
 
-    std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path).any(|dir| {
-                let candidate = dir.join(program);
-                candidate.is_file()
-                    || (cfg!(windows) && candidate.with_extension("exe").is_file())
-                    || (cfg!(windows) && candidate.with_extension("cmd").is_file())
-                    || (cfg!(windows) && candidate.with_extension("bat").is_file())
-            })
-        })
-        .unwrap_or(false)
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Some(found) = resolve_program_in_dir(program, &dir) {
+                return Some(found);
+            }
+        }
+    }
+
+    for dir in formatter_toolchain_bin_dirs(root) {
+        if let Some(found) = resolve_program_in_dir(program, &dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn resolve_program_in_dir(program: &str, dir: &Path) -> Option<PathBuf> {
+    let candidate = dir.join(program);
+    if is_executable_file(&candidate) {
+        return Some(candidate);
+    }
+    if cfg!(windows) {
+        for extension in ["exe", "cmd", "bat"] {
+            let with_extension = candidate.with_extension(extension);
+            if is_executable_file(&with_extension) {
+                return Some(with_extension);
+            }
+        }
+    }
+    None
+}
+
+fn formatter_toolchain_bin_dirs(root: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(root) = root {
+        push_toolchain_bin_dirs(root, &mut dirs);
+    }
+    if let Some(repo_root) = repo_root_from_current_exe() {
+        push_toolchain_bin_dirs(&repo_root, &mut dirs);
+    }
+    dirs
+}
+
+fn push_toolchain_bin_dirs(root: &Path, dirs: &mut Vec<PathBuf>) {
+    for candidate in [
+        root.join(".cortex").join("formatter-toolchain").join("bin"),
+        root.join(".cortex").join("toolchain").join("bin"),
+        root.join(".cortex").join("toolchains").join("bin"),
+    ] {
+        if !dirs.contains(&candidate) {
+            dirs.push(candidate);
+        }
+    }
+}
+
+fn repo_root_from_current_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|dir| dir.join("Cargo.toml").is_file() && dir.join("crates").is_dir())
+        .map(Path::to_path_buf)
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Ok(metadata) = fs::metadata(path) {
+            return metadata.permissions().mode() & 0o111 != 0;
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn current_dir_for_kind(
@@ -1512,18 +1607,15 @@ mod tests {
         let runner = FormatterRunner::new(&dir);
 
         let selected = runner.select(&dir.join("demo.ts"));
-        if binary_available("prettier") {
+        if binary_available("biome") {
             assert_eq!(
                 selected,
                 Err(SkipReason::MissingConfigMarker {
-                    formatter: FormatterKind::Prettier
+                    formatter: FormatterKind::Biome
                 })
             );
         } else {
-            assert_eq!(
-                selected,
-                Err(SkipReason::MissingBinary { binary: "prettier" })
-            );
+            assert_eq!(selected, Err(SkipReason::MissingBinary { binary: "biome" }));
         }
 
         fs::write(dir.join(".prettierrc"), "{}").expect("write prettier marker");
