@@ -7,6 +7,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -192,6 +193,18 @@ pub struct MentionPicker {
     files: Vec<String>,
     /// The highlighted match row (clamped to the current match count).
     selected: usize,
+}
+
+/// A plugin-provided completion candidate staged by the first Tab press.
+///
+/// We remember the candidate together with the cursor and active span used for the completion
+/// request so the second Tab can replace only that span (or insert at the cursor when the span is
+/// empty), preserving surrounding prompt text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingTextCompletion {
+    candidate: String,
+    cursor: usize,
+    span: Range<usize>,
 }
 
 /// The open command palette: the search query typed into it and the highlighted row.
@@ -402,8 +415,8 @@ pub struct App {
     /// Plugin-driven text completion bridge (`experimental.text.complete`) for interactive prompt
     /// completions.
     plugin_text_complete: Option<PluginEventHooks>,
-    /// A candidate returned by the plugin text-complete hook and awaiting insertion.
-    pending_text_completion: Option<String>,
+    /// A plugin completion candidate and its request context waiting for second-Tab insertion.
+    pending_text_completion: Option<PendingTextCompletion>,
     /// The open command palette (`Ctrl+P`), or `None` when closed. While set it is modal: it owns a
     /// search query and navigation, runs the highlighted command on Enter, and Esc dismisses it and
     /// returns focus to the prompt.
@@ -1614,13 +1627,70 @@ impl App {
         offset.saturating_add(pos.col)
     }
 
+    /// The active completion span around `cursor` (char offsets): contiguous non-whitespace text
+    /// containing the cursor, or an empty insertion span when the cursor sits on whitespace.
+    fn completion_span(text: &str, cursor: usize) -> Range<usize> {
+        let chars: Vec<char> = text.chars().collect();
+        let len = chars.len();
+        let cursor = cursor.min(len);
+
+        let mut start = cursor;
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+
+        let mut end = cursor;
+        while end < len && !chars[end].is_whitespace() {
+            end += 1;
+        }
+
+        start..end
+    }
+
+    /// Convert a char offset into a byte offset in `text`, clamping at EOF.
+    fn char_to_byte_offset(text: &str, offset: usize) -> usize {
+        text.char_indices()
+            .nth(offset)
+            .map_or(text.len(), |(byte, _)| byte)
+    }
+
+    /// Apply a staged completion candidate to `text`.
+    ///
+    /// When the recorded span still fits the current prompt, replace only that span. If not,
+    /// insert at the recorded cursor position to preserve existing text.
+    fn apply_pending_text_completion(text: &str, pending: &PendingTextCompletion) -> String {
+        let char_len = text.chars().count();
+        if pending.span.start <= pending.span.end && pending.span.end <= char_len {
+            let start = Self::char_to_byte_offset(text, pending.span.start);
+            let end = Self::char_to_byte_offset(text, pending.span.end);
+            let mut out = String::with_capacity(
+                text.len()
+                    .saturating_sub(end.saturating_sub(start))
+                    .saturating_add(pending.candidate.len()),
+            );
+            out.push_str(&text[..start]);
+            out.push_str(&pending.candidate);
+            out.push_str(&text[end..]);
+            return out;
+        }
+
+        let insert_at = pending.cursor.min(char_len);
+        let insert_byte = Self::char_to_byte_offset(text, insert_at);
+        let mut out = String::with_capacity(text.len().saturating_add(pending.candidate.len()));
+        out.push_str(&text[..insert_byte]);
+        out.push_str(&pending.candidate);
+        out.push_str(&text[insert_byte..]);
+        out
+    }
+
     /// Drive plugin-backed text completion (`experimental.text.complete`).
     ///
     /// First Tab fetches candidates and surfaces the first one; the next Tab inserts it into the
     /// prompt.
     fn trigger_text_completion(&mut self) {
-        if let Some(candidate) = self.pending_text_completion.take() {
-            self.input.set_value(&candidate);
+        if let Some(pending) = self.pending_text_completion.take() {
+            let updated = Self::apply_pending_text_completion(&self.input.value(), &pending);
+            self.input.set_value(&updated);
             self.on_prompt_edited();
             self.ack = Some("Inserted plugin completion".to_owned());
             return;
@@ -1637,7 +1707,11 @@ impl App {
         let Some(first) = candidates.first().cloned() else {
             return;
         };
-        self.pending_text_completion = Some(first.clone());
+        self.pending_text_completion = Some(PendingTextCompletion {
+            candidate: first.clone(),
+            cursor,
+            span: Self::completion_span(&text, cursor),
+        });
         self.transcript
             .push(Entry::Notice(format!("completion: {first}")));
         self.scroll = 0;
@@ -2600,6 +2674,7 @@ impl App {
     /// Replace the prompt contents (used to land editor-composed text back in the prompt).
     pub fn set_input_value(&mut self, value: &str) {
         self.input.set_value(value);
+        self.on_prompt_edited();
     }
 
     /// Surface a transient error in the transcript and as a distinct error toast (used when the
@@ -4073,6 +4148,74 @@ mod tests {
         a.on_key(key_mod(KeyCode::Char('e'), KeyModifiers::CONTROL));
         a.on_key(key(KeyCode::Char('<')));
         assert_eq!(a.input_value(), ">word<");
+    }
+
+    #[test]
+    fn completion_span_targets_only_the_active_token() {
+        assert_eq!(App::completion_span("hel world", 3), 0..3);
+        assert_eq!(App::completion_span("say hel there", 7), 4..7);
+        assert_eq!(App::completion_span("say hello wor", 13), 10..13);
+        assert_eq!(App::completion_span("say  there", 4), 4..4);
+    }
+
+    #[test]
+    fn pending_completion_replaces_span_or_inserts_at_cursor() {
+        let start = PendingTextCompletion {
+            candidate: "hello".to_owned(),
+            cursor: 3,
+            span: 0..3,
+        };
+        assert_eq!(
+            App::apply_pending_text_completion("hel world", &start),
+            "hello world"
+        );
+
+        let middle = PendingTextCompletion {
+            candidate: "hello".to_owned(),
+            cursor: 7,
+            span: 4..7,
+        };
+        assert_eq!(
+            App::apply_pending_text_completion("say hel there", &middle),
+            "say hello there"
+        );
+
+        let end = PendingTextCompletion {
+            candidate: "world".to_owned(),
+            cursor: 13,
+            span: 10..13,
+        };
+        assert_eq!(
+            App::apply_pending_text_completion("say hello wor", &end),
+            "say hello world"
+        );
+
+        let insert = PendingTextCompletion {
+            candidate: "hello".to_owned(),
+            cursor: 4,
+            span: 4..4,
+        };
+        assert_eq!(
+            App::apply_pending_text_completion("say  there", &insert),
+            "say hello there"
+        );
+    }
+
+    #[test]
+    fn editing_prompt_clears_stale_pending_completion_state() {
+        let mut a = app();
+        a.set_input_value("hel");
+        a.pending_text_completion = Some(PendingTextCompletion {
+            candidate: "hello".to_owned(),
+            cursor: 3,
+            span: 0..3,
+        });
+
+        a.on_key(key(KeyCode::End));
+        a.on_key(key(KeyCode::Char('p')));
+
+        assert!(a.pending_text_completion.is_none());
+        assert_eq!(a.input_value(), "help");
     }
 
     #[test]
