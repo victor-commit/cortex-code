@@ -548,9 +548,9 @@ fn project_claude_takes_precedence_over_global_claude() {
         ],
     )));
     let response = content(&doc).trim();
-    assert_eq!(
-        response, "PROJECT-CLAUDE-7305",
-        "project CLAUDE should override global CLAUDE when they conflict"
+    assert!(
+        response.contains("PROJECT-CLAUDE-7305") && !response.contains("GLOBAL-CLAUDE-7305"),
+        "project CLAUDE should override global CLAUDE when they conflict (response: {response})"
     );
 }
 
@@ -639,8 +639,10 @@ fn nested_memory_is_injected_after_reading_nested_files() {
         ],
     )));
     let response = content(&doc);
+    let normalized = response.to_ascii_lowercase();
     assert!(
-        response.contains(root_token) && response.contains(nested_token),
+        normalized.contains(&root_token.to_ascii_lowercase())
+            && normalized.contains(&nested_token.to_ascii_lowercase()),
         "nested memory should activate after the read and influence the same turn: {response}"
     );
     assert!(

@@ -18,10 +18,8 @@
 //!
 //! NOTE on the second model: the validation contract's VAL-LLM-013 example,
 //! `anthropic/claude-3.5-sonnet`, has since been removed from OpenRouter (a direct API call
-//! returns HTTP 404 "No endpoints found"). To keep this proof green against the live provider we
-//! exercise `anthropic/claude-sonnet-4` instead — a currently-available, embedded-catalogue model
-//! that equally proves selection is not hard-wired to the default. The drift is flagged to the
-//! orchestrator so the contract's literal model can be refreshed.
+//! returns HTTP 404 "No endpoints found"). This suite uses another currently-served catalog model
+//! to keep the black-box "second valid model" assertion stable.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -35,7 +33,7 @@ const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 /// A second, distinct valid OpenRouter model used to prove selection is not hard-wired. (The
 /// contract's original `anthropic/claude-3.5-sonnet` is no longer served by OpenRouter; see the
 /// module note.)
-const SECOND_MODEL: &str = "anthropic/claude-sonnet-4";
+const SECOND_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
 
 /// A malformed model id (not a `provider/model` pair): rejected locally before any credential or
 /// socket. Per the validation contract's VAL-LLM-014 example. (A bare `gemini-3.5-flash` is no
