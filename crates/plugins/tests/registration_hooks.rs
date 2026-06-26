@@ -72,6 +72,7 @@ export default async function plugin(input, options) {
       registry.register({
         name: "cortex_echo",
         description: "Echo text from the plugin runtime.",
+        auth: "plugin-auth",
         parameters: {
           type: "object",
           properties: { text: { type: "string" } },
@@ -137,6 +138,17 @@ export default async function plugin(input, options) {
     assert_eq!(report.config_rules[0].tool, "bash");
     assert_eq!(report.config_rules[0].action, "deny");
     assert_eq!(report.tools[0].name, "cortex_echo");
+    assert_eq!(
+        report.tools[0]
+            .auth
+            .as_ref()
+            .map(|auth| auth.provider.as_str()),
+        Some("plugin-auth")
+    );
+    assert_eq!(
+        report.tools[0].auth.as_ref().map(|auth| auth.required),
+        Some(true)
+    );
     assert_eq!(report.auth_methods[0].id, "plugin-auth");
     assert_eq!(report.providers[0].models[0].id, "plugin/example-model");
     assert!(

@@ -332,6 +332,113 @@ export default async function plugin(input, options) {
 }
 
 #[test]
+fn plugin_tool_auth_required_fails_closed_without_stored_credential() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("plugin-tool-auth-required");
+    let marker = sandbox.project.join("tool-auth-marker.json");
+    write_tool_auth_plugin(&sandbox, &marker, true);
+
+    let fixture = start_tool_call_fixture("plugin_auth_probe");
+    let mut run_cmd = sandbox.command(&["run", "--format", "json", "probe plugin tool auth"]);
+    run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
+    run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture.base_url());
+    let run_out = run(run_cmd);
+    fixture.join();
+    assert_eq!(
+        run_out.status.code(),
+        Some(0),
+        "run should complete through the fixture: stderr={}",
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+    let run_doc: Value = serde_json::from_slice(&run_out.stdout).expect("run json");
+    let content = run_doc["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("missing required auth credential for provider `plugin-tool-auth`"),
+        "tool auth should fail closed with a clear diagnostic, got: {run_doc}"
+    );
+    assert!(
+        !marker.exists(),
+        "required auth failure should stop before plugin JS tool execution"
+    );
+}
+
+#[test]
+fn plugin_tool_execution_receives_auth_payload_after_auth_login_without_secret_leaks() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("plugin-tool-auth-present");
+    let marker = sandbox.project.join("tool-auth-marker.json");
+    let audit_log = sandbox.project.join("audit.jsonl");
+    write_tool_auth_plugin(&sandbox, &marker, false);
+
+    let secret = "plugin-tool-secret-789";
+    let login = run(sandbox.command(&[
+        "auth",
+        "login",
+        "plugin-tool-auth",
+        "--auth-method",
+        "api",
+        "--auth-input",
+        &format!("api_key={secret}"),
+        "--format",
+        "json",
+    ]));
+    assert_eq!(
+        login.status.code(),
+        Some(0),
+        "plugin auth login should succeed"
+    );
+    let login_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&login.stdout),
+        String::from_utf8_lossy(&login.stderr)
+    );
+    assert!(
+        !login_output.contains(secret),
+        "auth login output must not leak the plugin secret"
+    );
+
+    let fixture = start_tool_call_fixture("plugin_auth_probe");
+    let mut run_cmd = sandbox.command(&["run", "--format", "json", "probe plugin tool auth"]);
+    run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
+    run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture.base_url());
+    run_cmd.env("CORTEX_AUDIT_LOG", &audit_log);
+    let run_out = run(run_cmd);
+    fixture.join();
+    assert_eq!(
+        run_out.status.code(),
+        Some(0),
+        "run should succeed with stored plugin auth: stderr={}",
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+    let run_doc: Value = serde_json::from_slice(&run_out.stdout).expect("run json");
+    assert_eq!(run_doc["content"], "AUTH_MARKER_PRESENT");
+    let marker_doc: Value = serde_json::from_slice(&fs::read(&marker).expect("tool marker file"))
+        .expect("tool marker json");
+    assert_eq!(marker_doc["marker"], "AUTH_MARKER_PRESENT");
+
+    let run_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run_out.stdout),
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+    assert!(
+        !run_output.contains(secret),
+        "run output must not leak the plugin secret"
+    );
+    let audit_output = fs::read_to_string(&audit_log).unwrap_or_default();
+    assert!(
+        !audit_output.contains(secret),
+        "audit output must not leak the plugin secret"
+    );
+}
+
+#[test]
 fn built_in_auth_integrations_are_listed_and_xai_key_authenticates_provider_runs_without_leaks() {
     let sandbox = Sandbox::new("builtin-auth");
     let model_id = "xai/test-model";
@@ -413,6 +520,77 @@ base_url = "{base_url}"
 models = [{{ id = "{model_id}", name = "xAI Fixture Model", tool_call = true, context_length = 4096, max_output_tokens = 512 }}]
 "#
         ),
+    )
+    .expect("write config");
+}
+
+fn write_tool_auth_plugin(sandbox: &Sandbox, marker: &std::path::Path, require_auth: bool) {
+    let tool_auth = if require_auth {
+        r#"auth: { provider: "plugin-tool-auth", required: true },"#
+    } else {
+        ""
+    };
+    fs::write(
+        sandbox.project.join("plugin.mjs"),
+        format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+
+export default async function plugin() {{
+  return {{
+    auth: {{
+      provider: "plugin-tool-auth",
+      name: "Plugin Tool Auth",
+      loader: async (loadAuth) => {{
+        const value = await loadAuth();
+        if (value?.type === "api" && typeof value.key === "string" && value.key.length > 0) {{
+          return {{ marker: "AUTH_MARKER_PRESENT" }};
+        }}
+        return {{ marker: "AUTH_MARKER_MISSING" }};
+      }},
+      methods: [{{
+        id: "api",
+        type: "api",
+        label: "API key",
+        prompts: [{{ type: "text", key: "api_key", message: "API key" }}],
+        async authorize(inputs) {{
+          return {{
+            type: "success",
+            credential: {{
+              type: "api",
+              key: String(inputs?.api_key ?? "")
+            }}
+          }};
+        }}
+      }}]
+    }},
+    async tool() {{
+      return {{
+        name: "plugin_auth_probe",
+        description: "Return whether auth payload reached the plugin tool body.",
+        {tool_auth}
+        parameters: {{
+          type: "object",
+          properties: {{}},
+          additionalProperties: false
+        }},
+        async execute(_args, ctx) {{
+          const marker = String(ctx?.auth?.marker ?? "AUTH_MARKER_MISSING");
+          await writeFile("{marker_path}", JSON.stringify({{ marker }}));
+          return marker;
+        }}
+      }};
+    }}
+  }};
+}}
+"#,
+            marker_path = marker.display(),
+        ),
+    )
+    .expect("write plugin");
+    fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
     )
     .expect("write config");
 }
@@ -522,8 +700,95 @@ fn bind_loopback_listener() -> TcpListener {
     panic!("no free loopback port in 3200-3299");
 }
 
+struct ToolCallFixture {
+    handle: Option<std::thread::JoinHandle<()>>,
+    base_url: String,
+}
+
+impl ToolCallFixture {
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn join(mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("join tool-call fixture");
+        }
+    }
+}
+
+fn start_tool_call_fixture(tool_name: &str) -> ToolCallFixture {
+    let listener = bind_loopback_listener();
+    let port = listener.local_addr().expect("fixture addr").port();
+    listener
+        .set_nonblocking(true)
+        .expect("set fixture nonblocking");
+    let tool_name = tool_name.to_owned();
+    let handle = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut request_count = 0_usize;
+        while started.elapsed() < Duration::from_secs(8) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    request_count += 1;
+                    let request = read_http_request(&mut stream);
+                    let body = if request_count == 1 {
+                        format!(
+                            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{{\"name\":\"{tool_name}\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\n\
+                             data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+                             data: [DONE]\n\n"
+                        )
+                    } else {
+                        let tool_result = latest_tool_content(&request.body)
+                            .unwrap_or_else(|| "NO_TOOL_RESULT".to_owned());
+                        let tool_result_json =
+                            serde_json::to_string(&tool_result).expect("tool result json");
+                        format!(
+                            "data: {{\"choices\":[{{\"delta\":{{\"content\":{tool_result_json}}},\"finish_reason\":null}}]}}\n\n\
+                             data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6}}}}\n\n\
+                             data: [DONE]\n\n"
+                        )
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                    if request_count >= 2 {
+                        return;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+
+    ToolCallFixture {
+        handle: Some(handle),
+        base_url: format!("http://127.0.0.1:{port}"),
+    }
+}
+
+fn latest_tool_content(body: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    let messages = parsed.get("messages")?.as_array()?;
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 struct HttpRequest {
     headers: Vec<(String, String)>,
+    body: String,
 }
 
 fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
@@ -537,6 +802,7 @@ fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
         if read == 0 {
             return HttpRequest {
                 headers: Vec::new(),
+                body: String::new(),
             };
         }
         buffer.extend_from_slice(&chunk[..read]);
@@ -553,5 +819,26 @@ fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
             Some((name.trim().to_owned(), value.trim().to_owned()))
         })
         .collect::<Vec<_>>();
-    HttpRequest { headers }
+    let content_length = headers
+        .iter()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).expect("read request body");
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let body_end = std::cmp::min(buffer.len(), header_end + content_length);
+    let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+    HttpRequest { headers, body }
+}
+
+fn fake_openrouter_key() -> String {
+    format!("sk-{}-{}", "or-v1", "abcdef01".repeat(8))
 }

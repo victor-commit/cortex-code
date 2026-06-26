@@ -19,6 +19,7 @@ use plugins::{
     PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError, PluginSpec,
     PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
 };
+use providers::{CredentialInputs, resolve_credential};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use settings::{ConfigError, ConfigInputs, EffectiveConfig};
@@ -187,10 +188,15 @@ impl PluginState {
             .iter()
             .flat_map(|loaded| {
                 loaded.report.tools.iter().cloned().map(|registration| {
+                    let auth_binding = tool_auth_binding_for_registration(
+                        &registration,
+                        &loaded.report.auth_methods,
+                    );
                     Box::new(PluginTool {
                         host: self.host.clone(),
                         spec: loaded.spec.clone(),
                         registration,
+                        auth_binding,
                     }) as Box<dyn Tool>
                 })
             })
@@ -1118,9 +1124,89 @@ pub(crate) struct WorkspaceAdapterDoc {
     pub(crate) workspace: PluginWorkspaceRegistration,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolAuthBinding {
+    provider_id: String,
+    required: bool,
+    env_vars: Vec<String>,
+    apply_loader: bool,
+}
+
 fn non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn tool_auth_binding_for_registration(
+    registration: &PluginToolRegistration,
+    auth_methods: &[PluginAuthRegistration],
+) -> Option<ToolAuthBinding> {
+    if let Some(auth) = &registration.auth {
+        let provider_id = auth.provider.trim();
+        if provider_id.is_empty() {
+            return None;
+        }
+        let auth_registration = auth_methods
+            .iter()
+            .find(|candidate| candidate.id == provider_id);
+        return Some(ToolAuthBinding {
+            provider_id: provider_id.to_owned(),
+            required: auth.required,
+            env_vars: auth_env_vars(auth_registration),
+            apply_loader: auth_registration.is_some(),
+        });
+    }
+
+    if auth_methods.len() == 1 {
+        let registration = &auth_methods[0];
+        return Some(ToolAuthBinding {
+            provider_id: registration.id.clone(),
+            required: false,
+            env_vars: auth_env_vars(Some(registration)),
+            apply_loader: true,
+        });
+    }
+
+    None
+}
+
+fn auth_env_vars(registration: Option<&PluginAuthRegistration>) -> Vec<String> {
+    let Some(registration) = registration else {
+        return Vec::new();
+    };
+    let mut env_vars = Vec::new();
+    for env in &registration.env {
+        if !env.trim().is_empty() && !env_vars.iter().any(|existing| existing == env) {
+            env_vars.push(env.clone());
+        }
+    }
+    for method in &registration.methods {
+        for env in &method.env {
+            if !env.trim().is_empty() && !env_vars.iter().any(|existing| existing == env) {
+                env_vars.push(env.clone());
+            }
+        }
+    }
+    env_vars
+}
+
+fn credential_inputs_for_tool_auth(binding: &ToolAuthBinding) -> CredentialInputs {
+    let mut inputs = CredentialInputs::from_process(None, None);
+    inputs.env_value = binding
+        .env_vars
+        .iter()
+        .find_map(|name| std::env::var(name).ok())
+        .and_then(|value| (!value.trim().is_empty()).then_some(value));
+    inputs
+}
+
+fn parse_plugin_auth_payload(raw: &str) -> JsonValue {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return JsonValue::Null;
+    }
+    serde_json::from_str::<JsonValue>(trimmed)
+        .unwrap_or_else(|_| serde_json::json!({ "type": "api", "key": trimmed }))
 }
 
 fn plugin_has_hook(loaded: &LoadedPlugin, hook: &str) -> bool {
@@ -1723,6 +1809,7 @@ struct PluginTool {
     host: RuntimeHost,
     spec: PluginSpec,
     registration: PluginToolRegistration,
+    auth_binding: Option<ToolAuthBinding>,
 }
 
 impl Tool for PluginTool {
@@ -1748,9 +1835,13 @@ impl Tool for PluginTool {
             if let Err(message) = ctx.ensure_permitted(self.name(), &subject) {
                 return ToolOutput::error(message);
             }
+            let auth = match self.resolve_auth_payload() {
+                Ok(auth) => auth,
+                Err(message) => return ToolOutput::error(message),
+            };
             match self
                 .host
-                .execute_tool(&self.spec, self.name(), arguments.clone(), None)
+                .execute_tool(&self.spec, self.name(), arguments.clone(), auth)
             {
                 Ok(output) => {
                     if let Some(audit) = ctx.audit_sink() {
@@ -1776,6 +1867,44 @@ impl Tool for PluginTool {
                 }
             }
         })
+    }
+}
+
+impl PluginTool {
+    fn resolve_auth_payload(&self) -> Result<Option<JsonValue>, String> {
+        let Some(binding) = &self.auth_binding else {
+            return Ok(None);
+        };
+
+        let inputs = credential_inputs_for_tool_auth(binding);
+        let credential = match resolve_credential(&binding.provider_id, &inputs) {
+            Ok(credential) => credential,
+            Err(_diagnostic) if binding.required => {
+                return Err(format!(
+                    "{}: missing required auth credential for provider `{}`; run `cortex auth login {}`",
+                    self.name(),
+                    binding.provider_id,
+                    binding.provider_id
+                ));
+            }
+            Err(_diagnostic) => return Ok(None),
+        };
+
+        let raw_auth = parse_plugin_auth_payload(credential.expose());
+        if !binding.apply_loader {
+            return Ok(Some(raw_auth));
+        }
+
+        match self
+            .host
+            .load_auth(&self.spec, &binding.provider_id, raw_auth.clone())
+        {
+            Ok(loaded) => Ok(Some(loaded)),
+            Err(err) => {
+                eprintln!("cortex plugin auth loader: {err}");
+                Ok(Some(raw_auth))
+            }
+        }
     }
 }
 

@@ -1623,6 +1623,19 @@ pub struct PluginToolRegistration {
     /// JSON Schema parameter object.
     #[serde(default = "default_parameters")]
     pub parameters: JsonValue,
+    /// Optional auth-provider mapping for this tool.
+    #[serde(default)]
+    pub auth: Option<PluginToolAuthRegistration>,
+}
+
+/// Auth-provider binding declared by a plugin tool registration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginToolAuthRegistration {
+    /// Provider id this tool should receive credentials from.
+    pub provider: String,
+    /// Whether the tool must fail closed if credentials are missing.
+    #[serde(default = "default_tool_auth_required")]
+    pub required: bool,
 }
 
 /// A plugin-contributed auth method returned by an `auth` hook.
@@ -2683,6 +2696,10 @@ fn default_parameters() -> JsonValue {
     })
 }
 
+fn default_tool_auth_required() -> bool {
+    true
+}
+
 #[derive(Clone, Debug)]
 struct PluginRuntimeContext {
     root: PathBuf,
@@ -3414,14 +3431,31 @@ function normalizeParameters(parameters) {
   return { type: "object", properties: {}, additionalProperties: true };
 }
 
+function normalizeToolAuth(auth) {
+  if (typeof auth === "string") {
+    const provider = auth.trim();
+    if (!provider) return null;
+    return { provider, required: true };
+  }
+  if (!auth || typeof auth !== "object") return null;
+  const provider = String(auth.provider ?? auth.id ?? auth.name ?? "").trim();
+  if (!provider) return null;
+  return {
+    provider,
+    required: auth.required === undefined ? true : Boolean(auth.required)
+  };
+}
+
 function normalizeTool(tool) {
   if (!tool || typeof tool !== "object") return null;
   const name = String(tool.name ?? tool.id ?? "").trim();
   if (!name) return null;
+  const auth = normalizeToolAuth(tool.auth);
   return {
     name,
     description: String(tool.description ?? ""),
-    parameters: normalizeParameters(tool.parameters ?? tool.schema ?? tool.input_schema ?? tool.inputSchema)
+    parameters: normalizeParameters(tool.parameters ?? tool.schema ?? tool.input_schema ?? tool.inputSchema),
+    auth
   };
 }
 
