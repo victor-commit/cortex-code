@@ -39,7 +39,7 @@ pub struct ModelLimit {
 }
 
 /// Per-million-token pricing for a model, as published by models.dev.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct ModelCost {
     /// USD per million input/prompt tokens.
     #[serde(default)]
@@ -59,6 +59,11 @@ pub struct ModelCost {
     /// Optional "over threshold" tier (for example OpenRouter's over-200k context tier).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub over_input_threshold: Option<ModelCostTier>,
+    /// Whether pricing metadata was explicitly provided for this model.
+    ///
+    /// This field is internal-only metadata and is not serialized.
+    #[serde(default = "default_cost_known", skip_serializing)]
+    pub(crate) known: bool,
 }
 
 /// One optional over-threshold pricing tier.
@@ -86,6 +91,37 @@ pub struct ModelCostTier {
 
 const fn default_tier_threshold() -> u64 {
     200_000
+}
+
+const fn default_cost_known() -> bool {
+    true
+}
+
+impl Default for ModelCost {
+    fn default() -> Self {
+        Self {
+            input: 0.0,
+            output: 0.0,
+            cache_write: None,
+            cache_read: None,
+            reasoning: None,
+            over_input_threshold: None,
+            known: false,
+        }
+    }
+}
+
+impl ModelCost {
+    #[must_use]
+    pub const fn is_known(self) -> bool {
+        self.known
+    }
+
+    #[must_use]
+    pub(crate) const fn with_known(mut self, known: bool) -> Self {
+        self.known = known;
+        self
+    }
 }
 
 /// Metadata for a single model in the catalogue.
@@ -244,20 +280,16 @@ pub fn resolve_model(requested: Option<&str>) -> ResolvedModel {
 
 /// Estimate turn cost from model pricing metadata when the provider does not report `usage.cost`.
 ///
-/// Returns `None` when all configured rates are zero, so callers can keep the existing "unknown
-/// cost" behavior unless a non-zero schedule is available. When a tier is configured, it applies
-/// once `usage.input_tokens` exceeds `threshold_input_tokens` (default 200k).
+/// Returns `None` only when pricing metadata is unknown/absent for the model. Known zero-priced
+/// schedules return an explicit `Some(0.0)`. When a tier is configured, it applies once
+/// `usage.input_tokens` exceeds `threshold_input_tokens` (default 200k).
 #[must_use]
 pub fn estimate_usage_cost(model: &ModelInfo, usage: &Usage) -> Option<f64> {
-    let rates = pricing_rates(model.cost, usage.input_tokens);
-    let has_non_zero_rate = rates.input > 0.0
-        || rates.output > 0.0
-        || rates.cache_write > 0.0
-        || rates.cache_read > 0.0
-        || rates.reasoning > 0.0;
-    if !has_non_zero_rate {
+    if !model.cost.is_known() {
         return None;
     }
+
+    let rates = pricing_rates(model.cost, usage.input_tokens);
 
     let cache_write_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
     let cache_read_tokens = usage.cache_read_input_tokens.unwrap_or(0);
@@ -439,7 +471,9 @@ mod tests {
                 cache_read: Some(0.25),
                 reasoning: Some(3.0),
                 over_input_threshold: None,
-            },
+                ..ModelCost::default()
+            }
+            .with_known(true),
         };
         let usage = Usage {
             input_tokens: 100,
@@ -482,7 +516,9 @@ mod tests {
                     cache_read: Some(1.0),
                     reasoning: Some(9.0),
                 }),
-            },
+                ..ModelCost::default()
+            }
+            .with_known(true),
         };
         let usage = Usage {
             input_tokens: 250_000,
@@ -503,10 +539,33 @@ mod tests {
     }
 
     #[test]
-    fn estimate_usage_cost_returns_none_for_zero_priced_models() {
+    fn estimate_usage_cost_returns_zero_for_known_zero_priced_models() {
         let model = ModelInfo {
             id: "local/free".to_owned(),
             name: "Free".to_owned(),
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            limit: ModelLimit::default(),
+            cost: ModelCost::default().with_known(true),
+        };
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
+            cost: None,
+        };
+        assert_eq!(estimate_usage_cost(&model, &usage), Some(0.0));
+    }
+
+    #[test]
+    fn estimate_usage_cost_returns_none_when_pricing_is_unknown() {
+        let model = ModelInfo {
+            id: "local/unknown".to_owned(),
+            name: "Unknown".to_owned(),
             attachment: false,
             reasoning: false,
             tool_call: true,

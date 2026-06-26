@@ -298,6 +298,162 @@ models = [{{ id = "local/tiered", name = "Tiered Local", tool_call = true, reaso
 }
 
 #[test]
+fn val_gap_llm_012_known_zero_pricing_reports_numeric_zero_cost() {
+    let frames = vec![
+        serde_json::json!({
+            "id": "gap-012-zero",
+            "object": "chat.completion.chunk",
+            "model": "local/free",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": "FREE-COST-OK" },
+                "finish_reason": serde_json::Value::Null
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "id": "gap-012-zero",
+            "object": "chat.completion.chunk",
+            "model": "local/free",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "total_tokens": 150
+            }
+        })
+        .to_string(),
+    ];
+    let (base_url, requests, handle) = start_fixture(vec![ScriptedResponse::Sse { frames }]);
+
+    let scratch = Scratch::new("val-gap-llm-012-zero");
+    scratch.write_project_config(&format!(
+        r#"
+[provider]
+enabled = ["local"]
+disabled = ["openrouter"]
+
+[provider.local]
+base_url = "{base_url}"
+api_key = "local-fixture-key"
+models = [{{ id = "local/free", name = "Free Local", tool_call = true, reasoning = false, context_length = 400000, max_output_tokens = 8192, cost = {{ input = 0, output = 0 }} }}]
+"#,
+    ));
+
+    let output = run(scratch.command(&[
+        "run",
+        "--format",
+        "json",
+        "--model",
+        "local/free",
+        "Reply with exactly FREE-COST-OK.",
+    ]));
+    let _ = handle.join();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests.lock().expect("request lock").len(),
+        1,
+        "turn should complete in one request"
+    );
+
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("run json");
+    assert_eq!(doc["content"], "FREE-COST-OK");
+    assert!(
+        doc["usage"]["cost"].is_number(),
+        "known zero pricing must produce a numeric cost: {}",
+        doc["usage"]
+    );
+    let cost = doc["usage"]["cost"].as_f64().expect("numeric zero cost");
+    assert_eq!(cost, 0.0, "known zero-priced models must report explicit 0");
+}
+
+#[test]
+fn val_gap_llm_012_unknown_pricing_remains_null() {
+    let frames = vec![
+        serde_json::json!({
+            "id": "gap-012-unknown",
+            "object": "chat.completion.chunk",
+            "model": "local/unknown",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": "UNKNOWN-COST-OK" },
+                "finish_reason": serde_json::Value::Null
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "id": "gap-012-unknown",
+            "object": "chat.completion.chunk",
+            "model": "local/unknown",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 80,
+                "completion_tokens": 20,
+                "total_tokens": 100
+            }
+        })
+        .to_string(),
+    ];
+    let (base_url, requests, handle) = start_fixture(vec![ScriptedResponse::Sse { frames }]);
+
+    let scratch = Scratch::new("val-gap-llm-012-unknown");
+    scratch.write_project_config(&format!(
+        r#"
+[provider]
+enabled = ["local"]
+disabled = ["openrouter"]
+
+[provider.local]
+base_url = "{base_url}"
+api_key = "local-fixture-key"
+models = [{{ id = "local/unknown", name = "Unknown Local", tool_call = true, reasoning = false, context_length = 400000, max_output_tokens = 8192 }}]
+"#,
+    ));
+
+    let output = run(scratch.command(&[
+        "run",
+        "--format",
+        "json",
+        "--model",
+        "local/unknown",
+        "Reply with exactly UNKNOWN-COST-OK.",
+    ]));
+    let _ = handle.join();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests.lock().expect("request lock").len(),
+        1,
+        "turn should complete in one request"
+    );
+
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("run json");
+    assert_eq!(doc["content"], "UNKNOWN-COST-OK");
+    assert!(
+        doc["usage"]["cost"].is_null(),
+        "unknown pricing must stay null: {}",
+        doc["usage"]
+    );
+}
+
+#[test]
 fn val_gap_llm_013_context_overflow_surfaces_specific_diagnostic() {
     let overflow_error = serde_json::json!({
         "error": {

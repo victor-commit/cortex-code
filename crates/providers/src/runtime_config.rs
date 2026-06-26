@@ -810,6 +810,12 @@ fn parse_model_table(
         })?),
         None => None,
     };
+    let has_cost_metadata = table.contains_key(MODEL_COST_KEY)
+        || table.contains_key(MODEL_COST_INPUT_ALIAS_KEY)
+        || table.contains_key(MODEL_COST_OUTPUT_ALIAS_KEY)
+        || table.contains_key(MODEL_COST_CACHE_WRITE_ALIAS_KEY)
+        || table.contains_key(MODEL_COST_CACHE_READ_ALIAS_KEY)
+        || table.contains_key(MODEL_COST_REASONING_ALIAS_KEY);
     let cost_input = parse_optional_f64(
         table.get(MODEL_COST_INPUT_ALIAS_KEY),
         &format!("{key_path}.{MODEL_COST_INPUT_ALIAS_KEY}"),
@@ -874,7 +880,9 @@ fn parse_model_table(
             cache_read: cost_cache_read,
             reasoning: cost_reasoning,
             over_input_threshold,
-        },
+            ..ModelCost::default()
+        }
+        .with_known(has_cost_metadata),
         limit: ModelLimit {
             context: context_length,
             output: max_output_limit,
