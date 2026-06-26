@@ -1,6 +1,6 @@
 //! Post-mutation diagnostics feedback built on real language servers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -25,6 +25,7 @@ pub const MAX_RENDERED_DIAGNOSTICS: usize = 20;
 pub const MAX_MESSAGE_CHARS: usize = 500;
 const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
 const PULL_DIAGNOSTICS_WAIT_BEFORE_FALLBACK: Duration = Duration::from_millis(1200);
+const LSP_CRASH_STATE_DIR: &str = "lsp/crash-state";
 // LSP cancellation/readiness errors that rust-analyzer may return while a just-opened workspace is
 // still loading or while it invalidates an in-flight query after didOpen/didChange. Treat these as
 // retryable for navigation only, without weakening fatal transport/process handling.
@@ -222,11 +223,70 @@ enum ServerSlot {
     Broken,
 }
 
+struct DurableCrashState {
+    path: Option<PathBuf>,
+    crashed_languages: BTreeSet<String>,
+}
+
+impl DurableCrashState {
+    fn load(root: &Path) -> Self {
+        let path = crash_state_path(root);
+        let crashed_languages = path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+            .map(|entries| entries.into_iter().collect())
+            .unwrap_or_default();
+        Self {
+            path,
+            crashed_languages,
+        }
+    }
+
+    fn is_crashed(&self, language_id: &str) -> bool {
+        self.crashed_languages.contains(language_id)
+    }
+
+    fn mark_crashed(&mut self, language_id: &str) {
+        if self.crashed_languages.insert(language_id.to_owned()) {
+            self.persist();
+        }
+    }
+
+    fn clear_crashed(&mut self, language_id: &str) {
+        if self.crashed_languages.remove(language_id) {
+            self.persist();
+        }
+    }
+
+    fn persist(&self) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let mut values = self
+            .crashed_languages
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>();
+        values.sort();
+        let Ok(bytes) = serde_json::to_vec_pretty(&values) else {
+            return;
+        };
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
 /// Lazy per-language server pool plus bounded diagnostics collection.
 pub struct FeedbackManager {
     root: PathBuf,
     config: LspConfigSet,
     servers: BTreeMap<String, ServerSlot>,
+    crash_state: DurableCrashState,
     budget: Duration,
 }
 
@@ -234,8 +294,10 @@ impl FeedbackManager {
     /// Create a manager rooted at `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>, config: LspConfigSet) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            crash_state: DurableCrashState::load(&root),
+            root,
             config,
             servers: BTreeMap::new(),
             budget: FEEDBACK_BUDGET,
@@ -669,15 +731,25 @@ impl FeedbackManager {
         let no_net = redaction::network_disabled();
         let mut rows = Vec::new();
         for server in self.config.servers() {
+            let language_id = server.language_id().to_owned();
             let install_hint = status_install_hint(server, no_net);
+            let mut mark_crashed = false;
+            let mut clear_crashed = false;
             let state = match self.servers.get_mut(server.language_id()) {
                 _ if !server.is_enabled() => ServerRunState::Disabled,
                 None => {
                     if let Some(pid) = find_running_pid(server.program()) {
+                        clear_crashed = true;
                         ServerRunState::Running(pid)
                     } else {
                         match install_readiness(server, no_net) {
-                            InstallReadiness::Available(_) => ServerRunState::Available,
+                            InstallReadiness::Available(_) => {
+                                if self.crash_state.is_crashed(server.language_id()) {
+                                    ServerRunState::Crashed
+                                } else {
+                                    ServerRunState::Available
+                                }
+                            }
                             InstallReadiness::Installable => ServerRunState::Installing,
                             InstallReadiness::NoPlan
                             | InstallReadiness::NetDisabled
@@ -689,23 +761,39 @@ impl FeedbackManager {
                 }
                 Some(ServerSlot::Running { client, .. }) => {
                     if client.is_running() {
+                        clear_crashed = true;
                         ServerRunState::Running(client.child_id())
                     } else {
+                        mark_crashed = true;
                         ServerRunState::Crashed
                     }
                 }
                 Some(ServerSlot::Missing) => match install_readiness(server, no_net) {
                     InstallReadiness::Installable => ServerRunState::Installing,
-                    InstallReadiness::Available(_) => ServerRunState::Available,
+                    InstallReadiness::Available(_) => {
+                        if self.crash_state.is_crashed(server.language_id()) {
+                            ServerRunState::Crashed
+                        } else {
+                            ServerRunState::Available
+                        }
+                    }
                     InstallReadiness::NoPlan
                     | InstallReadiness::NetDisabled
                     | InstallReadiness::MissingPrerequisite { .. } => ServerRunState::Unavailable,
                 },
-                Some(ServerSlot::Failed) => ServerRunState::Unavailable,
-                Some(ServerSlot::Broken) => ServerRunState::Crashed,
+                Some(ServerSlot::Failed | ServerSlot::Broken) => {
+                    mark_crashed = true;
+                    ServerRunState::Crashed
+                }
+            };
+            if mark_crashed {
+                self.crash_state.mark_crashed(&language_id);
+            }
+            if clear_crashed {
+                self.crash_state.clear_crashed(&language_id);
             };
             rows.push(ServerStatus {
-                language_id: server.language_id().to_owned(),
+                language_id,
                 program: server.program().to_owned(),
                 state,
                 install_hint,
@@ -722,7 +810,7 @@ impl FeedbackManager {
             {
                 let _ = client.shutdown();
                 let _ = client.exit();
-                self.servers.insert(language_id, ServerSlot::Broken);
+                self.crash_state.clear_crashed(&language_id);
             }
         }
     }
@@ -760,6 +848,7 @@ impl FeedbackManager {
         });
         match started {
             Some(client) => {
+                self.crash_state.clear_crashed(server.language_id());
                 self.servers.insert(
                     server.language_id().to_owned(),
                     ServerSlot::Running {
@@ -772,6 +861,7 @@ impl FeedbackManager {
             None => {
                 self.servers
                     .insert(server.language_id().to_owned(), ServerSlot::Failed);
+                self.crash_state.mark_crashed(server.language_id());
                 false
             }
         }
@@ -809,6 +899,7 @@ impl FeedbackManager {
     fn mark_broken(&mut self, language_id: &str) {
         self.servers
             .insert(language_id.to_owned(), ServerSlot::Broken);
+        self.crash_state.mark_crashed(language_id);
     }
 
     fn with_document<T, F>(&mut self, path: &Path, deadline: Instant, op: F) -> NavigationOutcome
@@ -1194,6 +1285,37 @@ pub fn no_server_guidance(server: &LspServerConfig, no_net: bool) -> Option<Stri
         | InstallReadiness::NoPlan
         | InstallReadiness::NetDisabled => None,
     }
+}
+
+fn crash_state_path(root: &Path) -> Option<PathBuf> {
+    let workspace_key = checkpoints::workspace_key(root);
+    crash_state_base_dir().map(|base| base.join(format!("{workspace_key}.json")))
+}
+
+fn crash_state_base_dir() -> Option<PathBuf> {
+    if let Some(data_dir) = non_empty_var("CORTEX_DATA_DIR") {
+        return Some(data_dir.join(LSP_CRASH_STATE_DIR));
+    }
+    if let Some(db_path) = non_empty_var("CORTEX_DB_PATH") {
+        if let Some(parent) = db_path.parent() {
+            return Some(parent.join(LSP_CRASH_STATE_DIR));
+        }
+    }
+    if let Some(xdg_data_home) = non_empty_var("XDG_DATA_HOME") {
+        return Some(xdg_data_home.join("cortex").join(LSP_CRASH_STATE_DIR));
+    }
+    non_empty_var("HOME").map(|home| {
+        home.join(".local")
+            .join("share")
+            .join("cortex")
+            .join(LSP_CRASH_STATE_DIR)
+    })
+}
+
+fn non_empty_var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn resolve_server_program(server: &LspServerConfig) -> Option<PathBuf> {

@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+checkpoints = { workspace = true }
 errors = { workspace = true }
 redaction = { workspace = true }
 serde = { workspace = true }
