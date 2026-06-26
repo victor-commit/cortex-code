@@ -291,19 +291,19 @@ fn run(mut command: Command) -> Output {
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().expect("wait") {
-            let stdout = child
+            let mut stdout = Vec::new();
+            child
                 .stdout
                 .take()
                 .expect("stdout")
-                .bytes()
-                .collect::<Result<Vec<_>, _>>()
+                .read_to_end(&mut stdout)
                 .expect("stdout bytes");
-            let stderr = child
+            let mut stderr = Vec::new();
+            child
                 .stderr
                 .take()
                 .expect("stderr")
-                .bytes()
-                .collect::<Result<Vec<_>, _>>()
+                .read_to_end(&mut stderr)
                 .expect("stderr bytes");
             return Output {
                 status,

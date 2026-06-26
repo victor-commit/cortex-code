@@ -500,12 +500,11 @@ fn snapshot_patch_file_and_reasoning_parts_persist_across_restart_surfaces() {
         .find(|part| part["type"] == "snapshot")
         .expect("snapshot part in session show");
     assert_eq!(show_snapshot["id"], run_snapshot["id"]);
-    assert_eq!(
-        show_snapshot["created_at"]
+    assert!(
+        !show_snapshot["created_at"]
             .as_str()
             .map(str::is_empty)
             .unwrap_or(true),
-        false,
         "persisted snapshot part should carry a timestamp"
     );
     assert_eq!(

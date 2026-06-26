@@ -1545,7 +1545,7 @@ fn resolve_small_model_for_turn(
 /// The result of awaiting a turn that may be interrupted by SIGINT.
 enum TurnResult {
     /// The turn ran to completion (success or a normalized error in the outcome).
-    Completed(RunOutcome),
+    Completed(Box<RunOutcome>),
     /// SIGINT (Ctrl-C) cancelled the turn at a safe await boundary before it completed.
     Interrupted,
 }
@@ -1619,7 +1619,7 @@ where
     let runner = SessionRunner::default();
     tokio::select! {
         outcome = runner.run_with_tools(provider, turn, dispatcher, sink) => {
-            TurnResult::Completed(outcome)
+            TurnResult::Completed(Box::new(outcome))
         }
         () = interrupt() => TurnResult::Interrupted,
     }
@@ -1698,7 +1698,7 @@ async fn stream_text(
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let mut outcome = match result {
-        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Completed(outcome) => *outcome,
         TurnResult::Interrupted => {
             // Cancelled at a safe boundary: finish the partial line cleanly and exit with the
             // interrupt code. The session stays durable (the prompt was persisted before the turn).
@@ -1805,7 +1805,7 @@ async fn stream_jsonl(
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let mut outcome = match result {
-        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Completed(outcome) => *outcome,
         TurnResult::Interrupted => {
             // Every JSONL line already written is a complete object; stop emitting and exit. The
             // session stays durable (the prompt was persisted before the turn).
@@ -1985,7 +1985,7 @@ async fn emit_json(
         checkpoint_snapshot_part(turn_message_id, checkpoint_recorder.map(Arc::as_ref));
 
     let mut outcome = match result {
-        TurnResult::Completed(outcome) => outcome,
+        TurnResult::Completed(outcome) => *outcome,
         TurnResult::Interrupted => {
             // The single JSON document is written only after the turn completes, so an interrupt
             // here leaves stdout byte-empty — never a partial/malformed document (VAL-RUN-013).

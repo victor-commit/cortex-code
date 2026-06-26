@@ -187,25 +187,23 @@ fn gap_plugin_011_tui_type_plugin_contributes_themes_without_headless_artifacts(
     let run_marker = sandbox.project.join("run-surface-marker.txt");
     write_plugin(
         &sandbox.project.join("tui-plugin.mjs"),
-        &format!(
-            r#"
-import {{ appendFile }} from "node:fs/promises";
+        r#"
+import { appendFile } from "node:fs/promises";
 
-export default async function plugin(_input, options) {{
-  return {{
-    async event(event) {{
-      if (event.surface === "run") {{
+export default async function plugin(_input, options) {
+  return {
+    async event(event) {
+      if (event.surface === "run") {
         await appendFile(options.runMarker, "run\n");
-      }}
-    }},
-    async theme({{ register }}) {{
-      register({{ id: options.themeID, name: options.themeName }});
+      }
+    },
+    async theme({ register }) {
+      register({ id: options.themeID, name: options.themeName });
       return [];
-    }}
-  }};
-}}
+    }
+  };
+}
 "#,
-        ),
     );
     std::fs::write(
         sandbox.project.join("cortex.toml"),
