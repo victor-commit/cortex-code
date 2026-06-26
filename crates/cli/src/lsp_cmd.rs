@@ -220,14 +220,18 @@ fn no_server_note(shown_path: &str, server: Option<&lsp::LspServerConfig>, no_ne
         None => format!(
             "LSP diagnostics unavailable for {shown_path}: no language server is configured for this file extension"
         ),
-        Some(server) if no_net => format!(
-            "LSP diagnostics unavailable for {shown_path}: CORTEX_NO_NET=1 prevents auto-installing a missing language server ({program}); no diagnostics were claimed",
-            program = server.program()
-        ),
-        Some(server) => format!(
-            "LSP diagnostics unavailable for {shown_path}: no language server available or auto-install could not provide {program}",
-            program = server.program()
-        ),
+        Some(server) => {
+            if let Some(guidance) = lsp::no_server_guidance(server, no_net) {
+                format!(
+                    "LSP diagnostics unavailable for {shown_path}: {guidance}; no diagnostics were claimed"
+                )
+            } else {
+                format!(
+                    "LSP diagnostics unavailable for {shown_path}: no language server available or auto-install could not provide {program}",
+                    program = server.program()
+                )
+            }
+        }
     }
 }
 

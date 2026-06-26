@@ -583,18 +583,22 @@ impl FeedbackManager {
         let no_net = redaction::network_disabled();
         let mut rows = Vec::new();
         for server in self.config.servers() {
-            let install_hint = server.install().map(InstallPlan::description);
+            let install_hint = status_install_hint(server, no_net);
             let state = match self.servers.get_mut(server.language_id()) {
                 _ if !server.is_enabled() => ServerRunState::Disabled,
                 None => {
                     if let Some(pid) = find_running_pid(server.program()) {
                         ServerRunState::Running(pid)
-                    } else if command_exists(server.program()) {
-                        ServerRunState::Available
-                    } else if server.install().is_some() && !no_net {
-                        ServerRunState::Installing
                     } else {
-                        ServerRunState::Unavailable
+                        match install_readiness(server, no_net) {
+                            InstallReadiness::Available(_) => ServerRunState::Available,
+                            InstallReadiness::Installable => ServerRunState::Installing,
+                            InstallReadiness::NoPlan
+                            | InstallReadiness::NetDisabled
+                            | InstallReadiness::MissingPrerequisite { .. } => {
+                                ServerRunState::Unavailable
+                            }
+                        }
                     }
                 }
                 Some(ServerSlot::Running { client, .. }) => {
@@ -604,13 +608,13 @@ impl FeedbackManager {
                         ServerRunState::Crashed
                     }
                 }
-                Some(ServerSlot::Missing) => {
-                    if server.install().is_some() && !no_net {
-                        ServerRunState::Installing
-                    } else {
-                        ServerRunState::Unavailable
-                    }
-                }
+                Some(ServerSlot::Missing) => match install_readiness(server, no_net) {
+                    InstallReadiness::Installable => ServerRunState::Installing,
+                    InstallReadiness::Available(_) => ServerRunState::Available,
+                    InstallReadiness::NoPlan
+                    | InstallReadiness::NetDisabled
+                    | InstallReadiness::MissingPrerequisite { .. } => ServerRunState::Unavailable,
+                },
                 Some(ServerSlot::Failed) => ServerRunState::Unavailable,
                 Some(ServerSlot::Broken) => ServerRunState::Crashed,
             };
@@ -640,18 +644,25 @@ impl FeedbackManager {
     fn start_server(&mut self, server: &LspServerConfig, deadline: Instant) -> bool {
         match ensure_installed(server) {
             InstallOutcome::Available => {}
-            InstallOutcome::Unavailable | InstallOutcome::NetDisabled => {
+            InstallOutcome::Unavailable
+            | InstallOutcome::NetDisabled
+            | InstallOutcome::MissingPrerequisite => {
                 self.servers
                     .insert(server.language_id().to_owned(), ServerSlot::Missing);
                 return false;
             }
         }
+        let Some(program_path) = resolve_server_program(server) else {
+            self.servers
+                .insert(server.language_id().to_owned(), ServerSlot::Missing);
+            return false;
+        };
 
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .unwrap_or_default();
         let command = server
-            .to_command()
+            .to_command_with_program(program_path.to_string_lossy().into_owned())
             .with_request_timeout(remaining.max(Duration::from_millis(1)));
         let root_uri = path_to_uri(&self.root);
         let started = LspClient::spawn(&command).ok().and_then(|mut client| {
@@ -965,12 +976,31 @@ enum InstallOutcome {
     Available,
     Unavailable,
     NetDisabled,
+    MissingPrerequisite,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum InstallReadiness {
+    Available(PathBuf),
+    Installable,
+    NoPlan,
+    NetDisabled,
+    MissingPrerequisite {
+        installer: &'static str,
+        command: String,
+    },
 }
 
 fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
-    if command_exists(server.program()) {
-        return InstallOutcome::Available;
-    }
+    match install_readiness(server, redaction::network_disabled()) {
+        InstallReadiness::Available(_) => return InstallOutcome::Available,
+        InstallReadiness::NoPlan => return InstallOutcome::Unavailable,
+        InstallReadiness::NetDisabled => return InstallOutcome::NetDisabled,
+        InstallReadiness::MissingPrerequisite { .. } => {
+            return InstallOutcome::MissingPrerequisite;
+        }
+        InstallReadiness::Installable => {}
+    };
     let Some(plan) = server.install() else {
         return InstallOutcome::Unavailable;
     };
@@ -1016,24 +1046,175 @@ fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
             .status()
             .is_ok_and(|status| status.success()),
     };
-    if installed && command_exists(server.program()) {
+    if installed
+        && matches!(
+            install_readiness(server, redaction::network_disabled()),
+            InstallReadiness::Available(_)
+        )
+    {
         InstallOutcome::Available
     } else {
         InstallOutcome::Unavailable
     }
 }
 
+fn install_readiness(server: &LspServerConfig, no_net: bool) -> InstallReadiness {
+    if let Some(program) = resolve_server_program(server) {
+        return InstallReadiness::Available(program);
+    }
+    let Some(plan) = server.install() else {
+        return InstallReadiness::NoPlan;
+    };
+    if no_net {
+        return InstallReadiness::NetDisabled;
+    }
+    if let Some(installer) = install_prerequisite(plan).filter(|program| !command_exists(program)) {
+        return InstallReadiness::MissingPrerequisite {
+            installer,
+            command: plan.description(),
+        };
+    }
+    InstallReadiness::Installable
+}
+
+fn status_install_hint(server: &LspServerConfig, no_net: bool) -> Option<String> {
+    let plan = server.install()?;
+    let base = plan.description();
+    match install_readiness(server, no_net) {
+        InstallReadiness::NetDisabled => Some(format!("{base} (blocked: CORTEX_NO_NET=1)")),
+        InstallReadiness::MissingPrerequisite { installer, .. } => {
+            Some(format!("{base} (blocked: requires `{installer}` on PATH)"))
+        }
+        InstallReadiness::Available(_)
+        | InstallReadiness::Installable
+        | InstallReadiness::NoPlan => Some(base),
+    }
+}
+
+pub fn no_server_guidance(server: &LspServerConfig, no_net: bool) -> Option<String> {
+    if no_net && server.install().is_some() {
+        return Some(format!(
+            "CORTEX_NO_NET=1 prevents auto-installing a missing language server ({})",
+            server.program()
+        ));
+    }
+    match install_readiness(server, false) {
+        InstallReadiness::MissingPrerequisite { installer, command } => Some(format!(
+            "auto-install for {} requires `{installer}` on PATH ({command})",
+            server.program()
+        )),
+        InstallReadiness::Available(_)
+        | InstallReadiness::Installable
+        | InstallReadiness::NoPlan
+        | InstallReadiness::NetDisabled => None,
+    }
+}
+
+fn resolve_server_program(server: &LspServerConfig) -> Option<PathBuf> {
+    find_program(server.program()).or_else(|| match server.install() {
+        Some(InstallPlan::Go { .. }) => resolve_go_program(server.program()),
+        _ => None,
+    })
+}
+
 fn command_exists(program: &str) -> bool {
+    find_program(program).is_some()
+}
+
+fn find_program(program: &str) -> Option<PathBuf> {
     let program_path = Path::new(program);
     if program_path.components().count() > 1 {
-        return program_path.is_file();
+        return program_path.is_file().then(|| program_path.to_path_buf());
     }
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            let candidate = dir.join(program);
-            candidate.is_file()
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| {
+            executable_names(program)
+                .into_iter()
+                .map(|name| dir.join(name))
+                .find(|candidate| candidate.is_file())
         })
     })
+}
+
+fn install_prerequisite(plan: &InstallPlan) -> Option<&'static str> {
+    match plan {
+        InstallPlan::Npm { .. } => Some("npm"),
+        InstallPlan::UvTool { .. } => Some("uv"),
+        InstallPlan::Cargo { .. } => Some("cargo"),
+        InstallPlan::Go { .. } => Some("go"),
+        InstallPlan::DotnetTool { .. } => Some("dotnet"),
+        InstallPlan::Gem { .. } => Some("gem"),
+    }
+}
+
+fn resolve_go_program(program: &str) -> Option<PathBuf> {
+    go_install_bin_dirs().into_iter().find_map(|dir| {
+        executable_names(program)
+            .into_iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn go_install_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_dir(&mut dirs, std::env::var_os("GOBIN").map(PathBuf::from));
+    push_unique_dir(
+        &mut dirs,
+        go_env_value("GOBIN").map(|value| PathBuf::from(value.trim())),
+    );
+    if let Some(gopath) = std::env::var_os("GOPATH") {
+        for entry in std::env::split_paths(&gopath) {
+            push_unique_dir(&mut dirs, Some(entry.join("bin")));
+        }
+    }
+    if let Some(gopath) = go_env_value("GOPATH") {
+        let gopath = std::ffi::OsString::from(gopath.trim());
+        for entry in std::env::split_paths(&gopath) {
+            push_unique_dir(&mut dirs, Some(entry.join("bin")));
+        }
+    }
+    push_unique_dir(
+        &mut dirs,
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("go").join("bin")),
+    );
+    dirs
+}
+
+fn go_env_value(variable: &str) -> Option<String> {
+    if !command_exists("go") {
+        return None;
+    }
+    let output = Command::new("go").args(["env", variable]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn push_unique_dir(dirs: &mut Vec<PathBuf>, candidate: Option<PathBuf>) {
+    let Some(candidate) = candidate.filter(|path| !path.as_os_str().is_empty()) else {
+        return;
+    };
+    if !dirs.iter().any(|existing| existing == &candidate) {
+        dirs.push(candidate);
+    }
+}
+
+fn executable_names(program: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let mut names = vec![program.to_owned()];
+        if Path::new(program).extension().is_none() {
+            names.push(format!("{program}.exe"));
+        }
+        names
+    }
+    #[cfg(not(windows))]
+    {
+        vec![program.to_owned()]
+    }
 }
 
 fn find_running_pid(program: &str) -> Option<u32> {

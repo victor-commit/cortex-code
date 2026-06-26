@@ -281,7 +281,13 @@ impl LspServerConfig {
     /// Convert to a spawnable command.
     #[must_use]
     pub fn to_command(&self) -> LspServerCommand {
-        let mut command = LspServerCommand::new(self.program.clone())
+        self.to_command_with_program(self.program.clone())
+    }
+
+    /// Convert to a spawnable command while overriding the launch program path.
+    #[must_use]
+    pub fn to_command_with_program(&self, program: impl Into<String>) -> LspServerCommand {
+        let mut command = LspServerCommand::new(program)
             .with_args(self.args.iter().cloned())
             .with_request_timeout(self.request_timeout);
         for (key, value) in &self.env {
