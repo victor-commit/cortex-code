@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -570,7 +570,13 @@ fn cache_remote_skill(
     files: &[String],
     warnings: &mut Vec<String>,
 ) -> Option<PathBuf> {
-    let skill_root = cache_dir.join(skill_name);
+    let Some(skill_root) = safe_join_remote_path(cache_dir, skill_name) else {
+        warnings.push(format!(
+            "skipping remote skill `{skill_name}` from `{}`: invalid cache destination",
+            base_url
+        ));
+        return None;
+    };
     let Some(skill_base_url) = base_url.join(&format!("{skill_name}/")).ok() else {
         warnings.push(format!(
             "skipping remote skill `{skill_name}` from `{}`: invalid skill URL",
@@ -600,15 +606,13 @@ fn cache_remote_skill(
             ));
             return None;
         }
-        let destination = skill_root.join(&relative);
-        if !destination.starts_with(&skill_root) {
+        let Some(destination) = safe_join_remote_path(&skill_root, &relative) else {
             warnings.push(format!(
                 "skipping remote skill `{skill_name}` from `{}`: escaped destination `{}`",
-                base_url,
-                destination.display()
+                base_url, relative
             ));
             return None;
-        }
+        };
         if destination.exists() {
             continue;
         }
@@ -704,14 +708,20 @@ fn cached_remote_skill_dirs(cache_dir: &Path) -> Vec<PathBuf> {
 
 fn sanitize_remote_skill_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.chars().all(|ch| ch == '.')
+        || trimmed.contains("..")
+    {
         return None;
     }
     if trimmed
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
     {
-        Some(trimmed.to_owned())
+        is_single_normal_component(trimmed).then(|| trimmed.to_owned())
     } else {
         None
     }
@@ -731,11 +741,35 @@ fn sanitize_relative_remote_file(file: &str) -> Option<String> {
     let candidate = Path::new(trimmed);
     if candidate
         .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
     {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+fn is_single_normal_component(value: &str) -> bool {
+    let mut components = Path::new(value).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
+fn safe_join_remote_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    let mut destination = root.to_path_buf();
+    let mut saw_component = false;
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => {
+                destination.push(part);
+                saw_component = true;
+            }
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    saw_component.then_some(destination)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1159,6 +1193,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_skill_name_validation_rejects_unsafe_inputs() {
+        assert_eq!(
+            sanitize_remote_skill_name("remote-skill"),
+            Some("remote-skill".to_owned())
+        );
+        assert_eq!(
+            sanitize_remote_skill_name("remote.skill"),
+            Some("remote.skill".to_owned())
+        );
+
+        for invalid in [
+            "",
+            " ",
+            ".",
+            "..",
+            "...",
+            "../skill",
+            "./skill",
+            "/skill",
+            "skill/name",
+            "skill\\name",
+            "skill..name",
+            "bad\0name",
+        ] {
+            assert!(
+                sanitize_remote_skill_name(invalid).is_none(),
+                "expected `{invalid}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn discovers_remote_skill_urls_and_reuses_cached_copy_when_source_is_offline() {
         let home = scratch("home-remote-cache");
         let project = home.join("project");
@@ -1224,6 +1290,89 @@ urls = ["{}"]
         assert!(
             second.skills.contains_key("remote-skill"),
             "cached remote skill should remain available while source is offline"
+        );
+    }
+
+    #[test]
+    fn skips_traversal_like_remote_skill_names_without_cache_escape() {
+        let home = scratch("home-remote-traversal");
+        let project = home.join("project");
+        fs::create_dir_all(&project).expect("create project");
+        let index = serde_json::json!({
+            "skills": [
+                {
+                    "name": "..",
+                    "files": ["SKILL.md"]
+                },
+                {
+                    "name": "remote.skill",
+                    "files": ["SKILL.md"]
+                }
+            ]
+        })
+        .to_string();
+        let files = BTreeMap::from([
+            (
+                "/SKILL.md".to_owned(),
+                skill_doc(
+                    "escaped-skill",
+                    "Traversal should never be cached",
+                    "Append SKILL-ESCAPED.",
+                ),
+            ),
+            (
+                "/catalog/remote.skill/SKILL.md".to_owned(),
+                skill_doc(
+                    "remote-skill",
+                    "Safe dotted remote skill",
+                    "Append SKILL-REMOTE-SAFE.",
+                ),
+            ),
+        ]);
+        let fixture = HttpFixture::start(index, files);
+        fs::write(
+            project.join("cortex.toml"),
+            format!(
+                r#"
+[skills]
+urls = ["{}"]
+"#,
+                fixture.base_url
+            ),
+        )
+        .expect("write config");
+
+        let discovery = discover(&ConfigInputs {
+            home: Some(home.clone()),
+            xdg_config_home: None,
+            cwd: project,
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        });
+
+        let cache_root = home
+            .join(".config")
+            .join("cortex")
+            .join("cache")
+            .join("skills");
+        let cache_dir = cache_root.join(hex_encode(fixture.base_url.as_bytes()));
+        fixture.join();
+
+        assert!(
+            !cache_root.join("SKILL.md").is_file(),
+            "remote traversal-like names must never write outside the source cache subtree"
+        );
+        assert!(
+            !discovery.skills.contains_key("escaped-skill"),
+            "traversal-like remote skills must be skipped"
+        );
+        assert!(
+            discovery.skills.contains_key("remote-skill"),
+            "safe dotted remote skill names should still be accepted"
+        );
+        assert!(
+            cache_dir.join("remote.skill").join("SKILL.md").is_file(),
+            "safe remote skill cache path should be written under the source cache subtree"
         );
     }
 }
