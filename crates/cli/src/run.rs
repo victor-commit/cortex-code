@@ -1061,24 +1061,23 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
                         return None;
                     }
                     let media_parts = extract_message_media_parts(&message.parts);
-                    let content = if let Some(summary) =
-                        legacy_compaction_summary_from_content(&message.content)
-                    {
-                        summary
-                    } else if message.content.trim().is_empty() {
-                        message
-                            .parts
-                            .iter()
-                            .filter_map(|part| match &part.body {
-                                MessagePartBody::Text { text }
-                                | MessagePartBody::Reasoning { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    } else {
-                        message.content.clone()
-                    };
+                    let content =
+                        if let Some(summary) = legacy_compaction_summary_for_message(&message) {
+                            summary
+                        } else if message.content.trim().is_empty() {
+                            message
+                                .parts
+                                .iter()
+                                .filter_map(|part| match &part.body {
+                                    MessagePartBody::Text { text }
+                                    | MessagePartBody::Reasoning { text } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            message.content.clone()
+                        };
                     Some(HistoryMessage::new(message.role, content).with_parts(media_parts))
                 })
                 .collect();
@@ -1407,11 +1406,30 @@ fn memory_provenance_from_content(content: &str) -> bool {
         .is_some_and(|kind| kind == "memory_provenance")
 }
 
+fn legacy_compaction_summary_for_message(message: &db::Message) -> Option<String> {
+    if !message.role.eq_ignore_ascii_case("system") {
+        return None;
+    }
+    compaction_summary_from_parts(&message.parts)
+        .or_else(|| legacy_compaction_summary_from_content(&message.content))
+}
+
+fn compaction_summary_from_parts(parts: &[MessagePart]) -> Option<String> {
+    parts.iter().find_map(|part| match &part.body {
+        MessagePartBody::Compaction { summary, .. } => Some(summary.clone()),
+        _ => None,
+    })
+}
+
 fn legacy_compaction_summary_from_content(content: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
-    (parsed.get("type")?.as_str()? == "compaction_summary")
-        .then(|| parsed.get("summary")?.as_str().map(str::to_owned))
-        .flatten()
+    if parsed.get("type")?.as_str()? != "compaction_summary" {
+        return None;
+    }
+    // Restrict compatibility decoding to the known persisted compaction JSON shape.
+    parsed.get("tail_start_id")?.as_str()?;
+    parsed.get("continued_request")?.as_bool()?;
+    parsed.get("summary")?.as_str().map(str::to_owned)
 }
 
 fn serialize_legacy_compaction_summary_content(
@@ -3519,6 +3537,69 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].role, llm::Role::System);
         assert_eq!(history[0].content, "compacted summary");
+    }
+
+    #[test]
+    fn load_history_preserves_json_shaped_user_and_assistant_content() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let literal_json =
+            serialize_legacy_compaction_summary_content("keep me verbatim", "tail_user", false);
+        db.messages()
+            .create(&session.id, "user", &literal_json)
+            .expect("persist user message");
+        db.messages()
+            .create(&session.id, "assistant", &literal_json)
+            .expect("persist assistant message");
+
+        let history = load_history(&db, &session.id).expect("history loads");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, llm::Role::User);
+        assert_eq!(history[0].content, literal_json.as_str());
+        assert_eq!(history[1].role, llm::Role::Assistant);
+        assert_eq!(history[1].content, literal_json.as_str());
+    }
+
+    #[test]
+    fn load_history_does_not_decode_system_json_without_known_compaction_markers() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let non_legacy = serde_json::json!({
+            "type": "compaction_summary",
+            "summary": "literal system payload"
+        })
+        .to_string();
+        db.messages()
+            .create(&session.id, "system", &non_legacy)
+            .expect("persist system message");
+
+        let history = load_history(&db, &session.id).expect("history loads");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, llm::Role::System);
+        assert_eq!(history[0].content, non_legacy);
+    }
+
+    #[test]
+    fn load_history_prefers_compaction_summary_from_rich_compaction_parts() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        let part = MessagePart {
+            id: String::new(),
+            created_at: None,
+            body: MessagePartBody::Compaction {
+                summary: "summary from part".to_owned(),
+                tail_start_id: "tail_9".to_owned(),
+                continued_request: true,
+            },
+        };
+        db.messages()
+            .create_with_parts(&session.id, "system", "not legacy json", &[part])
+            .expect("persist compaction part message");
+
+        let history = load_history(&db, &session.id).expect("history loads");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, llm::Role::System);
+        assert_eq!(history[0].content, "summary from part");
     }
 
     #[test]
