@@ -8,7 +8,8 @@
 // Adaptation: crate renamed cortex-frame -> frame (cortex_frame -> frame import paths);
 //   code_block.rs + languages.rs (tree-sitter syntax highlighting via tui-syntax) are ported by
 //   the syntax-highlight feature. Fenced code blocks render highlighted when the fence language
-//   maps to a registered grammar (rust/bash), else via the simple bordered fallback.
+//   maps to a registered grammar (high-priority common languages), else via the simple bordered
+//   fallback.
 // Upstream-License: MIT
 // See: NOTICE (Direct-Port Provenance Ledger)
 

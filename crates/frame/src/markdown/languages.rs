@@ -6,8 +6,9 @@
 // Target-Path: crates/frame/src/markdown/languages.rs
 // Port-Mode: adapt
 // Adaptation: crate renamed cortex-frame -> frame; syntax crate renamed cortex-tui-syntax ->
-//   tui-syntax. `register_common_languages` now registers BOTH bash and rust grammars (the
-//   workspace ships tree-sitter-bash + tree-sitter-rust); tests adjusted accordingly.
+//   tui-syntax. `register_common_languages` now registers the high-priority grammar set required
+//   for common fenced code blocks (bash/rust/python/javascript/typescript/go/json/yaml/toml/
+//   markdown/c/cpp/java); tests adjusted accordingly.
 // Upstream-License: MIT
 // See: NOTICE (Direct-Port Provenance Ledger)
 
@@ -29,29 +30,95 @@ use tui_syntax::{Highlighter, LanguageConfig};
 
 /// Register commonly used languages for syntax highlighting.
 ///
-/// The workspace ships the `tree-sitter-bash` and `tree-sitter-rust` grammars, so both are
-/// registered. Other languages fall back to plain text until their grammars are added.
+/// This registers the high-priority grammar set used by markdown fenced code blocks in the TUI.
 pub fn register_common_languages(highlighter: &Highlighter) {
-    // Bash
-    highlighter.register_language(
+    fn register_language(
+        highlighter: &Highlighter,
+        name: &str,
+        language: tree_sitter::Language,
+        highlights_query: &str,
+    ) {
+        highlighter.register_language(name, LanguageConfig::new(language, highlights_query));
+    }
+
+    register_language(
+        highlighter,
         "bash",
-        LanguageConfig::new(
-            tree_sitter_bash::LANGUAGE.into(),
-            tree_sitter_bash::HIGHLIGHT_QUERY,
-        ),
+        tree_sitter_bash::LANGUAGE.into(),
+        tree_sitter_bash::HIGHLIGHT_QUERY,
     );
-
-    // Rust
-    highlighter.register_language(
+    register_language(
+        highlighter,
         "rust",
-        LanguageConfig::new(
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::HIGHLIGHTS_QUERY,
-        ),
+        tree_sitter_rust::LANGUAGE.into(),
+        tree_sitter_rust::HIGHLIGHTS_QUERY,
     );
-
-    // Additional languages can be added when their grammars are vendored.
-    // Unknown languages fall back to plain text.
+    register_language(
+        highlighter,
+        "python",
+        tree_sitter_python::LANGUAGE.into(),
+        tree_sitter_python::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "javascript",
+        tree_sitter_javascript::LANGUAGE.into(),
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+    );
+    register_language(
+        highlighter,
+        "typescript",
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        tree_sitter_typescript::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "go",
+        tree_sitter_go::LANGUAGE.into(),
+        tree_sitter_go::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "json",
+        tree_sitter_json::LANGUAGE.into(),
+        tree_sitter_json::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "yaml",
+        tree_sitter_yaml::LANGUAGE.into(),
+        tree_sitter_yaml::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "toml",
+        tree_sitter_toml_ng::LANGUAGE.into(),
+        tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+    );
+    register_language(
+        highlighter,
+        "markdown",
+        tree_sitter_md::LANGUAGE.into(),
+        tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+    );
+    register_language(
+        highlighter,
+        "c",
+        tree_sitter_c::LANGUAGE.into(),
+        tree_sitter_c::HIGHLIGHT_QUERY,
+    );
+    register_language(
+        highlighter,
+        "cpp",
+        tree_sitter_cpp::LANGUAGE.into(),
+        tree_sitter_cpp::HIGHLIGHT_QUERY,
+    );
+    register_language(
+        highlighter,
+        "java",
+        tree_sitter_java::LANGUAGE.into(),
+        tree_sitter_java::HIGHLIGHTS_QUERY,
+    );
 }
 
 // ============================================================================
@@ -417,11 +484,39 @@ mod tests {
     }
 
     #[test]
-    fn test_is_language_available_unregistered() {
-        // Known languages that normalize correctly but don't have grammars registered yet.
-        assert!(!is_language_available("python"));
-        assert!(!is_language_available("javascript"));
-        assert!(!is_language_available("go"));
+    fn test_is_language_available_aliases() {
+        assert!(is_language_available("python3"));
+        assert!(is_language_available("js"));
+        assert!(is_language_available("ts"));
+        assert!(is_language_available("golang"));
+        assert!(is_language_available("yml"));
+        assert!(is_language_available("md"));
+        assert!(is_language_available("c++"));
+    }
+
+    #[test]
+    fn test_is_language_available_high_priority_languages() {
+        // VAL-GAP-TUI-001 requires these languages to be highlighted via tree-sitter.
+        for language in [
+            "rust",
+            "bash",
+            "python",
+            "javascript",
+            "typescript",
+            "go",
+            "json",
+            "yaml",
+            "toml",
+            "markdown",
+            "c",
+            "cpp",
+            "java",
+        ] {
+            assert!(
+                is_language_available(language),
+                "expected language '{language}' to be registered"
+            );
+        }
     }
 
     #[test]
@@ -499,9 +594,26 @@ mod tests {
     fn test_default_highlighter_initialization() {
         let highlighter = get_default_highlighter();
 
-        // Should have bash and rust registered
-        assert!(highlighter.has_language("bash"));
-        assert!(highlighter.has_language("rust"));
+        for language in [
+            "rust",
+            "bash",
+            "python",
+            "javascript",
+            "typescript",
+            "go",
+            "json",
+            "yaml",
+            "toml",
+            "markdown",
+            "c",
+            "cpp",
+            "java",
+        ] {
+            assert!(
+                highlighter.has_language(language),
+                "expected language '{language}' to be registered"
+            );
+        }
 
         // Multiple calls should return the same instance
         let highlighter2 = get_default_highlighter();
@@ -532,6 +644,42 @@ mod tests {
     }
 
     #[test]
+    fn test_default_highlighter_can_highlight_gap_languages() {
+        let highlighter = get_default_highlighter();
+
+        let fixtures = [
+            ("python", "def add(a, b):\n    return a + b"),
+            ("javascript", "function add(a, b) { return a + b; }"),
+            ("typescript", "type User = { id: number; name: string };"),
+            ("go", "package main\nfunc main() { println(\"hi\") }"),
+            ("json", "{ \"name\": \"cortex\", \"version\": 1 }"),
+            ("yaml", "name: cortex\nversion: 1"),
+            ("toml", "name = \"cortex\"\nversion = 1"),
+            ("markdown", "# Header\n\n`inline`"),
+            ("c", "int main(void) { return 0; }"),
+            (
+                "cpp",
+                "class Widget { public: int value; };",
+            ),
+            (
+                "java",
+                "class Main { public static void main(String[] args) { String s = \"hi\"; } }",
+            ),
+        ];
+
+        for (language, sample) in fixtures {
+            let highlighted = highlighter
+                .highlight(sample, language)
+                .unwrap_or_else(|error| panic!("failed to highlight '{language}': {error}"));
+
+            assert!(
+                highlighted.spans().iter().any(|span| !span.style.is_empty()),
+                "expected styled spans for language '{language}'"
+            );
+        }
+    }
+
+    #[test]
     fn test_get_language_aliases() {
         assert!(get_language_aliases("rust").contains(&"rs"));
         assert!(get_language_aliases("python").contains(&"py"));
@@ -556,9 +704,31 @@ mod tests {
         let highlighter = Highlighter::new();
         assert!(!highlighter.has_language("bash"));
         assert!(!highlighter.has_language("rust"));
+        assert!(!highlighter.has_language("python"));
+        assert!(!highlighter.has_language("javascript"));
+        assert!(!highlighter.has_language("typescript"));
+        assert!(!highlighter.has_language("go"));
+        assert!(!highlighter.has_language("json"));
+        assert!(!highlighter.has_language("yaml"));
+        assert!(!highlighter.has_language("toml"));
+        assert!(!highlighter.has_language("markdown"));
+        assert!(!highlighter.has_language("c"));
+        assert!(!highlighter.has_language("cpp"));
+        assert!(!highlighter.has_language("java"));
 
         register_common_languages(&highlighter);
         assert!(highlighter.has_language("bash"));
         assert!(highlighter.has_language("rust"));
+        assert!(highlighter.has_language("python"));
+        assert!(highlighter.has_language("javascript"));
+        assert!(highlighter.has_language("typescript"));
+        assert!(highlighter.has_language("go"));
+        assert!(highlighter.has_language("json"));
+        assert!(highlighter.has_language("yaml"));
+        assert!(highlighter.has_language("toml"));
+        assert!(highlighter.has_language("markdown"));
+        assert!(highlighter.has_language("c"));
+        assert!(highlighter.has_language("cpp"));
+        assert!(highlighter.has_language("java"));
     }
 }

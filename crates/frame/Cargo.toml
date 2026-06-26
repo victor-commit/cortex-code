@@ -30,7 +30,19 @@ ahash = { workspace = true }
 tui-syntax = { workspace = true }
 tui-text = { workspace = true }
 once_cell = { workspace = true }
+tree-sitter = { workspace = true }
 
 # Tree-sitter grammars registered with the default highlighter.
 tree-sitter-bash = { workspace = true }
+tree-sitter-c = { workspace = true }
+tree-sitter-cpp = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-java = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-json = { workspace = true }
+tree-sitter-md = { workspace = true }
+tree-sitter-python = { workspace = true }
 tree-sitter-rust = { workspace = true }
+tree-sitter-toml-ng = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-yaml = { workspace = true }

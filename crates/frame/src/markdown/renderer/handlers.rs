@@ -561,8 +561,9 @@ impl<'a> RenderState<'a> {
     }
 
     /// Render the current code block, syntax-highlighting it when the fence language maps to a
-    /// registered tree-sitter grammar (rust/bash). Unknown languages, and partial blocks whose
-    /// language has no grammar, degrade gracefully to the plain bordered container.
+    /// registered tree-sitter grammar (common high-priority languages). Unknown languages, and
+    /// partial blocks whose language has no grammar, degrade gracefully to the plain bordered
+    /// container.
     ///
     /// Highlighting produces styled ratatui spans inside the same `┌─┐ │ │ └─┘` frame the plain
     /// fallback uses, so partial/streaming code stays legible (no raw escapes) and reflows into

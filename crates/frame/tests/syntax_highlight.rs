@@ -132,6 +132,42 @@ fn bash_alias_sh_is_highlighted() {
     );
 }
 
+// VAL-GAP-TUI-001: common non-Rust/Bash language fences are rendered with syntax styling.
+#[test]
+fn common_language_fences_render_non_plain_styles() {
+    let fixtures = [
+        ("python", "def add(a, b):\n    return a + b"),
+        ("javascript", "function add(a, b) { return a + b; }"),
+        ("typescript", "interface User { id: number; name: string }\nconst user: User = { id: 1, name: \"Ada\" };"),
+        ("go", "package main\nfunc main() { var n int = 1 }"),
+        ("json", "{ \"name\": \"cortex\", \"enabled\": true, \"count\": 3 }"),
+        ("yaml", "name: cortex\nenabled: true\ncount: 3"),
+        ("toml", "name = \"cortex\"\nenabled = true\ncount = 3"),
+        ("markdown", "# Header\n\n- item\n\n`inline`"),
+        ("c", "int main(void) { return 0; }"),
+        ("cpp", "class Widget { public: int value; };"),
+        ("java", "class Main { public static void main(String[] args) {} }"),
+        ("sh", "if true; then echo ok; fi"),
+    ];
+
+    for (language, code) in fixtures {
+        let md = format!("```{language}\n{code}\n```");
+        let lines = render_markdown(&md, W);
+        let text = flatten(&lines);
+        let colors = distinct_token_colors(&lines);
+
+        assert!(
+            text.contains('┌') && text.contains('└') && text.contains('│'),
+            "expected bordered code block for language '{language}':\n{text}"
+        );
+        assert!(
+            colors.len() >= 1,
+            "expected non-plain syntax color for language '{language}', got {:?}\n{text}",
+            colors
+        );
+    }
+}
+
 // VAL-TUI-018: streaming markdown does not corrupt partially-received blocks.
 #[test]
 fn partial_code_block_is_legible_and_final_is_formatted() {
