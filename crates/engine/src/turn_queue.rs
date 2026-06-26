@@ -87,10 +87,16 @@ impl TurnQueue {
         if let Ok(mut active) = self.active.lock() {
             active.remove(session_id);
         }
-        if let Ok(waiters) = self.waiters.lock()
-            && let Some(waiter) = waiters.get(session_id)
-        {
-            waiter.notify_waiters();
+        if let Ok(mut waiters) = self.waiters.lock() {
+            let remove_entry = if let Some(waiter) = waiters.get(session_id) {
+                waiter.notify_waiters();
+                Arc::strong_count(waiter) == 1
+            } else {
+                false
+            };
+            if remove_entry {
+                waiters.remove(session_id);
+            }
         }
     }
 
@@ -232,5 +238,44 @@ mod tests {
         assert!(queue.abort("ses").expect("abort result"));
         abort_rx.changed().await.expect("abort signal");
         assert!(*abort_rx.borrow(), "active lease should observe abort");
+    }
+
+    #[tokio::test]
+    async fn uncontended_releases_do_not_leave_stale_waiters() {
+        let queue = TurnQueue::default();
+        for index in 0..64 {
+            let lease = queue
+                .acquire(format!("session-{index}"))
+                .await
+                .expect("lease");
+            drop(lease);
+        }
+        let waiters = queue.waiters.lock().expect("lock waiters");
+        assert!(
+            waiters.is_empty(),
+            "waiter map should be empty after uncontended release cycles"
+        );
+    }
+
+    #[tokio::test]
+    async fn contended_release_eventually_cleans_waiter_entry() {
+        let queue = TurnQueue::default();
+        let first = queue.acquire("ses").await.expect("first lease");
+        let queue_for_second = queue.clone();
+        let second = tokio::spawn(async move { queue_for_second.acquire("ses").await });
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        drop(first);
+        let second = second
+            .await
+            .expect("join second acquire")
+            .expect("queued second lease");
+        drop(second);
+
+        let waiters = queue.waiters.lock().expect("lock waiters");
+        assert!(
+            !waiters.contains_key("ses"),
+            "waiter entry should be removed once no waiter still needs it"
+        );
     }
 }
