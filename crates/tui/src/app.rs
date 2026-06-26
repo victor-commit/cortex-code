@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::ops::Range;
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -823,6 +823,9 @@ pub struct App {
     /// unit tests, so they never touch a real database); the real launch sets it so interactive
     /// turns are recorded in the shared store and become resumable across surfaces.
     db_path: Option<PathBuf>,
+    /// Optional override for the local `/share` reference directory, used by tests to isolate
+    /// filesystem side effects from the real user data directory.
+    share_data_dir: Option<PathBuf>,
     /// The persisted id (`ses_…`) of the active conversation, or `None` until the first turn (or a
     /// model selection) lazily creates a session, or a session is loaded from the picker. This is
     /// the durable id a headless `cortex run --session <id>` resumes; it is surfaced in the footer
@@ -911,6 +914,7 @@ impl App {
             cancel_flag: None,
             pending_permission: None,
             db_path: None,
+            share_data_dir: None,
             session_id: None,
             remote_server: None,
             seen_message_ids: BTreeSet::new(),
@@ -3401,7 +3405,8 @@ impl App {
         }
         let id = local_share_id();
         let url = format!("http://127.0.0.1:3200/share/{id}");
-        let notice = match write_share_reference(&id, &self.status.session) {
+        let shares_dir = self.share_dir();
+        let notice = match write_share_reference(&id, &self.status.session, &shares_dir) {
             Ok(path) => format!(
                 "Local share reference created: {url}  ·  id {id}  ·  saved to {}",
                 path.display()
@@ -3415,15 +3420,14 @@ impl App {
     /// Revoke local shares for the current session (`/unshare`), using the attached server when
     /// available or the local on-disk share references otherwise.
     fn unshare_session(&mut self) {
-        let Some(session_id) = self.session_id.clone() else {
-            self.transcript.push(Entry::Notice(
-                "No persisted session yet, nothing to unshare.".to_owned(),
-            ));
-            self.push_toast(ToastLevel::Info, "Nothing to unshare");
-            return;
-        };
-
         if let Some(server) = self.remote_server.clone() {
+            let Some(session_id) = self.session_id.clone() else {
+                self.transcript.push(Entry::Notice(
+                    "No persisted session yet, nothing to unshare.".to_owned(),
+                ));
+                self.push_toast(ToastLevel::Info, "Nothing to unshare");
+                return;
+            };
             match server.unshare_session(&session_id) {
                 Ok(revoked) => {
                     let detail = if revoked {
@@ -3441,7 +3445,12 @@ impl App {
             return;
         }
 
-        match revoke_local_share_references(&session_id) {
+        let session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| self.status.session.clone());
+        let shares_dir = self.share_dir();
+        match revoke_local_share_references(&session_id, &shares_dir) {
             Ok(count) => {
                 let detail = if count == 0 {
                     "no local share references found".to_owned()
@@ -3454,6 +3463,12 @@ impl App {
             }
             Err(err) => self.note_error(format!("Unshare failed: {err}")),
         }
+    }
+
+    fn share_dir(&self) -> PathBuf {
+        self.share_data_dir
+            .clone()
+            .unwrap_or_else(|| data_subdir("shares"))
     }
 
     fn run_mcp_prompt_command(&mut self, command_name: &str, id: &str, required: &[String]) {
@@ -6676,9 +6691,8 @@ fn local_share_id() -> String {
 
 /// Persist a small local share reference file under the data directory's `shares/` folder, returning
 /// the path written. Local share only (loopback); no external upload.
-fn write_share_reference(id: &str, session: &str) -> io::Result<PathBuf> {
-    let dir = data_subdir("shares");
-    std::fs::create_dir_all(&dir)?;
+fn write_share_reference(id: &str, session: &str, dir: &Path) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{id}.json"));
     let body = format!(
         "{{\"id\":\"{id}\",\"session\":\"{session}\",\"url\":\"http://127.0.0.1:3200/share/{id}\"}}"
@@ -6687,8 +6701,7 @@ fn write_share_reference(id: &str, session: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn revoke_local_share_references(session: &str) -> io::Result<usize> {
-    let dir = data_subdir("shares");
+fn revoke_local_share_references(session: &str, dir: &Path) -> io::Result<usize> {
     if !dir.is_dir() {
         return Ok(0);
     }
@@ -6794,6 +6807,7 @@ mod tests {
 
     static ATTACH_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static DIFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static SHARE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -6811,6 +6825,29 @@ mod tests {
             variant: "default".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    fn isolated_share_dir(test_name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-tui-share-{test_name}-{}-{}",
+            std::process::id(),
+            SHARE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let shares_dir = root.join("shares");
+        std::fs::create_dir_all(&shares_dir).expect("create share dir");
+        (root, shares_dir)
+    }
+
+    fn share_reference_count(shares_dir: &std::path::Path) -> usize {
+        if !shares_dir.is_dir() {
+            return 0;
+        }
+        std::fs::read_dir(shares_dir)
+            .expect("read share dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .count()
     }
 
     fn temp_attachment(ext: &str, bytes: &[u8]) -> std::path::PathBuf {
@@ -9117,7 +9154,9 @@ mod tests {
     #[test]
     fn dispatching_share_produces_a_local_loopback_reference() {
         // VAL-TUI-045: `/share` produces a local (loopback) share reference.
+        let (root, shares_dir) = isolated_share_dir("share-notice");
         let mut a = app();
+        a.share_data_dir = Some(shares_dir);
         dispatch(&mut a, "share");
         match a.transcript.last() {
             Some(Entry::Notice(text)) => {
@@ -9126,6 +9165,38 @@ mod tests {
             }
             other => panic!("expected a share notice, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_persistence_share_then_unshare_revokes_local_reference() {
+        let (root, shares_dir) = isolated_share_dir("share-then-unshare");
+        let mut a = app();
+        a.share_data_dir = Some(shares_dir.clone());
+        assert!(
+            a.session_id.is_none(),
+            "fresh app starts without session id"
+        );
+
+        dispatch(&mut a, "share");
+        assert!(a.session_id.is_none(), "local share stays pre-persistence");
+        assert_eq!(
+            share_reference_count(&shares_dir),
+            1,
+            "share writes one local reference"
+        );
+
+        dispatch(&mut a, "unshare");
+        assert_eq!(
+            share_reference_count(&shares_dir),
+            0,
+            "unshare removes local pre-persistence references"
+        );
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Notice(text)) if text.contains("revoked 1 local share reference")),
+            "unshare reports one revoked local reference"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
