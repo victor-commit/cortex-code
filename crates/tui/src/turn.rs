@@ -59,6 +59,7 @@ pub struct SpawnRequest {
     pub history: Vec<Message>,
     pub model: String,
     pub agent: String,
+    pub variant: String,
     pub pure_plugins: bool,
     pub mcp_manager: Option<Arc<mcp::McpManager>>,
     pub remote: Option<RemoteBridge>,
@@ -133,6 +134,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
             history,
             model,
             agent,
+            variant,
             pure_plugins,
             mcp_manager,
             remote,
@@ -140,7 +142,15 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
             db_path,
             cancel,
         } = request;
-        match build_turn(&prompt, user_parts, history, &model, &agent, pure_plugins) {
+        match build_turn(
+            &prompt,
+            user_parts,
+            history,
+            &model,
+            &agent,
+            &variant,
+            pure_plugins,
+        ) {
             Ok(setup) => {
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -401,6 +411,7 @@ fn build_turn(
     history: Vec<Message>,
     active_model: &str,
     active_agent: &str,
+    active_variant: &str,
     pure_plugins: bool,
 ) -> Result<TurnSetup, String> {
     // Fail closed on the network kill-switch before resolving a credential or opening any socket.
@@ -487,7 +498,14 @@ fn build_turn(
         .with_user_parts(user_parts)
         .with_history(history)
         .with_compaction(compaction);
-    let request_params = provider_config.provider_params(&model.provider_id);
+    let mut request_params = provider_config.provider_params(&model.provider_id);
+    let variant = active_variant.trim();
+    if !variant.is_empty() && !variant.eq_ignore_ascii_case("default") {
+        request_params.insert(
+            "variant".to_owned(),
+            serde_json::Value::String(variant.to_owned()),
+        );
+    }
     if !request_params.is_empty() {
         turn = turn.with_extra_params(request_params);
     }

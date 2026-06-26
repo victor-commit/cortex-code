@@ -5,7 +5,7 @@
 //! (see [`crate::ui`]); this module only owns state and translates key events.
 
 use std::cell::Cell;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::ops::Range;
 use std::path::{Component, PathBuf};
@@ -61,6 +61,8 @@ pub struct Status {
     pub agent: String,
     /// Active mode.
     pub mode: String,
+    /// Active variant.
+    pub variant: String,
     /// Session indicator (e.g. `new` for an unsaved, empty session).
     pub session: String,
 }
@@ -287,12 +289,90 @@ struct PendingTextCompletion {
 /// command and runs the selected one directly, independent of the prompt's `/` autocomplete. Its
 /// query is kept separate from the prompt so dismissing the palette restores the untouched chat
 /// input and returns focus to it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteScope {
+    Root,
+    Models,
+    Skills,
+    Variants,
+    Subagents,
+    QueuedPrompts,
+}
+
+/// A rendered command-palette row for the current scope/query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteMatch {
+    /// Primary row label.
+    pub label: String,
+    /// Secondary descriptive text.
+    pub description: String,
+    /// Why this row cannot currently be executed.
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PaletteAction {
+    DispatchSlash(String),
+    OpenScope(PaletteScope),
+    CloseScope,
+    SetModel(String),
+    SetVariant(String),
+    SelectSkill(String),
+    LoadSession(String),
+    QueuePromote(usize),
+    QueueDrop(usize),
+    QueueClear,
+    Noop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PaletteItem {
+    label: String,
+    description: String,
+    action: PaletteAction,
+    disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Palette {
     /// The search text typed into the palette (filters the command list).
     query: String,
     /// The highlighted match row (clamped to the current match count).
     selected: usize,
+    /// Submenu stack (`Root` when newly opened).
+    scopes: Vec<PaletteScope>,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            selected: 0,
+            scopes: vec![PaletteScope::Root],
+        }
+    }
+}
+
+/// One prompt draft snapshot (text plus caret), used by history navigation and explicit stash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptDraft {
+    text: String,
+    cursor: CursorPosition,
+}
+
+/// Prompt-history browsing state for the currently recalled history set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptHistoryNavigation {
+    ordered: Vec<String>,
+    index: usize,
+    stashed: PromptDraft,
+}
+
+/// Frecency metadata for one previously submitted prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PromptHistoryStats {
+    count: u64,
+    last_used: u64,
 }
 
 /// The open find-in-chat search bar: the live query, the active-match index, and the cached match
@@ -389,6 +469,9 @@ const REVIEW_PROMPT: &str = "Review the current state of the code in this reposi
 const COMPACTION_PROMPT: &str = "Summarize our conversation so far into a concise summary that \
     preserves the key facts, decisions, code changes, and any open tasks. Respond with only the \
     summary.";
+
+/// Built-in variant options surfaced by keybinds and palette flows.
+const VARIANT_OPTIONS: &[&str] = &["default", "fast", "balanced", "quality"];
 
 /// Cumulative token/cost usage shown in the footer, accumulated across the session's turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -504,6 +587,8 @@ pub struct App {
     /// search query and navigation, runs the highlighted command on Enter, and Esc dismisses it and
     /// returns focus to the prompt.
     palette: Option<Palette>,
+    /// Most recent keybind-configuration diagnostics gathered at launch.
+    keybind_diagnostics: Vec<String>,
     /// Set when `/editor` is dispatched, signalling the event loop to suspend the TUI and open the
     /// external `$EDITOR`. Consumed once by [`App::take_editor_request`].
     editor_requested: bool,
@@ -531,6 +616,9 @@ pub struct App {
     /// item rows (index 0 is the synthetic "current session" row). Populated when the session
     /// picker opens; consulted by switch/rename/delete; cleared when the dialog closes.
     session_entries: Vec<SessionEntry>,
+    /// Model-picker row mapping: `Some(model_id)` for selectable model rows, `None` for provider
+    /// headers/separators.
+    model_rows: Vec<Option<String>>,
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
     /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
     session_rename: Option<String>,
@@ -576,6 +664,16 @@ pub struct App {
     /// dropped. Cleared when the active turn is interrupted.
     queued_prompts: VecDeque<QueuedPrompt>,
     /// The interrupt signal shared with the active turn worker. Setting it asks the worker to stop
+    /// Prompt history frecency table (submitted prompt text -> usage metadata).
+    prompt_history: BTreeMap<String, PromptHistoryStats>,
+    /// Monotonic counter used for prompt-history recency ordering.
+    prompt_history_tick: u64,
+    /// Active history-browse state while recalling prompts.
+    prompt_history_nav: Option<PromptHistoryNavigation>,
+    /// Explicitly stashed prompt draft.
+    prompt_stash: Option<PromptDraft>,
+    /// Last skill selected from the palette skills submenu.
+    selected_skill: Option<String>,
     /// streaming at a safe boundary; `None` whenever no turn is in flight.
     cancel_flag: Option<Arc<AtomicBool>>,
     /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
@@ -632,6 +730,7 @@ impl App {
             plugin_text_complete: None,
             pending_text_completion: None,
             palette: None,
+            keybind_diagnostics: Vec::new(),
             editor_requested: false,
             shell_mode: false,
             history: Vec::new(),
@@ -641,6 +740,7 @@ impl App {
             leader_pending: false,
             sidebar_visible: false,
             session_entries: Vec::new(),
+            model_rows: Vec::new(),
             session_rename: None,
             scroll: 0,
             viewport: Cell::new((80, 24)),
@@ -655,6 +755,11 @@ impl App {
             mcp_runtime: None,
             mcp_events: None,
             queued_prompts: VecDeque::new(),
+            prompt_history: BTreeMap::new(),
+            prompt_history_tick: 0,
+            prompt_history_nav: None,
+            prompt_stash: None,
+            selected_skill: None,
             cancel_flag: None,
             pending_permission: None,
             db_path: None,
@@ -679,6 +784,15 @@ impl App {
     /// Replace the active keybind set, used at launch to apply user overrides from config.
     pub fn set_keybinds(&mut self, keybinds: Keybinds) {
         self.keybinds = keybinds;
+    }
+
+    /// Replace keybind diagnostics captured at launch-time config parsing.
+    pub fn set_keybind_diagnostics(&mut self, diagnostics: Vec<String>) {
+        self.keybind_diagnostics = diagnostics.clone();
+        for message in diagnostics {
+            self.transcript
+                .push(Entry::Notice(format!("Keybind config: {message}")));
+        }
     }
 
     /// Attach the shadow checkpoint store backing `/undo` and `/redo`, used at launch to wire the
@@ -747,10 +861,28 @@ impl App {
         self.status.agent.clone()
     }
 
+    /// The active variant value (used to annotate turn request params and UI state).
+    #[must_use]
+    pub fn active_variant(&self) -> String {
+        self.status.variant.clone()
+    }
+
     /// The active keybind set (for rendering the which-key overlay and `/help`).
     #[must_use]
     pub fn keybinds(&self) -> &Keybinds {
         &self.keybinds
+    }
+
+    /// Non-fatal keybind diagnostics gathered while loading `[keybinds]`.
+    #[must_use]
+    pub fn keybind_diagnostics(&self) -> &[String] {
+        &self.keybind_diagnostics
+    }
+
+    /// Runtime disabled reason (if any) for a keybind action.
+    #[must_use]
+    pub fn keybind_disabled_reason(&self, action: KeybindAction) -> Option<String> {
+        self.keybind_action_disabled_reason(action)
     }
 
     /// Whether the leader chord is armed and the which-key overlay should be shown.
@@ -1833,7 +1965,15 @@ impl App {
 
     /// Open the command palette (`Ctrl+P`): a modal, searchable overlay of every built-in command.
     fn open_palette(&mut self) {
-        self.palette = Some(Palette::default());
+        self.open_palette_scope(PaletteScope::Root);
+    }
+
+    fn open_palette_scope(&mut self, scope: PaletteScope) {
+        let mut palette = Palette::default();
+        if scope != PaletteScope::Root {
+            palette.scopes.push(scope);
+        }
+        self.palette = Some(palette);
     }
 
     /// Whether the command palette is currently open.
@@ -1848,27 +1988,38 @@ impl App {
         self.palette.as_ref().map(|palette| palette.query.as_str())
     }
 
-    /// The commands matching the palette query, in highlight order. Empty when the palette is closed
-    /// or nothing matches the query.
+    /// The active palette scope (submenu), or `None` when the palette is closed.
     #[must_use]
-    pub fn palette_matches(&self) -> Vec<&'static slash::SlashCommand> {
-        match self.palette.as_ref() {
-            Some(palette) => slash::filter(&palette.query),
-            None => Vec::new(),
-        }
+    pub fn palette_scope(&self) -> Option<PaletteScope> {
+        self.palette
+            .as_ref()
+            .and_then(|palette| palette.scopes.last().copied())
+    }
+
+    /// The rows matching the active palette query/scope, in highlight order.
+    #[must_use]
+    pub fn palette_matches(&self) -> Vec<PaletteMatch> {
+        self.palette_items()
+            .into_iter()
+            .map(|item| PaletteMatch {
+                label: item.label,
+                description: item.description,
+                disabled_reason: item.disabled_reason,
+            })
+            .collect()
     }
 
     /// The highlighted palette row, clamped to the current match count.
     #[must_use]
     pub fn palette_selected(&self) -> usize {
-        let len = self.palette_matches().len();
+        let len = self.palette_items().len();
         let raw = self.palette.as_ref().map_or(0, |palette| palette.selected);
         if len == 0 { 0 } else { raw.min(len - 1) }
     }
 
     /// Move the palette highlight to the next match (wrapping at the end).
     fn palette_select_next(&mut self) {
-        let len = self.palette_matches().len();
+        let len = self.palette_items().len();
         if len == 0 {
             return;
         }
@@ -1880,7 +2031,7 @@ impl App {
 
     /// Move the palette highlight to the previous match (wrapping at the start).
     fn palette_select_prev(&mut self) {
-        let len = self.palette_matches().len();
+        let len = self.palette_items().len();
         if len == 0 {
             return;
         }
@@ -1909,20 +2060,321 @@ impl App {
 
     /// Close the command palette (Esc), returning focus to the prompt without altering its contents.
     fn close_palette(&mut self) {
-        self.palette = None;
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
+        if palette.scopes.len() > 1 {
+            palette.scopes.pop();
+            palette.query.clear();
+            palette.selected = 0;
+        } else {
+            self.palette = None;
+        }
     }
 
-    /// Run the highlighted palette command (Enter): close the palette, then dispatch the command so
-    /// its effect (a dialog, flow, or action) appears. With no match the palette simply closes.
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let Some(palette) = self.palette.as_ref() else {
+            return Vec::new();
+        };
+        let scope = palette.scopes.last().copied().unwrap_or(PaletteScope::Root);
+        let mut items = Vec::new();
+        if scope != PaletteScope::Root {
+            items.push(PaletteItem {
+                label: "← Back".to_owned(),
+                description: "Return to the previous palette menu".to_owned(),
+                action: PaletteAction::CloseScope,
+                disabled_reason: None,
+            });
+        }
+        match scope {
+            PaletteScope::Root => {
+                for command in slash::BUILTINS {
+                    items.push(PaletteItem {
+                        label: format!("/{}", command.name),
+                        description: command.description.to_owned(),
+                        action: PaletteAction::DispatchSlash(command.name.to_owned()),
+                        disabled_reason: None,
+                    });
+                }
+                items.push(PaletteItem {
+                    label: "Models…".to_owned(),
+                    description: "Browse model groups and switch model".to_owned(),
+                    action: PaletteAction::OpenScope(PaletteScope::Models),
+                    disabled_reason: None,
+                });
+                items.push(PaletteItem {
+                    label: "Skills…".to_owned(),
+                    description: "Browse discovered skills".to_owned(),
+                    action: PaletteAction::OpenScope(PaletteScope::Skills),
+                    disabled_reason: None,
+                });
+                items.push(PaletteItem {
+                    label: "Variants…".to_owned(),
+                    description: "Pick the active variant".to_owned(),
+                    action: PaletteAction::OpenScope(PaletteScope::Variants),
+                    disabled_reason: None,
+                });
+                items.push(PaletteItem {
+                    label: "Subagents…".to_owned(),
+                    description: "Switch to a subagent session".to_owned(),
+                    action: PaletteAction::OpenScope(PaletteScope::Subagents),
+                    disabled_reason: None,
+                });
+                items.push(PaletteItem {
+                    label: "Queued prompts…".to_owned(),
+                    description: "Manage queued prompt backlog".to_owned(),
+                    action: PaletteAction::OpenScope(PaletteScope::QueuedPrompts),
+                    disabled_reason: None,
+                });
+            }
+            PaletteScope::Models => {
+                let effective = effective_config();
+                let provider_config = effective
+                    .as_ref()
+                    .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
+                let merged_catalogue = provider_config.as_ref().map_or_else(
+                    || providers::Catalogue::embedded().clone(),
+                    |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
+                );
+                for provider in merged_catalogue.providers() {
+                    let enabled = provider_config
+                        .as_ref()
+                        .is_none_or(|cfg| cfg.provider_enabled(&provider.id));
+                    items.push(PaletteItem {
+                        label: format!("{} ({})", provider.name, provider.id),
+                        description: "provider".to_owned(),
+                        action: PaletteAction::Noop,
+                        disabled_reason: Some("Provider group".to_owned()),
+                    });
+                    let mut models = provider.models.values().collect::<Vec<_>>();
+                    models.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+                    for model in models {
+                        let mut tags = Vec::new();
+                        if model.id == self.status.model {
+                            tags.push("current");
+                        }
+                        if model.cost.input == 0.0 && model.cost.output == 0.0 {
+                            tags.push("free");
+                        }
+                        if !enabled {
+                            tags.push("unavailable");
+                        }
+                        let desc = if tags.is_empty() {
+                            "model".to_owned()
+                        } else {
+                            format!("model · {}", tags.join(", "))
+                        };
+                        items.push(PaletteItem {
+                            label: format!("  {}", model.id),
+                            description: desc,
+                            action: PaletteAction::SetModel(model.id.clone()),
+                            disabled_reason: (!enabled)
+                                .then_some("Provider is disabled by configuration".to_owned()),
+                        });
+                    }
+                }
+            }
+            PaletteScope::Skills => {
+                if let Ok(inputs) =
+                    settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
+                {
+                    let discovery = skills::discover(&inputs);
+                    if discovery.skills.is_empty() {
+                        items.push(PaletteItem {
+                            label: "No skills discovered".to_owned(),
+                            description: "Add SKILL.md files under configured skill directories"
+                                .to_owned(),
+                            action: PaletteAction::Noop,
+                            disabled_reason: Some("No discovered skills".to_owned()),
+                        });
+                    } else {
+                        for skill in discovery.ordered_skills() {
+                            items.push(PaletteItem {
+                                label: skill.name.clone(),
+                                description: skill.description.clone(),
+                                action: PaletteAction::SelectSkill(skill.name),
+                                disabled_reason: None,
+                            });
+                        }
+                    }
+                }
+            }
+            PaletteScope::Variants => {
+                for variant in VARIANT_OPTIONS {
+                    let mut description = "variant".to_owned();
+                    if *variant == self.status.variant {
+                        description.push_str(" · current");
+                    }
+                    items.push(PaletteItem {
+                        label: (*variant).to_owned(),
+                        description,
+                        action: PaletteAction::SetVariant((*variant).to_owned()),
+                        disabled_reason: None,
+                    });
+                }
+            }
+            PaletteScope::Subagents => {
+                let mut found = false;
+                for session in self.persisted_sessions() {
+                    let label = session_picker_label(&session);
+                    if label.contains("subagent:") {
+                        found = true;
+                        items.push(PaletteItem {
+                            label,
+                            description: "subagent session".to_owned(),
+                            action: PaletteAction::LoadSession(session.id),
+                            disabled_reason: None,
+                        });
+                    }
+                }
+                if !found {
+                    items.push(PaletteItem {
+                        label: "No subagent sessions".to_owned(),
+                        description: "Spawn a subagent task to populate this list".to_owned(),
+                        action: PaletteAction::Noop,
+                        disabled_reason: Some("No subagent sessions are available".to_owned()),
+                    });
+                }
+            }
+            PaletteScope::QueuedPrompts => {
+                if self.queued_prompts.is_empty() {
+                    items.push(PaletteItem {
+                        label: "No queued prompts".to_owned(),
+                        description: "Submit while a turn is busy to queue prompts".to_owned(),
+                        action: PaletteAction::Noop,
+                        disabled_reason: Some("There are no queued prompts".to_owned()),
+                    });
+                } else {
+                    for (idx, queued) in self.queued_prompts.iter().enumerate() {
+                        let text = queued
+                            .header
+                            .as_deref()
+                            .unwrap_or(&queued.prompt)
+                            .chars()
+                            .take(64)
+                            .collect::<String>();
+                        items.push(PaletteItem {
+                            label: format!("{}. {}", idx + 1, text),
+                            description: "promote to next".to_owned(),
+                            action: PaletteAction::QueuePromote(idx),
+                            disabled_reason: None,
+                        });
+                        items.push(PaletteItem {
+                            label: format!("    drop queued #{}", idx + 1),
+                            description: "remove this queued prompt".to_owned(),
+                            action: PaletteAction::QueueDrop(idx),
+                            disabled_reason: None,
+                        });
+                    }
+                    items.push(PaletteItem {
+                        label: "Clear queued prompts".to_owned(),
+                        description: "drop every queued prompt".to_owned(),
+                        action: PaletteAction::QueueClear,
+                        disabled_reason: None,
+                    });
+                }
+            }
+        }
+
+        let needle = palette.query.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return items;
+        }
+        items
+            .into_iter()
+            .filter(|item| {
+                let label = item.label.to_ascii_lowercase();
+                let desc = item.description.to_ascii_lowercase();
+                label.contains(&needle) || desc.contains(&needle)
+            })
+            .collect()
+    }
+
+    fn promote_queued_prompt_index(&mut self, index: usize) {
+        if index >= self.queued_prompts.len() {
+            self.push_toast(ToastLevel::Info, "Queued prompt no longer exists");
+            return;
+        }
+        if let Some(item) = self.queued_prompts.remove(index) {
+            self.queued_prompts.push_front(item);
+            self.push_toast(ToastLevel::Success, "Queued prompt promoted");
+        }
+    }
+
+    fn drop_queued_prompt_index(&mut self, index: usize) {
+        if index >= self.queued_prompts.len() {
+            self.push_toast(ToastLevel::Info, "Queued prompt no longer exists");
+            return;
+        }
+        self.queued_prompts.remove(index);
+        self.push_toast(ToastLevel::Success, "Queued prompt dropped");
+    }
+
+    fn dispatch_palette_action(&mut self, action: PaletteAction) {
+        match action {
+            PaletteAction::DispatchSlash(name) => {
+                if let Some(command) = slash::BUILTINS.iter().find(|command| command.name == name) {
+                    self.dispatch_command(command);
+                }
+                self.palette = None;
+            }
+            PaletteAction::OpenScope(scope) => {
+                if let Some(palette) = self.palette.as_mut() {
+                    palette.scopes.push(scope);
+                    palette.query.clear();
+                    palette.selected = 0;
+                }
+            }
+            PaletteAction::CloseScope => self.close_palette(),
+            PaletteAction::SetModel(model) => {
+                self.status.model = model.clone();
+                self.persist_config_string("model", &model);
+                self.persist_session_model(&model);
+                self.transcript
+                    .push(Entry::Notice(format!("Model set to {model}")));
+                self.palette = None;
+            }
+            PaletteAction::SetVariant(variant) => {
+                self.status.variant = variant.clone();
+                self.persist_config_string("variant", &variant);
+                self.transcript
+                    .push(Entry::Notice(format!("Variant set to {variant}")));
+                self.palette = None;
+            }
+            PaletteAction::SelectSkill(skill) => {
+                self.selected_skill = Some(skill.clone());
+                self.transcript
+                    .push(Entry::Notice(format!("Skill selected: {skill}")));
+                self.palette = None;
+            }
+            PaletteAction::LoadSession(id) => {
+                self.load_session(&id);
+                self.palette = None;
+            }
+            PaletteAction::QueuePromote(index) => self.promote_queued_prompt_index(index),
+            PaletteAction::QueueDrop(index) => self.drop_queued_prompt_index(index),
+            PaletteAction::QueueClear => self.clear_queued_prompts(),
+            PaletteAction::Noop => {}
+        }
+    }
+
+    /// Run the highlighted palette action (Enter). With no match the palette simply closes.
     fn dispatch_palette(&mut self) {
-        let matches = self.palette_matches();
-        if matches.is_empty() {
+        let items = self.palette_items();
+        if items.is_empty() {
             self.close_palette();
             return;
         }
-        let command = matches[self.palette_selected()];
-        self.close_palette();
-        self.dispatch_command(command);
+        let selected = self.palette_selected();
+        let Some(item) = items.get(selected) else {
+            self.close_palette();
+            return;
+        };
+        if let Some(reason) = item.disabled_reason.clone() {
+            self.push_toast(ToastLevel::Info, reason);
+            return;
+        }
+        self.dispatch_palette_action(item.action.clone());
     }
 
     /// React to a prompt edit: reset the slash highlight and recompute the mention picker.
@@ -2010,22 +2462,60 @@ impl App {
     }
 
     /// Open the model picker (`/models`): every model the OpenRouter catalogue serves, by id, with
-    /// the active model pre-highlighted. The list always contains the default model.
+    /// grouped provider headers and per-model availability metadata.
     fn open_models_dialog(&mut self) {
-        let items: Vec<String> = providers::Catalogue::embedded()
-            .provider(providers::OPENROUTER_ID)
-            .map(|provider| {
-                provider
-                    .models
-                    .values()
-                    .map(|model| model.id.clone())
-                    .collect::<Vec<String>>()
-            })
-            .unwrap_or_default();
-        let selected = items
-            .iter()
-            .position(|id| *id == self.status.model)
-            .unwrap_or(0);
+        let mut items = Vec::new();
+        let mut rows = Vec::new();
+        let mut selected = 0;
+
+        let effective = effective_config();
+        let provider_config = effective
+            .as_ref()
+            .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
+        let merged_catalogue = provider_config.as_ref().map_or_else(
+            || providers::Catalogue::embedded().clone(),
+            |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
+        );
+
+        for provider in merged_catalogue.providers() {
+            let enabled = provider_config
+                .as_ref()
+                .is_none_or(|cfg| cfg.provider_enabled(&provider.id));
+
+            items.push(format!("{} ({})", provider.name, provider.id));
+            rows.push(None);
+
+            let mut models = provider.models.values().collect::<Vec<_>>();
+            models.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+            for model in models {
+                let mut tags = Vec::new();
+                if model.id == self.status.model {
+                    tags.push("current");
+                    selected = items.len();
+                }
+                if model.cost.input == 0.0 && model.cost.output == 0.0 {
+                    tags.push("free");
+                }
+                if !enabled {
+                    tags.push("unavailable");
+                }
+                let suffix = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", tags.join(", "))
+                };
+                items.push(format!("{}{}", model.id, suffix));
+                rows.push(enabled.then_some(model.id.clone()));
+            }
+        }
+
+        if rows.get(selected).is_none_or(Option::is_none)
+            && let Some(first) = rows.iter().position(Option::is_some)
+        {
+            selected = first;
+        }
+
+        self.model_rows = rows;
         self.open_dialog(Dialog {
             kind: DialogKind::Models,
             title: "Models".to_owned(),
@@ -2320,6 +2810,9 @@ impl App {
 
     /// Open a modal dialog, replacing any currently-open one and closing the slash menu.
     fn open_dialog(&mut self, dialog: Dialog) {
+        if dialog.kind != DialogKind::Models {
+            self.model_rows.clear();
+        }
         self.dialog = Some(dialog);
     }
 
@@ -2550,6 +3043,7 @@ impl App {
     fn close_dialog(&mut self) {
         self.dialog = None;
         self.session_entries.clear();
+        self.model_rows.clear();
         self.session_rename = None;
     }
 
@@ -2606,7 +3100,18 @@ impl App {
         if let Some(dialog) = self.dialog.as_mut() {
             let len = dialog.items.len();
             if len > 0 {
-                dialog.selected = (dialog.selected() + 1) % len;
+                if dialog.kind == DialogKind::Models {
+                    let mut next = dialog.selected();
+                    for _ in 0..len {
+                        next = (next + 1) % len;
+                        if self.model_rows.get(next).is_some_and(Option::is_some) {
+                            dialog.selected = next;
+                            break;
+                        }
+                    }
+                } else {
+                    dialog.selected = (dialog.selected() + 1) % len;
+                }
             }
         }
         self.sync_theme_preview();
@@ -2617,7 +3122,18 @@ impl App {
         if let Some(dialog) = self.dialog.as_mut() {
             let len = dialog.items.len();
             if len > 0 {
-                dialog.selected = (dialog.selected() + len - 1) % len;
+                if dialog.kind == DialogKind::Models {
+                    let mut prev = dialog.selected();
+                    for _ in 0..len {
+                        prev = (prev + len - 1) % len;
+                        if self.model_rows.get(prev).is_some_and(Option::is_some) {
+                            dialog.selected = prev;
+                            break;
+                        }
+                    }
+                } else {
+                    dialog.selected = (dialog.selected() + len - 1) % len;
+                }
             }
         }
         self.sync_theme_preview();
@@ -2888,7 +3404,7 @@ impl App {
         if dialog.kind != DialogKind::Models {
             return None;
         }
-        let model = dialog.items.get(dialog.selected())?.clone();
+        let model = self.model_rows.get(dialog.selected())?.clone()?;
         if model == self.status.model {
             return None;
         }
@@ -3124,6 +3640,10 @@ impl App {
     /// Run a leader keybind action: the same visible effects the matching slash commands produce,
     /// reached via the leader chord instead of the prompt.
     fn run_keybind_action(&mut self, action: KeybindAction) {
+        if let Some(reason) = self.keybind_action_disabled_reason(action) {
+            self.push_toast(ToastLevel::Info, reason);
+            return;
+        }
         match action {
             KeybindAction::NewSession => self.new_session(),
             KeybindAction::ModelList => self.open_models_dialog(),
@@ -3133,12 +3653,289 @@ impl App {
             KeybindAction::Themes => self.open_themes_dialog(),
             KeybindAction::Undo => self.undo(),
             KeybindAction::Redo => self.redo(),
+            KeybindAction::CommandPalette => self.open_palette(),
+            KeybindAction::MessagePrev => self.select_prev_message(),
+            KeybindAction::MessageNext => self.select_next_message(),
+            KeybindAction::ModelCycleNext => self.cycle_model_next(),
+            KeybindAction::AgentCycleNext => self.cycle_agent_next(),
+            KeybindAction::VariantCycleNext => self.cycle_variant_next(),
+            KeybindAction::PromptHistoryPrev => self.recall_prompt_history_prev(),
+            KeybindAction::PromptHistoryNext => self.recall_prompt_history_next(),
+            KeybindAction::PromptStashSave => self.stash_prompt(),
+            KeybindAction::PromptStashRestore => self.restore_prompt_stash(),
+            KeybindAction::ToggleToolDetails => self.expand_tools = !self.expand_tools,
+            KeybindAction::QueuePromoteNext => self.promote_next_queued_prompt(),
+            KeybindAction::QueueDropOne => self.drop_one_queued_prompt(),
+            KeybindAction::QueueClear => self.clear_queued_prompts(),
+            KeybindAction::PaletteModels => self.open_palette_scope(PaletteScope::Models),
+            KeybindAction::PaletteSkills => self.open_palette_scope(PaletteScope::Skills),
+            KeybindAction::PaletteVariants => self.open_palette_scope(PaletteScope::Variants),
+            KeybindAction::PaletteSubagents => self.open_palette_scope(PaletteScope::Subagents),
+            KeybindAction::PaletteQueuedPrompts => {
+                self.open_palette_scope(PaletteScope::QueuedPrompts)
+            }
+        }
+    }
+
+    fn keybind_action_disabled_reason(&self, action: KeybindAction) -> Option<String> {
+        match action {
+            KeybindAction::MessagePrev | KeybindAction::MessageNext => self
+                .transcript
+                .is_empty()
+                .then_some("No transcript messages yet".to_owned()),
+            KeybindAction::PromptHistoryPrev => self
+                .prompt_history
+                .is_empty()
+                .then_some("Prompt history is empty".to_owned()),
+            KeybindAction::PromptHistoryNext => self
+                .prompt_history_nav
+                .is_none()
+                .then_some("No prompt-history recall is active".to_owned()),
+            KeybindAction::PromptStashRestore => self
+                .prompt_stash
+                .is_none()
+                .then_some("No stashed prompt draft".to_owned()),
+            KeybindAction::QueuePromoteNext
+            | KeybindAction::QueueDropOne
+            | KeybindAction::QueueClear => self
+                .queued_prompts
+                .is_empty()
+                .then_some("There are no queued prompts".to_owned()),
+            KeybindAction::PaletteSubagents => self
+                .persisted_sessions()
+                .iter()
+                .all(|session| !session_picker_label(session).contains("subagent:"))
+                .then_some("No subagent sessions are available".to_owned()),
+            KeybindAction::ModelCycleNext => self
+                .available_model_ids()
+                .is_empty()
+                .then_some("No models are available".to_owned()),
+            _ => None,
         }
     }
 
     /// Show or hide the session sidebar panel (the sidebar-toggle keybind).
     fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    fn available_model_ids(&self) -> Vec<String> {
+        let effective = effective_config();
+        let provider_config = effective
+            .as_ref()
+            .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
+        let merged_catalogue = provider_config.as_ref().map_or_else(
+            || providers::Catalogue::embedded().clone(),
+            |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
+        );
+        let mut model_ids = Vec::new();
+        for provider in merged_catalogue.providers() {
+            let enabled = provider_config
+                .as_ref()
+                .is_none_or(|cfg| cfg.provider_enabled(&provider.id));
+            if !enabled {
+                continue;
+            }
+            model_ids.extend(provider.models.values().map(|model| model.id.clone()));
+        }
+        model_ids.sort();
+        model_ids.dedup();
+        model_ids
+    }
+
+    fn cycle_model_next(&mut self) {
+        let models = self.available_model_ids();
+        if models.is_empty() {
+            self.push_toast(ToastLevel::Info, "No models are available");
+            return;
+        }
+        let idx = models
+            .iter()
+            .position(|model| model == &self.status.model)
+            .unwrap_or(0);
+        let next = models[(idx + 1) % models.len()].clone();
+        if next != self.status.model {
+            self.status.model = next.clone();
+            self.persist_config_string("model", &next);
+            self.persist_session_model(&next);
+            self.transcript
+                .push(Entry::Notice(format!("Model set to {next}")));
+        }
+    }
+
+    fn cycle_agent_next(&mut self) {
+        if Agent::ALL.is_empty() {
+            self.push_toast(ToastLevel::Info, "No agents are available");
+            return;
+        }
+        let idx = Agent::ALL
+            .iter()
+            .position(|agent| agent.name() == self.status.agent)
+            .unwrap_or(0);
+        let next = Agent::ALL[(idx + 1) % Agent::ALL.len()].name().to_owned();
+        if next != self.status.agent {
+            self.status.agent = next.clone();
+            self.persist_config_string("agent", &next);
+            self.transcript
+                .push(Entry::Notice(format!("Agent set to {next}")));
+        }
+    }
+
+    fn cycle_variant_next(&mut self) {
+        let idx = VARIANT_OPTIONS
+            .iter()
+            .position(|variant| *variant == self.status.variant)
+            .unwrap_or(0);
+        let next = VARIANT_OPTIONS[(idx + 1) % VARIANT_OPTIONS.len()].to_owned();
+        if next != self.status.variant {
+            self.status.variant = next.clone();
+            self.persist_config_string("variant", &next);
+            self.transcript
+                .push(Entry::Notice(format!("Variant set to {next}")));
+        }
+    }
+
+    fn stash_prompt(&mut self) {
+        self.prompt_stash = Some(PromptDraft {
+            text: self.input.value(),
+            cursor: self.input.cursor_position(),
+        });
+        self.push_toast(ToastLevel::Success, "Prompt draft stashed");
+    }
+
+    fn restore_prompt_stash(&mut self) {
+        let Some(stashed) = self.prompt_stash.clone() else {
+            self.push_toast(ToastLevel::Info, "No stashed prompt draft");
+            return;
+        };
+        self.input.set_value(&stashed.text);
+        self.input.set_cursor_position(stashed.cursor);
+        self.prompt_stash = None;
+        self.prompt_history_nav = None;
+        self.on_prompt_edited();
+        self.push_toast(ToastLevel::Success, "Restored stashed prompt");
+    }
+
+    fn frecency_ranked_prompts(&self) -> Vec<String> {
+        let mut entries = self
+            .prompt_history
+            .iter()
+            .map(|(prompt, stats)| (prompt.clone(), *stats))
+            .collect::<Vec<_>>();
+        entries.sort_by(|(lhs_prompt, lhs), (rhs_prompt, rhs)| {
+            rhs.count
+                .cmp(&lhs.count)
+                .then(rhs.last_used.cmp(&lhs.last_used))
+                .then(lhs_prompt.cmp(rhs_prompt))
+        });
+        entries.into_iter().map(|(prompt, _)| prompt).collect()
+    }
+
+    fn record_prompt_history(&mut self, prompt: &str) {
+        let normalized = prompt.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        self.prompt_history_tick = self.prompt_history_tick.saturating_add(1);
+        let entry = self
+            .prompt_history
+            .entry(normalized.to_owned())
+            .or_default();
+        entry.count = entry.count.saturating_add(1);
+        entry.last_used = self.prompt_history_tick;
+    }
+
+    fn begin_prompt_history_nav(&mut self) {
+        let ordered = self.frecency_ranked_prompts();
+        if ordered.is_empty() {
+            self.push_toast(ToastLevel::Info, "Prompt history is empty");
+            return;
+        }
+        let stashed = PromptDraft {
+            text: self.input.value(),
+            cursor: self.input.cursor_position(),
+        };
+        self.prompt_history_nav = Some(PromptHistoryNavigation {
+            ordered,
+            index: 0,
+            stashed,
+        });
+        self.apply_prompt_history_nav();
+    }
+
+    fn apply_prompt_history_nav(&mut self) {
+        let Some(nav) = self.prompt_history_nav.as_ref() else {
+            return;
+        };
+        let Some(prompt) = nav.ordered.get(nav.index) else {
+            return;
+        };
+        self.input.set_value(prompt);
+        self.input
+            .set_cursor_position(CursorPosition::new(0, prompt.chars().count()));
+        self.on_prompt_edited();
+    }
+
+    fn recall_prompt_history_prev(&mut self) {
+        if self.prompt_history_nav.is_none() {
+            self.begin_prompt_history_nav();
+            return;
+        }
+        if let Some(nav) = self.prompt_history_nav.as_mut() {
+            if nav.index + 1 < nav.ordered.len() {
+                nav.index += 1;
+            }
+        }
+        self.apply_prompt_history_nav();
+    }
+
+    fn recall_prompt_history_next(&mut self) {
+        let Some(nav) = self.prompt_history_nav.as_mut() else {
+            self.push_toast(ToastLevel::Info, "No prompt-history recall is active");
+            return;
+        };
+        if nav.index > 0 {
+            nav.index -= 1;
+            self.apply_prompt_history_nav();
+            return;
+        }
+        let restore = nav.stashed.clone();
+        self.prompt_history_nav = None;
+        self.input.set_value(&restore.text);
+        self.input.set_cursor_position(restore.cursor);
+        self.on_prompt_edited();
+    }
+
+    fn promote_next_queued_prompt(&mut self) {
+        if self.queued_prompts.is_empty() {
+            self.push_toast(ToastLevel::Info, "There are no queued prompts");
+            return;
+        }
+        if self.queued_prompts.len() == 1 {
+            self.push_toast(ToastLevel::Info, "Only one queued prompt is present");
+            return;
+        }
+        if let Some(prompt) = self.queued_prompts.pop_back() {
+            self.queued_prompts.push_front(prompt);
+        }
+        self.push_toast(ToastLevel::Success, "Queued prompt promoted");
+    }
+
+    fn drop_one_queued_prompt(&mut self) {
+        if self.queued_prompts.pop_back().is_some() {
+            self.push_toast(ToastLevel::Success, "Dropped one queued prompt");
+        } else {
+            self.push_toast(ToastLevel::Info, "There are no queued prompts");
+        }
+    }
+
+    fn clear_queued_prompts(&mut self) {
+        let cleared = self.queued_prompts.len();
+        self.queued_prompts.clear();
+        self.push_toast(
+            ToastLevel::Success,
+            format!("Cleared {cleared} queued prompt(s)"),
+        );
     }
 
     /// Start a fresh session (`/new`): clear the transcript, the conversational history, and the
@@ -3919,6 +4716,8 @@ impl App {
         // typed `@path` prompt in the transcript: the expanded text becomes the prompt (sent and
         // carried into history) and the typed text becomes the user-visible header.
         let typed = trimmed.to_owned();
+        self.record_prompt_history(&typed);
+        self.prompt_history_nav = None;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let expanded = mention::expand(&typed, &cwd);
         let header = (expanded != typed).then(|| typed.clone());
@@ -4471,6 +5270,7 @@ mod tests {
             model: "google/gemini-2.5-flash".to_owned(),
             agent: "build".to_owned(),
             mode: "build".to_owned(),
+            variant: "default".to_owned(),
             session: "new".to_owned(),
         })
     }
@@ -6288,12 +7088,19 @@ mod tests {
         let dialog = a.dialog().expect("the model picker opened");
         assert_eq!(dialog.kind, DialogKind::Models);
         assert!(
-            dialog.items.iter().any(|m| m == "google/gemini-2.5-flash"),
+            dialog
+                .items
+                .iter()
+                .any(|m| m.starts_with("google/gemini-2.5-flash")),
             "the default model is listed: {:?}",
             dialog.items
         );
         // The active model is pre-highlighted.
-        assert_eq!(dialog.items[dialog.selected()], "google/gemini-2.5-flash");
+        assert!(
+            dialog.items[dialog.selected()].starts_with("google/gemini-2.5-flash"),
+            "active model pre-highlighted: {}",
+            dialog.items[dialog.selected()]
+        );
     }
 
     #[test]
@@ -6624,10 +7431,13 @@ mod tests {
             let dialog = a.dialog().expect("the model picker is open");
             dialog.items[dialog.selected()].clone()
         };
-        assert_ne!(highlighted, before, "a different model is highlighted");
         let chosen = a.select_model().expect("a changed model is committed");
-        assert_eq!(chosen, highlighted, "the highlighted model is committed");
-        assert_eq!(a.status.model, highlighted, "the active model updates");
+        assert_ne!(chosen, before, "a different model is committed");
+        assert!(
+            highlighted.starts_with(&chosen),
+            "the highlighted row maps to the chosen model: highlighted={highlighted} chosen={chosen}"
+        );
+        assert_eq!(a.status.model, chosen, "the active model updates");
     }
 
     #[test]
@@ -6896,11 +7706,18 @@ mod tests {
         a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
         type_str(&mut a, "mod");
         assert_eq!(a.palette_query(), Some("mod"));
-        let names: Vec<&str> = a.palette_matches().iter().map(|c| c.name).collect();
-        assert!(names.contains(&"models"), "models matches: {names:?}");
+        let labels = a
+            .palette_matches()
+            .into_iter()
+            .map(|c| c.label)
+            .collect::<Vec<_>>();
         assert!(
-            !names.contains(&"help"),
-            "unrelated commands hidden: {names:?}"
+            labels.iter().any(|label| label.contains("models")),
+            "models matches: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("/help")),
+            "unrelated commands hidden: {labels:?}"
         );
         // The query edits the palette, not the prompt beneath it.
         assert_eq!(a.input_value(), "", "the prompt stays untouched");

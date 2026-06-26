@@ -99,7 +99,9 @@ fn run(options: LaunchOptions) -> io::Result<()> {
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
     // Apply any user keybind overrides from config so custom/leader bindings take effect at launch.
-    app.set_keybinds(keybind::Keybinds::load());
+    let (keybinds, keybind_diagnostics) = keybind::Keybinds::load_with_diagnostics();
+    app.set_keybinds(keybinds);
+    app.set_keybind_diagnostics(keybind_diagnostics);
     // Open the shared shadow checkpoint store for the working directory so `/undo` and `/redo` can
     // revert/re-apply file-affecting turns on disk. It degrades to graceful no-ops when no data
     // location resolves; opening never blocks launch.
@@ -354,6 +356,7 @@ fn event_loop<B: Backend + Write>(
                 history: app.history_snapshot(),
                 model: app.active_model(),
                 agent: app.active_agent(),
+                variant: app.active_variant(),
                 pure_plugins,
                 mcp_manager: app.mcp_manager(),
                 remote,
@@ -508,10 +511,18 @@ fn initial_status() -> Status {
         .unwrap_or("build")
         .to_owned();
 
+    let variant = effective
+        .as_ref()
+        .and_then(|cfg| cfg.get("variant"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("default")
+        .to_owned();
+
     Status {
         model,
         agent,
         mode,
+        variant,
         session: "new".to_owned(),
     }
 }

@@ -30,6 +30,44 @@ pub enum KeybindAction {
     Undo,
     /// Redo the last undone change, like `/redo`.
     Redo,
+    /// Open the command palette, like `Ctrl+P`.
+    CommandPalette,
+    /// Select the previous transcript message.
+    MessagePrev,
+    /// Select the next transcript message.
+    MessageNext,
+    /// Cycle to the next available model.
+    ModelCycleNext,
+    /// Cycle to the next built-in agent.
+    AgentCycleNext,
+    /// Cycle to the next variant.
+    VariantCycleNext,
+    /// Recall a prompt from history (frecency-ranked), moving backwards.
+    PromptHistoryPrev,
+    /// Move forward in prompt-history recall (toward the stashed draft).
+    PromptHistoryNext,
+    /// Stash the current prompt draft.
+    PromptStashSave,
+    /// Restore the stashed prompt draft.
+    PromptStashRestore,
+    /// Expand/collapse tool-card details.
+    ToggleToolDetails,
+    /// Promote a queued prompt for next execution.
+    QueuePromoteNext,
+    /// Drop one queued prompt.
+    QueueDropOne,
+    /// Clear every queued prompt.
+    QueueClear,
+    /// Open the palette directly in the models submenu.
+    PaletteModels,
+    /// Open the palette directly in the skills submenu.
+    PaletteSkills,
+    /// Open the palette directly in the variants submenu.
+    PaletteVariants,
+    /// Open the palette directly in the subagents submenu.
+    PaletteSubagents,
+    /// Open the palette directly in the queued-prompts submenu.
+    PaletteQueuedPrompts,
 }
 
 impl KeybindAction {
@@ -43,6 +81,25 @@ impl KeybindAction {
         KeybindAction::Themes,
         KeybindAction::Undo,
         KeybindAction::Redo,
+        KeybindAction::CommandPalette,
+        KeybindAction::MessagePrev,
+        KeybindAction::MessageNext,
+        KeybindAction::ModelCycleNext,
+        KeybindAction::AgentCycleNext,
+        KeybindAction::VariantCycleNext,
+        KeybindAction::PromptHistoryPrev,
+        KeybindAction::PromptHistoryNext,
+        KeybindAction::PromptStashSave,
+        KeybindAction::PromptStashRestore,
+        KeybindAction::ToggleToolDetails,
+        KeybindAction::QueuePromoteNext,
+        KeybindAction::QueueDropOne,
+        KeybindAction::QueueClear,
+        KeybindAction::PaletteModels,
+        KeybindAction::PaletteSkills,
+        KeybindAction::PaletteVariants,
+        KeybindAction::PaletteSubagents,
+        KeybindAction::PaletteQueuedPrompts,
     ];
 
     /// The config key under `[keybinds]` that overrides this action's key (e.g. `new_session`).
@@ -57,6 +114,25 @@ impl KeybindAction {
             KeybindAction::Themes => "themes",
             KeybindAction::Undo => "undo",
             KeybindAction::Redo => "redo",
+            KeybindAction::CommandPalette => "command_palette",
+            KeybindAction::MessagePrev => "message_prev",
+            KeybindAction::MessageNext => "message_next",
+            KeybindAction::ModelCycleNext => "model_cycle_next",
+            KeybindAction::AgentCycleNext => "agent_cycle_next",
+            KeybindAction::VariantCycleNext => "variant_cycle_next",
+            KeybindAction::PromptHistoryPrev => "prompt_history_prev",
+            KeybindAction::PromptHistoryNext => "prompt_history_next",
+            KeybindAction::PromptStashSave => "prompt_stash_save",
+            KeybindAction::PromptStashRestore => "prompt_stash_restore",
+            KeybindAction::ToggleToolDetails => "toggle_tool_details",
+            KeybindAction::QueuePromoteNext => "queue_promote_next",
+            KeybindAction::QueueDropOne => "queue_drop_one",
+            KeybindAction::QueueClear => "queue_clear",
+            KeybindAction::PaletteModels => "palette_models",
+            KeybindAction::PaletteSkills => "palette_skills",
+            KeybindAction::PaletteVariants => "palette_variants",
+            KeybindAction::PaletteSubagents => "palette_subagents",
+            KeybindAction::PaletteQueuedPrompts => "palette_queued_prompts",
         }
     }
 
@@ -72,6 +148,25 @@ impl KeybindAction {
             KeybindAction::Themes => "Open the theme picker",
             KeybindAction::Undo => "Undo the last change",
             KeybindAction::Redo => "Redo the last undone change",
+            KeybindAction::CommandPalette => "Open the command palette",
+            KeybindAction::MessagePrev => "Select the previous message",
+            KeybindAction::MessageNext => "Select the next message",
+            KeybindAction::ModelCycleNext => "Cycle to the next model",
+            KeybindAction::AgentCycleNext => "Cycle to the next agent",
+            KeybindAction::VariantCycleNext => "Cycle to the next variant",
+            KeybindAction::PromptHistoryPrev => "Recall an older/frequent prompt",
+            KeybindAction::PromptHistoryNext => "Move toward the stashed prompt",
+            KeybindAction::PromptStashSave => "Stash the current prompt draft",
+            KeybindAction::PromptStashRestore => "Restore the stashed prompt",
+            KeybindAction::ToggleToolDetails => "Toggle tool details",
+            KeybindAction::QueuePromoteNext => "Promote a queued prompt",
+            KeybindAction::QueueDropOne => "Drop one queued prompt",
+            KeybindAction::QueueClear => "Clear all queued prompts",
+            KeybindAction::PaletteModels => "Open palette submenu: models",
+            KeybindAction::PaletteSkills => "Open palette submenu: skills",
+            KeybindAction::PaletteVariants => "Open palette submenu: variants",
+            KeybindAction::PaletteSubagents => "Open palette submenu: subagents",
+            KeybindAction::PaletteQueuedPrompts => "Open palette submenu: queued prompts",
         }
     }
 
@@ -87,6 +182,25 @@ impl KeybindAction {
             KeybindAction::Themes => 't',
             KeybindAction::Undo => 'u',
             KeybindAction::Redo => 'r',
+            KeybindAction::CommandPalette => 'p',
+            KeybindAction::MessagePrev => 'k',
+            KeybindAction::MessageNext => 'j',
+            KeybindAction::ModelCycleNext => 'x',
+            KeybindAction::AgentCycleNext => 'y',
+            KeybindAction::VariantCycleNext => 'v',
+            KeybindAction::PromptHistoryPrev => 'h',
+            KeybindAction::PromptHistoryNext => 'l',
+            KeybindAction::PromptStashSave => 'g',
+            KeybindAction::PromptStashRestore => 'f',
+            KeybindAction::ToggleToolDetails => 'o',
+            KeybindAction::QueuePromoteNext => '1',
+            KeybindAction::QueueDropOne => '2',
+            KeybindAction::QueueClear => '3',
+            KeybindAction::PaletteModels => '4',
+            KeybindAction::PaletteSkills => '5',
+            KeybindAction::PaletteVariants => '6',
+            KeybindAction::PaletteSubagents => '7',
+            KeybindAction::PaletteQueuedPrompts => '8',
         };
         KeyChord::plain(ch)
     }
@@ -285,30 +399,70 @@ impl Default for Keybinds {
 }
 
 impl Keybinds {
+    /// Load keybinds and return any non-fatal configuration diagnostics.
+    #[must_use]
+    pub fn load_with_diagnostics() -> (Self, Vec<String>) {
+        let mut keybinds = Self::default();
+        let mut diagnostics = Vec::new();
+        if let Some(table) = keybind_table() {
+            keybinds.apply_overrides_with_diagnostics(&table, &mut diagnostics);
+        }
+        (keybinds, diagnostics)
+    }
+
     /// The default keybinds with any `[keybinds]` config overrides applied. A missing or malformed
     /// override leaves that binding at its default, so the TUI always has a usable set.
     #[must_use]
     pub fn load() -> Self {
-        let mut keybinds = Self::default();
-        if let Some(table) = keybind_table() {
-            keybinds.apply_overrides(&table);
-        }
-        keybinds
+        Self::load_with_diagnostics().0
     }
 
     /// Apply a `[keybinds]` config table over the defaults: a `leader` entry replaces the leader,
     /// and any `<action.config_key>` entry replaces that action's key. Unparseable values are
     /// ignored (the default stays).
     pub fn apply_overrides(&mut self, table: &Table) {
+        self.apply_overrides_with_diagnostics(table, &mut Vec::new());
+    }
+
+    /// Like [`Self::apply_overrides`], but also collects non-fatal diagnostics describing invalid
+    /// or conflicting keybind entries so the caller can surface them to the user.
+    pub fn apply_overrides_with_diagnostics(
+        &mut self,
+        table: &Table,
+        diagnostics: &mut Vec<String>,
+    ) {
         if let Some(spec) = table.get("leader").and_then(toml::Value::as_str) {
             if let Some(chord) = KeyChord::parse(spec) {
                 self.leader = chord;
+            } else {
+                diagnostics.push(format!(
+                    "Invalid keybind `leader = {spec:?}`; keeping {}",
+                    self.leader.display()
+                ));
             }
         }
         for (chord, action) in &mut self.bindings {
             if let Some(spec) = table.get(action.config_key()).and_then(toml::Value::as_str) {
                 if let Some(parsed) = KeyChord::parse(spec) {
                     *chord = parsed;
+                } else {
+                    diagnostics.push(format!(
+                        "Invalid keybind `{}` = {spec:?}; keeping {}",
+                        action.config_key(),
+                        chord.display()
+                    ));
+                }
+            }
+        }
+        for (idx, (lhs_chord, lhs_action)) in self.bindings.iter().enumerate() {
+            for (rhs_chord, rhs_action) in self.bindings.iter().skip(idx + 1) {
+                if lhs_chord == rhs_chord {
+                    diagnostics.push(format!(
+                        "Keybind conflict on {} between `{}` and `{}`; first match wins",
+                        lhs_chord.display(),
+                        lhs_action.config_key(),
+                        rhs_action.config_key()
+                    ));
                 }
             }
         }

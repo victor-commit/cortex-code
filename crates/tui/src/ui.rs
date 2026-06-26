@@ -687,13 +687,27 @@ fn push_help(lines: &mut Vec<Line<'static>>, app: &App, theme: &style::ThemeColo
         section,
     )));
     for (chord, action) in app.keybinds().entries() {
+        let mut desc_text = action.label().to_owned();
+        if let Some(reason) = app.keybind_disabled_reason(*action) {
+            desc_text.push_str(&format!(" (disabled: {reason})"));
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:<16}", format!("{leader} {}", chord.display())),
                 name,
             ),
-            Span::styled(format!("  {}", action.label()), desc),
+            Span::styled(format!("  {desc_text}"), desc),
         ]));
+    }
+    if !app.keybind_diagnostics().is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Keybind diagnostics", section)));
+        for message in app.keybind_diagnostics() {
+            lines.push(Line::from(vec![
+                Span::styled("  • ", desc),
+                Span::styled(message.clone(), Style::default().fg(theme.warning)),
+            ]));
+        }
     }
     lines.push(Line::from(""));
 }
@@ -1904,19 +1918,28 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
     for (i, command) in matches.iter().enumerate() {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
-        let name_style = if is_selected {
+        let disabled = command.disabled_reason.is_some();
+        let name_style = if disabled {
+            Style::default()
+                .fg(theme.text_dim)
+                .add_modifier(Modifier::DIM)
+        } else if is_selected {
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text)
         };
+        let mut description = command.description.clone();
+        if let Some(reason) = &command.disabled_reason {
+            if !description.is_empty() {
+                description.push_str(" · ");
+            }
+            description.push_str(reason);
+        }
         lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(theme.info)),
-            Span::styled(format!("/{}", command.name), name_style),
+            Span::styled(command.label.clone(), name_style),
             Span::raw("  "),
-            Span::styled(
-                command.description.to_owned(),
-                Style::default().fg(theme.text_dim),
-            ),
+            Span::styled(description, Style::default().fg(theme.text_dim)),
         ]));
     }
     lines
@@ -1942,7 +1965,14 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
         Span::styled(query.to_owned(), Style::default().fg(theme.text)),
         Span::styled("▏", Style::default().fg(theme.info)),
     ]);
-    let hint = "↑/↓ to move · Enter to run · Esc to close";
+    let hint = if app
+        .palette_scope()
+        .is_some_and(|scope| scope != crate::app::PaletteScope::Root)
+    {
+        "↑/↓ move · Enter run · Esc back"
+    } else {
+        "↑/↓ move · Enter run · Esc close"
+    };
 
     let widest = command_rows
         .iter()
@@ -1963,12 +1993,24 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
 
     let popup = centered_rect(width, height, area);
 
+    let scope_title = match app
+        .palette_scope()
+        .unwrap_or(crate::app::PaletteScope::Root)
+    {
+        crate::app::PaletteScope::Root => "Command Palette".to_owned(),
+        crate::app::PaletteScope::Models => "Command Palette · Models".to_owned(),
+        crate::app::PaletteScope::Skills => "Command Palette · Skills".to_owned(),
+        crate::app::PaletteScope::Variants => "Command Palette · Variants".to_owned(),
+        crate::app::PaletteScope::Subagents => "Command Palette · Subagents".to_owned(),
+        crate::app::PaletteScope::QueuedPrompts => "Command Palette · Queued prompts".to_owned(),
+    };
+
     let block = Block::default()
         .style(Style::default().bg(theme.surface[1]))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border_focus))
-        .title(" Command Palette ")
+        .title(format!(" {scope_title} "))
         .title_style(
             Style::default()
                 .fg(theme.primary)
@@ -2021,6 +2063,7 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
     };
     field(&mut lines, "Model", app.status.model.clone());
     field(&mut lines, "Agent", app.status.agent.clone());
+    field(&mut lines, "Variant", app.status.variant.clone());
     field(&mut lines, "Mode", app.status.mode.clone());
     field(&mut lines, "Session", app.status.session.clone());
     lines.push(Line::from(""));
@@ -2079,9 +2122,13 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect, theme: &style::Theme
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     for (chord, action) in app.keybinds().entries() {
+        let mut label = action.label().to_owned();
+        if let Some(reason) = app.keybind_disabled_reason(*action) {
+            label.push_str(&format!(" (disabled: {reason})"));
+        }
         rows.push(Line::from(vec![
             Span::styled(format!("  {:<3}", chord.display()), key_style),
-            Span::styled(format!("  {}", action.label()), label_style),
+            Span::styled(format!("  {label}"), label_style),
         ]));
     }
 
@@ -2179,6 +2226,9 @@ pub fn footer_line(app: &App) -> Line<'static> {
         Span::styled("mode ", label),
         Span::styled(app.status.mode.clone(), value),
         sep(),
+        Span::styled("variant ", label),
+        Span::styled(app.status.variant.clone(), value),
+        sep(),
         Span::styled("session ", label),
         Span::styled(app.status.session.clone(), value),
         sep(),
@@ -2216,6 +2266,7 @@ mod tests {
             model: "google/gemini-2.5-flash".to_owned(),
             agent: "build".to_owned(),
             mode: "build".to_owned(),
+            variant: "default".to_owned(),
             session: "new".to_owned(),
         })
     }
