@@ -36,6 +36,7 @@ use url::Url;
 struct EchoServer {
     label: Option<String>,
     resources_prompts: bool,
+    no_args_prompt: bool,
     roots_tool: bool,
     error_tool: bool,
     stall_tool: bool,
@@ -47,6 +48,7 @@ impl EchoServer {
         Self {
             label: std::env::var("CORTEX_MCP_ECHO_LABEL").ok(),
             resources_prompts: std::env::var("CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS").is_ok(),
+            no_args_prompt: std::env::var("CORTEX_MCP_ECHO_ENABLE_NOARGS_PROMPT").is_ok(),
             roots_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ROOTS_TOOL").is_ok(),
             error_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL").is_ok(),
             stall_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_STALL_TOOL").is_ok(),
@@ -177,11 +179,19 @@ impl EchoServer {
         if !self.resources_prompts {
             return Vec::new();
         }
-        vec![Prompt::new(
+        let mut prompts = vec![Prompt::new(
             "greet",
             Some("Greet a caller by name from the MCP fixture."),
             Some(vec![PromptArgument::new("name").with_required(true)]),
-        )]
+        )];
+        if self.no_args_prompt {
+            prompts.push(Prompt::new(
+                "ping",
+                Some("Return a no-argument MCP prompt for slash-command fixture coverage."),
+                None,
+            ));
+        }
+        prompts
     }
 
     fn log_call(&self, name: &str, arguments: &Option<JsonObject>) {
@@ -304,22 +314,30 @@ impl ServerHandler for EchoServer {
             .map(|map| Value::Object(map.clone()))
             .unwrap_or(Value::Null);
         self.log_line(&format!("prompts/get name={} args={args}", request.name));
-        if request.name != "greet" {
-            return Err(McpError::invalid_params(
+        match request.name.as_str() {
+            "greet" => {
+                let name = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|map| map.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("friend");
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!("Hello {name} from MCP"),
+                )]))
+            }
+            "ping" if self.no_args_prompt => {
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    "Ping from MCP prompt fixture".to_owned(),
+                )]))
+            }
+            _ => Err(McpError::invalid_params(
                 format!("unknown prompt: {}", request.name),
                 None,
-            ));
+            )),
         }
-        let name = request
-            .arguments
-            .as_ref()
-            .and_then(|map| map.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or("friend");
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            format!("Hello {name} from MCP"),
-        )]))
     }
 
     async fn call_tool(

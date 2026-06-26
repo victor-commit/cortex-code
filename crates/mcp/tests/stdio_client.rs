@@ -362,6 +362,53 @@ async fn resources_and_prompts_are_listed_read_and_fetched() {
 }
 
 #[tokio::test]
+async fn optional_no_args_prompt_can_be_fetched_without_arguments() {
+    let bin = echo_server_bin();
+    let log = temp_path("prompt-noargs-log");
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS": "1",
+                "CORTEX_MCP_ECHO_ENABLE_NOARGS_PROMPT": "1"
+            }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    assert_eq!(manager.statuses()[0].state, mcp::ConnectionState::Connected);
+    let prompt = manager
+        .prompts()
+        .into_iter()
+        .find(|entry| entry.name == "ping")
+        .expect("fixture exposes a no-argument prompt");
+    assert!(
+        prompt.arguments.is_empty(),
+        "no-argument fixture prompt should not declare required args"
+    );
+
+    let response = manager
+        .get_prompt(&prompt.id, json!({}))
+        .await
+        .expect("no-argument prompt get succeeds");
+    assert!(
+        response.content.contains("Ping from MCP prompt fixture"),
+        "got: {}",
+        response.content
+    );
+
+    manager.shutdown().await;
+    let log_contents = std::fs::read_to_string(&log).expect("server log written");
+    assert!(
+        log_contents.contains("prompts/get name=ping"),
+        "server log must confirm a real prompts/get for the no-argument prompt, got:\n{log_contents}"
+    );
+    let _ = std::fs::remove_file(&log);
+}
+
+#[tokio::test]
 async fn roots_capability_is_advertised_and_used_for_real_file_resolution() {
     let bin = echo_server_bin();
     let root = temp_path("roots");
