@@ -2090,6 +2090,8 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             usage.input_tokens,
             usage.output_tokens,
             usage.total_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
             usage.cost,
         )),
         RunnerEvent::Error { message, kind } => bus.publish(&Event::turn_error(

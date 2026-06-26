@@ -3801,6 +3801,8 @@ mod tests {
                 input_tokens: 9,
                 output_tokens: 8,
                 total_tokens: 17,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
                 cost: Some(0.0000056),
             }),
             finish_reason: llm::FinishReason::Stop,
@@ -4111,6 +4113,8 @@ mod tests {
                 input_tokens: 5,
                 output_tokens: 3,
                 total_tokens: 8,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
                 cost: None,
             }),
             RunnerEvent::Done {

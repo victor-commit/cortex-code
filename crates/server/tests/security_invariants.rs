@@ -173,6 +173,8 @@ impl Provider for SecretProvider {
                     input_tokens: 1,
                     output_tokens: 1,
                     total_tokens: 2,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
                     cost: None,
                 }),
                 LlmEvent::Done {

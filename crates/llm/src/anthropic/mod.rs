@@ -24,6 +24,9 @@ use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 pub const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OUTBOUND_OPERATION: &str = "LLM streaming request";
+const PROMPT_CACHE_BREAKPOINT_CAP: usize = 4;
+const PROMPT_CACHE_PARAM: &str = "prompt_cache";
+const PROMPT_CACHE_TTL_SECONDS_PARAM: &str = "prompt_cache_ttl_seconds";
 
 /// Configuration for [`AnthropicMessages`].
 #[derive(Clone)]
@@ -117,6 +120,8 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
     let model = normalize_model_id(&request.model);
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
+    let mut user_text_positions = Vec::new();
+    let mut tool_result_positions = Vec::new();
 
     for message in &request.messages {
         match message.role {
@@ -136,7 +141,10 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                     );
                 }
                 if !text.is_empty() {
-                    system_parts.push(text);
+                    system_parts.push(serde_json::json!({
+                        "type": "text",
+                        "text": text,
+                    }));
                 }
             }
             Role::User => {
@@ -146,6 +154,7 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                         "type": "text",
                         "text": message.content,
                     }));
+                    user_text_positions.push((messages.len(), content.len() - 1));
                 }
                 let (media_blocks, strip_stubs) = anthropic_media_blocks(&message.parts);
                 content.extend(media_blocks);
@@ -154,6 +163,7 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                         "type": "text",
                         "text": strip_stubs.join("\n"),
                     }));
+                    user_text_positions.push((messages.len(), content.len() - 1));
                 }
                 messages.push(serde_json::json!({
                     "role": "user",
@@ -212,7 +222,39 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                         },
                     }],
                 }));
+                tool_result_positions.push((messages.len() - 1, 0usize));
             }
+        }
+    }
+
+    if prompt_cache_enabled(request) {
+        let cache_control = prompt_cache_control(request);
+        let mut remaining = PROMPT_CACHE_BREAKPOINT_CAP;
+        if let Some((message_index, block_index)) = tool_result_positions.last().copied() {
+            if apply_cache_control_to_message_block(
+                &mut messages,
+                message_index,
+                block_index,
+                &cache_control,
+            ) {
+                remaining -= 1;
+            }
+        }
+        if remaining > 0
+            && let Some(system_index) = system_parts.len().checked_sub(1)
+            && apply_cache_control_to_system_block(&mut system_parts, system_index, &cache_control)
+        {
+            remaining -= 1;
+        }
+        if remaining > 0
+            && let Some((message_index, block_index)) = user_text_positions.last().copied()
+        {
+            let _ = apply_cache_control_to_message_block(
+                &mut messages,
+                message_index,
+                block_index,
+                &cache_control,
+            );
         }
     }
 
@@ -223,7 +265,7 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
         "max_tokens": request.max_tokens.unwrap_or(4096),
     });
     if !system_parts.is_empty() {
-        body["system"] = serde_json::json!(system_parts.join("\n\n"));
+        body["system"] = serde_json::Value::Array(system_parts);
     }
     if let Some(temperature) = request.temperature {
         body["temperature"] = serde_json::json!(temperature);
@@ -285,10 +327,87 @@ fn anthropic_media_blocks(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<
     (blocks, strip_stubs)
 }
 
+fn prompt_cache_enabled(request: &LlmRequest) -> bool {
+    request
+        .extra_params
+        .get(PROMPT_CACHE_PARAM)
+        .and_then(JsonValue::as_str)
+        .map(|mode| !mode.eq_ignore_ascii_case("off"))
+        .or_else(|| {
+            request
+                .extra_params
+                .get(PROMPT_CACHE_PARAM)
+                .and_then(JsonValue::as_bool)
+        })
+        .unwrap_or(true)
+}
+
+fn prompt_cache_control(request: &LlmRequest) -> JsonValue {
+    let ttl = request
+        .extra_params
+        .get(PROMPT_CACHE_TTL_SECONDS_PARAM)
+        .and_then(JsonValue::as_u64)
+        .filter(|seconds| *seconds >= 3_600)
+        .map(|_| "1h");
+    match ttl {
+        Some(ttl) => serde_json::json!({
+            "type": "ephemeral",
+            "ttl": ttl,
+        }),
+        None => serde_json::json!({
+            "type": "ephemeral",
+        }),
+    }
+}
+
+fn apply_cache_control_to_system_block(
+    system: &mut [JsonValue],
+    index: usize,
+    cache_control: &JsonValue,
+) -> bool {
+    let Some(block) = system.get_mut(index).and_then(JsonValue::as_object_mut) else {
+        return false;
+    };
+    block.insert("cache_control".to_owned(), cache_control.clone());
+    true
+}
+
+fn apply_cache_control_to_message_block(
+    messages: &mut [JsonValue],
+    message_index: usize,
+    block_index: usize,
+    cache_control: &JsonValue,
+) -> bool {
+    let Some(content) = messages
+        .get_mut(message_index)
+        .and_then(JsonValue::as_object_mut)
+        .and_then(|message| message.get_mut("content"))
+        .and_then(JsonValue::as_array_mut)
+    else {
+        return false;
+    };
+    let Some(block) = content
+        .get_mut(block_index)
+        .and_then(JsonValue::as_object_mut)
+    else {
+        return false;
+    };
+    block.insert("cache_control".to_owned(), cache_control.clone());
+    true
+}
+
 fn is_reserved_messages_param(name: &str) -> bool {
     matches!(
         name,
-        "model" | "messages" | "stream" | "system" | "tools" | "max_tokens" | "temperature"
+        "model"
+            | "messages"
+            | "stream"
+            | "system"
+            | "tools"
+            | "max_tokens"
+            | "temperature"
+            | PROMPT_CACHE_PARAM
+            | PROMPT_CACHE_TTL_SECONDS_PARAM
     )
 }
 
@@ -351,6 +470,8 @@ impl NormalizeState {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
                 cost: None,
             },
             saw_usage: false,
@@ -391,14 +512,15 @@ impl NormalizeState {
             .unwrap_or_default();
         match event_type {
             "message_start" => {
-                if let Some(input) = value
+                if let Some(usage) = value
                     .get("message")
                     .and_then(|message| message.get("usage"))
-                    .and_then(|usage| usage.get("input_tokens"))
-                    .and_then(JsonValue::as_u64)
                 {
-                    self.usage.input_tokens = input as u32;
-                    self.saw_usage = true;
+                    if let Some(input) = usage.get("input_tokens").and_then(JsonValue::as_u64) {
+                        self.usage.input_tokens = input as u32;
+                        self.saw_usage = true;
+                    }
+                    update_cache_usage_fields(&mut self.usage, usage);
                 }
             }
             "content_block_start" => {
@@ -490,13 +612,12 @@ impl NormalizeState {
                 {
                     self.stop_reason = Some(stop_reason.to_owned());
                 }
-                if let Some(output) = value
-                    .get("usage")
-                    .and_then(|usage| usage.get("output_tokens"))
-                    .and_then(JsonValue::as_u64)
-                {
-                    self.usage.output_tokens = output as u32;
-                    self.saw_usage = true;
+                if let Some(usage) = value.get("usage") {
+                    if let Some(output) = usage.get("output_tokens").and_then(JsonValue::as_u64) {
+                        self.usage.output_tokens = output as u32;
+                        self.saw_usage = true;
+                    }
+                    update_cache_usage_fields(&mut self.usage, usage);
                 }
             }
             "error" => {
@@ -538,6 +659,23 @@ impl NormalizeState {
             reason: finish_reason(self.stop_reason.as_deref(), self.saw_tool_calls),
         });
         self.terminated = true;
+    }
+}
+
+fn update_cache_usage_fields(usage: &mut Usage, value: &JsonValue) {
+    if let Some(tokens) = value
+        .get("cache_creation_input_tokens")
+        .and_then(JsonValue::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+    {
+        usage.cache_creation_input_tokens = Some(tokens);
+    }
+    if let Some(tokens) = value
+        .get("cache_read_input_tokens")
+        .and_then(JsonValue::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+    {
+        usage.cache_read_input_tokens = Some(tokens);
     }
 }
 
@@ -651,11 +789,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_cache_breakpoints_mark_last_system_tool_and_user_text_blocks() {
+        let request = LlmRequest::new("anthropic/claude-sonnet-4")
+            .message(Message::system("system instructions"))
+            .message(Message::user("first user message"))
+            .message({
+                let mut assistant = Message::assistant("");
+                assistant.tool_calls.push(ToolCall {
+                    id: "call_1".to_owned(),
+                    name: "read".to_owned(),
+                    arguments: "{\"path\":\"Cargo.toml\"}".to_owned(),
+                });
+                assistant
+            })
+            .message(Message::tool_result("call_1", "file contents"))
+            .message(Message::user("second user message"))
+            .extra_param(PROMPT_CACHE_TTL_SECONDS_PARAM, serde_json::json!(3600));
+
+        let encoded = build_messages_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert_eq!(json["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(json["system"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(
+            json["messages"][2]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(
+            json["messages"][3]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_can_be_disabled_per_request() {
+        let request = LlmRequest::new("anthropic/claude-sonnet-4")
+            .message(Message::system("system instructions"))
+            .message(Message::user("hello"))
+            .extra_param(PROMPT_CACHE_PARAM, serde_json::json!("off"));
+        let encoded = build_messages_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert!(
+            json["system"][0].get("cache_control").is_none(),
+            "cache_control should be omitted when prompt_cache=off: {json}"
+        );
+        assert!(
+            json["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none(),
+            "cache_control should be omitted when prompt_cache=off: {json}"
+        );
+    }
+
     #[tokio::test]
     async fn normalizer_emits_tool_use_and_usage() {
         let stream = futures_util::stream::iter(vec![
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":6}}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
                 "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"read\",\"input\":{}}}\n\n",
@@ -664,7 +854,7 @@ mod tests {
                 "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2,\"cache_read_input_tokens\":4}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from("data: [DONE]\n\n")),
         ]);
@@ -681,6 +871,12 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, LlmEvent::Usage(usage) if usage.total_tokens == 5))
         );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            LlmEvent::Usage(usage)
+                if usage.cache_creation_input_tokens == Some(6)
+                    && usage.cache_read_input_tokens == Some(4)
+        )));
         assert_eq!(
             events.last(),
             Some(&LlmEvent::Done {

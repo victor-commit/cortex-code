@@ -210,6 +210,22 @@ pub(crate) fn accumulate_usage(acc: Option<Usage>, next: Usage) -> Usage {
             input_tokens: prev.input_tokens + next.input_tokens,
             output_tokens: prev.output_tokens + next.output_tokens,
             total_tokens: prev.total_tokens + next.total_tokens,
+            cache_creation_input_tokens: match (
+                prev.cache_creation_input_tokens,
+                next.cache_creation_input_tokens,
+            ) {
+                (Some(left), Some(right)) => Some(left.saturating_add(right)),
+                (Some(left), None) => Some(left),
+                (None, right) => right,
+            },
+            cache_read_input_tokens: match (
+                prev.cache_read_input_tokens,
+                next.cache_read_input_tokens,
+            ) {
+                (Some(left), Some(right)) => Some(left.saturating_add(right)),
+                (Some(left), None) => Some(left),
+                (None, right) => right,
+            },
             cost: match (prev.cost, next.cost) {
                 (Some(a), Some(b)) => Some(a + b),
                 (Some(a), None) => Some(a),
@@ -303,18 +319,24 @@ mod tests {
             input_tokens: 3,
             output_tokens: 4,
             total_tokens: 7,
+            cache_creation_input_tokens: Some(2),
+            cache_read_input_tokens: None,
             cost: Some(0.001),
         };
         let b = Usage {
             input_tokens: 5,
             output_tokens: 6,
             total_tokens: 11,
+            cache_creation_input_tokens: Some(1),
+            cache_read_input_tokens: Some(4),
             cost: Some(0.002),
         };
         let summed = accumulate_usage(Some(a), b);
         assert_eq!(summed.input_tokens, 8);
         assert_eq!(summed.output_tokens, 10);
         assert_eq!(summed.total_tokens, 18);
+        assert_eq!(summed.cache_creation_input_tokens, Some(3));
+        assert_eq!(summed.cache_read_input_tokens, Some(4));
         assert_eq!(summed.cost, Some(0.003));
     }
 
@@ -324,6 +346,8 @@ mod tests {
             input_tokens: 1,
             output_tokens: 2,
             total_tokens: 3,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
             cost: None,
         };
         assert_eq!(accumulate_usage(None, next.clone()), next);

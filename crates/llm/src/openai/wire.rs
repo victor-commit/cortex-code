@@ -349,19 +349,37 @@ pub struct ChatUsage {
     #[serde(default)]
     total_tokens: u32,
     #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
     cost: Option<f64>,
 }
 
 impl ChatUsage {
     /// Convert provider token counts into the canonical [`Usage`].
     pub fn into_usage(self) -> Usage {
+        let cache_read_input_tokens = self.cache_read_input_tokens.or_else(|| {
+            self.prompt_tokens_details
+                .and_then(|details| details.cached_tokens)
+        });
         Usage {
             input_tokens: self.prompt_tokens,
             output_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
+            cache_creation_input_tokens: self.cache_creation_input_tokens,
+            cache_read_input_tokens,
             cost: self.cost,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -639,5 +657,23 @@ mod tests {
             chunk.choices[0].delta.reasoning_text(),
             Some("thinking".to_owned())
         );
+    }
+
+    #[test]
+    fn usage_parses_prompt_cache_read_tokens_from_prompt_token_details() {
+        let usage: ChatUsage = serde_json::from_str(
+            r#"{
+                "prompt_tokens": 9,
+                "completion_tokens": 3,
+                "total_tokens": 12,
+                "prompt_tokens_details": { "cached_tokens": 4 }
+            }"#,
+        )
+        .expect("parse usage");
+        let usage = usage.into_usage();
+        assert_eq!(usage.input_tokens, 9);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 12);
+        assert_eq!(usage.cache_read_input_tokens, Some(4));
     }
 }

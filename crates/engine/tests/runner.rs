@@ -96,6 +96,8 @@ fn usage() -> LlmEvent {
         input_tokens: 5,
         output_tokens: 3,
         total_tokens: 8,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
         cost: Some(0.0001),
     })
 }

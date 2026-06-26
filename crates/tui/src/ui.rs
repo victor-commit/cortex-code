@@ -2469,6 +2469,8 @@ mod tests {
                 input_tokens: 12,
                 output_tokens: 34,
                 total_tokens: 46,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
                 cost: Some(0.0021),
             },
         )))

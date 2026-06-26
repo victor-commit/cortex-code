@@ -262,6 +262,12 @@ pub struct TurnUsageEvent {
     pub output_tokens: u32,
     /// Total tokens.
     pub total_tokens: u32,
+    /// Prompt-cache write tokens (cache creation), when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    /// Prompt-cache read tokens, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
     /// Optional provider-reported cost.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<f64>,
@@ -597,6 +603,7 @@ impl Event {
     }
 
     /// Construct a `turn.usage` event.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn turn_usage(
         session_id: impl Into<String>,
@@ -604,6 +611,8 @@ impl Event {
         input_tokens: u32,
         output_tokens: u32,
         total_tokens: u32,
+        cache_creation_input_tokens: Option<u32>,
+        cache_read_input_tokens: Option<u32>,
         cost: Option<f64>,
     ) -> Self {
         Event::TurnUsage(TurnUsageEvent {
@@ -612,6 +621,8 @@ impl Event {
             input_tokens,
             output_tokens,
             total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
             cost,
         })
     }

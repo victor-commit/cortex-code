@@ -957,6 +957,8 @@ fn write_acp_update<W>(
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
                     "total_tokens": usage.total_tokens,
+                    "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens,
                     "cost": usage.cost,
                 })
                 .to_string(),
@@ -1012,6 +1014,8 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             usage.input_tokens,
             usage.output_tokens,
             usage.total_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
             usage.cost,
         )),
         RunnerEvent::Error { message, kind } => bus.publish(&Event::turn_error(
@@ -1315,6 +1319,8 @@ mod tests {
                         input_tokens: 2,
                         output_tokens: 2,
                         total_tokens: 4,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
                         cost: Some(0.000002),
                     }),
                     LlmEvent::Done {
@@ -1387,6 +1393,8 @@ mod tests {
                     input_tokens: 1,
                     output_tokens: 1,
                     total_tokens: 2,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
                     cost: Some(0.000001),
                 }));
                 events.push(LlmEvent::Done {

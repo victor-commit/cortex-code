@@ -458,6 +458,8 @@ fn parse_usage(value: Option<&JsonValue>) -> Option<Usage> {
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
         cost: None,
     })
 }

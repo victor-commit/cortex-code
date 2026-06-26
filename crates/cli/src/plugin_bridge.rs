@@ -1586,6 +1586,13 @@ fn usage_from_json_object(object: &serde_json::Map<String, JsonValue>) -> Option
             .or_else(|| object.get("tokens")),
     )
     .unwrap_or(input_tokens.saturating_add(output_tokens));
+    let cache_creation_input_tokens = json_u32(object.get("cache_creation_input_tokens"));
+    let cache_read_input_tokens = json_u32(object.get("cache_read_input_tokens")).or_else(|| {
+        object
+            .get("input_tokens_details")
+            .and_then(JsonValue::as_object)
+            .and_then(|details| json_u32(details.get("cached_tokens")))
+    });
     let cost = object
         .get("cost")
         .and_then(JsonValue::as_f64)
@@ -1594,6 +1601,8 @@ fn usage_from_json_object(object: &serde_json::Map<String, JsonValue>) -> Option
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
         cost,
     })
 }
@@ -1625,7 +1634,11 @@ fn plugin_usage_cost(model: &PluginModelRegistration, usage: &Usage) -> Option<f
     if in_cost <= 0.0 && out_cost <= 0.0 {
         return None;
     }
-    let input = f64::from(usage.input_tokens) * in_cost / 1_000_000.0;
+    let billed_input_tokens = usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+    let input = f64::from(billed_input_tokens) * in_cost / 1_000_000.0;
     let output = f64::from(usage.output_tokens) * out_cost / 1_000_000.0;
     Some(input + output)
 }
@@ -2079,6 +2092,35 @@ mod tests {
             name: name.to_owned(),
             arguments: arguments.to_owned(),
         }
+    }
+
+    #[test]
+    fn plugin_usage_cost_counts_cache_tokens_as_billable_input() {
+        let model = PluginModelRegistration {
+            id: "plugin/model".to_owned(),
+            name: "Plugin Model".to_owned(),
+            tool_call: true,
+            reasoning: false,
+            context: 8_192,
+            output: 1_024,
+            attachment: false,
+            cost_input: 2.0,
+            cost_output: 4.0,
+        };
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cache_creation_input_tokens: Some(7),
+            cache_read_input_tokens: Some(3),
+            cost: None,
+        };
+        let cost = plugin_usage_cost(&model, &usage).expect("cost");
+        let expected = ((10.0 + 7.0 + 3.0) * 2.0 + (5.0 * 4.0)) / 1_000_000.0;
+        assert!(
+            (cost - expected).abs() < 1e-12,
+            "expected {expected}, got {cost}"
+        );
     }
 
     struct NoopTodos;

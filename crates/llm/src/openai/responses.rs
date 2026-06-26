@@ -475,11 +475,28 @@ fn parse_usage(value: Option<&JsonValue>) -> Option<Usage> {
         .and_then(JsonValue::as_u64)
         .map(|value| value as u32)
         .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    let cache_creation_input_tokens = usage
+        .get("cache_creation_input_tokens")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let cache_read_input_tokens = usage
+        .get("cache_read_input_tokens")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| {
+            usage
+                .get("input_tokens_details")
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(JsonValue::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+        });
     let cost = usage.get("cost").and_then(JsonValue::as_f64);
     Some(Usage {
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
         cost,
     })
 }
@@ -525,7 +542,7 @@ mod tests {
                 "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"\\\"Cargo.toml\\\"}\"}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from("data: [DONE]\n\n")),
         ]);
@@ -537,11 +554,12 @@ mod tests {
                 |event| matches!(event, LlmEvent::ToolCall(call) if call.id == "call_1" && call.name == "read")
             )
         );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, LlmEvent::Usage(usage) if usage.total_tokens == 6))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            LlmEvent::Usage(usage)
+                if usage.total_tokens == 6
+                    && usage.cache_read_input_tokens == Some(3)
+        )));
         assert!(matches!(events.last(), Some(LlmEvent::Done { .. })));
     }
 }

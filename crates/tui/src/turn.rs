@@ -331,6 +331,8 @@ fn event_for_runner(session_id: &str, message_id: &str, event: &RunnerEvent) -> 
             usage.input_tokens,
             usage.output_tokens,
             usage.total_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
             usage.cost,
         )),
         RunnerEvent::Error { message, kind } => Some(Event::turn_error(

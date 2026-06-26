@@ -324,6 +324,8 @@ async fn posted_tui_turn_events_are_rebroadcast_and_abort_observes_remote_activi
             3,
             4,
             7,
+            None,
+            None,
             Some(0.1),
         ),
     )
@@ -494,6 +496,8 @@ impl Provider for StreamingEchoProvider {
                     input_tokens: 3,
                     output_tokens: 3,
                     total_tokens: 6,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
                     cost: Some(0.000_001),
                 }),
                 LlmEvent::Done {
@@ -541,6 +545,8 @@ impl Provider for ToolCallingProvider {
                         input_tokens: 5,
                         output_tokens: 5,
                         total_tokens: 10,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
                         cost: Some(0.000_002),
                     }),
                     LlmEvent::Done {
