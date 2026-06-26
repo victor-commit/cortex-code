@@ -121,6 +121,13 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
     let mut normalized = request.clone();
     normalized.normalize_known_params();
     let request = &normalized;
+    let tool_call_names: BTreeMap<String, String> = request
+        .messages
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .filter(|call| !call.id.is_empty() && !call.name.is_empty())
+        .map(|call| (call.id.clone(), call.name.clone()))
+        .collect();
     let mut contents = Vec::new();
     let mut system_parts = Vec::new();
     for message in &request.messages {
@@ -209,12 +216,15 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
             }
             Role::Tool => {
                 let (media_parts, strip_stubs) = gemini_media_parts(&message.parts);
+                let function_name = message
+                    .tool_call_id
+                    .as_ref()
+                    .and_then(|id| tool_call_names.get(id))
+                    .cloned()
+                    .unwrap_or_else(|| "tool_result".to_owned());
                 let mut parts = vec![serde_json::json!({
                     "functionResponse": {
-                        "name": message
-                            .tool_call_id
-                            .clone()
-                            .unwrap_or_else(|| "tool_result".to_owned()),
+                        "name": function_name,
                         "response": { "content": message.content },
                     }
                 })];
@@ -764,6 +774,34 @@ mod tests {
         let encoded = build_gemini_request(&request).expect("request");
         let json: JsonValue = serde_json::from_str(&encoded).expect("json");
         assert!(json["contents"][0]["parts"][1]["inlineData"].is_object());
+    }
+
+    #[test]
+    fn tool_result_function_response_uses_original_function_name() {
+        let call = ToolCall {
+            id: "call_1".to_owned(),
+            name: "read".to_owned(),
+            arguments: "{\"path\":\"Cargo.toml\"}".to_owned(),
+        };
+        let request = LlmRequest::new("google/gemini-2.5-flash")
+            .message(Message {
+                role: Role::Assistant,
+                content: String::new(),
+                parts: Vec::new(),
+                tool_call_id: None,
+                tool_calls: vec![call.clone()],
+            })
+            .message(Message::tool_result(call.id.clone(), "tool output"));
+        let encoded = build_gemini_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert_eq!(
+            json["contents"][0]["parts"][0]["functionCall"]["name"],
+            "read"
+        );
+        assert_eq!(
+            json["contents"][1]["parts"][0]["functionResponse"]["name"],
+            "read"
+        );
     }
 
     #[tokio::test]
