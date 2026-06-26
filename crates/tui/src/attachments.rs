@@ -108,6 +108,7 @@ pub fn resolve_local_file_attachment(
             canonical.display()
         ));
     };
+    validate_attachment_file(&canonical, media_type)?;
 
     Ok(InputAttachment {
         path: canonical.to_string_lossy().into_owned(),
@@ -216,6 +217,23 @@ pub fn is_supported_media_type(media_type: &str) -> bool {
     )
 }
 
+/// Validate that `path` contains bytes matching `media_type`.
+///
+/// This prevents extension-only spoofing from reaching a provider and causing avoidable
+/// unsupported/invalid media failures mid-turn.
+pub fn validate_attachment_file(path: &Path, media_type: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|err| format!("Could not read attachment `{}`: {err}", path.display()))?;
+    if looks_like_media(&bytes, media_type) {
+        return Ok(());
+    }
+    Err(format!(
+        "`{}` is not a valid {} attachment.",
+        path.display(),
+        media_type
+    ))
+}
+
 fn capture_clipboard_stdout(
     command: &str,
     args: &[&str],
@@ -291,10 +309,11 @@ fn persist_clipboard_bytes(bytes: Vec<u8>, media_type: &str) -> Result<InputAtta
 fn looks_like_media(bytes: &[u8], media_type: &str) -> bool {
     match media_type {
         "image/png" => bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']),
-        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8]),
+        "image/jpeg" => bytes.len() >= 4 && bytes.starts_with(&[0xff, 0xd8]),
         "image/svg+xml" => String::from_utf8_lossy(bytes)
             .to_ascii_lowercase()
             .contains("<svg"),
+        "application/pdf" => bytes.starts_with(b"%PDF-"),
         _ => !bytes.is_empty(),
     }
 }
@@ -383,5 +402,21 @@ mod tests {
         let attachment = attachment_from_message_part(&part).expect("attachment");
         assert_eq!(attachment.path, "/tmp/example.png");
         assert_eq!(attachment.media_type, "image/png");
+    }
+
+    #[test]
+    fn invalid_png_payload_is_rejected_even_with_png_extension() {
+        let path = std::env::temp_dir().join(format!(
+            "cortex-tui-invalid-png-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::write(&path, b"not-a-real-png").expect("write invalid payload");
+        let err = validate_attachment_file(&path, "image/png").expect_err("must fail");
+        assert!(err.contains("not a valid image/png"), "error: {err}");
+        let _ = std::fs::remove_file(path);
     }
 }

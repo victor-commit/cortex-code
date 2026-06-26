@@ -680,6 +680,8 @@ pub struct App {
     /// Whether the in-flight turn is a compaction (its summary replaces the conversation history
     /// when it finishes). Set from [`App::pending_compaction`] when the turn begins.
     turn_compaction: bool,
+    /// Whether the in-flight turn's user message has already been persisted.
+    turn_user_persisted: bool,
     /// Streaming redaction state for assistant-visible answer deltas in the active turn.
     answer_redactor: redaction::StreamingRedactor,
     /// Streaming redaction state for reasoning deltas in the active turn, independent from answer.
@@ -862,6 +864,7 @@ impl App {
             turn_errored: false,
             turn_usage: None,
             turn_compaction: false,
+            turn_user_persisted: false,
             answer_redactor: redaction::StreamingRedactor::new(),
             reasoning_redactor: redaction::StreamingRedactor::new(),
             expanded_tool_ids: BTreeSet::new(),
@@ -1330,15 +1333,18 @@ impl App {
         self.turn_errored = false;
         self.turn_usage = None;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
+        self.turn_user_persisted = false;
         self.answer_redactor.reset();
         self.reasoning_redactor.reset();
         // Persist the user message to the durable store so this conversation is resumable from
         // headless `cortex run --session <id>` and the session picker. A compaction turn's internal
         // summarization instruction is not part of the visible conversation, so it is not persisted
-        // (the full pre-compaction transcript stays the durable record).
-        if !self.turn_compaction {
+        // (the full pre-compaction transcript stays the durable record). Attachment-bearing prompts
+        // are persisted at turn finalization so failed turns can drop unsupported media safely.
+        if !self.turn_compaction && attachments.is_empty() {
             let user_parts = user_message_parts(&prompt, &attachments);
             self.persist_message("user", &prompt, &user_parts);
+            self.turn_user_persisted = true;
         }
         self.turn_prompt = Some(prompt);
         self.turn_attachments = attachments;
@@ -1688,6 +1694,7 @@ impl App {
         let errored = std::mem::take(&mut self.turn_errored);
         let turn_usage = self.turn_usage.take();
         let compaction = std::mem::take(&mut self.turn_compaction);
+        let user_persisted = std::mem::take(&mut self.turn_user_persisted);
 
         if compaction {
             if !errored {
@@ -1709,16 +1716,26 @@ impl App {
         }
 
         if let Some(prompt) = prompt {
-            self.history.push(
-                Message::user(prompt)
-                    .with_parts(attachments_to_message_content_parts(&turn_attachments)),
-            );
+            let history_media_parts = if errored {
+                Vec::new()
+            } else {
+                attachments_to_message_content_parts(&turn_attachments)
+            };
+            self.history
+                .push(Message::user(prompt.clone()).with_parts(history_media_parts));
+            if !user_persisted {
+                let persisted_parts = if errored {
+                    user_message_parts(&prompt, &[])
+                } else {
+                    user_message_parts(&prompt, &turn_attachments)
+                };
+                self.persist_message("user", &prompt, &persisted_parts);
+            }
             if !errored {
                 if let Some(answer) = self.latest_assistant_answer() {
                     self.history.push(Message::assistant(answer.clone()));
                     // Persist the assistant reply so a resumed session (headless or picker) sees the
-                    // full exchange. The user message was persisted when the turn began; an errored
-                    // turn has no answer to record, matching the headless runner.
+                    // full exchange.
                     self.persist_message("assistant", &answer, &[]);
                 }
                 if let Some(usage) = turn_usage.as_ref() {
@@ -1766,11 +1783,23 @@ impl App {
         let errored = std::mem::take(&mut self.turn_errored);
         let _ = self.turn_usage.take();
         let _ = std::mem::take(&mut self.turn_compaction);
+        let user_persisted = std::mem::take(&mut self.turn_user_persisted);
         if let Some(prompt) = prompt {
-            self.history.push(
-                Message::user(prompt)
-                    .with_parts(attachments_to_message_content_parts(&turn_attachments)),
-            );
+            let history_media_parts = if errored {
+                Vec::new()
+            } else {
+                attachments_to_message_content_parts(&turn_attachments)
+            };
+            self.history
+                .push(Message::user(prompt.clone()).with_parts(history_media_parts));
+            if !user_persisted {
+                let persisted_parts = if errored {
+                    user_message_parts(&prompt, &[])
+                } else {
+                    user_message_parts(&prompt, &turn_attachments)
+                };
+                self.persist_message("user", &prompt, &persisted_parts);
+            }
             if !errored {
                 if let Some(answer) = self.latest_assistant_answer() {
                     self.history.push(Message::assistant(answer));
@@ -8809,6 +8838,45 @@ mod tests {
                     })
             }),
             "finalized history keeps the user image part for follow-up turns: {history:?}"
+        );
+    }
+
+    #[test]
+    fn errored_attachment_turn_keeps_prompt_text_but_drops_media_from_history() {
+        let mut a = app();
+        let png = temp_attachment(
+            "png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(key(KeyCode::Enter));
+        a.set_input_value("Please describe this attachment.");
+        a.on_key(key(KeyCode::Enter));
+        let prompt = a.take_pending_prompt().expect("queued prompt");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt, rx, flag());
+        tx.send(TurnMessage::SetupError(
+            "Unsupported attachment media `application/pdf` for protocol `openai-chat`.".to_owned(),
+        ))
+        .expect("setup error");
+        tx.send(TurnMessage::Finished).expect("finish");
+        a.poll_turn();
+
+        let history = a.history_snapshot();
+        assert!(
+            history.iter().any(|message| {
+                message.role == llm::Role::User
+                    && message.content == "Please describe this attachment."
+                    && message.parts.is_empty()
+            }),
+            "errored media turns keep prompt text but drop attachments from history: {history:?}"
         );
     }
 

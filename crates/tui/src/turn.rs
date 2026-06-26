@@ -460,7 +460,9 @@ fn build_turn(
     let model = provider_config
         .resolve_model(providers::Catalogue::embedded(), Some(active_model))
         .map_err(|err| err.to_string())?;
+    let protocol = provider_config.provider_protocol(&model.provider_id);
     validate_model_id(&model.model_id)?;
+    validate_user_media_parts_for_model(&model, protocol, &user_parts)?;
     policy::enforce_provider_use(&inputs, &model.provider_id).map_err(|err| {
         if err.is_config() {
             format!("cannot load provider policy: {err}")
@@ -488,6 +490,7 @@ fn build_turn(
 
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
+    let history = sanitize_history_media_parts_for_protocol(history, protocol);
     let system = render_system_context(
         &model_id,
         &agent,
@@ -522,6 +525,90 @@ fn build_turn(
         skills: discovered_skill_list,
         plugin_hooks,
     })
+}
+
+fn validate_user_media_parts_for_model(
+    model: &providers::ResolvedModel,
+    protocol: providers::ProviderProtocol,
+    user_parts: &[llm::MessageContentPart],
+) -> Result<(), String> {
+    if user_parts.is_empty() {
+        return Ok(());
+    }
+    if model.info.as_ref().is_some_and(|info| !info.attachment) {
+        return Err(format!(
+            "Model `{}` does not support attachments. Remove attachments or switch to an attachment-capable model.",
+            model.model_id
+        ));
+    }
+    let Some(unsupported) = user_parts
+        .iter()
+        .find(|part| !media_part_supported_by_protocol(part, protocol))
+    else {
+        return Ok(());
+    };
+    Err(format!(
+        "Unsupported attachment media `{}` for protocol `{}`. Remove the attachment or switch to a compatible provider/model.",
+        media_part_label(unsupported),
+        protocol.as_str()
+    ))
+}
+
+fn sanitize_history_media_parts_for_protocol(
+    mut history: Vec<Message>,
+    protocol: providers::ProviderProtocol,
+) -> Vec<Message> {
+    for message in &mut history {
+        if message.parts.is_empty() {
+            continue;
+        }
+        message
+            .parts
+            .retain(|part| media_part_supported_by_protocol(part, protocol));
+    }
+    history
+}
+
+fn media_part_supported_by_protocol(
+    part: &llm::MessageContentPart,
+    protocol: providers::ProviderProtocol,
+) -> bool {
+    match part {
+        llm::MessageContentPart::Reasoning { .. } => true,
+        llm::MessageContentPart::Image { media_type, .. } => match protocol {
+            providers::ProviderProtocol::OpenAiChat => {
+                openai_chat_supported_image_media_type(media_type)
+            }
+            providers::ProviderProtocol::OpenAiResponses => false,
+            providers::ProviderProtocol::AnthropicMessages
+            | providers::ProviderProtocol::Gemini => true,
+        },
+        llm::MessageContentPart::Document { .. } | llm::MessageContentPart::File { .. } => {
+            !matches!(
+                protocol,
+                providers::ProviderProtocol::OpenAiChat
+                    | providers::ProviderProtocol::OpenAiResponses
+            )
+        }
+    }
+}
+
+fn openai_chat_supported_image_media_type(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+    )
+}
+
+fn media_part_label(part: &llm::MessageContentPart) -> String {
+    match part {
+        llm::MessageContentPart::Image { media_type, .. } => media_type.clone(),
+        llm::MessageContentPart::Document { media_type, .. } => media_type.clone(),
+        llm::MessageContentPart::File { media_type, .. } => media_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+        llm::MessageContentPart::Reasoning { provider, .. } => format!("reasoning:{provider}"),
+    }
 }
 
 fn render_system_context(
@@ -744,6 +831,67 @@ mod tests {
     fn empty_provider_or_model_half_is_rejected() {
         assert!(validate_model_id("/flash").is_err());
         assert!(validate_model_id("google/").is_err());
+    }
+
+    #[test]
+    fn openai_chat_rejects_pdf_user_attachments_before_turn_start() {
+        let model = providers::ResolvedModel {
+            provider_id: "openrouter".to_owned(),
+            model_id: "google/gemini-2.5-flash".to_owned(),
+            info: Some(providers::ModelInfo {
+                id: "google/gemini-2.5-flash".to_owned(),
+                name: "Gemini".to_owned(),
+                attachment: true,
+                reasoning: false,
+                tool_call: true,
+                limit: providers::ModelLimit::default(),
+                cost: providers::ModelCost::default(),
+            }),
+        };
+        let parts = vec![llm::MessageContentPart::Document {
+            media_type: "application/pdf".to_owned(),
+            path: "/tmp/example.pdf".to_owned(),
+        }];
+        let err = validate_user_media_parts_for_model(
+            &model,
+            providers::ProviderProtocol::OpenAiChat,
+            &parts,
+        )
+        .expect_err("pdf should be rejected on openai-chat");
+        assert!(
+            err.contains("application/pdf") && err.contains("openai-chat"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn history_media_sanitizer_drops_unsupported_openai_chat_parts() {
+        let history = vec![Message::user("describe attachments").with_parts(vec![
+            llm::MessageContentPart::Image {
+                media_type: "image/png".to_owned(),
+                path: "/tmp/a.png".to_owned(),
+            },
+            llm::MessageContentPart::Image {
+                media_type: "image/svg+xml".to_owned(),
+                path: "/tmp/a.svg".to_owned(),
+            },
+            llm::MessageContentPart::Document {
+                media_type: "application/pdf".to_owned(),
+                path: "/tmp/a.pdf".to_owned(),
+            },
+        ])];
+        let sanitized = sanitize_history_media_parts_for_protocol(
+            history,
+            providers::ProviderProtocol::OpenAiChat,
+        );
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(
+            sanitized[0].parts,
+            vec![llm::MessageContentPart::Image {
+                media_type: "image/png".to_owned(),
+                path: "/tmp/a.png".to_owned(),
+            }]
+        );
     }
 
     // The default policy asks before each effectful tool and allows the read-only tools, so an
