@@ -587,10 +587,16 @@ async fn oauth_rejects_a_forged_callback_state() {
         matches!(rejected, Err(oauth::OAuthError::InvalidCallbackPort(3199))),
         "callback ports outside 3200-3299 must be refused"
     );
-    let request = oauth::begin(oauth_config, Some(3216))
-        .await
-        .expect("begin auth");
+    let request = oauth::begin(oauth_config, None).await.expect("begin auth");
     let redirect_uri = request.redirect_uri.clone();
+    let callback_port = url::Url::parse(&redirect_uri)
+        .expect("redirect URI")
+        .port()
+        .expect("callback port");
+    assert!(
+        (3200..=3299).contains(&callback_port),
+        "callback port must stay in the mission range, got {callback_port}"
+    );
     let completion = tokio::spawn(async move { request.complete(Duration::from_secs(5)).await });
 
     // VAL-MCP-009: a forged/mismatched state is rejected.
@@ -601,6 +607,13 @@ async fn oauth_rejects_a_forged_callback_state() {
     assert!(
         matches!(outcome, Err(oauth::OAuthError::StateMismatch)),
         "a forged callback state must be rejected, got: {outcome:?}"
+    );
+
+    // Callback listeners must be released after error paths too.
+    let rebound = tokio::net::TcpListener::bind(("127.0.0.1", callback_port)).await;
+    assert!(
+        rebound.is_ok(),
+        "callback port should be free after state mismatch, bind failed: {rebound:?}"
     );
 }
 
