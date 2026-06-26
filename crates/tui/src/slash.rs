@@ -67,7 +67,47 @@ pub const BUILTINS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "fork",
-        description: "Fork the current session",
+        description: "Open the fork dialog",
+    },
+    SlashCommand {
+        name: "subagents",
+        description: "Open the subagent picker",
+    },
+    SlashCommand {
+        name: "queue",
+        description: "Open queued prompt manager",
+    },
+    SlashCommand {
+        name: "sidebar-toggle",
+        description: "Toggle sidebar visibility",
+    },
+    SlashCommand {
+        name: "sidebar-context",
+        description: "Show sidebar context panel",
+    },
+    SlashCommand {
+        name: "sidebar-files",
+        description: "Show sidebar files panel",
+    },
+    SlashCommand {
+        name: "sidebar-lsp",
+        description: "Show sidebar LSP panel",
+    },
+    SlashCommand {
+        name: "sidebar-mcp",
+        description: "Show sidebar MCP panel",
+    },
+    SlashCommand {
+        name: "sidebar-todo",
+        description: "Show sidebar todo panel",
+    },
+    SlashCommand {
+        name: "sidebar-subagents",
+        description: "Show sidebar subagents panel",
+    },
+    SlashCommand {
+        name: "sidebar-queue",
+        description: "Show sidebar queue panel",
     },
     SlashCommand {
         name: "rename",

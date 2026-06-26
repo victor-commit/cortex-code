@@ -153,6 +153,58 @@ pub enum DialogKind {
     Mcp,
     /// Attachment file picker (`/attach`).
     Attachments,
+    /// Fork picker (`/fork`) backed by timeline entries.
+    Fork,
+}
+
+/// Sidebar panel tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarPanel {
+    Context,
+    Files,
+    Lsp,
+    Mcp,
+    Todo,
+    Subagents,
+    Queue,
+}
+
+impl SidebarPanel {
+    pub const ALL: &'static [SidebarPanel] = &[
+        SidebarPanel::Context,
+        SidebarPanel::Files,
+        SidebarPanel::Lsp,
+        SidebarPanel::Mcp,
+        SidebarPanel::Todo,
+        SidebarPanel::Subagents,
+        SidebarPanel::Queue,
+    ];
+
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            SidebarPanel::Context => "Context",
+            SidebarPanel::Files => "Files",
+            SidebarPanel::Lsp => "LSP",
+            SidebarPanel::Mcp => "MCP",
+            SidebarPanel::Todo => "Todo",
+            SidebarPanel::Subagents => "Subagents",
+            SidebarPanel::Queue => "Queue",
+        }
+    }
+
+    #[must_use]
+    pub const fn short(self) -> &'static str {
+        match self {
+            SidebarPanel::Context => "Ctx",
+            SidebarPanel::Files => "Files",
+            SidebarPanel::Lsp => "LSP",
+            SidebarPanel::Mcp => "MCP",
+            SidebarPanel::Todo => "Todo",
+            SidebarPanel::Subagents => "Subs",
+            SidebarPanel::Queue => "Queue",
+        }
+    }
 }
 
 /// A modal list dialog (a picker or status view) floating over the transcript.
@@ -265,6 +317,14 @@ struct SessionEntry {
     id: Option<String>,
     /// The persisted session's title (used to seed a rename), if any.
     title: Option<String>,
+}
+
+/// One timeline row in the `/timeline` and `/fork` dialogs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TimelineEntry {
+    session_id: String,
+    message_id: String,
+    label: String,
 }
 
 /// The open `@`-file picker: the cached candidate file list (loaded when the picker opened) and the
@@ -640,10 +700,14 @@ pub struct App {
     leader_pending: bool,
     /// Whether the session sidebar panel is shown. Toggled by the sidebar keybind.
     sidebar_visible: bool,
+    /// Active sidebar tab.
+    sidebar_panel: SidebarPanel,
     /// The persisted-session metadata backing the open session picker, parallel to the dialog's
     /// item rows (index 0 is the synthetic "current session" row). Populated when the session
     /// picker opens; consulted by switch/rename/delete; cleared when the dialog closes.
     session_entries: Vec<SessionEntry>,
+    /// Timeline rows backing the `/timeline` and `/fork` dialogs.
+    timeline_entries: Vec<TimelineEntry>,
     /// Model-picker row mapping: `Some(model_id)` for selectable model rows, `None` for provider
     /// headers/separators.
     model_rows: Vec<Option<String>>,
@@ -678,6 +742,8 @@ pub struct App {
     /// Error-level toasts render with distinct error styling; entries are removed once their display
     /// window elapses (see [`App::tick_toasts`]).
     toasts: Vec<Toast>,
+    /// Recent LSP notes extracted from tool results (`write`/`edit`/`lsp`) for the LSP sidebar tab.
+    sidebar_lsp_notes: Vec<String>,
     /// The shadow checkpoint store backing `/undo` and `/redo`, opened for the working directory at
     /// launch. `None` when no data location resolves (so undo/redo degrade to a graceful no-op note
     /// rather than failing). The undo/redo handlers re-read its on-disk journal each invocation, so
@@ -773,7 +839,9 @@ impl App {
             keybinds: Keybinds::default(),
             leader_pending: false,
             sidebar_visible: false,
+            sidebar_panel: SidebarPanel::Context,
             session_entries: Vec::new(),
+            timeline_entries: Vec::new(),
             model_rows: Vec::new(),
             skill_rows: Vec::new(),
             variant_rows: Vec::new(),
@@ -786,6 +854,7 @@ impl App {
             ack: None,
             copy_request: None,
             toasts: Vec::new(),
+            sidebar_lsp_notes: Vec::new(),
             checkpoints: None,
             mcp_manager: None,
             mcp_runtime: None,
@@ -932,6 +1001,48 @@ impl App {
     #[must_use]
     pub fn sidebar_visible(&self) -> bool {
         self.sidebar_visible
+    }
+
+    /// The active sidebar tab.
+    #[must_use]
+    pub fn sidebar_panel(&self) -> SidebarPanel {
+        self.sidebar_panel
+    }
+
+    /// Every sidebar tab in display order.
+    #[must_use]
+    pub fn sidebar_panels(&self) -> &'static [SidebarPanel] {
+        SidebarPanel::ALL
+    }
+
+    /// Sidebar rows for the active tab.
+    #[must_use]
+    pub fn sidebar_rows(&self) -> Vec<String> {
+        match self.sidebar_panel {
+            SidebarPanel::Context => self.sidebar_context_rows(),
+            SidebarPanel::Files => self.sidebar_files_rows(),
+            SidebarPanel::Lsp => self.sidebar_lsp_rows(),
+            SidebarPanel::Mcp => self.sidebar_mcp_rows(),
+            SidebarPanel::Todo => self.sidebar_todo_rows(),
+            SidebarPanel::Subagents => self.sidebar_subagent_rows(),
+            SidebarPanel::Queue => self.sidebar_queue_rows(),
+        }
+    }
+
+    /// Footer summary for child subagents linked to the active session.
+    #[must_use]
+    pub fn subagent_footer_summary(&self) -> (usize, usize, usize) {
+        let statuses = self.subagent_statuses();
+        let total = statuses.len();
+        let running = statuses
+            .iter()
+            .filter(|(_, _, state, _)| *state == "running" || *state == "queued")
+            .count();
+        let done = statuses
+            .iter()
+            .filter(|(_, _, state, _)| *state == "done")
+            .count();
+        (total, running, done)
     }
 
     /// The current scroll offset (lines up from the bottom; 0 = pinned to the latest content).
@@ -1329,6 +1440,7 @@ impl App {
     /// Transition the running tool card matching `id` to its terminal (completed/failed) state,
     /// recording the result text. The most recent matching card wins so re-used ids never collide.
     fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
+        let mut lsp_candidate: Option<(String, String)> = None;
         if let Some(card) = self
             .transcript
             .iter_mut()
@@ -1339,6 +1451,44 @@ impl App {
             })
         {
             card.complete(parts, is_error);
+            lsp_candidate = Some((card.name.clone(), card.output.clone()));
+        }
+        if let Some((name, output)) = lsp_candidate {
+            self.capture_lsp_sidebar_note(&name, &output);
+        }
+    }
+
+    fn capture_lsp_sidebar_note(&mut self, tool_name: &str, output: &str) {
+        let name = tool_name.to_ascii_lowercase();
+        let output_lower = output.to_ascii_lowercase();
+        let looks_like_lsp =
+            name == "lsp" || output_lower.contains("lsp") || output_lower.contains("diagnostic");
+        if !looks_like_lsp {
+            return;
+        }
+        let mut pushed = false;
+        for line in output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("diagnostic")
+                || lower.contains("lsp")
+                || lower.contains("workspace symbols")
+                || lower.contains("definition")
+                || lower.contains("hover")
+            {
+                self.sidebar_lsp_notes.push(line.to_owned());
+                pushed = true;
+            }
+        }
+        if !pushed && let Some(line) = output.lines().map(str::trim).find(|line| !line.is_empty()) {
+            self.sidebar_lsp_notes.push(line.to_owned());
+        }
+        if self.sidebar_lsp_notes.len() > 8 {
+            let keep_from = self.sidebar_lsp_notes.len() - 8;
+            self.sidebar_lsp_notes.drain(0..keep_from);
         }
     }
 
@@ -2338,26 +2488,23 @@ impl App {
                 }
             }
             PaletteScope::Subagents => {
-                let mut found = false;
-                for session in self.persisted_sessions() {
-                    let label = session_picker_label(&session);
-                    if label.contains("subagent:") {
-                        found = true;
-                        items.push(PaletteItem {
-                            label,
-                            description: "subagent session".to_owned(),
-                            action: PaletteAction::LoadSession(session.id),
-                            disabled_reason: None,
-                        });
-                    }
-                }
-                if !found {
+                let statuses = self.subagent_statuses();
+                if statuses.is_empty() {
                     items.push(PaletteItem {
                         label: "No subagent sessions".to_owned(),
                         description: "Spawn a subagent task to populate this list".to_owned(),
                         action: PaletteAction::Noop,
                         disabled_reason: Some("No subagent sessions are available".to_owned()),
                     });
+                } else {
+                    for (id, label, state, detail) in statuses {
+                        items.push(PaletteItem {
+                            label,
+                            description: format!("{state} · {detail}"),
+                            action: PaletteAction::LoadSession(id),
+                            disabled_reason: None,
+                        });
+                    }
                 }
             }
             PaletteScope::QueuedPrompts => {
@@ -2565,7 +2712,17 @@ impl App {
             "compact" => self.start_compaction(),
             "sessions" => self.open_sessions_dialog(),
             "timeline" => self.open_timeline_dialog(),
-            "fork" => self.fork_session(),
+            "fork" => self.open_fork_dialog(),
+            "subagents" => self.open_palette_scope(PaletteScope::Subagents),
+            "queue" => self.open_palette_scope(PaletteScope::QueuedPrompts),
+            "sidebar-toggle" => self.toggle_sidebar(),
+            "sidebar-context" => self.set_sidebar_panel(SidebarPanel::Context),
+            "sidebar-files" => self.set_sidebar_panel(SidebarPanel::Files),
+            "sidebar-lsp" => self.set_sidebar_panel(SidebarPanel::Lsp),
+            "sidebar-mcp" => self.set_sidebar_panel(SidebarPanel::Mcp),
+            "sidebar-todo" => self.set_sidebar_panel(SidebarPanel::Todo),
+            "sidebar-subagents" => self.set_sidebar_panel(SidebarPanel::Subagents),
+            "sidebar-queue" => self.set_sidebar_panel(SidebarPanel::Queue),
             "rename" => self.rename_session_command(),
             "models" => self.open_models_dialog(),
             "model" => self.open_models_dialog(),
@@ -2608,18 +2765,102 @@ impl App {
         });
     }
 
-    /// Open the timeline view (`/timeline`): session history rows newest-first, without rename or
-    /// delete actions.
+    /// Open the timeline view (`/timeline`): the current session's persisted message history with
+    /// per-row part counts.
     fn open_timeline_dialog(&mut self) {
-        let (items, entries) = self.session_rows();
-        self.session_entries = entries;
+        let Some(session_id) = self.session_id.clone() else {
+            self.note_error("No persisted session is active yet.".to_owned());
+            return;
+        };
+        let (items, entries) = match self.timeline_rows(&session_id) {
+            Ok(rows) => rows,
+            Err(err) => {
+                self.note_error(format!("Timeline unavailable: {err}"));
+                return;
+            }
+        };
+        let selected = entries.len().saturating_sub(1);
+        self.timeline_entries = entries;
         self.open_dialog(Dialog {
             kind: DialogKind::Timeline,
-            title: "Timeline".to_owned(),
+            title: format!("Timeline · {session_id}"),
             items,
-            selected: 0,
-            empty: None,
+            selected,
+            empty: Some("No turns in this session yet.".to_owned()),
         });
+    }
+
+    /// Open the fork picker (`/fork`) backed by the current session timeline.
+    fn open_fork_dialog(&mut self) {
+        self.open_fork_dialog_with_selected(None);
+    }
+
+    fn open_fork_dialog_with_selected(&mut self, preferred_selected: Option<usize>) {
+        let Some(session_id) = self.session_id.clone() else {
+            self.note_error("No persisted session is active yet.".to_owned());
+            return;
+        };
+        if self.is_busy() {
+            self.push_toast(ToastLevel::Info, "Cannot fork while a turn is running");
+            return;
+        }
+        let (items, entries) = match self.timeline_rows(&session_id) {
+            Ok(rows) => rows,
+            Err(err) => {
+                self.note_error(format!("Fork unavailable: {err}"));
+                return;
+            }
+        };
+        let selected = preferred_selected
+            .unwrap_or_else(|| entries.len().saturating_sub(1))
+            .min(entries.len().saturating_sub(1));
+        self.timeline_entries = entries;
+        self.open_dialog(Dialog {
+            kind: DialogKind::Fork,
+            title: format!("Fork from timeline · {session_id}"),
+            items,
+            selected,
+            empty: Some("No turns available to fork.".to_owned()),
+        });
+    }
+
+    fn timeline_rows(&self, session_id: &str) -> Result<(Vec<String>, Vec<TimelineEntry>), String> {
+        let db = self
+            .open_store()
+            .ok_or_else(|| "no session store is available".to_owned())?;
+        let messages = db
+            .messages()
+            .list_for_session(session_id)
+            .map_err(|err| err.to_string())?;
+        if messages.is_empty() {
+            return Ok((vec!["No turns in this session yet.".to_owned()], Vec::new()));
+        }
+        let mut items = Vec::with_capacity(messages.len());
+        let mut entries = Vec::with_capacity(messages.len());
+        for (index, message) in messages.iter().enumerate() {
+            let who = if message.role == "assistant" {
+                "assistant"
+            } else if message.role == "user" {
+                "you"
+            } else {
+                message.role.as_str()
+            };
+            let excerpt = first_line(&message.content);
+            let part_count = message.parts.len();
+            let label = format!(
+                "{:>2}. {who} · {} part{} · {excerpt}",
+                index + 1,
+                part_count,
+                if part_count == 1 { "" } else { "s" }
+            );
+            items.push(label.clone());
+            entries.push(TimelineEntry {
+                session_id: session_id.to_owned(),
+                message_id: message.id.clone(),
+                label,
+            });
+        }
+        Ok((items, entries))
     }
 
     /// Open the model picker (`/models`): every model the OpenRouter catalogue serves, by id, with
@@ -3381,6 +3622,7 @@ impl App {
     fn close_dialog(&mut self) {
         self.dialog = None;
         self.session_entries.clear();
+        self.timeline_entries.clear();
         self.model_rows.clear();
         self.skill_rows.clear();
         self.variant_rows.clear();
@@ -3424,6 +3666,10 @@ impl App {
             self.dialog.as_ref().map(|dialog| dialog.kind),
             Some(DialogKind::Sessions)
         );
+        let is_timeline = matches!(
+            self.dialog.as_ref().map(|dialog| dialog.kind),
+            Some(DialogKind::Timeline)
+        );
         match key.code {
             KeyCode::Up => self.dialog_select_prev(),
             KeyCode::Down => self.dialog_select_next(),
@@ -3431,6 +3677,10 @@ impl App {
             KeyCode::Esc => self.dialog_cancel(),
             KeyCode::Char('r') if is_sessions => self.begin_session_rename(),
             KeyCode::Char('d') | KeyCode::Delete if is_sessions => self.delete_selected_session(),
+            KeyCode::Char('f') if is_timeline => {
+                let selected = self.dialog.as_ref().map(Dialog::selected);
+                self.open_fork_dialog_with_selected(selected);
+            }
             _ => {}
         }
     }
@@ -3540,10 +3790,12 @@ impl App {
                 }
             }
             Some(DialogKind::Timeline) => {
-                if let Some(id) = self.selected_session_id() {
-                    self.load_session(&id);
+                if let Some(label) = self.selected_timeline_label() {
+                    self.transcript
+                        .push(Entry::Notice(format!("Timeline point selected: {label}")));
                 }
             }
+            Some(DialogKind::Fork) => self.fork_from_timeline_selection(),
             Some(DialogKind::Attachments) => {
                 self.confirm_attachment_selection();
             }
@@ -3818,12 +4070,30 @@ impl App {
     /// "current session" row (and when the open dialog is not the session picker).
     fn selected_session_id(&self) -> Option<String> {
         let dialog = self.dialog.as_ref()?;
-        if !matches!(dialog.kind, DialogKind::Sessions | DialogKind::Timeline) {
+        if dialog.kind != DialogKind::Sessions {
             return None;
         }
         self.session_entries
             .get(dialog.selected())
             .and_then(|entry| entry.id.clone())
+    }
+
+    fn selected_timeline_index(&self) -> Option<usize> {
+        let dialog = self.dialog.as_ref()?;
+        if !matches!(dialog.kind, DialogKind::Timeline | DialogKind::Fork) {
+            return None;
+        }
+        if self.timeline_entries.is_empty() {
+            return None;
+        }
+        Some(dialog.selected().min(self.timeline_entries.len() - 1))
+    }
+
+    fn selected_timeline_label(&self) -> Option<String> {
+        let index = self.selected_timeline_index()?;
+        self.timeline_entries
+            .get(index)
+            .map(|entry| entry.label.clone())
     }
 
     fn append_loaded_message(&mut self, message: &db::Message) {
@@ -4089,9 +4359,8 @@ impl App {
                 .is_empty()
                 .then_some("There are no queued prompts".to_owned()),
             KeybindAction::PaletteSubagents => self
-                .persisted_sessions()
-                .iter()
-                .all(|session| !session_picker_label(session).contains("subagent:"))
+                .subagent_statuses()
+                .is_empty()
                 .then_some("No subagent sessions are available".to_owned()),
             KeybindAction::ModelCycleNext => self
                 .available_model_ids()
@@ -4107,6 +4376,206 @@ impl App {
     /// Show or hide the session sidebar panel (the sidebar-toggle keybind).
     fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    fn set_sidebar_panel(&mut self, panel: SidebarPanel) {
+        self.sidebar_visible = true;
+        self.sidebar_panel = panel;
+        self.push_toast(ToastLevel::Info, format!("Sidebar: {}", panel.title()));
+    }
+
+    fn cycle_sidebar_panel(&mut self, forward: bool) {
+        let tabs = SidebarPanel::ALL;
+        let index = tabs
+            .iter()
+            .position(|panel| *panel == self.sidebar_panel)
+            .unwrap_or(0);
+        let next = if forward {
+            (index + 1) % tabs.len()
+        } else {
+            (index + tabs.len() - 1) % tabs.len()
+        };
+        self.set_sidebar_panel(tabs[next]);
+    }
+
+    fn sidebar_context_rows(&self) -> Vec<String> {
+        let mut rows = vec![
+            format!("model: {}", self.status.model),
+            format!("agent: {}", self.status.agent),
+            format!("variant: {}", self.status.variant),
+            format!("mode: {}", self.status.mode),
+            format!("session: {}", self.status.session),
+            format!("messages: {}", self.transcript.len()),
+        ];
+        rows.push(if self.usage.reported {
+            format!(
+                "usage: ↑{} ↓{} total {}",
+                self.usage.input_tokens, self.usage.output_tokens, self.usage.total_tokens
+            )
+        } else {
+            "usage: —".to_owned()
+        });
+        if let Some(cost) = self.usage.cost {
+            rows.push(format!("cost: ${cost:.4}"));
+        }
+        rows.push(format!("queued prompts: {}", self.queued_prompts.len()));
+        let (total, running, done) = self.subagent_footer_summary();
+        rows.push(format!(
+            "subagents: {total} total · {running} running · {done} done"
+        ));
+        rows
+    }
+
+    fn sidebar_files_rows(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut rows = Vec::new();
+        for entry in self.transcript.iter().rev() {
+            if let Entry::Diff(diff) = entry
+                && seen.insert(diff.path.clone())
+            {
+                rows.push(format!("changed: {}", diff.path));
+            }
+            if rows.len() >= 8 {
+                break;
+            }
+        }
+        for attachment in self
+            .composer_attachments
+            .iter()
+            .chain(self.pending_attachments.iter())
+            .chain(self.turn_attachments.iter())
+        {
+            let label = format!("attachment: {}", attachment.path);
+            if seen.insert(label.clone()) {
+                rows.push(label);
+            }
+            if rows.len() >= 10 {
+                break;
+            }
+        }
+        if rows.is_empty() {
+            rows.push("No changed or attached files yet.".to_owned());
+        }
+        rows
+    }
+
+    fn sidebar_lsp_rows(&self) -> Vec<String> {
+        if self.sidebar_lsp_notes.is_empty() {
+            return vec!["No recent LSP diagnostics.".to_owned()];
+        }
+        self.sidebar_lsp_notes.clone()
+    }
+
+    fn sidebar_mcp_rows(&self) -> Vec<String> {
+        let rows = self.mcp_rows();
+        if rows.is_empty() {
+            vec!["No MCP servers configured.".to_owned()]
+        } else {
+            rows
+        }
+    }
+
+    fn sidebar_todo_rows(&self) -> Vec<String> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return vec!["No active persisted session.".to_owned()];
+        };
+        let Some(db) = self.open_store() else {
+            return vec!["No session store is available.".to_owned()];
+        };
+        match db.todos().list_for_session(session_id) {
+            Ok(items) if items.is_empty() => vec!["No todo items for this session.".to_owned()],
+            Ok(items) => items
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    format!(
+                        "{}. [{}|{}] {}",
+                        index + 1,
+                        item.status.as_str(),
+                        item.priority.as_str(),
+                        item.content
+                    )
+                })
+                .collect(),
+            Err(err) => vec![format!("Todo state unavailable: {err}")],
+        }
+    }
+
+    fn sidebar_subagent_rows(&self) -> Vec<String> {
+        let statuses = self.subagent_statuses();
+        if statuses.is_empty() {
+            return vec!["No subagent sessions for this parent.".to_owned()];
+        }
+        statuses
+            .into_iter()
+            .map(|(_, label, state, detail)| format!("[{state}] {label} — {detail}"))
+            .collect()
+    }
+
+    fn sidebar_queue_rows(&self) -> Vec<String> {
+        if self.queued_prompts.is_empty() {
+            return vec!["No queued prompts.".to_owned()];
+        }
+        self.queued_prompts
+            .iter()
+            .enumerate()
+            .map(|(index, queued)| {
+                let text = queued
+                    .header
+                    .as_deref()
+                    .unwrap_or(&queued.prompt)
+                    .chars()
+                    .take(80)
+                    .collect::<String>();
+                format!("{}. {}", index + 1, text)
+            })
+            .collect()
+    }
+
+    fn subagent_statuses(&self) -> Vec<(String, String, &'static str, String)> {
+        let Some(db) = self.open_store() else {
+            return Vec::new();
+        };
+        let Some(parent_id) = self.session_id.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(sessions) = db.sessions().list() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for session in sessions {
+            let label = session_picker_label(&session);
+            if !label.contains("subagent:") || !label.contains(&format!("parent:{parent_id}")) {
+                continue;
+            }
+            let messages = db
+                .messages()
+                .list_for_session(&session.id)
+                .unwrap_or_default();
+            let last = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant")
+                .map(|message| message.content.clone());
+            let state = if last
+                .as_deref()
+                .is_some_and(|text| text.to_ascii_lowercase().contains("state: error"))
+            {
+                "error"
+            } else if last.is_some() {
+                "done"
+            } else if messages.is_empty() {
+                "queued"
+            } else {
+                "running"
+            };
+            let detail = last
+                .as_deref()
+                .map(first_line)
+                .unwrap_or_else(|| "awaiting assistant result".to_owned());
+            rows.push((session.id, label, state, detail));
+        }
+        rows
     }
 
     fn available_model_ids(&self) -> Vec<String> {
@@ -4351,21 +4820,35 @@ impl App {
         self.reset_view();
     }
 
-    /// Fork the current persisted session into a new session (`/fork`) and switch to it.
-    fn fork_session(&mut self) {
-        if self.is_busy() {
-            self.push_toast(ToastLevel::Info, "Cannot fork while a turn is running");
+    /// Fork the selected timeline point into a new session and switch to it.
+    fn fork_from_timeline_selection(&mut self) {
+        let Some(selected) = self.selected_timeline_index() else {
+            self.note_error("No timeline point selected for forking.".to_owned());
             return;
-        }
-        let Some(source_id) = self.ensure_session_id() else {
-            self.note_error("No session store is available for forking.".to_owned());
+        };
+        let Some(source) = self.timeline_entries.get(selected).cloned() else {
+            self.note_error("No timeline point selected for forking.".to_owned());
             return;
         };
         let Some(db) = self.open_store() else {
             self.note_error("No session store is available for forking.".to_owned());
             return;
         };
-        let title = format!("Fork of {source_id}");
+        let messages = match db.messages().list_for_session(&source.session_id) {
+            Ok(messages) => messages,
+            Err(err) => {
+                self.note_error(format!("Fork failed: {err}"));
+                return;
+            }
+        };
+        let Some(source_index) = messages
+            .iter()
+            .position(|message| message.id == source.message_id)
+        else {
+            self.note_error("Fork failed: selected timeline message no longer exists.".to_owned());
+            return;
+        };
+        let title = format!("Fork of {} @ {}", source.session_id, source_index + 1);
         let forked = match db.sessions().create(Some(&title)) {
             Ok(session) => session,
             Err(err) => {
@@ -4373,14 +4856,7 @@ impl App {
                 return;
             }
         };
-        let messages = match db.messages().list_for_session(&source_id) {
-            Ok(messages) => messages,
-            Err(err) => {
-                self.note_error(format!("Fork failed: {err}"));
-                return;
-            }
-        };
-        for message in &messages {
+        for message in messages.iter().take(source_index + 1) {
             let persisted = if message.parts.is_empty() {
                 db.messages()
                     .create(&forked.id, &message.role, &message.content)
@@ -4405,7 +4881,9 @@ impl App {
         }
         self.load_session(&forked.id);
         self.transcript.push(Entry::Notice(format!(
-            "Forked session {source_id} -> {}",
+            "Forked {} at point {} -> {}",
+            source.session_id,
+            source_index + 1,
             forked.id
         )));
     }
@@ -5108,6 +5586,16 @@ impl App {
             KeyCode::Char('p') if ctrl => self.open_palette(),
             // Ctrl+F opens find-in-chat (highlight + next/prev navigation) over the transcript.
             KeyCode::Char('f') if ctrl => self.open_find(),
+            // Sidebar tabs: Ctrl+1..Ctrl+7 jump to a panel and show the sidebar.
+            KeyCode::Char('1') if ctrl => self.set_sidebar_panel(SidebarPanel::Context),
+            KeyCode::Char('2') if ctrl => self.set_sidebar_panel(SidebarPanel::Files),
+            KeyCode::Char('3') if ctrl => self.set_sidebar_panel(SidebarPanel::Lsp),
+            KeyCode::Char('4') if ctrl => self.set_sidebar_panel(SidebarPanel::Mcp),
+            KeyCode::Char('5') if ctrl => self.set_sidebar_panel(SidebarPanel::Todo),
+            KeyCode::Char('6') if ctrl => self.set_sidebar_panel(SidebarPanel::Subagents),
+            KeyCode::Char('7') if ctrl => self.set_sidebar_panel(SidebarPanel::Queue),
+            KeyCode::Char(']') if ctrl => self.cycle_sidebar_panel(true),
+            KeyCode::Char('[') if ctrl => self.cycle_sidebar_panel(false),
             // Ctrl+Y copies the selected message (or the latest) to the clipboard, acknowledged.
             KeyCode::Char('y') if ctrl => self.copy_selected_message(),
             // Message-level navigation: Ctrl+K / Ctrl+N select the previous / next message.
@@ -5646,6 +6134,16 @@ fn session_picker_label(session: &db::Session) -> String {
     match &session.title {
         Some(title) if !title.trim().is_empty() => format!("{}  —  {title}", session.id),
         _ => session.id.clone(),
+    }
+}
+
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= 88 {
+        line.to_owned()
+    } else {
+        let kept: String = line.chars().take(87).collect();
+        format!("{kept}…")
     }
 }
 
@@ -7217,7 +7715,16 @@ mod tests {
             .map(|command| command.name.clone())
             .collect();
         for required in [
-            "skills", "variant", "timeline", "fork", "status", "rename", "unshare", "details",
+            "skills",
+            "variant",
+            "timeline",
+            "fork",
+            "subagents",
+            "queue",
+            "status",
+            "rename",
+            "unshare",
+            "details",
         ] {
             assert!(
                 names.iter().any(|name| name == required),
@@ -9535,6 +10042,165 @@ mod tests {
                 && item.contains(&format!("parent:{parent_id}"))),
             "child subagent row includes the parent linkage: {items:?}"
         );
+    }
+
+    #[test]
+    fn timeline_dialog_lists_persisted_turns_with_part_counts() {
+        let path = session_store_path("timeline-dialog");
+        let mut a = app();
+        a.set_session_store(Some(path));
+        run_turn(&mut a, "first question", "first answer");
+        run_turn(&mut a, "second question", "second answer");
+
+        dispatch(&mut a, "timeline");
+        let dialog = a.dialog().expect("timeline dialog");
+        assert_eq!(dialog.kind, DialogKind::Timeline);
+        assert!(
+            dialog
+                .items
+                .iter()
+                .any(|item| item.contains("you") && item.contains("part")),
+            "timeline rows include user turns with part counts: {:?}",
+            dialog.items
+        );
+        assert!(
+            dialog
+                .items
+                .iter()
+                .any(|item| item.contains("assistant") && item.contains("part")),
+            "timeline rows include assistant turns with part counts: {:?}",
+            dialog.items
+        );
+    }
+
+    #[test]
+    fn fork_dialog_clones_history_through_selected_timeline_point() {
+        let path = session_store_path("fork-dialog");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "first question", "first answer");
+        run_turn(&mut a, "second question", "second answer");
+        let source_id = a.session_id.clone().expect("source session");
+
+        dispatch(&mut a, "fork");
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Fork),
+            "fork opens a timeline-backed fork dialog"
+        );
+
+        // default selection is the latest point; move up to assistant #1 (index 1 of 4 rows).
+        a.on_key(key(KeyCode::Up));
+        a.on_key(key(KeyCode::Up));
+        a.on_key(key(KeyCode::Enter));
+
+        let forked_id = a.session_id.clone().expect("forked session");
+        assert_ne!(forked_id, source_id, "fork creates a distinct session");
+
+        let db = db::Database::open(&path).expect("reopen store");
+        let source_messages = db.messages().list_for_session(&source_id).expect("source");
+        let forked_messages = db.messages().list_for_session(&forked_id).expect("forked");
+        assert_eq!(source_messages.len(), 4, "seeded full source history");
+        assert_eq!(
+            forked_messages.len(),
+            2,
+            "fork keeps history through the selected timeline point only"
+        );
+        assert_eq!(forked_messages[0].content, "first question");
+        assert_eq!(forked_messages[1].content, "first answer");
+    }
+
+    #[test]
+    fn sidebar_tabs_cover_context_files_lsp_mcp_todo_and_queue() {
+        let path = session_store_path("sidebar-panels");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "seed", "reply");
+
+        let session_id = a.session_id.clone().expect("session id");
+        {
+            let db = db::Database::open(&path).expect("open store");
+            db.todos()
+                .replace_for_session(
+                    &session_id,
+                    &[protocol::TodoItem::new(
+                        "wire sidebar todo",
+                        protocol::TodoStatus::Pending,
+                    )],
+                )
+                .expect("seed todo");
+        }
+        a.load_session(&session_id);
+
+        a.on_key(key_mod(KeyCode::Char('1'), KeyModifiers::CONTROL));
+        assert!(a.sidebar_visible(), "Ctrl+1 shows the sidebar");
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Context);
+
+        a.on_key(key_mod(KeyCode::Char('2'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Files);
+
+        a.on_key(key_mod(KeyCode::Char('3'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Lsp);
+
+        a.on_key(key_mod(KeyCode::Char('4'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Mcp);
+
+        a.on_key(key_mod(KeyCode::Char('5'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Todo);
+        assert!(
+            a.sidebar_rows()
+                .iter()
+                .any(|row| row.contains("wire sidebar todo")),
+            "todo panel surfaces persisted session todos"
+        );
+
+        // Queue one prompt while busy, then inspect the queue panel.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        type_str(&mut a, "queued prompt row");
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key_mod(KeyCode::Char('7'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Queue);
+        assert!(
+            a.sidebar_rows()
+                .iter()
+                .any(|row| row.contains("queued prompt row")),
+            "queue panel shows queued prompts"
+        );
+    }
+
+    #[test]
+    fn subagent_footer_summary_counts_running_and_done_children() {
+        let path = session_store_path("subagent-footer");
+        let parent_id = "ses_parent_footer";
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent session");
+            let running = db
+                .sessions()
+                .create(Some(&format!("subagent:explore parent:{parent_id}")))
+                .expect("running child");
+            db.messages()
+                .create(&running.id, "user", "working")
+                .expect("running user message");
+            let done = db
+                .sessions()
+                .create(Some(&format!("subagent:plan parent:{parent_id}")))
+                .expect("done child");
+            db.messages()
+                .create(&done.id, "assistant", "state: done")
+                .expect("done assistant");
+        }
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(parent_id);
+        let (total, running, done) = a.subagent_footer_summary();
+        assert_eq!(total, 2);
+        assert_eq!(running, 1);
+        assert_eq!(done, 1);
     }
 
     // VAL-CROSS-006 (TUI half): selecting a model for the session via `/models` persists it with the

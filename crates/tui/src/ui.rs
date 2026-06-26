@@ -1896,7 +1896,8 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
         (DialogKind::Sessions, false) => {
             "↑/↓ move · Enter switch · r rename · d delete · Esc close"
         }
-        (DialogKind::Timeline, _) => "↑/↓ move · Enter load · Esc close",
+        (DialogKind::Timeline, _) => "↑/↓ move · Enter select · f fork · Esc close",
+        (DialogKind::Fork, _) => "↑/↓ move · Enter fork here · Esc close",
         _ => "↑/↓ to move · Esc to close",
     }
 }
@@ -2052,36 +2053,31 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
     if area.width < 4 || area.height < 3 {
         return;
     }
-    let label = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
-    let value = Style::default().fg(theme.text);
     let dim = Style::default().fg(theme.text_dim);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let field = |lines: &mut Vec<Line<'static>>, name: &str, val: String| {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{name}: "), label),
-            Span::styled(val, value),
-        ]));
-    };
-    field(&mut lines, "Model", app.status.model.clone());
-    field(&mut lines, "Agent", app.status.agent.clone());
-    field(&mut lines, "Variant", app.status.variant.clone());
-    field(&mut lines, "Mode", app.status.mode.clone());
-    field(&mut lines, "Session", app.status.session.clone());
-    lines.push(Line::from(""));
-    field(&mut lines, "Messages", app.transcript.len().to_string());
-    field(
-        &mut lines,
-        "Tokens",
-        if app.usage.reported {
-            app.usage.total_tokens.to_string()
+    let selected = app.sidebar_panel();
+    let mut tab_spans = Vec::new();
+    for (index, panel) in app.sidebar_panels().iter().enumerate() {
+        if index > 0 {
+            tab_spans.push(Span::styled(" ", Style::default().fg(theme.text_muted)));
+        }
+        let style = if *panel == selected {
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            "—".to_owned()
-        },
-    );
+            Style::default().fg(theme.text_muted)
+        };
+        tab_spans.push(Span::styled(panel.short().to_owned(), style));
+    }
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(tab_spans), Line::from("")];
+    lines.extend(app.sidebar_rows().into_iter().map(Line::from));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("{} B  toggle", app.keybinds().leader.display()),
+        format!(
+            "{} B toggle · Ctrl+[ / Ctrl+] cycle · Ctrl+1..7 tabs",
+            app.keybinds().leader.display()
+        ),
         dim,
     )));
 
@@ -2090,7 +2086,7 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border_focus))
-        .title(" Session ")
+        .title(format!(" Sidebar · {} ", selected.title()))
         .title_style(
             Style::default()
                 .fg(theme.primary)
@@ -2237,6 +2233,16 @@ pub fn footer_line(app: &App) -> Line<'static> {
         Span::styled("usage ", label),
     ];
     spans.push(Span::styled(usage_text(&app.usage), value));
+    let (sub_total, sub_running, sub_done) = app.subagent_footer_summary();
+    spans.push(sep());
+    spans.push(Span::styled("subagents ", label));
+    spans.push(Span::styled(
+        format!("{sub_total} ({sub_running} running, {sub_done} done)"),
+        value,
+    ));
+    spans.push(sep());
+    spans.push(Span::styled("queued ", label));
+    spans.push(Span::styled(app.queued_count().to_string(), value));
     Line::from(spans)
 }
 
