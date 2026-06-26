@@ -130,7 +130,7 @@ impl PartLifecycleTracker {
                 delta.text = Some(text.clone());
                 emitted.push(delta);
             }
-            RunnerEvent::Reasoning { text } if !text.is_empty() => {
+            RunnerEvent::Reasoning { text, .. } if !text.is_empty() => {
                 let part_id = reasoning_part_id(&self.turn_id);
                 if !self.reasoning_started {
                     emitted.push(self.lifecycle_start(PartLifecycleKind::Reasoning, &part_id));
@@ -479,6 +479,7 @@ mod tests {
         let mut out = Vec::new();
         out.extend(tracker.observe(&RunnerEvent::Reasoning {
             text: "thinking".to_owned(),
+            metadata: None,
         }));
         out.extend(tracker.observe(&RunnerEvent::ToolCall {
             id: "call_a".to_owned(),
@@ -545,6 +546,7 @@ mod tests {
 
         out.extend(tracker.observe(&RunnerEvent::Reasoning {
             text: "thinking".to_owned(),
+            metadata: None,
         }));
         out.extend(tracker.observe(&RunnerEvent::TextDelta {
             text: "partial".to_owned(),

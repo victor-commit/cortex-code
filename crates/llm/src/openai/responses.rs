@@ -17,7 +17,7 @@ use serde_json::Value as JsonValue;
 use crate::error::LlmError;
 use crate::event::{FinishReason, LlmEvent, ToolCall, Usage};
 use crate::provider::{LlmStream, Provider};
-use crate::request::{LlmRequest, Role};
+use crate::request::{LlmRequest, Role, ToolChoice};
 use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 
 /// The outbound operation named in a `net-disabled` refusal raised by the adapter.
@@ -113,6 +113,9 @@ impl Provider for OpenAiResponses {
 }
 
 fn build_responses_request(request: &LlmRequest, provider_name: &str) -> Result<String, LlmError> {
+    let mut normalized = request.clone();
+    normalized.normalize_known_params();
+    let request = &normalized;
     let model = normalize_model_id(&request.model, provider_name);
     let mut input = Vec::new();
     for message in &request.messages {
@@ -175,6 +178,9 @@ fn build_responses_request(request: &LlmRequest, provider_name: &str) -> Result<
                 .collect(),
         );
     }
+    if let Some(tool_choice) = request.tool_choice.as_ref() {
+        value["tool_choice"] = responses_tool_choice_value(tool_choice);
+    }
     if let Some(map) = value.as_object_mut() {
         for (name, param) in &request.extra_params {
             if !is_reserved_responses_param(name) {
@@ -189,8 +195,27 @@ fn build_responses_request(request: &LlmRequest, provider_name: &str) -> Result<
 fn is_reserved_responses_param(name: &str) -> bool {
     matches!(
         name,
-        "model" | "input" | "tools" | "stream" | "max_output_tokens" | "temperature"
+        "model"
+            | "input"
+            | "tools"
+            | "stream"
+            | "max_output_tokens"
+            | "temperature"
+            | "tool_choice"
+            | "toolChoice"
     )
+}
+
+fn responses_tool_choice_value(tool_choice: &ToolChoice) -> JsonValue {
+    match tool_choice {
+        ToolChoice::Auto => serde_json::json!("auto"),
+        ToolChoice::None => serde_json::json!("none"),
+        ToolChoice::Required => serde_json::json!("required"),
+        ToolChoice::Tool { name } => serde_json::json!({
+            "type": "function",
+            "name": name,
+        }),
+    }
 }
 
 fn normalize_model_id(model_id: &str, provider_name: &str) -> String {
@@ -364,6 +389,7 @@ impl NormalizeState {
                 {
                     self.queue.push_back(LlmEvent::Reasoning {
                         text: delta.to_owned(),
+                        metadata: None,
                     });
                 }
             }

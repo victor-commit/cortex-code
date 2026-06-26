@@ -12,6 +12,7 @@
 use errors::{Diagnostic, Exit};
 use llm::{FinishReason, Message, ToolDef, Usage};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 /// Metadata captured when the runner compacts context through an LLM-authored summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,9 @@ pub enum RunnerEvent {
     Reasoning {
         /// The reasoning fragment.
         text: String,
+        /// Optional provider-specific metadata for reasoning replay (for example signatures).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
     },
     /// A tool the model requested, surfaced before it is executed so a machine consumer can observe
     /// the call (name and assembled JSON arguments) that produced the following [`RunnerEvent::ToolResult`].

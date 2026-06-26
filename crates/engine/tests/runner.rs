@@ -1799,7 +1799,7 @@ async fn compaction_summary_prunes_non_protected_tool_output_and_auto_continues(
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, RunnerEvent::Reasoning { text }
+            .any(|event| matches!(event, RunnerEvent::Reasoning { text, .. }
                 if text.contains("[context compaction]") && text.contains("continued_request=true"))),
         "event stream marks compaction before continuation"
     );

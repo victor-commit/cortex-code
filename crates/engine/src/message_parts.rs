@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use llm::Usage;
 use protocol::{MessagePart, MessagePartBody, StepPartPhase, ToolPartState, ToolResultPart};
+use serde_json::Value as JsonValue;
 
 use crate::{
     RunOutcome, RunnerEvent, agent_part_id, compaction_part_id, file_part_id, patch_part_id,
@@ -50,6 +51,7 @@ pub fn build_assistant_message_parts(
 
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut reasoning_metadata: Option<JsonValue> = None;
     let mut usage_count = 0usize;
     let mut retry_count = 0usize;
     let mut tool_call_arguments: HashMap<String, (String, String)> = HashMap::new();
@@ -57,7 +59,16 @@ pub fn build_assistant_message_parts(
     for event in events {
         match event {
             RunnerEvent::TextDelta { text: delta } => text.push_str(delta),
-            RunnerEvent::Reasoning { text: delta } => reasoning.push_str(delta),
+            RunnerEvent::Reasoning {
+                text: delta,
+                metadata,
+            } => {
+                reasoning.push_str(delta);
+                if let Some(metadata) = metadata {
+                    reasoning_metadata =
+                        merge_reasoning_metadata(reasoning_metadata.take(), metadata.clone());
+                }
+            }
             RunnerEvent::ToolCall {
                 id,
                 name,
@@ -179,13 +190,14 @@ pub fn build_assistant_message_parts(
         }
     }
 
-    if !reasoning.trim().is_empty() {
+    if !reasoning.trim().is_empty() || reasoning_metadata.is_some() {
         let reasoning_id = reasoning_part_id(turn_id);
         parts.push(MessagePart {
             id: reasoning_id.clone(),
             created_at: part_timestamps.get(&reasoning_id).cloned(),
             body: MessagePartBody::Reasoning {
                 text: reasoning.trim().to_owned(),
+                metadata: reasoning_metadata,
             },
         });
     }
@@ -354,6 +366,19 @@ fn finish_reason_name(reason: &llm::FinishReason) -> String {
         .unwrap_or_else(|| format!("{reason:?}"))
 }
 
+fn merge_reasoning_metadata(existing: Option<JsonValue>, next: JsonValue) -> Option<JsonValue> {
+    match (existing, next) {
+        (None, next) => Some(next),
+        (Some(JsonValue::Object(mut left)), JsonValue::Object(right)) => {
+            for (key, value) in right {
+                left.insert(key, value);
+            }
+            Some(JsonValue::Object(left))
+        }
+        (Some(current), next) => Some(JsonValue::Array(vec![current, next])),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +389,7 @@ mod tests {
         let events = vec![
             RunnerEvent::Reasoning {
                 text: "thinking".to_owned(),
+                metadata: None,
             },
             RunnerEvent::ToolCall {
                 id: "call_1".to_owned(),

@@ -109,6 +109,30 @@ pub enum MessageContentPart {
         #[serde(skip_serializing_if = "Option::is_none")]
         media_type: Option<String>,
     },
+    /// Provider-specific reasoning metadata needed to safely replay prior thinking context.
+    Reasoning {
+        /// Provider id this reasoning metadata belongs to (for example `anthropic` or `gemini`).
+        provider: String,
+        /// The non-user-visible reasoning text.
+        text: String,
+        /// Optional provider-issued signature/token needed to replay the reasoning block.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+}
+
+/// Canonical tool-choice modes normalized across provider adapters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolChoice {
+    /// Let the model decide whether to call tools.
+    Auto,
+    /// Do not allow tool calls.
+    None,
+    /// Require at least one tool call.
+    Required,
+    /// Require a specific tool by name.
+    Tool { name: String },
 }
 
 /// A tool the model is permitted to call, described by a JSON-schema parameter definition.
@@ -132,6 +156,9 @@ pub struct LlmRequest {
     /// The tool catalogue offered to the model for this turn.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tools: Vec<ToolDef>,
+    /// Optional tool-choice mode for providers that support function/tool calling controls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
     /// Optional cap on generated tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -157,6 +184,7 @@ impl LlmRequest {
             model: model.into(),
             messages: Vec::new(),
             tools: Vec::new(),
+            tool_choice: None,
             max_tokens: None,
             temperature: None,
             extra_params: JsonMap::new(),
@@ -190,6 +218,13 @@ impl LlmRequest {
         self
     }
 
+    /// Set a normalized tool-choice mode (builder style).
+    #[must_use]
+    pub fn tool_choice(mut self, tool_choice: ToolChoice) -> Self {
+        self.tool_choice = Some(tool_choice);
+        self
+    }
+
     /// Set the max-tokens cap (builder style).
     #[must_use]
     pub fn max_tokens(mut self, max_tokens: u32) -> Self {
@@ -217,6 +252,77 @@ impl LlmRequest {
         self.extra_headers.push((name.into(), value.into()));
         self
     }
+
+    /// Normalize known canonical options from `extra_params` into dedicated request fields.
+    ///
+    /// This currently extracts `tool_choice`/`toolChoice` when the typed field is still unset.
+    pub fn normalize_known_params(&mut self) {
+        if self.tool_choice.is_none() {
+            self.tool_choice = take_tool_choice_from_extra_params(&mut self.extra_params);
+        }
+    }
+}
+
+fn take_tool_choice_from_extra_params(
+    params: &mut JsonMap<String, JsonValue>,
+) -> Option<ToolChoice> {
+    let raw = params
+        .remove("tool_choice")
+        .or_else(|| params.remove("toolChoice"))?;
+    parse_tool_choice_value(&raw)
+}
+
+fn parse_tool_choice_value(raw: &JsonValue) -> Option<ToolChoice> {
+    match raw {
+        JsonValue::String(value) => parse_tool_choice_string(value),
+        JsonValue::Object(object) => {
+            let kind = object
+                .get("type")
+                .or_else(|| object.get("mode"))
+                .and_then(JsonValue::as_str);
+            match kind.and_then(parse_tool_choice_string) {
+                Some(ToolChoice::Tool { .. }) => {
+                    let name = object
+                        .get("name")
+                        .or_else(|| object.get("tool"))
+                        .or_else(|| object.get("tool_name"))
+                        .or_else(|| {
+                            object
+                                .get("function")
+                                .and_then(JsonValue::as_object)
+                                .and_then(|function| function.get("name"))
+                        })
+                        .and_then(JsonValue::as_str)?;
+                    Some(ToolChoice::Tool {
+                        name: name.to_owned(),
+                    })
+                }
+                Some(choice) => Some(choice),
+                None => object
+                    .get("name")
+                    .or_else(|| object.get("tool"))
+                    .and_then(JsonValue::as_str)
+                    .map(|name| ToolChoice::Tool {
+                        name: name.to_owned(),
+                    }),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_tool_choice_string(value: &str) -> Option<ToolChoice> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(ToolChoice::Auto),
+        "none" | "off" | "disabled" => Some(ToolChoice::None),
+        "required" | "any" => Some(ToolChoice::Required),
+        "tool" | "function" => Some(ToolChoice::Tool {
+            name: String::new(),
+        }),
+        _ => Some(ToolChoice::Tool {
+            name: value.trim().to_owned(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +348,24 @@ mod tests {
         assert_eq!(message.role, Role::Tool);
         assert_eq!(message.tool_call_id.as_deref(), Some("call_7"));
         assert_eq!(message.content, "42");
+    }
+
+    #[test]
+    fn normalize_known_params_extracts_tool_choice() {
+        let mut request = LlmRequest::new("google/gemini-2.5-flash").extra_param(
+            "tool_choice",
+            serde_json::json!({"type":"tool","name":"todo"}),
+        );
+        request.normalize_known_params();
+        assert_eq!(
+            request.tool_choice,
+            Some(ToolChoice::Tool {
+                name: "todo".to_owned()
+            })
+        );
+        assert!(
+            !request.extra_params.contains_key("tool_choice"),
+            "tool_choice should move into the typed request field"
+        );
     }
 }

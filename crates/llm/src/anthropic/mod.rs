@@ -17,7 +17,7 @@ use crate::error::LlmError;
 use crate::event::{FinishReason, LlmEvent, ToolCall, Usage};
 use crate::media::{encode_media_part, is_image_part, strip_media_stub};
 use crate::provider::{LlmStream, Provider};
-use crate::request::{LlmRequest, MessageContentPart, Role};
+use crate::request::{LlmRequest, MessageContentPart, Role, ToolChoice};
 use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 
 /// Default Anthropic API base (without `/messages`).
@@ -117,6 +117,9 @@ impl Provider for AnthropicMessages {
 }
 
 fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
+    let mut normalized = request.clone();
+    normalized.normalize_known_params();
+    let request = &normalized;
     let model = normalize_model_id(&request.model);
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
@@ -183,10 +186,33 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                         "input": parse_json_arguments(&call.arguments),
                     }));
                 }
-                if !message.parts.is_empty() {
+                let mut strip_stubs = Vec::new();
+                for part in &message.parts {
+                    match part {
+                        MessageContentPart::Reasoning {
+                            provider,
+                            text,
+                            signature,
+                        } if provider.eq_ignore_ascii_case("anthropic") => {
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let mut block = serde_json::json!({
+                                "type": "thinking",
+                                "thinking": text,
+                            });
+                            if let Some(signature) = signature {
+                                block["signature"] = serde_json::json!(signature);
+                            }
+                            content.push(block);
+                        }
+                        _ => strip_stubs.push(strip_media_stub(part)),
+                    }
+                }
+                if !strip_stubs.is_empty() {
                     content.push(serde_json::json!({
                         "type": "text",
-                        "text": message.parts.iter().map(strip_media_stub).collect::<Vec<_>>().join("\n"),
+                        "text": strip_stubs.join("\n"),
                     }));
                 }
                 messages.push(serde_json::json!({
@@ -267,10 +293,14 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
     if !system_parts.is_empty() {
         body["system"] = serde_json::Value::Array(system_parts);
     }
-    if let Some(temperature) = request.temperature {
-        body["temperature"] = serde_json::json!(temperature);
+    let mut suppress_tools = false;
+    if let Some((tool_choice, suppress)) = anthropic_tool_choice(request.tool_choice.as_ref()) {
+        suppress_tools = suppress;
+        body["tool_choice"] = tool_choice;
+    } else if matches!(request.tool_choice, Some(ToolChoice::None)) {
+        suppress_tools = true;
     }
-    if !request.tools.is_empty() {
+    if !request.tools.is_empty() && !suppress_tools {
         body["tools"] = serde_json::Value::Array(
             request
                 .tools
@@ -285,12 +315,67 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                 .collect(),
         );
     }
+
+    let mut temperature = request.temperature.map(clamp_anthropic_temperature);
+    let mut top_p = None;
     if let Some(map) = body.as_object_mut() {
         for (name, param) in &request.extra_params {
-            if !is_reserved_messages_param(name) {
-                map.insert(name.clone(), param.clone());
+            match name.as_str() {
+                "temperature" => {
+                    if let Some(value) = param.as_f64() {
+                        temperature = Some(clamp_anthropic_temperature(value as f32));
+                    }
+                }
+                "top_p" | "topP" => {
+                    if let Some(value) = param.as_f64() {
+                        top_p = Some(clamp_unit_interval(value));
+                    }
+                }
+                "top_k" | "topK" => {
+                    if let Some(value) = parse_positive_u32(param) {
+                        map.insert("top_k".to_owned(), serde_json::json!(value));
+                    }
+                }
+                "stop" | "stop_sequences" | "stopSequences" => {
+                    if let Some(sequences) = stop_sequences_from_value(param) {
+                        map.insert("stop_sequences".to_owned(), sequences);
+                    }
+                }
+                "metadata" => {
+                    if param.is_object() {
+                        map.insert("metadata".to_owned(), param.clone());
+                    }
+                }
+                "thinking" => {
+                    if param.is_object() {
+                        map.insert("thinking".to_owned(), param.clone());
+                    }
+                }
+                "reasoning_effort" | "reasoningEffort" | "thinking_budget" | "thinkingBudget" => {
+                    if let Some(budget) = reasoning_budget_from_value(param) {
+                        apply_anthropic_thinking_budget(map, budget);
+                    }
+                }
+                "max_tokens" => {
+                    if let Some(value) = parse_positive_u32(param) {
+                        map.insert("max_tokens".to_owned(), serde_json::json!(value));
+                    }
+                }
+                _ => {
+                    if !is_reserved_messages_param(name) {
+                        // Scrub unknown provider params to prevent unsupported-parameter leakage.
+                    }
+                }
             }
         }
+        map.insert(
+            "temperature".to_owned(),
+            serde_json::json!(temperature.unwrap_or(1.0)),
+        );
+        map.insert(
+            "top_p".to_owned(),
+            serde_json::json!(top_p.unwrap_or(0.999)),
+        );
     }
     serde_json::to_string(&body)
         .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))
@@ -300,6 +385,9 @@ fn anthropic_media_blocks(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<
     let mut blocks = Vec::new();
     let mut strip_stubs = Vec::new();
     for part in parts {
+        if matches!(part, MessageContentPart::Reasoning { .. }) {
+            continue;
+        }
         let Ok(encoded) = encode_media_part(part) else {
             strip_stubs.push(strip_media_stub(part));
             continue;
@@ -406,6 +494,21 @@ fn is_reserved_messages_param(name: &str) -> bool {
             | "tools"
             | "max_tokens"
             | "temperature"
+            | "top_p"
+            | "topP"
+            | "top_k"
+            | "topK"
+            | "stop"
+            | "stop_sequences"
+            | "stopSequences"
+            | "metadata"
+            | "thinking"
+            | "reasoning_effort"
+            | "reasoningEffort"
+            | "thinking_budget"
+            | "thinkingBudget"
+            | "tool_choice"
+            | "toolChoice"
             | PROMPT_CACHE_PARAM
             | PROMPT_CACHE_TTL_SECONDS_PARAM
     )
@@ -424,6 +527,79 @@ fn normalize_model_id(model_id: &str) -> String {
 
 fn parse_json_arguments(arguments: &str) -> JsonValue {
     serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({ "raw": arguments }))
+}
+
+fn anthropic_tool_choice(tool_choice: Option<&ToolChoice>) -> Option<(JsonValue, bool)> {
+    match tool_choice {
+        Some(ToolChoice::Auto) => Some((serde_json::json!({ "type": "auto" }), false)),
+        Some(ToolChoice::Required) => Some((serde_json::json!({ "type": "any" }), false)),
+        Some(ToolChoice::Tool { name }) if !name.trim().is_empty() => Some((
+            serde_json::json!({
+                "type": "tool",
+                "name": name,
+            }),
+            false,
+        )),
+        Some(ToolChoice::Tool { .. }) => Some((serde_json::json!({ "type": "any" }), false)),
+        Some(ToolChoice::None) => None,
+        None => None,
+    }
+}
+
+fn clamp_anthropic_temperature(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
+}
+
+fn clamp_unit_interval(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+fn parse_positive_u32(value: &JsonValue) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| value.as_str().and_then(|value| value.parse::<u32>().ok()))
+        .filter(|value| *value > 0)
+}
+
+fn stop_sequences_from_value(value: &JsonValue) -> Option<JsonValue> {
+    match value {
+        JsonValue::String(sequence) => Some(serde_json::json!([sequence])),
+        JsonValue::Array(items) => {
+            let sequences = items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            (!sequences.is_empty()).then(|| serde_json::json!(sequences))
+        }
+        _ => None,
+    }
+}
+
+fn reasoning_budget_from_value(value: &JsonValue) -> Option<u32> {
+    match value {
+        JsonValue::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "minimal" => Some(1_024),
+            "low" => Some(2_048),
+            "medium" => Some(4_096),
+            "high" => Some(8_192),
+            _ => None,
+        },
+        JsonValue::Number(_) => parse_positive_u32(value).map(|budget| budget.clamp(1_024, 8_192)),
+        _ => None,
+    }
+}
+
+fn apply_anthropic_thinking_budget(map: &mut serde_json::Map<String, JsonValue>, budget: u32) {
+    let mut thinking = map
+        .get("thinking")
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default();
+    thinking.insert("type".to_owned(), serde_json::json!("enabled"));
+    thinking.insert("budget_tokens".to_owned(), serde_json::json!(budget));
+    map.insert("thinking".to_owned(), JsonValue::Object(thinking));
 }
 
 type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
@@ -587,6 +763,20 @@ impl NormalizeState {
                         {
                             self.queue.push_back(LlmEvent::Reasoning {
                                 text: text.to_owned(),
+                                metadata: None,
+                            });
+                        }
+                    }
+                    Some("signature_delta") => {
+                        if let Some(signature) = delta.get("signature").and_then(JsonValue::as_str)
+                            && !signature.is_empty()
+                        {
+                            self.queue.push_back(LlmEvent::Reasoning {
+                                text: String::new(),
+                                metadata: Some(serde_json::json!({
+                                    "provider": "anthropic",
+                                    "signature": signature,
+                                })),
                             });
                         }
                     }

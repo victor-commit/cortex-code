@@ -1014,7 +1014,7 @@ impl App {
     fn apply_event(&mut self, event: RunnerEvent) {
         match event {
             RunnerEvent::TextDelta { text } => self.append_answer(&text),
-            RunnerEvent::Reasoning { text } => self.append_reasoning(&text),
+            RunnerEvent::Reasoning { text, .. } => self.append_reasoning(&text),
             RunnerEvent::Usage(usage) => {
                 self.turn_usage = Some(usage.clone());
                 self.usage.accumulate(&usage);
@@ -4640,6 +4640,7 @@ mod tests {
 
         tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
             text: "let me think".to_owned(),
+            metadata: None,
         }))
         .unwrap();
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
@@ -4662,6 +4663,7 @@ mod tests {
 
         tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
             text: format!("reasoning mentions {secret}"),
+            metadata: None,
         }))
         .unwrap();
         tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
@@ -4729,6 +4731,7 @@ mod tests {
         ] {
             tx.send(TurnMessage::Event(RunnerEvent::Reasoning {
                 text: fragment.to_owned(),
+                metadata: None,
             }))
             .unwrap();
             a.poll_turn();

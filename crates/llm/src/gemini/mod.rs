@@ -17,7 +17,7 @@ use crate::error::LlmError;
 use crate::event::{FinishReason, LlmEvent, ToolCall, Usage};
 use crate::media::{encode_media_part, strip_media_stub};
 use crate::provider::{LlmStream, Provider};
-use crate::request::{LlmRequest, MessageContentPart, Role};
+use crate::request::{LlmRequest, MessageContentPart, Role, ToolChoice};
 use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 
 /// Default Gemini API base.
@@ -118,6 +118,9 @@ impl Provider for GeminiProvider {
 }
 
 fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
+    let mut normalized = request.clone();
+    normalized.normalize_known_params();
+    let request = &normalized;
     let mut contents = Vec::new();
     let mut system_parts = Vec::new();
     for message in &request.messages {
@@ -169,9 +172,34 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
                         }
                     }));
                 }
-                if !message.parts.is_empty() {
+                let mut strip_stubs = Vec::new();
+                for part in &message.parts {
+                    match part {
+                        MessageContentPart::Reasoning {
+                            provider,
+                            text,
+                            signature,
+                        } if provider.eq_ignore_ascii_case("gemini")
+                            || provider.eq_ignore_ascii_case("google") =>
+                        {
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let mut thought_part = serde_json::json!({
+                                "text": text,
+                                "thought": true,
+                            });
+                            if let Some(signature) = signature {
+                                thought_part["thoughtSignature"] = serde_json::json!(signature);
+                            }
+                            parts.push(thought_part);
+                        }
+                        _ => strip_stubs.push(strip_media_stub(part)),
+                    }
+                }
+                if !strip_stubs.is_empty() {
                     parts.push(serde_json::json!({
-                        "text": message.parts.iter().map(strip_media_stub).collect::<Vec<_>>().join("\n"),
+                        "text": strip_stubs.join("\n"),
                     }));
                 }
                 contents.push(serde_json::json!({
@@ -214,23 +242,76 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
             })).collect::<Vec<_>>()
         }]);
     }
-    if request.max_tokens.is_some() || request.temperature.is_some() {
-        let mut config = serde_json::Map::new();
-        if let Some(max_tokens) = request.max_tokens {
-            config.insert("maxOutputTokens".to_owned(), serde_json::json!(max_tokens));
-        }
-        if let Some(temperature) = request.temperature {
-            config.insert("temperature".to_owned(), serde_json::json!(temperature));
-        }
-        body["generationConfig"] = JsonValue::Object(config);
+    let mut generation_config = serde_json::Map::new();
+    let temperature = request
+        .temperature
+        .map(clamp_gemini_temperature)
+        .unwrap_or(1.0);
+    generation_config.insert("temperature".to_owned(), serde_json::json!(temperature));
+    generation_config.insert("topP".to_owned(), serde_json::json!(0.95));
+    if let Some(max_tokens) = request.max_tokens {
+        generation_config.insert("maxOutputTokens".to_owned(), serde_json::json!(max_tokens));
     }
-    if let Some(map) = body.as_object_mut() {
-        for (name, param) in &request.extra_params {
-            if !is_reserved_gemini_param(name) {
-                map.insert(name.clone(), param.clone());
+
+    if let Some(tool_config) = gemini_tool_config(request.tool_choice.as_ref()) {
+        body["toolConfig"] = tool_config;
+    }
+
+    for (name, param) in &request.extra_params {
+        match name.as_str() {
+            "temperature" => {
+                if let Some(value) = param.as_f64() {
+                    generation_config.insert(
+                        "temperature".to_owned(),
+                        serde_json::json!(clamp_gemini_temperature(value as f32)),
+                    );
+                }
+            }
+            "top_p" | "topP" => {
+                if let Some(value) = param.as_f64() {
+                    generation_config.insert(
+                        "topP".to_owned(),
+                        serde_json::json!(clamp_unit_interval(value)),
+                    );
+                }
+            }
+            "top_k" | "topK" => {
+                if let Some(value) = parse_positive_u32(param) {
+                    generation_config.insert("topK".to_owned(), serde_json::json!(value));
+                }
+            }
+            "candidate_count" | "candidateCount" => {
+                if let Some(value) = parse_positive_u32(param) {
+                    generation_config.insert(
+                        "candidateCount".to_owned(),
+                        serde_json::json!(value.clamp(1, 8)),
+                    );
+                }
+            }
+            "stop" | "stop_sequences" | "stopSequences" => {
+                if let Some(sequences) = stop_sequences_from_value(param) {
+                    generation_config.insert("stopSequences".to_owned(), sequences);
+                }
+            }
+            "reasoning_effort" | "reasoningEffort" | "thinking_budget" | "thinkingBudget" => {
+                if let Some(budget) = reasoning_budget_from_value(param) {
+                    apply_gemini_thinking_budget(&mut generation_config, budget);
+                }
+            }
+            "max_tokens" => {
+                if let Some(value) = parse_positive_u32(param) {
+                    generation_config
+                        .insert("maxOutputTokens".to_owned(), serde_json::json!(value));
+                }
+            }
+            _ => {
+                if !is_reserved_gemini_param(name) {
+                    // Scrub unknown provider params to prevent unsupported-parameter leakage.
+                }
             }
         }
     }
+    body["generationConfig"] = JsonValue::Object(generation_config);
     serde_json::to_string(&body)
         .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))
 }
@@ -239,6 +320,9 @@ fn gemini_media_parts(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<Stri
     let mut out = Vec::new();
     let mut strip_stubs = Vec::new();
     for part in parts {
+        if matches!(part, MessageContentPart::Reasoning { .. }) {
+            continue;
+        }
         let Ok(encoded) = encode_media_part(part) else {
             strip_stubs.push(strip_media_stub(part));
             continue;
@@ -256,7 +340,28 @@ fn gemini_media_parts(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<Stri
 fn is_reserved_gemini_param(name: &str) -> bool {
     matches!(
         name,
-        "contents" | "systemInstruction" | "tools" | "generationConfig"
+        "contents"
+            | "systemInstruction"
+            | "tools"
+            | "generationConfig"
+            | "toolConfig"
+            | "temperature"
+            | "top_p"
+            | "topP"
+            | "top_k"
+            | "topK"
+            | "candidate_count"
+            | "candidateCount"
+            | "stop"
+            | "stop_sequences"
+            | "stopSequences"
+            | "reasoning_effort"
+            | "reasoningEffort"
+            | "thinking_budget"
+            | "thinkingBudget"
+            | "tool_choice"
+            | "toolChoice"
+            | "max_tokens"
     )
 }
 
@@ -273,6 +378,85 @@ fn normalize_model_id(model_id: &str) -> String {
 
 fn parse_json_arguments(arguments: &str) -> JsonValue {
     serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({ "raw": arguments }))
+}
+
+fn gemini_tool_config(tool_choice: Option<&ToolChoice>) -> Option<JsonValue> {
+    match tool_choice {
+        Some(ToolChoice::Auto) => Some(serde_json::json!({
+            "functionCallingConfig": { "mode": "AUTO" }
+        })),
+        Some(ToolChoice::None) => Some(serde_json::json!({
+            "functionCallingConfig": { "mode": "NONE" }
+        })),
+        Some(ToolChoice::Required) => Some(serde_json::json!({
+            "functionCallingConfig": { "mode": "ANY" }
+        })),
+        Some(ToolChoice::Tool { name }) if !name.trim().is_empty() => Some(serde_json::json!({
+            "functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": [name],
+            }
+        })),
+        Some(ToolChoice::Tool { .. }) => Some(serde_json::json!({
+            "functionCallingConfig": { "mode": "ANY" }
+        })),
+        None => None,
+    }
+}
+
+fn clamp_gemini_temperature(value: f32) -> f32 {
+    value.clamp(0.0, 2.0)
+}
+
+fn clamp_unit_interval(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+fn parse_positive_u32(value: &JsonValue) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| value.as_str().and_then(|value| value.parse::<u32>().ok()))
+        .filter(|value| *value > 0)
+}
+
+fn stop_sequences_from_value(value: &JsonValue) -> Option<JsonValue> {
+    match value {
+        JsonValue::String(sequence) => Some(serde_json::json!([sequence])),
+        JsonValue::Array(items) => {
+            let sequences = items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            (!sequences.is_empty()).then(|| serde_json::json!(sequences))
+        }
+        _ => None,
+    }
+}
+
+fn reasoning_budget_from_value(value: &JsonValue) -> Option<u32> {
+    match value {
+        JsonValue::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "minimal" => Some(1_024),
+            "low" => Some(2_048),
+            "medium" => Some(4_096),
+            "high" => Some(8_192),
+            _ => None,
+        },
+        JsonValue::Number(_) => parse_positive_u32(value).map(|budget| budget.clamp(1_024, 8_192)),
+        _ => None,
+    }
+}
+
+fn apply_gemini_thinking_budget(config: &mut serde_json::Map<String, JsonValue>, budget: u32) {
+    let mut thinking = config
+        .get("thinkingConfig")
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default();
+    thinking.insert("thinkingBudget".to_owned(), serde_json::json!(budget));
+    config.insert("thinkingConfig".to_owned(), JsonValue::Object(thinking));
 }
 
 type FrameStream = std::pin::Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
@@ -382,8 +566,18 @@ impl NormalizeState {
                 if let Some(text) = part.get("text").and_then(JsonValue::as_str) {
                     if part.get("thought").and_then(JsonValue::as_bool) == Some(true) {
                         if !text.is_empty() {
+                            let metadata = part
+                                .get("thoughtSignature")
+                                .and_then(JsonValue::as_str)
+                                .map(|signature| {
+                                    serde_json::json!({
+                                        "provider": "gemini",
+                                        "signature": signature,
+                                    })
+                                });
                             self.queue.push_back(LlmEvent::Reasoning {
                                 text: text.to_owned(),
+                                metadata,
                             });
                         }
                     } else if !text.is_empty() {
@@ -582,7 +776,7 @@ mod tests {
         let events: Vec<LlmEvent> = normalize_gemini_sse(frames).collect().await;
         assert!(events.iter().any(|event| matches!(
             event,
-            LlmEvent::Reasoning { text } if text == "thinking"
+            LlmEvent::Reasoning { text, .. } if text == "thinking"
         )));
         assert!(
             events

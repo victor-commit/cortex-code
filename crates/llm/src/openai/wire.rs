@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::LlmError;
 use crate::event::Usage;
 use crate::media::{encode_media_part, is_image_part, strip_media_stub};
-use crate::request::{LlmRequest, Message, MessageContentPart, Role, ToolDef};
+use crate::request::{LlmRequest, Message, MessageContentPart, Role, ToolChoice, ToolDef};
 
 /// Serialize a canonical [`LlmRequest`] into a streaming Chat-completions request body.
 ///
@@ -20,12 +20,16 @@ pub fn build_chat_request(
     include_usage: bool,
     provider_name: &str,
 ) -> Result<String, LlmError> {
+    let mut normalized = request.clone();
+    normalized.normalize_known_params();
+    let request = &normalized;
     let body = ChatRequest {
         model: &request.model,
         messages: request.messages.iter().map(WireMessage::from).collect(),
         stream: true,
         max_tokens: request.max_tokens,
         temperature: request.temperature,
+        tool_choice: request.tool_choice.as_ref().map(openai_tool_choice_value),
         tools: request
             .tools
             .iter()
@@ -51,7 +55,7 @@ pub fn build_chat_request(
 fn is_reserved_chat_param(name: &str) -> bool {
     matches!(
         name,
-        "model" | "messages" | "tools" | "stream" | "stream_options"
+        "model" | "messages" | "tools" | "stream" | "stream_options" | "tool_choice" | "toolChoice"
     )
 }
 
@@ -64,6 +68,8 @@ struct ChatRequest<'a> {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<WireTool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +129,9 @@ fn wire_content(message: &Message) -> serde_json::Value {
     let allow_media = role_accepts_media(message.role);
     let mut strip_stubs = Vec::new();
     for part in &message.parts {
+        if matches!(part, MessageContentPart::Reasoning { .. }) {
+            continue;
+        }
         match openai_media_part(part, allow_media) {
             Some(media_part) => parts.push(media_part),
             None => strip_stubs.push(strip_media_stub(part)),
@@ -137,6 +146,18 @@ fn wire_content(message: &Message) -> serde_json::Value {
     }
 
     serde_json::Value::Array(parts)
+}
+
+fn openai_tool_choice_value(tool_choice: &ToolChoice) -> serde_json::Value {
+    match tool_choice {
+        ToolChoice::Auto => serde_json::json!("auto"),
+        ToolChoice::None => serde_json::json!("none"),
+        ToolChoice::Required => serde_json::json!("required"),
+        ToolChoice::Tool { name } => serde_json::json!({
+            "type": "function",
+            "function": { "name": name },
+        }),
+    }
 }
 
 fn role_accepts_media(role: Role) -> bool {

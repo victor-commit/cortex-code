@@ -360,6 +360,7 @@ impl SessionRunner {
                                 "[context compaction] tail_start_id={} continued_request={}",
                                 record.tail_start_id, record.continued_request
                             ),
+                            metadata: None,
                         });
                         compactions.push(record);
                     }
@@ -476,9 +477,9 @@ impl SessionRunner {
                             sink(RunnerEvent::TextDelta { text });
                         }
                     }
-                    LlmEvent::Reasoning { text } => {
-                        if !text.is_empty() {
-                            sink(RunnerEvent::Reasoning { text });
+                    LlmEvent::Reasoning { text, metadata } => {
+                        if !text.is_empty() || metadata.is_some() {
+                            sink(RunnerEvent::Reasoning { text, metadata });
                         }
                     }
                     LlmEvent::ToolCall(call) => round.tool_calls.push(call),
@@ -665,6 +666,7 @@ impl SessionRunner {
         request.temperature = turn.temperature;
         request.extra_params = turn.extra_params.clone();
         request.extra_headers = turn.extra_headers.clone();
+        request.normalize_known_params();
         request
     }
 

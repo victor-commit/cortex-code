@@ -2059,7 +2059,7 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             message_id.to_owned(),
             text.clone(),
         )),
-        RunnerEvent::Reasoning { text } => bus.publish(&Event::assistant_reasoning_delta(
+        RunnerEvent::Reasoning { text, .. } => bus.publish(&Event::assistant_reasoning_delta(
             session_id.to_owned(),
             message_id.to_owned(),
             text.clone(),
@@ -2143,7 +2143,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ap
                     .iter()
                     .filter_map(|part| match &part.body {
                         protocol::MessagePartBody::Text { text }
-                        | protocol::MessagePartBody::Reasoning { text } => Some(text.as_str()),
+                        | protocol::MessagePartBody::Reasoning { text, .. } => Some(text.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()

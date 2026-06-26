@@ -161,7 +161,10 @@ impl ChatAccumulator {
             if let Some(reasoning) = reasoning
                 && !reasoning.is_empty()
             {
-                queue.push_back(LlmEvent::Reasoning { text: reasoning });
+                queue.push_back(LlmEvent::Reasoning {
+                    text: reasoning,
+                    metadata: None,
+                });
             }
             for delta in choice.delta.tool_calls {
                 self.saw_tool_calls = true;

@@ -1476,6 +1476,7 @@ fn plugin_provider_events(
                 {
                     events.push(LlmEvent::Reasoning {
                         text: text.to_owned(),
+                        metadata: None,
                     });
                 }
             }

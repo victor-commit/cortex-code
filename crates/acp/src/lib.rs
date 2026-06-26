@@ -883,7 +883,7 @@ fn write_acp_update<W>(
                     .message_id(Some(MessageId::new(message_id.to_owned()))),
             ))
         }
-        RunnerEvent::Reasoning { text } if !text.is_empty() => {
+        RunnerEvent::Reasoning { text, .. } if !text.is_empty() => {
             Some(SessionUpdate::AgentThoughtChunk(
                 ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
                     .message_id(Some(MessageId::new(format!("{message_id}-thought")))),
@@ -983,7 +983,7 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             message_id.to_owned(),
             text.clone(),
         )),
-        RunnerEvent::Reasoning { text } => bus.publish(&Event::assistant_reasoning_delta(
+        RunnerEvent::Reasoning { text, .. } => bus.publish(&Event::assistant_reasoning_delta(
             session_id.to_owned(),
             message_id.to_owned(),
             text.clone(),
@@ -1067,7 +1067,7 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, St
                             .iter()
                             .filter_map(|part| match &part.body {
                                 protocol::MessagePartBody::Text { text }
-                                | protocol::MessagePartBody::Reasoning { text } => {
+                                | protocol::MessagePartBody::Reasoning { text, .. } => {
                                     Some(text.as_str())
                                 }
                                 _ => None,

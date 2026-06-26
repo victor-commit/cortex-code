@@ -8,6 +8,7 @@
 //! [`LlmEvent::Done`].
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 /// One normalized streaming event from a provider turn.
 ///
@@ -27,6 +28,10 @@ pub enum LlmEvent {
     Reasoning {
         /// The reasoning fragment.
         text: String,
+        /// Optional provider-specific metadata needed to replay reasoning safely (for example
+        /// Anthropic thinking signatures).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
     },
     /// A complete tool call whose streamed argument fragments have been assembled into a single
     /// JSON `arguments` string.
@@ -164,6 +169,7 @@ mod tests {
             },
             LlmEvent::Reasoning {
                 text: "think".to_owned(),
+                metadata: None,
             },
             LlmEvent::ToolResult(ToolResult {
                 id: "call_1".to_owned(),

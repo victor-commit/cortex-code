@@ -300,7 +300,7 @@ fn event_for_runner(session_id: &str, message_id: &str, event: &RunnerEvent) -> 
             message_id.to_owned(),
             text.clone(),
         )),
-        RunnerEvent::Reasoning { text } => Some(Event::assistant_reasoning_delta(
+        RunnerEvent::Reasoning { text, .. } => Some(Event::assistant_reasoning_delta(
             session_id.to_owned(),
             message_id.to_owned(),
             text.clone(),

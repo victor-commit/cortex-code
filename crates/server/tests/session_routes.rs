@@ -3149,6 +3149,7 @@ impl Provider for RichPartsProvider {
                 vec![
                     LlmEvent::Reasoning {
                         text: "planning tool usage".to_owned(),
+                        metadata: None,
                     },
                     LlmEvent::ToolCall(ToolCall {
                         id: "call_rich_todo".to_owned(),

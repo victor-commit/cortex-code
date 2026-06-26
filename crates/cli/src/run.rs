@@ -511,7 +511,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Err(exit) => return exit,
     };
     let user_parts = prompt_message_parts(&prompt, &cwd);
-    let user_media_parts = extract_message_media_parts(&user_parts);
+    let user_media_parts = extract_message_content_parts(&user_parts);
     let user_message =
         match db
             .messages()
@@ -1030,24 +1030,25 @@ fn load_history(db: &Database, session_id: &str) -> Result<Vec<llm::Message>, Ex
                     if memory_provenance_from_content(&message.content) {
                         return None;
                     }
-                    let media_parts = extract_message_media_parts(&message.parts);
-                    let content =
-                        if let Some(summary) = legacy_compaction_summary_for_message(&message) {
-                            summary
-                        } else if message.content.trim().is_empty() {
-                            message
-                                .parts
-                                .iter()
-                                .filter_map(|part| match &part.body {
-                                    MessagePartBody::Text { text }
-                                    | MessagePartBody::Reasoning { text } => Some(text.as_str()),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        } else {
-                            message.content.clone()
-                        };
+                    let media_parts = extract_message_content_parts(&message.parts);
+                    let content = if let Some(summary) =
+                        legacy_compaction_summary_for_message(&message)
+                    {
+                        summary
+                    } else if message.content.trim().is_empty() {
+                        message
+                            .parts
+                            .iter()
+                            .filter_map(|part| match &part.body {
+                                MessagePartBody::Text { text }
+                                | MessagePartBody::Reasoning { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        message.content.clone()
+                    };
                     Some(HistoryMessage::new(message.role, content).with_parts(media_parts))
                 })
                 .collect();
@@ -1142,7 +1143,7 @@ fn media_type_for_path(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn extract_message_media_parts(parts: &[MessagePart]) -> Vec<MessageContentPart> {
+fn extract_message_content_parts(parts: &[MessagePart]) -> Vec<MessageContentPart> {
     let mut seen = BTreeSet::new();
     let mut media = Vec::new();
     for part in parts {
@@ -1157,6 +1158,11 @@ fn extract_message_media_parts(parts: &[MessagePart]) -> Vec<MessageContentPart>
                     })
                 {
                     push_unique_media_part(&mut media, &mut seen, media_part);
+                }
+            }
+            MessagePartBody::Reasoning { text, metadata } => {
+                if let Some(reasoning_part) = reasoning_content_part(text, metadata.as_ref()) {
+                    push_unique_media_part(&mut media, &mut seen, reasoning_part);
                 }
             }
             MessagePartBody::Tool { attachments, .. } => {
@@ -1185,6 +1191,24 @@ fn extract_message_media_parts(parts: &[MessagePart]) -> Vec<MessageContentPart>
         }
     }
     media
+}
+
+fn reasoning_content_part(
+    text: &str,
+    metadata: Option<&serde_json::Value>,
+) -> Option<MessageContentPart> {
+    let metadata = metadata?;
+    let object = metadata.as_object()?;
+    let provider = object.get("provider").and_then(serde_json::Value::as_str)?;
+    let signature = object
+        .get("signature")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    Some(MessageContentPart::Reasoning {
+        provider: provider.to_owned(),
+        text: text.to_owned(),
+        signature,
+    })
 }
 
 fn message_media_part_for_file(path: &str, media_type: Option<&str>) -> Option<MessageContentPart> {
@@ -1221,6 +1245,16 @@ fn push_unique_media_part(
         }
         MessageContentPart::File { path, media_type } => {
             format!("file|{}|{path}", media_type.as_deref().unwrap_or(""))
+        }
+        MessageContentPart::Reasoning {
+            provider,
+            text,
+            signature,
+        } => {
+            format!(
+                "reasoning|{provider}|{text}|{}",
+                signature.as_deref().unwrap_or_default()
+            )
         }
     };
     if seen.insert(key) {

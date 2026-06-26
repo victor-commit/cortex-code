@@ -31,6 +31,9 @@ pub(crate) fn encode_media_part(part: &MessageContentPart) -> Result<EncodedMedi
                 .or_else(|| infer_media_type(path).map(Cow::Borrowed))
                 .unwrap_or(Cow::Borrowed("application/octet-stream")),
         ),
+        MessageContentPart::Reasoning { .. } => {
+            return Err("reasoning metadata is not a binary media attachment".to_owned());
+        }
     };
 
     let bytes =
@@ -60,6 +63,7 @@ fn part_media_type(part: &MessageContentPart) -> Option<&str> {
         MessageContentPart::File { path, media_type } => {
             media_type.as_deref().or_else(|| infer_media_type(path))
         }
+        MessageContentPart::Reasoning { .. } => None,
     }
 }
 

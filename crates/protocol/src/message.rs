@@ -40,7 +40,10 @@ impl MessagePart {
         Self {
             id: String::new(),
             created_at: None,
-            body: MessagePartBody::Reasoning { text: text.into() },
+            body: MessagePartBody::Reasoning {
+                text: text.into(),
+                metadata: None,
+            },
         }
     }
 }
@@ -72,6 +75,8 @@ pub enum MessagePartBody {
     },
     Reasoning {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
     },
     Tool {
         call_id: String,
