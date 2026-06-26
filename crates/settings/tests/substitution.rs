@@ -270,3 +270,14 @@ fn tilde_expands_to_home_for_path_values() {
         Some(expected.to_string_lossy().as_ref())
     );
 }
+
+#[test]
+fn tilde_does_not_expand_for_non_path_values() {
+    let scratch = Scratch::new();
+    scratch.write_project(r#"message = "~/cache/data.txt""#);
+    let config = load(scratch.inputs(&[])).expect("loads");
+    assert_eq!(
+        config.get("message").and_then(|v| v.as_str()),
+        Some("~/cache/data.txt")
+    );
+}

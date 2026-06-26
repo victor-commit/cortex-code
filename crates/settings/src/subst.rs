@@ -15,8 +15,9 @@
 //!   path is resolved against the config file directory for file-backed layers (or against the
 //!   invocation directory for non-file layers). A missing/unreadable file is a hard
 //!   error naming the path.
-//! - A string beginning with `~` (for example `~/secrets.txt`) expands to the isolated HOME when
-//!   HOME is available, so no literal `~` reaches operational path values.
+//! - A string beginning with `~` (for example `~/secrets.txt`) expands to the isolated HOME only
+//!   for path-like configuration fields and `{file:PATH}` inputs, so non-path text values are not
+//!   rewritten unexpectedly.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -124,7 +125,11 @@ fn resolve(
         cursor = open + 1;
     }
 
-    Ok(expand_home_in_string(&out, home))
+    if should_expand_home_for_key(path) {
+        Ok(expand_home_in_string(&out, home))
+    } else {
+        Ok(out)
+    }
 }
 
 fn resolve_env(
@@ -171,6 +176,41 @@ fn expand_home_in_string(raw: &str, home: Option<&Path>) -> String {
         return home.join(rest).display().to_string();
     }
     raw.to_owned()
+}
+
+fn should_expand_home_for_key(path: &str) -> bool {
+    let key = path
+        .rsplit('.')
+        .find(|segment| !segment.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+
+    matches!(
+        key.as_str(),
+        "path"
+            | "paths"
+            | "file"
+            | "files"
+            | "dir"
+            | "dirs"
+            | "directory"
+            | "directories"
+            | "cwd"
+            | "home"
+            | "root"
+            | "instruction"
+            | "instructions"
+    ) || key.ends_with("_path")
+        || key.ends_with("_paths")
+        || key.ends_with("_file")
+        || key.ends_with("_files")
+        || key.ends_with("_dir")
+        || key.ends_with("_dirs")
+        || key.ends_with("_directory")
+        || key.ends_with("_directories")
+        || key.ends_with("_cwd")
+        || key.ends_with("_home")
+        || key.ends_with("_root")
 }
 
 /// Build a dotted diagnostic path (`prefix.key`), or just `key` at the top level.
@@ -309,5 +349,48 @@ mod tests {
         )
         .expect("resolve");
         assert_eq!(t["path"].as_str(), Some("/home/tester/cache/file.txt"));
+    }
+
+    #[test]
+    fn tilde_does_not_expand_for_non_path_text_values() {
+        let mut t = table(r#"message = "~/cache/file.txt""#);
+        substitute(
+            &mut t,
+            &env(&[]),
+            Path::new("/tmp"),
+            Some(Path::new("/home/tester")),
+        )
+        .expect("resolve");
+        assert_eq!(t["message"].as_str(), Some("~/cache/file.txt"));
+    }
+
+    #[test]
+    fn tilde_expands_for_path_like_values_from_env_substitution() {
+        let mut t = table(r#"cache_path = "{env:CACHE_PATH}""#);
+        substitute(
+            &mut t,
+            &env(&[("CACHE_PATH", "~/cache/file.txt")]),
+            Path::new("/tmp"),
+            Some(Path::new("/home/tester")),
+        )
+        .expect("resolve");
+        assert_eq!(
+            t["cache_path"].as_str(),
+            Some("/home/tester/cache/file.txt")
+        );
+    }
+
+    #[test]
+    fn tilde_expands_for_instructions_array_items() {
+        let mut t = table(r#"instructions = ["~/rules/agent.md"]"#);
+        substitute(
+            &mut t,
+            &env(&[]),
+            Path::new("/tmp"),
+            Some(Path::new("/home/tester")),
+        )
+        .expect("resolve");
+        let items = t["instructions"].as_array().expect("instructions array");
+        assert_eq!(items[0].as_str(), Some("/home/tester/rules/agent.md"));
     }
 }

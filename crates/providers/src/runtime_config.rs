@@ -697,40 +697,34 @@ fn parse_model_table(
     )?)
     .unwrap_or(0);
 
+    let nested_cost = match table.get(MODEL_COST_KEY) {
+        Some(cost) => Some(cost.as_table().ok_or_else(|| {
+            ProviderConfigError::type_mismatch(
+                format!("{key_path}.{MODEL_COST_KEY}"),
+                "a table",
+                cost,
+            )
+        })?),
+        None => None,
+    };
     let cost_input = parse_optional_f64(
         table.get(MODEL_COST_INPUT_ALIAS_KEY),
         &format!("{key_path}.{MODEL_COST_INPUT_ALIAS_KEY}"),
     )?
-    .or_else(|| {
-        table
-            .get(MODEL_COST_KEY)
-            .and_then(Value::as_table)
-            .and_then(|cost| cost.get(MODEL_COST_INPUT_KEY))
-            .and_then(Value::as_float)
-    })
+    .or(parse_optional_f64(
+        nested_cost.and_then(|cost| cost.get(MODEL_COST_INPUT_KEY)),
+        &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_INPUT_KEY}"),
+    )?)
     .unwrap_or(0.0);
     let cost_output = parse_optional_f64(
         table.get(MODEL_COST_OUTPUT_ALIAS_KEY),
         &format!("{key_path}.{MODEL_COST_OUTPUT_ALIAS_KEY}"),
     )?
-    .or_else(|| {
-        table
-            .get(MODEL_COST_KEY)
-            .and_then(Value::as_table)
-            .and_then(|cost| cost.get(MODEL_COST_OUTPUT_KEY))
-            .and_then(Value::as_float)
-    })
+    .or(parse_optional_f64(
+        nested_cost.and_then(|cost| cost.get(MODEL_COST_OUTPUT_KEY)),
+        &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_OUTPUT_KEY}"),
+    )?)
     .unwrap_or(0.0);
-
-    if let Some(cost) = table.get(MODEL_COST_KEY)
-        && !cost.is_table()
-    {
-        return Err(ProviderConfigError::type_mismatch(
-            format!("{key_path}.{MODEL_COST_KEY}"),
-            "a table",
-            cost,
-        ));
-    }
 
     Ok(ModelInfo {
         id,
@@ -889,4 +883,73 @@ fn apply_override_chain(overrides: &BTreeMap<String, String>, model_id: &str) ->
         current = next.clone();
     }
     current
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_set(toml_src: &str) -> ProviderConfigSet {
+        let table: Table = toml::from_str(toml_src).expect("valid toml fixture");
+        ProviderConfigSet::from_table(&table).expect("provider config parses")
+    }
+
+    #[test]
+    fn nested_model_cost_accepts_integer_values() {
+        let config = parse_set(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:3200"
+models = [{ id = "local/demo", cost = { input = 2, output = 3 } }]
+"#,
+        );
+        let model = config
+            .providers
+            .get("local")
+            .and_then(|provider| provider.models.get("local/demo"))
+            .expect("configured model");
+        assert_eq!(model.cost.input, 2.0);
+        assert_eq!(model.cost.output, 3.0);
+    }
+
+    #[test]
+    fn nested_model_cost_type_errors_are_reported() {
+        let table: Table = toml::from_str(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:3200"
+models = [{ id = "local/demo", cost = { input = "cheap", output = 3 } }]
+"#,
+        )
+        .expect("valid toml fixture");
+        let err = ProviderConfigSet::from_table(&table).expect_err("invalid cost type must fail");
+        assert!(
+            err.key.contains("cost.input"),
+            "error key should point at nested cost input, got: {}",
+            err.key
+        );
+        assert!(
+            err.message.contains("expected a number"),
+            "error should mention numeric expectation, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn top_level_cost_aliases_override_nested_cost_values() {
+        let config = parse_set(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:3200"
+models = [{ id = "local/demo", cost_input = 7, cost_output = 11, cost = { input = 2, output = 3 } }]
+"#,
+        );
+        let model = config
+            .providers
+            .get("local")
+            .and_then(|provider| provider.models.get("local/demo"))
+            .expect("configured model");
+        assert_eq!(model.cost.input, 7.0);
+        assert_eq!(model.cost.output, 11.0);
+    }
 }

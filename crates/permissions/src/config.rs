@@ -643,4 +643,44 @@ action = "allow"
             "legacy-only capabilities remain in effect when not overridden"
         );
     }
+
+    #[test]
+    fn dual_permission_env_precedence_is_deterministic_with_mixed_formats() {
+        let legacy = (
+            LEGACY_ENV_PERMISSION.to_owned(),
+            r#"{"bash":{"git push*":"allow"},"read":"deny"}"#.to_owned(),
+        );
+        let cortex = (
+            CORTEX_ENV_PERMISSION.to_owned(),
+            r#"
+[[permission]]
+tool = "bash"
+pattern = "git push*"
+action = "deny"
+"#
+            .to_owned(),
+        );
+
+        let ordered =
+            rules_from_permission_env(&inputs_with_env(vec![legacy.clone(), cortex.clone()]))
+                .expect("env parse");
+        let reversed =
+            rules_from_permission_env(&inputs_with_env(vec![cortex, legacy])).expect("env parse");
+        assert_eq!(
+            ordered, reversed,
+            "mixed JSON/TOML env ordering should not affect precedence"
+        );
+
+        let ruleset = Ruleset::new(ordered);
+        assert_eq!(
+            ruleset.classify("bash", "git push origin main"),
+            Action::Deny,
+            "CORTEX_PERMISSION should override legacy permission on conflicts"
+        );
+        assert_eq!(
+            ruleset.classify("read", ".env"),
+            Action::Deny,
+            "legacy-only entries should still apply when CORTEX_PERMISSION omits that capability"
+        );
+    }
 }
