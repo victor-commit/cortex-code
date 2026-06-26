@@ -135,12 +135,20 @@ pub enum Entry {
 pub enum DialogKind {
     /// The session picker (`/sessions`).
     Sessions,
+    /// The session timeline (`/timeline`).
+    Timeline,
     /// The model picker (`/models`).
     Models,
     /// The agent picker (`/agents`).
     Agents,
+    /// The skill picker (`/skills`).
+    Skills,
+    /// The variant picker (`/variant`).
+    Variants,
     /// The theme picker (`/themes`).
     Themes,
+    /// Runtime status details (`/status`).
+    Status,
     /// The MCP status/list view (`/mcp`).
     Mcp,
     /// Attachment file picker (`/attach`).
@@ -323,6 +331,27 @@ enum PaletteAction {
     QueueDrop(usize),
     QueueClear,
     Noop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SlashAction {
+    Builtin,
+    CustomPrompt { prompt: String },
+    McpPrompt { id: String, required: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashMatch {
+    pub name: String,
+    pub description: String,
+    action: SlashAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomSlashCommand {
+    name: String,
+    description: String,
+    prompt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -562,9 +591,8 @@ pub struct App {
     answer_redactor: redaction::StreamingRedactor,
     /// Streaming redaction state for reasoning deltas in the active turn, independent from answer.
     reasoning_redactor: redaction::StreamingRedactor,
-    /// Whether tool cards are expanded to reveal their full arguments and output. Toggled by the
-    /// expand/collapse keybind; applies to every tool card so the detail view is unambiguous.
-    pub expand_tools: bool,
+    /// Tool-card ids whose detail region (arguments/output) is expanded.
+    expanded_tool_ids: BTreeSet<String>,
     /// Highlighted row in the open slash-command menu (index into the filtered matches). Reset to
     /// the top whenever the typed query changes; only meaningful while the menu is open.
     slash_selected: usize,
@@ -619,6 +647,10 @@ pub struct App {
     /// Model-picker row mapping: `Some(model_id)` for selectable model rows, `None` for provider
     /// headers/separators.
     model_rows: Vec<Option<String>>,
+    /// Skill-picker row mapping: selected row -> skill name.
+    skill_rows: Vec<String>,
+    /// Variant-picker row mapping: selected row -> variant id.
+    variant_rows: Vec<String>,
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
     /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
     session_rename: Option<String>,
@@ -674,6 +706,8 @@ pub struct App {
     prompt_stash: Option<PromptDraft>,
     /// Last skill selected from the palette skills submenu.
     selected_skill: Option<String>,
+    /// Custom slash commands loaded from config (`[command]`) at startup.
+    custom_commands: Vec<CustomSlashCommand>,
     /// streaming at a safe boundary; `None` whenever no turn is in flight.
     cancel_flag: Option<Arc<AtomicBool>>,
     /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
@@ -722,7 +756,7 @@ impl App {
             turn_compaction: false,
             answer_redactor: redaction::StreamingRedactor::new(),
             reasoning_redactor: redaction::StreamingRedactor::new(),
-            expand_tools: false,
+            expanded_tool_ids: BTreeSet::new(),
             slash_selected: 0,
             dialog: None,
             diff_viewer: None,
@@ -741,6 +775,8 @@ impl App {
             sidebar_visible: false,
             session_entries: Vec::new(),
             model_rows: Vec::new(),
+            skill_rows: Vec::new(),
+            variant_rows: Vec::new(),
             session_rename: None,
             scroll: 0,
             viewport: Cell::new((80, 24)),
@@ -760,6 +796,7 @@ impl App {
             prompt_history_nav: None,
             prompt_stash: None,
             selected_skill: None,
+            custom_commands: configured_custom_slash_commands(),
             cancel_flag: None,
             pending_permission: None,
             db_path: None,
@@ -1677,14 +1714,101 @@ impl App {
         self.slash_query().is_some()
     }
 
+    fn slash_catalogue(&self) -> Vec<SlashMatch> {
+        let mut commands = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        for builtin in slash::BUILTINS {
+            let key = builtin.name.to_ascii_lowercase();
+            if seen.insert(key) {
+                commands.push(SlashMatch {
+                    name: builtin.name.to_owned(),
+                    description: builtin.description.to_owned(),
+                    action: SlashAction::Builtin,
+                });
+            }
+        }
+
+        for custom in &self.custom_commands {
+            let key = custom.name.to_ascii_lowercase();
+            if seen.insert(key) {
+                commands.push(SlashMatch {
+                    name: custom.name.clone(),
+                    description: custom.description.clone(),
+                    action: SlashAction::CustomPrompt {
+                        prompt: custom.prompt.clone(),
+                    },
+                });
+            }
+        }
+
+        if let Some(manager) = &self.mcp_manager {
+            for prompt in manager.prompts() {
+                let key = prompt.id.to_ascii_lowercase();
+                if seen.insert(key) {
+                    let description = prompt.description.unwrap_or_else(|| {
+                        format!("Run MCP prompt `{}` from `{}`", prompt.name, prompt.server)
+                    });
+                    let required = prompt
+                        .arguments
+                        .iter()
+                        .filter(|argument| argument.required)
+                        .map(|argument| argument.name.clone())
+                        .collect::<Vec<_>>();
+                    commands.push(SlashMatch {
+                        name: prompt.id.clone(),
+                        description,
+                        action: SlashAction::McpPrompt {
+                            id: prompt.id,
+                            required,
+                        },
+                    });
+                }
+            }
+        }
+
+        commands
+    }
+
+    fn filter_slash_matches(&self, query: &str) -> Vec<SlashMatch> {
+        let needle = query.to_ascii_lowercase();
+        let commands = self.slash_catalogue();
+        if needle.is_empty() {
+            return commands;
+        }
+
+        let mut prefix = Vec::new();
+        let mut substring = Vec::new();
+        for command in commands {
+            let lower = command.name.to_ascii_lowercase();
+            if lower.starts_with(&needle) {
+                prefix.push(command);
+            } else if lower.contains(&needle) {
+                substring.push(command);
+            }
+        }
+        prefix.extend(substring);
+        prefix
+    }
+
     /// The commands matching the current query, in highlight order. Empty when the menu is closed
     /// or nothing matches.
     #[must_use]
-    pub fn slash_matches(&self) -> Vec<&'static slash::SlashCommand> {
+    pub fn slash_matches(&self) -> Vec<SlashMatch> {
         match self.slash_query() {
-            Some(query) => slash::filter(&query),
+            Some(query) => self.filter_slash_matches(&query),
             None => Vec::new(),
         }
+    }
+
+    /// Every slash command currently discoverable in help: built-ins, config custom commands, and
+    /// MCP prompt commands.
+    #[must_use]
+    pub fn slash_help_entries(&self) -> Vec<(String, String)> {
+        self.slash_catalogue()
+            .into_iter()
+            .map(|command| (command.name, command.description))
+            .collect()
     }
 
     /// The highlighted match index, clamped to the current match count.
@@ -2314,7 +2438,7 @@ impl App {
         match action {
             PaletteAction::DispatchSlash(name) => {
                 if let Some(command) = slash::BUILTINS.iter().find(|command| command.name == name) {
-                    self.dispatch_command(command);
+                    self.dispatch_builtin_command(command.name, command.description);
                 }
                 self.palette = None;
             }
@@ -2396,9 +2520,23 @@ impl App {
             self.close_slash_menu();
             return;
         }
-        let command = matches[self.slash_selected()];
+        let command = matches[self.slash_selected()].clone();
         self.close_slash_menu();
-        self.dispatch_command(command);
+        match command.action {
+            SlashAction::Builtin => {
+                self.dispatch_builtin_command(&command.name, &command.description);
+            }
+            SlashAction::CustomPrompt { prompt } => {
+                self.start_flow(
+                    &format!("/{}", command.name),
+                    &format!("/{} — running custom command…", command.name),
+                    &prompt,
+                );
+            }
+            SlashAction::McpPrompt { id, required } => {
+                self.run_mcp_prompt_command(&command.name, &id, &required);
+            }
+        }
     }
 
     /// Apply a dispatched slash command's effect. The action/flow built-ins (`/help`, `/new`,
@@ -2406,12 +2544,13 @@ impl App {
     /// dialog-opening built-ins (`/sessions`, `/models`, `/agents`, `/themes`, `/mcp`) open their
     /// modal picker/view; `/editor` requests the external editor and `/share` produces a local
     /// share reference. Any unhandled name surfaces a notice acknowledging the dispatch.
-    fn dispatch_command(&mut self, command: &'static slash::SlashCommand) {
-        match command.name {
+    fn dispatch_builtin_command(&mut self, name: &str, description: &str) {
+        match name {
             "exit" => self.should_quit = true,
             "help" => self.transcript.push(Entry::Help),
             "new" => self.new_session(),
             "export" => self.export_session(),
+            "status" => self.open_status_dialog(),
             "init" => self.start_flow(
                 "/init",
                 "/init — analyzing the repository to create AGENTS.md…",
@@ -2425,9 +2564,16 @@ impl App {
             "diff" => self.open_diff_viewer(),
             "compact" => self.start_compaction(),
             "sessions" => self.open_sessions_dialog(),
+            "timeline" => self.open_timeline_dialog(),
+            "fork" => self.fork_session(),
+            "rename" => self.rename_session_command(),
             "models" => self.open_models_dialog(),
+            "model" => self.open_models_dialog(),
             "agents" => self.open_agents_dialog(),
+            "skills" => self.open_skills_dialog(),
+            "variant" => self.open_variants_dialog(),
             "themes" => self.open_themes_dialog(),
+            "theme" => self.open_themes_dialog(),
             "attach" => self.open_attachments_dialog(),
             "paste" => {
                 let _ = self.attach_from_clipboard_image();
@@ -2435,12 +2581,13 @@ impl App {
             "mcp" => self.open_mcp_dialog(),
             "editor" => self.editor_requested = true,
             "share" => self.share_session(),
+            "unshare" => self.unshare_session(),
+            "details" => self.toggle_tool_details(),
             "undo" => self.undo(),
             "redo" => self.redo(),
-            _ => self.transcript.push(Entry::Notice(format!(
-                "/{} — {}",
-                command.name, command.description
-            ))),
+            _ => self
+                .transcript
+                .push(Entry::Notice(format!("/{} — {}", name, description))),
         }
     }
 
@@ -2455,6 +2602,20 @@ impl App {
         self.open_dialog(Dialog {
             kind: DialogKind::Sessions,
             title: "Sessions".to_owned(),
+            items,
+            selected: 0,
+            empty: None,
+        });
+    }
+
+    /// Open the timeline view (`/timeline`): session history rows newest-first, without rename or
+    /// delete actions.
+    fn open_timeline_dialog(&mut self) {
+        let (items, entries) = self.session_rows();
+        self.session_entries = entries;
+        self.open_dialog(Dialog {
+            kind: DialogKind::Timeline,
+            title: "Timeline".to_owned(),
             items,
             selected: 0,
             empty: None,
@@ -2539,6 +2700,60 @@ impl App {
         self.open_dialog(Dialog {
             kind: DialogKind::Agents,
             title: "Agents".to_owned(),
+            items,
+            selected,
+            empty: None,
+        });
+    }
+
+    /// Open the skill picker (`/skills`): every discovered skill, with a graceful empty state.
+    fn open_skills_dialog(&mut self) {
+        let discovery = settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
+            .ok()
+            .map(|inputs| skills::discover(&inputs));
+        let mut rows = Vec::new();
+        let mut items = Vec::new();
+        if let Some(discovery) = discovery {
+            for skill in discovery.ordered_skills() {
+                rows.push(skill.name.clone());
+                items.push(format!("{}  —  {}", skill.name, skill.description));
+            }
+        }
+        let selected = self
+            .selected_skill
+            .as_ref()
+            .and_then(|selected| rows.iter().position(|name| name == selected))
+            .unwrap_or(0);
+        self.skill_rows = rows;
+        self.open_dialog(Dialog {
+            kind: DialogKind::Skills,
+            title: "Skills".to_owned(),
+            items,
+            selected,
+            empty: Some("No skills discovered.".to_owned()),
+        });
+    }
+
+    /// Open the variant picker (`/variant`) with the active variant pre-highlighted.
+    fn open_variants_dialog(&mut self) {
+        let rows = VARIANT_OPTIONS
+            .iter()
+            .map(|variant| (*variant).to_owned())
+            .collect::<Vec<_>>();
+        let mut items = Vec::new();
+        let mut selected = 0;
+        for (index, variant) in rows.iter().enumerate() {
+            let is_current = *variant == self.status.variant;
+            if is_current {
+                selected = index;
+            }
+            let suffix = if is_current { " [current]" } else { "" };
+            items.push(format!("{variant}{suffix}"));
+        }
+        self.variant_rows = rows;
+        self.open_dialog(Dialog {
+            kind: DialogKind::Variants,
+            title: "Variants".to_owned(),
             items,
             selected,
             empty: None,
@@ -2691,6 +2906,36 @@ impl App {
         });
     }
 
+    /// Open a status dialog (`/status`) with the active runtime state.
+    fn open_status_dialog(&mut self) {
+        let mut items = vec![
+            format!("Model: {}", self.status.model),
+            format!("Agent: {}", self.status.agent),
+            format!("Mode: {}", self.status.mode),
+            format!("Variant: {}", self.status.variant),
+            format!("Session: {}", self.status.session),
+            format!("Turn: {}", if self.is_busy() { "running" } else { "idle" }),
+            format!("Queued prompts: {}", self.queued_count()),
+            format!(
+                "Usage: ↑{} ↓{} total {}",
+                self.usage.input_tokens, self.usage.output_tokens, self.usage.total_tokens
+            ),
+        ];
+        if let Some(cost) = self.usage.cost {
+            items.push(format!("Cost: ${cost:.4}"));
+        }
+        if let Some(skill) = &self.selected_skill {
+            items.push(format!("Selected skill: {skill}"));
+        }
+        self.open_dialog(Dialog {
+            kind: DialogKind::Status,
+            title: "Status".to_owned(),
+            items,
+            selected: 0,
+            empty: Some("No status available.".to_owned()),
+        });
+    }
+
     /// Refresh an already-open MCP view from the live manager after a catalogue change event.
     fn refresh_mcp_dialog(&mut self) {
         let Some(dialog) = self.dialog.as_ref() else {
@@ -2753,6 +2998,93 @@ impl App {
         self.push_toast(ToastLevel::Success, "Share link created");
     }
 
+    /// Revoke local shares for the current session (`/unshare`), using the attached server when
+    /// available or the local on-disk share references otherwise.
+    fn unshare_session(&mut self) {
+        let Some(session_id) = self.session_id.clone() else {
+            self.transcript.push(Entry::Notice(
+                "No persisted session yet, nothing to unshare.".to_owned(),
+            ));
+            self.push_toast(ToastLevel::Info, "Nothing to unshare");
+            return;
+        };
+
+        if let Some(server) = self.remote_server.clone() {
+            match server.unshare_session(&session_id) {
+                Ok(revoked) => {
+                    let detail = if revoked {
+                        "revoked"
+                    } else {
+                        "no active shares"
+                    };
+                    self.transcript.push(Entry::Notice(format!(
+                        "Server unshare: {detail} ({session_id})"
+                    )));
+                    self.push_toast(ToastLevel::Success, "Share revoked");
+                }
+                Err(err) => self.note_error(format!("Server unshare failed: {err}")),
+            }
+            return;
+        }
+
+        match revoke_local_share_references(&session_id) {
+            Ok(count) => {
+                let detail = if count == 0 {
+                    "no local share references found".to_owned()
+                } else {
+                    format!("revoked {count} local share reference(s)")
+                };
+                self.transcript
+                    .push(Entry::Notice(format!("Unshared {session_id}: {detail}")));
+                self.push_toast(ToastLevel::Success, "Share revoked");
+            }
+            Err(err) => self.note_error(format!("Unshare failed: {err}")),
+        }
+    }
+
+    fn run_mcp_prompt_command(&mut self, command_name: &str, id: &str, required: &[String]) {
+        if !required.is_empty() {
+            self.transcript.push(Entry::Notice(format!(
+                "/{command_name} requires arguments ({}) and cannot run from slash yet.",
+                required.join(", ")
+            )));
+            self.push_toast(ToastLevel::Info, "Prompt requires arguments");
+            return;
+        }
+        let Some(manager) = self.mcp_manager.clone() else {
+            self.transcript.push(Entry::Notice(
+                "MCP is not connected, cannot run MCP prompt command.".to_owned(),
+            ));
+            self.push_toast(ToastLevel::Info, "MCP unavailable");
+            return;
+        };
+        let Some(runtime) = self.mcp_runtime.as_ref() else {
+            self.transcript.push(Entry::Notice(
+                "MCP runtime is unavailable, cannot run MCP prompt command.".to_owned(),
+            ));
+            self.push_toast(ToastLevel::Info, "MCP unavailable");
+            return;
+        };
+        match runtime.block_on(manager.get_prompt(id, serde_json::json!({}))) {
+            Ok(result) => {
+                let prompt = result.content.trim().to_owned();
+                if prompt.is_empty() {
+                    self.transcript.push(Entry::Notice(format!(
+                        "/{command_name} returned an empty MCP prompt."
+                    )));
+                    self.push_toast(ToastLevel::Info, "Prompt was empty");
+                    return;
+                }
+                self.start_flow(
+                    &format!("/{command_name}"),
+                    &format!("/{command_name} — running MCP prompt…"),
+                    &prompt,
+                );
+            }
+            Err(err) => self.note_error(format!("MCP prompt command failed: {err}")),
+        }
+    }
+
     /// Undo the last file-affecting change (`/undo`, the undo keybind, and the palette share this):
     /// restore the most recently changed file(s) to their pre-change bytes on disk. The outcome is
     /// reported as a transcript notice and a toast; an empty history (or an unresolved store) is
@@ -2812,6 +3144,12 @@ impl App {
     fn open_dialog(&mut self, dialog: Dialog) {
         if dialog.kind != DialogKind::Models {
             self.model_rows.clear();
+        }
+        if dialog.kind != DialogKind::Skills {
+            self.skill_rows.clear();
+        }
+        if dialog.kind != DialogKind::Variants {
+            self.variant_rows.clear();
         }
         self.dialog = Some(dialog);
     }
@@ -3044,6 +3382,8 @@ impl App {
         self.dialog = None;
         self.session_entries.clear();
         self.model_rows.clear();
+        self.skill_rows.clear();
+        self.variant_rows.clear();
         self.session_rename = None;
     }
 
@@ -3181,7 +3521,25 @@ impl App {
                         .push(Entry::Notice(format!("Agent set to {agent}")));
                 }
             }
+            Some(DialogKind::Skills) => {
+                if let Some(skill) = self.select_skill() {
+                    self.transcript
+                        .push(Entry::Notice(format!("Skill selected: {skill}")));
+                }
+            }
+            Some(DialogKind::Variants) => {
+                if let Some(variant) = self.select_variant() {
+                    self.persist_config_string("variant", &variant);
+                    self.transcript
+                        .push(Entry::Notice(format!("Variant set to {variant}")));
+                }
+            }
             Some(DialogKind::Sessions) => {
+                if let Some(id) = self.selected_session_id() {
+                    self.load_session(&id);
+                }
+            }
+            Some(DialogKind::Timeline) => {
                 if let Some(id) = self.selected_session_id() {
                     self.load_session(&id);
                 }
@@ -3428,11 +3786,39 @@ impl App {
         Some(name)
     }
 
+    /// Select the highlighted skill row from the skill picker.
+    fn select_skill(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Skills {
+            return None;
+        }
+        let skill = self.skill_rows.get(dialog.selected())?.clone();
+        if self.selected_skill.as_deref() == Some(skill.as_str()) {
+            return None;
+        }
+        self.selected_skill = Some(skill.clone());
+        Some(skill)
+    }
+
+    /// Select the highlighted variant row from the variant picker.
+    fn select_variant(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        if dialog.kind != DialogKind::Variants {
+            return None;
+        }
+        let variant = self.variant_rows.get(dialog.selected())?.clone();
+        if variant == self.status.variant {
+            return None;
+        }
+        self.status.variant = variant.clone();
+        Some(variant)
+    }
+
     /// The persisted id of the highlighted session-picker row, or `None` for the synthetic
     /// "current session" row (and when the open dialog is not the session picker).
     fn selected_session_id(&self) -> Option<String> {
         let dialog = self.dialog.as_ref()?;
-        if dialog.kind != DialogKind::Sessions {
+        if !matches!(dialog.kind, DialogKind::Sessions | DialogKind::Timeline) {
             return None;
         }
         self.session_entries
@@ -3503,6 +3889,7 @@ impl App {
 
         self.transcript.clear();
         self.history.clear();
+        self.expanded_tool_ids.clear();
         self.seen_message_ids.clear();
         self.composer_attachments.clear();
         self.pending_attachments.clear();
@@ -3663,7 +4050,7 @@ impl App {
             KeybindAction::PromptHistoryNext => self.recall_prompt_history_next(),
             KeybindAction::PromptStashSave => self.stash_prompt(),
             KeybindAction::PromptStashRestore => self.restore_prompt_stash(),
-            KeybindAction::ToggleToolDetails => self.expand_tools = !self.expand_tools,
+            KeybindAction::ToggleToolDetails => self.toggle_tool_details(),
             KeybindAction::QueuePromoteNext => self.promote_next_queued_prompt(),
             KeybindAction::QueueDropOne => self.drop_one_queued_prompt(),
             KeybindAction::QueueClear => self.clear_queued_prompts(),
@@ -3710,6 +4097,9 @@ impl App {
                 .available_model_ids()
                 .is_empty()
                 .then_some("No models are available".to_owned()),
+            KeybindAction::ToggleToolDetails => {
+                (!self.has_tool_cards()).then_some("No tool cards are available".to_owned())
+            }
             _ => None,
         }
     }
@@ -3946,6 +4336,7 @@ impl App {
         }
         self.transcript.clear();
         self.history.clear();
+        self.expanded_tool_ids.clear();
         self.seen_message_ids.clear();
         self.usage = UsageSummary::default();
         self.composer_attachments.clear();
@@ -3958,6 +4349,85 @@ impl App {
         self.session_id = None;
         self.status.session = "new".to_owned();
         self.reset_view();
+    }
+
+    /// Fork the current persisted session into a new session (`/fork`) and switch to it.
+    fn fork_session(&mut self) {
+        if self.is_busy() {
+            self.push_toast(ToastLevel::Info, "Cannot fork while a turn is running");
+            return;
+        }
+        let Some(source_id) = self.ensure_session_id() else {
+            self.note_error("No session store is available for forking.".to_owned());
+            return;
+        };
+        let Some(db) = self.open_store() else {
+            self.note_error("No session store is available for forking.".to_owned());
+            return;
+        };
+        let title = format!("Fork of {source_id}");
+        let forked = match db.sessions().create(Some(&title)) {
+            Ok(session) => session,
+            Err(err) => {
+                self.note_error(format!("Fork failed: {err}"));
+                return;
+            }
+        };
+        let messages = match db.messages().list_for_session(&source_id) {
+            Ok(messages) => messages,
+            Err(err) => {
+                self.note_error(format!("Fork failed: {err}"));
+                return;
+            }
+        };
+        for message in &messages {
+            let persisted = if message.parts.is_empty() {
+                db.messages()
+                    .create(&forked.id, &message.role, &message.content)
+            } else {
+                let parts = message
+                    .parts
+                    .iter()
+                    .cloned()
+                    .map(|mut part| {
+                        part.id.clear();
+                        part.created_at = None;
+                        part
+                    })
+                    .collect::<Vec<_>>();
+                db.messages()
+                    .create_with_parts(&forked.id, &message.role, &message.content, &parts)
+            };
+            if let Err(err) = persisted {
+                self.note_error(format!("Fork failed: {err}"));
+                return;
+            }
+        }
+        self.load_session(&forked.id);
+        self.transcript.push(Entry::Notice(format!(
+            "Forked session {source_id} -> {}",
+            forked.id
+        )));
+    }
+
+    /// Open the session picker and enter rename mode on the first persisted session row.
+    fn rename_session_command(&mut self) {
+        self.open_sessions_dialog();
+        let has_persisted_rows = self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.items.len() > 1);
+        if !has_persisted_rows {
+            self.close_dialog();
+            self.transcript
+                .push(Entry::Notice("No persisted sessions to rename.".to_owned()));
+            self.push_toast(ToastLevel::Info, "No session to rename");
+            return;
+        }
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.selected = 1;
+        }
+        self.begin_session_rename();
     }
 
     /// Reset transcript navigation back to the pinned-bottom, nothing-selected, find-closed state
@@ -4240,6 +4710,39 @@ impl App {
             NavEscapeProbeState::NotCandidate => self.flush_nav_escape_probe_text(),
         }
         true
+    }
+
+    fn selected_or_latest_tool_card_id(&self) -> Option<String> {
+        if let Some(index) = self.selected_message
+            && let Some(Entry::Tool(card)) = self.transcript.get(index)
+        {
+            return Some(card.id.clone());
+        }
+        self.transcript.iter().rev().find_map(|entry| match entry {
+            Entry::Tool(card) => Some(card.id.clone()),
+            _ => None,
+        })
+    }
+
+    fn has_tool_cards(&self) -> bool {
+        self.transcript
+            .iter()
+            .any(|entry| matches!(entry, Entry::Tool(_)))
+    }
+
+    fn toggle_tool_details(&mut self) {
+        let Some(id) = self.selected_or_latest_tool_card_id() else {
+            self.push_toast(ToastLevel::Info, "No tool cards yet");
+            return;
+        };
+        if !self.expanded_tool_ids.insert(id.clone()) {
+            self.expanded_tool_ids.remove(&id);
+        }
+    }
+
+    #[must_use]
+    pub fn tool_card_expanded(&self, card: &ToolCard) -> bool {
+        self.expanded_tool_ids.contains(&card.id)
     }
 
     /// Copy the selected message (or, with none selected, the most recent message) to the terminal
@@ -4600,7 +5103,7 @@ impl App {
                 self.input.handle_key(TextAreaKey::End, modifiers(false));
             }
             // Expand/collapse tool cards to reveal or hide their full arguments and output.
-            KeyCode::Char('o') if ctrl => self.expand_tools = !self.expand_tools,
+            KeyCode::Char('o') if ctrl => self.toggle_tool_details(),
             // Ctrl+P opens the searchable command palette overlay.
             KeyCode::Char('p') if ctrl => self.open_palette(),
             // Ctrl+F opens find-in-chat (highlight + next/prev navigation) over the transcript.
@@ -5153,6 +5656,75 @@ fn effective_config() -> Option<settings::EffectiveConfig> {
         .and_then(|inputs| settings::load(inputs).ok())
 }
 
+fn configured_custom_slash_commands() -> Vec<CustomSlashCommand> {
+    let Some(config) = effective_config() else {
+        return Vec::new();
+    };
+    parse_custom_slash_commands(config.get("command"))
+}
+
+fn parse_custom_slash_commands(value: Option<&toml::Value>) -> Vec<CustomSlashCommand> {
+    let Some(toml::Value::Table(table)) = value else {
+        return Vec::new();
+    };
+
+    let mut commands = Vec::new();
+    for (raw_name, entry) in table {
+        let Some(name) = normalize_custom_command_name(raw_name) else {
+            continue;
+        };
+        let Some(command) = parse_custom_command_entry(&name, entry) else {
+            continue;
+        };
+        commands.push(command);
+    }
+    commands
+}
+
+fn normalize_custom_command_name(raw: &str) -> Option<String> {
+    let name = raw.trim().trim_start_matches('/');
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(name.to_ascii_lowercase())
+}
+
+fn parse_custom_command_entry(name: &str, entry: &toml::Value) -> Option<CustomSlashCommand> {
+    match entry {
+        toml::Value::String(prompt) => {
+            let prompt = prompt.trim();
+            (!prompt.is_empty()).then(|| CustomSlashCommand {
+                name: name.to_owned(),
+                description: "Run custom command".to_owned(),
+                prompt: prompt.to_owned(),
+            })
+        }
+        toml::Value::Table(table) => {
+            if table.get("disabled").and_then(toml::Value::as_bool) == Some(true) {
+                return None;
+            }
+            let prompt = table
+                .get("prompt")
+                .and_then(toml::Value::as_str)
+                .or_else(|| table.get("template").and_then(toml::Value::as_str))
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())?;
+            let description = table
+                .get("description")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("Run custom command");
+            Some(CustomSlashCommand {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                prompt: prompt.to_owned(),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Mint a stable, unique local share identifier for the current session.
 fn local_share_id() -> String {
     let nanos = std::time::SystemTime::now()
@@ -5173,6 +5745,32 @@ fn write_share_reference(id: &str, session: &str) -> io::Result<PathBuf> {
     );
     std::fs::write(&path, body)?;
     Ok(path)
+}
+
+fn revoke_local_share_references(session: &str) -> io::Result<usize> {
+    let dir = data_subdir("shares");
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if value.get("session").and_then(serde_json::Value::as_str) == Some(session)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn remote_abort_path(session_id: &str) -> PathBuf {
@@ -6511,11 +7109,40 @@ mod tests {
     #[test]
     fn ctrl_o_toggles_tool_card_expansion() {
         let mut a = app();
-        assert!(!a.expand_tools);
+        a.transcript.push(Entry::Tool(ToolCard::new(
+            "tool_a",
+            "read",
+            r#"{"path":"a.txt"}"#,
+        )));
+        a.transcript.push(Entry::Tool(ToolCard::new(
+            "tool_b",
+            "read",
+            r#"{"path":"b.txt"}"#,
+        )));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
         a.on_key(key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL));
-        assert!(a.expand_tools, "Ctrl+O expands");
+        assert!(
+            !a.transcript.iter().any(|entry| matches!(
+                entry,
+                Entry::Tool(card) if card.id == "tool_a" && a.tool_card_expanded(card)
+            )),
+            "first card stays collapsed"
+        );
+        assert!(
+            a.transcript.iter().any(|entry| matches!(
+                entry,
+                Entry::Tool(card) if card.id == "tool_b" && a.tool_card_expanded(card)
+            )),
+            "selected card expands"
+        );
         a.on_key(key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL));
-        assert!(!a.expand_tools, "Ctrl+O again collapses");
+        assert!(
+            !a.transcript.iter().any(|entry| matches!(
+                entry,
+                Entry::Tool(card) if card.id == "tool_b" && a.tool_card_expanded(card)
+            )),
+            "Ctrl+O again collapses the selected card"
+        );
     }
 
     #[test]
@@ -6574,10 +7201,29 @@ mod tests {
         let mut a = app();
         a.on_key(key(KeyCode::Char('/')));
         assert!(a.slash_menu_open(), "menu open after '/'");
-        let names: Vec<&str> = a.slash_matches().iter().map(|c| c.name).collect();
-        assert!(names.contains(&"help"));
-        assert!(names.contains(&"new"));
-        assert!(names.contains(&"models"));
+        let names: Vec<String> = a.slash_matches().iter().map(|c| c.name.clone()).collect();
+        assert!(names.iter().any(|name| name == "help"));
+        assert!(names.iter().any(|name| name == "new"));
+        assert!(names.iter().any(|name| name == "models"));
+    }
+
+    #[test]
+    fn slash_menu_includes_gap_command_surfaces() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        let names: Vec<String> = a
+            .slash_matches()
+            .iter()
+            .map(|command| command.name.clone())
+            .collect();
+        for required in [
+            "skills", "variant", "timeline", "fork", "status", "rename", "unshare", "details",
+        ] {
+            assert!(
+                names.iter().any(|name| name == required),
+                "missing /{required} in slash menu: {names:?}"
+            );
+        }
     }
 
     #[test]
@@ -6592,9 +7238,15 @@ mod tests {
         // VAL-TUI-029: continuing to type narrows the list to matching commands.
         let mut a = app();
         type_str(&mut a, "/mod");
-        let names: Vec<&str> = a.slash_matches().iter().map(|c| c.name).collect();
-        assert!(names.contains(&"models"), "models present: {names:?}");
-        assert!(!names.contains(&"help"), "help filtered out: {names:?}");
+        let names: Vec<String> = a.slash_matches().iter().map(|c| c.name.clone()).collect();
+        assert!(
+            names.iter().any(|name| name == "models"),
+            "models present: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "help"),
+            "help filtered out: {names:?}"
+        );
     }
 
     #[test]
@@ -6650,6 +7302,145 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         let dialog = a.dialog().expect("the session picker opened");
         assert_eq!(dialog.kind, DialogKind::Sessions);
+    }
+
+    #[test]
+    fn status_variant_and_skills_commands_open_dialogs() {
+        let mut a = app();
+        type_str(&mut a, "/status");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Status)
+        );
+        a.on_key(key(KeyCode::Esc));
+
+        type_str(&mut a, "/variant");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Variants)
+        );
+        a.on_key(key(KeyCode::Esc));
+
+        type_str(&mut a, "/skills");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Skills)
+        );
+    }
+
+    #[test]
+    fn rename_command_enters_session_rename_mode() {
+        let path = session_store_path("rename-command");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "hello", "hi");
+
+        type_str(&mut a, "/rename");
+        a.on_key(key(KeyCode::Enter));
+
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Sessions)
+        );
+        assert!(
+            a.session_rename().is_some(),
+            "rename mode should be active for a persisted session"
+        );
+    }
+
+    #[test]
+    fn details_command_toggles_only_the_selected_tool_card() {
+        let mut a = app();
+        a.transcript.push(Entry::Tool(ToolCard::new(
+            "tool_1",
+            "read",
+            r#"{"path":"a.txt"}"#,
+        )));
+        a.transcript.push(Entry::Tool(ToolCard::new(
+            "tool_2",
+            "read",
+            r#"{"path":"b.txt"}"#,
+        )));
+        a.on_key(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+
+        type_str(&mut a, "/details");
+        a.on_key(key(KeyCode::Enter));
+
+        let first = a
+            .transcript
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Tool(card) if card.id == "tool_1" => Some(card),
+                _ => None,
+            })
+            .expect("tool_1");
+        let second = a
+            .transcript
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Tool(card) if card.id == "tool_2" => Some(card),
+                _ => None,
+            })
+            .expect("tool_2");
+
+        assert!(!a.tool_card_expanded(first));
+        assert!(a.tool_card_expanded(second));
+    }
+
+    #[test]
+    fn config_custom_command_is_listed_and_dispatched() {
+        let mut a = app();
+        a.custom_commands = vec![CustomSlashCommand {
+            name: "daily".to_owned(),
+            description: "Run daily custom routine".to_owned(),
+            prompt: "Summarize today's progress.".to_owned(),
+        }];
+
+        type_str(&mut a, "/daily");
+        let names: Vec<String> = a
+            .slash_matches()
+            .iter()
+            .map(|command| command.name.clone())
+            .collect();
+        assert!(names.iter().any(|name| name == "daily"));
+
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.take_pending_prompt().as_deref(),
+            Some("Summarize today's progress.")
+        );
+        assert!(
+            a.transcript.iter().any(
+                |entry| matches!(entry, Entry::Notice(text) if text.contains("custom command"))
+            ),
+            "custom-command notice should be visible"
+        );
+    }
+
+    #[test]
+    fn parse_custom_commands_reads_prompt_description_and_template_fields() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [command.daily]
+            description = "Run daily routine"
+            prompt = "Summarize today's progress."
+
+            [command.audit]
+            template = "Review this repository for security issues."
+            "#,
+        )
+        .expect("valid toml");
+        let parsed = parse_custom_slash_commands(value.get("command"));
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed.iter().any(|command| command.name == "daily"
+            && command.description == "Run daily routine"
+            && command.prompt.contains("Summarize")));
+        assert!(parsed.iter().any(|command| command.name == "audit"
+            && command.description == "Run custom command"
+            && command.prompt.contains("security issues")));
     }
 
     #[test]

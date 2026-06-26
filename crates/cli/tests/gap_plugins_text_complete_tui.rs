@@ -103,6 +103,7 @@ fn tab_completion_replaces_only_active_span_across_prompt_positions() {
         model: "plugin/stream-model".to_owned(),
         agent: "build".to_owned(),
         mode: "build".to_owned(),
+        variant: "default".to_owned(),
         session: "new".to_owned(),
     });
     app.set_plugin_text_complete(Some(hooks));
@@ -132,6 +133,7 @@ fn editing_prompt_clears_stale_pending_plugin_completion() {
         model: "plugin/stream-model".to_owned(),
         agent: "build".to_owned(),
         mode: "build".to_owned(),
+        variant: "default".to_owned(),
         session: "new".to_owned(),
     });
     app.set_plugin_text_complete(Some(hooks));

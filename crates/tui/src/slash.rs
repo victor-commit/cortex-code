@@ -34,12 +34,44 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Open the model picker",
     },
     SlashCommand {
+        name: "model",
+        description: "Open the model picker",
+    },
+    SlashCommand {
         name: "agents",
         description: "Open the agent picker",
     },
     SlashCommand {
+        name: "skills",
+        description: "Open the skill picker",
+    },
+    SlashCommand {
+        name: "variant",
+        description: "Open the variant picker",
+    },
+    SlashCommand {
         name: "themes",
         description: "Open the theme picker",
+    },
+    SlashCommand {
+        name: "theme",
+        description: "Open the theme picker",
+    },
+    SlashCommand {
+        name: "status",
+        description: "Open the status view",
+    },
+    SlashCommand {
+        name: "timeline",
+        description: "Open the session timeline",
+    },
+    SlashCommand {
+        name: "fork",
+        description: "Fork the current session",
+    },
+    SlashCommand {
+        name: "rename",
+        description: "Rename a persisted session",
     },
     SlashCommand {
         name: "attach",
@@ -78,8 +110,16 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Create a local share reference",
     },
     SlashCommand {
+        name: "unshare",
+        description: "Revoke local share references",
+    },
+    SlashCommand {
         name: "mcp",
         description: "Open the MCP status view",
+    },
+    SlashCommand {
+        name: "details",
+        description: "Toggle detail on the selected tool card",
     },
     SlashCommand {
         name: "undo",
@@ -101,6 +141,7 @@ pub const BUILTINS: &[SlashCommand] = &[
 /// commands whose name contains it (case-insensitive), ranking prefix matches ahead of
 /// interior substring matches so the most relevant command highlights first.
 #[must_use]
+#[allow(dead_code)]
 pub fn filter(query: &str) -> Vec<&'static SlashCommand> {
     let needle = query.to_lowercase();
     if needle.is_empty() {

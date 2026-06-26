@@ -103,6 +103,23 @@ impl RemoteServer {
         Ok(RemoteShare { share_id, url })
     }
 
+    pub fn unshare_session(&self, session_id: &str) -> Result<bool, String> {
+        let path = format!("/session/{session_id}/unshare");
+        let response = self.post_json(&path, "")?;
+        if !(200..300).contains(&response.status) {
+            return Err(format!(
+                "server unshare failed with HTTP {}: {}",
+                response.status, response.body
+            ));
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&response.body).map_err(|err| err.to_string())?;
+        Ok(value
+            .get("revoked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
     fn post_json(&self, path: &str, body: &str) -> Result<HttpResponse, String> {
         let mut stream =
             TcpStream::connect_timeout(&self.addr, Duration::from_secs(2)).map_err(|err| {

@@ -194,7 +194,7 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                     &mut lines,
                     card,
                     width,
-                    app.expand_tools,
+                    app.tool_card_expanded(card),
                     app.spinner_glyph(),
                     &theme,
                 );
@@ -646,8 +646,9 @@ const KEYBINDINGS: &[(&str, &str)] = &[
     ("Ctrl+C", "Quit Cortex Code"),
 ];
 
-/// Append the `/help` command reference: a titled panel listing every built-in slash command (from
-/// the registry) with its description, then the keybindings (including the active leader bindings).
+/// Append the `/help` command reference: a titled panel listing every currently-discoverable slash
+/// command (built-ins, config custom commands, and MCP prompt commands) with its description, then
+/// the keybindings (including the active leader bindings).
 /// This is the visible effect of `/help`.
 fn push_help(lines: &mut Vec<Line<'static>>, app: &App, theme: &style::ThemeColors) {
     let title = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
@@ -664,10 +665,10 @@ fn push_help(lines: &mut Vec<Line<'static>>, app: &App, theme: &style::ThemeColo
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("Commands", section)));
-    for command in crate::slash::BUILTINS {
+    for (name_text, description_text) in app.slash_help_entries() {
         lines.push(Line::from(vec![
-            Span::styled(format!("  /{:<9}", command.name), name),
-            Span::styled(format!("  {}", command.description), desc),
+            Span::styled(format!("  /{:<18}", name_text), name),
+            Span::styled(format!("  {}", description_text), desc),
         ]));
     }
     lines.push(Line::from(""));
@@ -1895,6 +1896,7 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
         (DialogKind::Sessions, false) => {
             "↑/↓ move · Enter switch · r rename · d delete · Esc close"
         }
+        (DialogKind::Timeline, _) => "↑/↓ move · Enter load · Esc close",
         _ => "↑/↓ to move · Esc to close",
     }
 }
