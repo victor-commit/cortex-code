@@ -147,7 +147,7 @@ impl Provider for OpenAiCompatible {
                 return Err(LlmError::no_credential(&self.provider_name));
             }
 
-            let body = wire::build_chat_request(&request, self.include_usage)?;
+            let body = wire::build_chat_request(&request, self.include_usage, &self.provider_name)?;
             let url = self.chat_url();
             let idle_timeout = self.transport.config().idle_timeout;
             let mut headers = self.extra_headers.clone();
