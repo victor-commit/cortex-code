@@ -407,7 +407,6 @@ impl FakeOpenRouter {
                             .to_string(),
                         ]);
                         write_sse_response(&mut stream, &body).expect("write provider response");
-                        return;
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(20));

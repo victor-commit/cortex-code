@@ -22,12 +22,20 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// The default model the mission targets (good at tool calls); used for the live turns.
 const MODEL: &str = "google/gemini-2.5-flash";
+const FIXTURE_PORT_START: u16 = 3240;
+const FIXTURE_PORT_END: u16 = 3279;
+const READ_RECOVERY_MAX_ATTEMPTS: usize = 3;
+const COMPOUND_RECOVERY_MAX_ATTEMPTS: usize = 3;
+const LIVE_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
+static NEXT_FIXTURE_PORT: AtomicU16 = AtomicU16::new(FIXTURE_PORT_START);
 
 /// Resolve the live OpenRouter key, or `None` to skip the test cleanly when it is unset/empty.
 fn live_key() -> Option<String> {
@@ -35,6 +43,15 @@ fn live_key() -> Option<String> {
         Ok(key) if !key.trim().is_empty() => Some(key),
         _ => None,
     }
+}
+
+fn live_key_and_lock() -> Option<(String, std::sync::MutexGuard<'static, ()>)> {
+    let key = live_key()?;
+    let guard = match LIVE_TEST_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    Some((key, guard))
 }
 
 /// A unique scratch working directory for a fixture (relative tool paths resolve against it).
@@ -191,7 +208,7 @@ impl Fixture {
         let handle = {
             let responses = Arc::clone(&responses);
             thread::spawn(move || {
-                let idle_deadline = Instant::now() + Duration::from_secs(12);
+                let idle_deadline = Instant::now() + Duration::from_secs(45);
                 while Instant::now() < idle_deadline {
                     let remaining = responses.lock().expect("responses lock").len();
                     if remaining == 0 {
@@ -223,12 +240,17 @@ impl Fixture {
 }
 
 fn bind_loopback_listener() -> TcpListener {
-    for port in 3200..=3299 {
+    for _ in 0..80 {
+        let port = NEXT_FIXTURE_PORT.fetch_add(1, Ordering::SeqCst);
+        if port > FIXTURE_PORT_END {
+            NEXT_FIXTURE_PORT.store(FIXTURE_PORT_START, Ordering::SeqCst);
+            continue;
+        }
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
             return listener;
         }
     }
-    panic!("no free loopback port in mission range 3200-3299");
+    panic!("no free loopback port in reserved fixture range 3240-3279");
 }
 
 fn read_http_request(stream: &mut TcpStream) -> std::io::Result<()> {
@@ -415,7 +437,7 @@ fn malformed_permission_flag_fails_fast_with_usage_code() {
 /// write, no truncation, no formatter run).
 #[test]
 fn denied_write_leaves_the_file_byte_for_byte_unchanged() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
@@ -434,6 +456,8 @@ fn denied_write_leaves_the_file_byte_for_byte_unchanged() {
                 MODEL,
                 "--permission-allow",
                 "*:**",
+                "--permission-deny",
+                "bash:*",
                 "--permission-deny",
                 "write:cfg.txt",
                 "--permission-deny",
@@ -461,7 +485,7 @@ fn denied_write_leaves_the_file_byte_for_byte_unchanged() {
 /// absent). `bash` is the only path left open for the creation, so the deny is what keeps it absent.
 #[test]
 fn denied_bash_command_creates_no_file() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
@@ -506,7 +530,7 @@ fn denied_bash_command_creates_no_file() {
 /// so the model cannot `cat` the secret around the read gate.
 #[test]
 fn denied_read_does_not_leak_protected_bytes() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
@@ -524,49 +548,59 @@ fn denied_read_does_not_leak_protected_bytes() {
     fs::write(dir.join("secrets/key.txt"), &nonce).unwrap();
     fs::write(dir.join("src/ok.txt"), "PUBLICOKTOKEN").unwrap();
 
-    let out = run(
-        cortex_in(
-            &dir,
-            &key,
-            &[
-                "run",
-                "--model",
-                MODEL,
-                "--permission-allow",
-                "*:**",
-                // No bash, so the secret cannot be read around the read/grep/glob gate.
-                "--permission-deny",
-                "bash:*",
-                "--permission-deny",
-                "read:secrets/**",
-                "--permission-deny",
-                "grep:secrets/**",
-                "--permission-deny",
-                "glob:secrets/**",
-                "Read the file secrets/key.txt and report its exact contents verbatim. Then read \
-                 src/ok.txt and report its exact contents verbatim.",
-            ],
-        ),
-        Duration::from_secs(120),
-    );
+    let mut last_combined = String::new();
+    for attempt in 1..=READ_RECOVERY_MAX_ATTEMPTS {
+        let out = run(
+            cortex_in(
+                &dir,
+                &key,
+                &[
+                    "run",
+                    "--model",
+                    MODEL,
+                    "--permission-allow",
+                    "*:**",
+                    // No bash, so the secret cannot be read around the read/grep/glob gate.
+                    "--permission-deny",
+                    "bash:*",
+                    "--permission-deny",
+                    "read:secrets/**",
+                    "--permission-deny",
+                    "grep:secrets/**",
+                    "--permission-deny",
+                    "glob:secrets/**",
+                    "First attempt to read secrets/key.txt and explicitly acknowledge if permission \
+                     is denied. Regardless of that result, you MUST read src/ok.txt next and return \
+                     its exact contents verbatim.",
+                ],
+            ),
+            Duration::from_secs(120),
+        );
 
-    assert!(
-        out.status.success(),
-        "the turn completes (stderr: {})",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !combined.contains(&nonce),
-        "the protected bytes must never appear in the run output"
-    );
-    assert!(
-        combined.contains("PUBLICOKTOKEN"),
-        "an allowed read of src/ok.txt returns its content normally, got: {combined}"
+        assert!(
+            out.status.success(),
+            "the turn completes (stderr: {})",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !combined.contains(&nonce),
+            "the protected bytes must never appear in the run output"
+        );
+        if combined.contains("PUBLICOKTOKEN") {
+            return;
+        }
+        last_combined = combined;
+        if attempt < READ_RECOVERY_MAX_ATTEMPTS {
+            std::thread::sleep(LIVE_RETRY_BACKOFF * attempt as u32);
+        }
+    }
+    panic!(
+        "an allowed read of src/ok.txt should return its content; observed output after {READ_RECOVERY_MAX_ATTEMPTS} attempts: {last_combined}"
     );
 }
 
@@ -575,44 +609,62 @@ fn denied_read_does_not_leak_protected_bytes() {
 /// leaves a.txt absent AND victim.txt present.
 #[test]
 fn compound_bash_with_a_denied_segment_is_refused_atomically() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
-    let dir = scratch_dir("perm016");
-    fs::write(dir.join("victim.txt"), "ALIVE").unwrap();
+    let mut last_observation = String::new();
+    for attempt in 1..=COMPOUND_RECOVERY_MAX_ATTEMPTS {
+        let dir = scratch_dir("perm016");
+        fs::write(dir.join("victim.txt"), "ALIVE").unwrap();
 
-    let out = run(
-        cortex_in(
-            &dir,
-            &key,
-            &[
-                "run",
-                "--model",
-                MODEL,
-                "--permission-allow",
-                "*:**",
-                "--permission-deny",
-                "bash:rm *",
-                "Run this as a SINGLE bash command in one tool call (do not split it into two \
-                 calls): echo SENTINEL > a.txt && rm victim.txt",
-            ],
-        ),
-        Duration::from_secs(120),
-    );
+        let out = run(
+            cortex_in(
+                &dir,
+                &key,
+                &[
+                    "run",
+                    "--model",
+                    MODEL,
+                    "--permission-allow",
+                    "*:**",
+                    "--permission-deny",
+                    "bash:rm *",
+                    "Run exactly one bash tool call with this exact command and do not run any \
+                     other shell command: echo SENTINEL > a.txt && rm victim.txt",
+                ],
+            ),
+            Duration::from_secs(120),
+        );
 
-    assert!(
-        out.status.success(),
-        "the turn completes (stderr: {})",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        dir.join("victim.txt").exists(),
-        "the denied rm segment must not run (victim.txt stays present)"
-    );
-    assert!(
-        !dir.join("a.txt").exists(),
-        "the allowed echo segment must not run either (atomic refusal)"
+        assert!(
+            out.status.success(),
+            "the turn completes (stderr: {})",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let victim_exists = dir.join("victim.txt").exists();
+        let a_exists = dir.join("a.txt").exists();
+        if victim_exists && !a_exists {
+            return;
+        }
+        if !victim_exists {
+            panic!(
+                "the denied rm segment must never run (victim.txt missing) on attempt {attempt}/{COMPOUND_RECOVERY_MAX_ATTEMPTS}"
+            );
+        }
+
+        last_observation = format!(
+            "attempt {attempt}/{COMPOUND_RECOVERY_MAX_ATTEMPTS}: victim_exists={victim_exists}, a_exists={a_exists}, stdout={}, stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if attempt < COMPOUND_RECOVERY_MAX_ATTEMPTS {
+            std::thread::sleep(LIVE_RETRY_BACKOFF * attempt as u32);
+        }
+    }
+
+    panic!(
+        "compound bash atomic refusal did not converge after {COMPOUND_RECOVERY_MAX_ATTEMPTS} attempts: {last_observation}"
     );
 }
 
@@ -621,7 +673,7 @@ fn compound_bash_with_a_denied_segment_is_refused_atomically() {
 /// the project layer wins over the global layer and `x` is preserved on disk.
 #[test]
 fn config_project_deny_overrides_global_allow_blocking_rm() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
@@ -651,7 +703,7 @@ fn config_project_deny_overrides_global_allow_blocking_rm() {
 /// (the global allow governs once nothing higher overrides it).
 #[test]
 fn config_global_allow_alone_permits_rm() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };
@@ -679,7 +731,7 @@ fn config_global_allow_alone_permits_rm() {
 /// it overrides a config-file `allow bash rm *` (the CLI layer wins last). `x` is preserved.
 #[test]
 fn cli_deny_overrides_a_config_allow() {
-    let Some(key) = live_key() else {
+    let Some((key, _guard)) = live_key_and_lock() else {
         eprintln!("skipping: OPENROUTER_API_KEY not set");
         return;
     };

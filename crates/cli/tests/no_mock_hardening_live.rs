@@ -15,7 +15,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,10 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(90);
 const SERVE_TIMEOUT: Duration = Duration::from_secs(20);
 const NONCE_MAX_ATTEMPTS: u32 = 3;
 const NONCE_RETRY_BASE_BACKOFF_MS: u64 = 200;
+const SERVE_PORT_START: u16 = 3200;
+const SERVE_PORT_END: u16 = 3239;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+static NEXT_SERVE_PORT: AtomicU16 = AtomicU16::new(SERVE_PORT_START);
 static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn live_key() -> Option<String> {
@@ -484,12 +487,17 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) {
 }
 
 fn free_port() -> u16 {
-    for port in (3200u16..=3299).rev() {
+    for _ in 0..80 {
+        let port = NEXT_SERVE_PORT.fetch_add(1, Ordering::SeqCst);
+        if port > SERVE_PORT_END {
+            NEXT_SERVE_PORT.store(SERVE_PORT_START, Ordering::SeqCst);
+            continue;
+        }
         if listener_pids(port).is_empty() && TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free port in 3200-3299");
+    panic!("no free serve port in reserved range 3200-3239");
 }
 
 fn listener_pids(port: u16) -> Vec<u32> {

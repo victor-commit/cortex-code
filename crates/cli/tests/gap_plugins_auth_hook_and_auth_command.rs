@@ -622,9 +622,12 @@ fn start_provider_fixture(model_id: &str, expected_key: &str) -> ProviderFixture
     let expected = expected_key.to_owned();
     let handle = std::thread::spawn(move || {
         let started = Instant::now();
+        let mut served_authorized = 0usize;
+        let mut last_activity = Instant::now();
         while started.elapsed() < Duration::from_secs(8) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    last_activity = Instant::now();
                     let request = read_http_request(&mut stream);
                     let auth_ok = request
                         .headers
@@ -643,8 +646,9 @@ fn start_provider_fixture(model_id: &str, expected_key: &str) -> ProviderFixture
                         );
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
-                        return;
+                        continue;
                     }
+                    served_authorized += 1;
                     let chunk = serde_json::json!({
                         "id": "auth-fixture",
                         "object": "chat.completion.chunk",
@@ -676,9 +680,11 @@ fn start_provider_fixture(model_id: &str, expected_key: &str) -> ProviderFixture
                     );
                     let _ = stream.write_all(response.as_bytes());
                     let _ = stream.flush();
-                    return;
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if served_authorized > 0 && last_activity.elapsed() > Duration::from_secs(2) {
+                        return;
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(_) => return,
@@ -726,19 +732,22 @@ fn start_tool_call_fixture(tool_name: &str) -> ToolCallFixture {
     let tool_name = tool_name.to_owned();
     let handle = std::thread::spawn(move || {
         let started = Instant::now();
-        let mut request_count = 0_usize;
+        let mut sent_tool_call_turn = false;
+        let mut sent_final_turn = false;
         while started.elapsed() < Duration::from_secs(8) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    request_count += 1;
                     let request = read_http_request(&mut stream);
-                    let body = if request_count == 1 {
+                    let request_has_tools = request.body.contains("\"tools\"");
+                    let body = if !sent_tool_call_turn && request_has_tools {
+                        sent_tool_call_turn = true;
                         format!(
                             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{{\"name\":\"{tool_name}\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\n\
                              data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
                              data: [DONE]\n\n"
                         )
-                    } else {
+                    } else if sent_tool_call_turn {
+                        sent_final_turn = true;
                         let tool_result = latest_tool_content(&request.body)
                             .unwrap_or_else(|| "NO_TOOL_RESULT".to_owned());
                         let tool_result_json =
@@ -748,6 +757,11 @@ fn start_tool_call_fixture(tool_name: &str) -> ToolCallFixture {
                              data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6}}}}\n\n\
                              data: [DONE]\n\n"
                         )
+                    } else {
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"fixture-warmup\"},\"finish_reason\":null}]}\n\n\
+                         data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                         data: [DONE]\n\n"
+                            .to_owned()
                     };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
@@ -756,7 +770,7 @@ fn start_tool_call_fixture(tool_name: &str) -> ToolCallFixture {
                     );
                     let _ = stream.write_all(response.as_bytes());
                     let _ = stream.flush();
-                    if request_count >= 2 {
+                    if sent_final_turn {
                         return;
                     }
                 }

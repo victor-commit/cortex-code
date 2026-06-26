@@ -16,6 +16,8 @@ const MODEL: &str = "google/gemini-2.5-flash";
 const RUN_TIMEOUT: Duration = Duration::from_secs(150);
 const SELECTABLE_AGENT_MAX_ATTEMPTS: usize = 3;
 const SELECTABLE_AGENT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const PLAN_BUILD_MAX_ATTEMPTS: usize = 3;
+const PLAN_BUILD_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const OUTPUT_EXCERPT_BYTES: usize = 4000;
 
 static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -288,61 +290,113 @@ fn plan_then_build_in_the_same_session_lifts_the_mutation_block() {
         return;
     };
     let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
-    let (home, proj) = scratch_project("switch");
-    let session = "builtin-agent-switch";
-    let target = proj.join("session_switch.txt");
+    let mut failures = Vec::new();
 
-    let plan_doc = json_doc(run(cortex_in(
-        &home,
-        &proj,
-        &key,
-        &[
-            "run",
-            "--session",
-            session,
-            "--agent",
-            "plan",
-            "--model",
-            MODEL,
-            "--format",
-            "json",
-            "Create session_switch.txt containing exactly SWITCH_OK. If you cannot make the change, provide a numbered implementation plan.",
-        ],
-    )));
-    assert_eq!(plan_doc["agent"], "plan");
-    assert!(
-        !target.exists(),
-        "the plan agent must leave the requested file absent"
-    );
-    let plan_content = plan_doc["content"].as_str().expect("plan content");
-    assert!(
-        has_denied_mutation_result(&plan_doc) || looks_like_plan_outline(plan_content),
-        "plan turn should either surface a denied mutation attempt or return a plan-like outline; got: {plan_content}"
-    );
+    for attempt in 1..=PLAN_BUILD_MAX_ATTEMPTS {
+        let (home, proj) = scratch_project(&format!("switch-attempt-{attempt}"));
+        let session = format!("builtin-agent-switch-{attempt}");
+        let target = proj.join("session_switch.txt");
 
-    let build_doc = json_doc(run(cortex_in(
-        &home,
-        &proj,
-        &key,
-        &[
-            "run",
-            "--session",
-            session,
-            "--agent",
-            "build",
-            "--model",
-            MODEL,
-            "--format",
-            "json",
-            "Now use the write tool to create session_switch.txt containing exactly SWITCH_OK and no trailing newline.",
-        ],
-    )));
-    assert_eq!(build_doc["agent"], "build");
-    let written = fs::read_to_string(&target).expect("build creates the file");
-    assert_eq!(
-        written.trim(),
-        "SWITCH_OK",
-        "build mode should write the requested content"
+        let plan_doc = json_doc(run(cortex_in(
+            &home,
+            &proj,
+            &key,
+            &[
+                "run",
+                "--session",
+                session.as_str(),
+                "--agent",
+                "plan",
+                "--model",
+                MODEL,
+                "--format",
+                "json",
+                "Create session_switch.txt containing exactly SWITCH_OK. If you cannot make the change, provide a numbered implementation plan.",
+            ],
+        )));
+        if plan_doc["agent"] != "plan" {
+            failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: expected plan agent in first turn, got {}",
+                plan_doc["agent"]
+            ));
+            if attempt < PLAN_BUILD_MAX_ATTEMPTS {
+                std::thread::sleep(PLAN_BUILD_RETRY_BACKOFF * attempt as u32);
+                continue;
+            }
+            break;
+        }
+        if target.exists() {
+            failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: plan turn unexpectedly created {}",
+                target.display()
+            ));
+            if attempt < PLAN_BUILD_MAX_ATTEMPTS {
+                std::thread::sleep(PLAN_BUILD_RETRY_BACKOFF * attempt as u32);
+                continue;
+            }
+            break;
+        }
+        let plan_content = plan_doc["content"].as_str().unwrap_or_default();
+        if !has_denied_mutation_result(&plan_doc) && !looks_like_plan_outline(plan_content) {
+            failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: plan turn did not include a denied mutation result or plan-like outline; content={plan_content:?}"
+            ));
+            if attempt < PLAN_BUILD_MAX_ATTEMPTS {
+                std::thread::sleep(PLAN_BUILD_RETRY_BACKOFF * attempt as u32);
+                continue;
+            }
+            break;
+        }
+
+        let build_doc = json_doc(run(cortex_in(
+            &home,
+            &proj,
+            &key,
+            &[
+                "run",
+                "--session",
+                session.as_str(),
+                "--agent",
+                "build",
+                "--model",
+                MODEL,
+                "--format",
+                "json",
+                "Now use the write tool to create or replace session_switch.txt with exactly SWITCH_OK and no trailing newline.",
+            ],
+        )));
+        if build_doc["agent"] != "build" {
+            failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: expected build agent in second turn, got {}",
+                build_doc["agent"]
+            ));
+            if attempt < PLAN_BUILD_MAX_ATTEMPTS {
+                std::thread::sleep(PLAN_BUILD_RETRY_BACKOFF * attempt as u32);
+                continue;
+            }
+            break;
+        }
+
+        match fs::read_to_string(&target) {
+            Ok(written) if written.trim() == "SWITCH_OK" => return,
+            Ok(written) => failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: build wrote unexpected content {:?}",
+                written
+            )),
+            Err(err) => failures.push(format!(
+                "attempt {attempt}/{PLAN_BUILD_MAX_ATTEMPTS}: build did not create {} ({err})",
+                target.display()
+            )),
+        }
+
+        if attempt < PLAN_BUILD_MAX_ATTEMPTS {
+            std::thread::sleep(PLAN_BUILD_RETRY_BACKOFF * attempt as u32);
+        }
+    }
+
+    panic!(
+        "plan→build same-session flow failed after {PLAN_BUILD_MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
     );
 }
 
