@@ -150,6 +150,72 @@ fn wait_for_contains(session: &str, needle: &str, timeout: Duration) -> bool {
 }
 
 #[test]
+fn gap_tui_010_model_picker_fixture_surfaces_provider_grouping_and_metadata_labels() {
+    if !tuistory_available() {
+        eprintln!("skipping TUI model-picker metadata test: tuistory is unavailable");
+        return;
+    }
+
+    let sandbox = Sandbox::new("val-gap-tui-010");
+    write(
+        sandbox.project.join("cortex.toml"),
+        r#"
+[provider]
+disabled = ["legacy"]
+
+[provider.fixture]
+models = [{ id = "fixture/free-model", name = "Fixture Free Model", tool_call = true, context_length = 8192, max_output_tokens = 1024, cost = { input = 0, output = 0 } }]
+
+[provider.legacy]
+models = [{ id = "legacy/disabled-model", name = "Disabled Fixture Model", tool_call = true, context_length = 8192, max_output_tokens = 1024, cost = { input = 1, output = 1 } }]
+"#,
+    );
+
+    let session = format!(
+        "gap-tui-010-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let _guard = launch_tui_session(&sandbox, &session);
+
+    assert!(tuistory(&session, &["type", "/models"]).status.success());
+    assert!(tuistory(&session, &["press", "enter"]).status.success());
+
+    assert!(
+        wait_for_contains(&session, "(openrouter)", Duration::from_secs(20)),
+        "model picker should include grouped provider headers"
+    );
+    assert!(
+        wait_for_contains(&session, "fixture (fixture)", Duration::from_secs(20)),
+        "fixture provider group should be visible in the picker"
+    );
+    assert!(
+        wait_for_contains(&session, "legacy (legacy)", Duration::from_secs(20)),
+        "disabled provider group should still be visible in the picker"
+    );
+    assert!(
+        wait_for_contains(&session, "[current]", Duration::from_secs(20)),
+        "picker should mark the currently selected model"
+    );
+    assert!(
+        wait_for_contains(
+            &session,
+            "fixture/free-model [free]",
+            Duration::from_secs(20)
+        ),
+        "fixture should expose a zero-cost model with the free marker"
+    );
+    assert!(
+        wait_for_contains(
+            &session,
+            "legacy/disabled-model [unavailable]",
+            Duration::from_secs(20)
+        ),
+        "disabled provider model should carry the unavailable label"
+    );
+}
+
+#[test]
 fn gap_tui_011_custom_json_theme_preview_cancel_accept_and_persist() {
     if !tuistory_available() {
         eprintln!("skipping TUI theme gap test: tuistory is unavailable");
