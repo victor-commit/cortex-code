@@ -153,17 +153,18 @@ impl ChatAccumulator {
 
         for choice in chunk.choices {
             let reasoning = choice.delta.reasoning_text();
+            let reasoning_metadata = choice.delta.reasoning_metadata();
             if let Some(text) = choice.delta.content
                 && !text.is_empty()
             {
                 queue.push_back(LlmEvent::TextDelta { text });
             }
-            if let Some(reasoning) = reasoning
-                && !reasoning.is_empty()
+            if reasoning.as_ref().is_some_and(|text| !text.is_empty())
+                || reasoning_metadata.is_some()
             {
                 queue.push_back(LlmEvent::Reasoning {
-                    text: reasoning,
-                    metadata: None,
+                    text: reasoning.unwrap_or_default(),
+                    metadata: reasoning_metadata,
                 });
             }
             for delta in choice.delta.tool_calls {
@@ -256,6 +257,29 @@ mod tests {
                 reason: FinishReason::Stop
             })
         );
+    }
+
+    #[tokio::test]
+    async fn reasoning_details_emit_reasoning_event_even_when_text_is_absent() {
+        let events = collect(normalize_chat_sse(frames(vec![
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"cipher-1","id":"rs_1"}]}}]}"#,
+            r#"{"choices":[{"delta":{"content":"FINAL:378"},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ])))
+        .await;
+
+        let reasoning = events
+            .iter()
+            .find_map(|event| match event {
+                LlmEvent::Reasoning { text, metadata } => Some((text, metadata)),
+                _ => None,
+            })
+            .expect("a reasoning event");
+        assert_eq!(reasoning.0, "");
+        let metadata = reasoning.1.as_ref().expect("reasoning metadata");
+        assert_eq!(metadata["provider"], "openai");
+        assert_eq!(metadata["signature"], "cipher-1");
+        assert!(metadata["details"].is_array());
     }
 
     #[tokio::test]

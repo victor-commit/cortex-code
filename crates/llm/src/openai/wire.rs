@@ -331,6 +331,8 @@ pub struct ChatDelta {
     #[serde(default)]
     pub reasoning_content: Option<String>,
     #[serde(default)]
+    pub reasoning_details: Option<serde_json::Value>,
+    #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
 }
 
@@ -340,6 +342,49 @@ impl ChatDelta {
         self.reasoning
             .clone()
             .or_else(|| self.reasoning_content.clone())
+    }
+
+    /// Reasoning metadata normalized to a provider-tagged object when available.
+    pub fn reasoning_metadata(&self) -> Option<serde_json::Value> {
+        let details = self.reasoning_details.clone()?;
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "provider".to_owned(),
+            serde_json::Value::String("openai".to_owned()),
+        );
+        if let Some(signature) = extract_reasoning_signature(&details) {
+            metadata.insert("signature".to_owned(), serde_json::Value::String(signature));
+        }
+        metadata.insert("details".to_owned(), details);
+        Some(serde_json::Value::Object(metadata))
+    }
+}
+
+fn extract_reasoning_signature(details: &serde_json::Value) -> Option<String> {
+    fn signature_from_object(
+        object: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<String> {
+        object
+            .get("signature")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                object
+                    .get("data")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+    }
+
+    match details {
+        serde_json::Value::Object(object) => signature_from_object(object),
+        serde_json::Value::Array(values) => values.iter().find_map(|value| match value {
+            serde_json::Value::Object(object) => signature_from_object(object),
+            _ => None,
+        }),
+        _ => None,
     }
 }
 
@@ -690,6 +735,21 @@ mod tests {
             chunk.choices[0].delta.reasoning_text(),
             Some("thinking".to_owned())
         );
+    }
+
+    #[test]
+    fn chunk_with_reasoning_details_parses_metadata_and_signature() {
+        let chunk: ChatChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"cipher-1","id":"rs_1"}]}}]}"#,
+        )
+        .expect("parse");
+        let metadata = chunk.choices[0]
+            .delta
+            .reasoning_metadata()
+            .expect("reasoning metadata");
+        assert_eq!(metadata["provider"], "openai");
+        assert_eq!(metadata["signature"], "cipher-1");
+        assert!(metadata["details"].is_array());
     }
 
     #[test]

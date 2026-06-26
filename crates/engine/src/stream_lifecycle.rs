@@ -130,15 +130,22 @@ impl PartLifecycleTracker {
                 delta.text = Some(text.clone());
                 emitted.push(delta);
             }
-            RunnerEvent::Reasoning { text, .. } if !text.is_empty() => {
-                let part_id = reasoning_part_id(&self.turn_id);
-                if !self.reasoning_started {
-                    emitted.push(self.lifecycle_start(PartLifecycleKind::Reasoning, &part_id));
-                    self.reasoning_started = true;
+            RunnerEvent::Reasoning { text, metadata } => {
+                if !text.is_empty() || metadata.is_some() {
+                    let part_id = reasoning_part_id(&self.turn_id);
+                    if !self.reasoning_started {
+                        emitted.push(self.lifecycle_start(PartLifecycleKind::Reasoning, &part_id));
+                        self.reasoning_started = true;
+                    }
+                    let mut delta = self.lifecycle_delta(PartLifecycleKind::Reasoning, &part_id);
+                    if !text.is_empty() {
+                        delta.text = Some(text.clone());
+                    }
+                    if let Some(metadata) = metadata {
+                        delta.metadata = metadata.clone();
+                    }
+                    emitted.push(delta);
                 }
-                let mut delta = self.lifecycle_delta(PartLifecycleKind::Reasoning, &part_id);
-                delta.text = Some(text.clone());
-                emitted.push(delta);
             }
             RunnerEvent::ToolCall {
                 id,
@@ -224,8 +231,7 @@ impl PartLifecycleTracker {
             RunnerEvent::Usage(_)
             | RunnerEvent::Retry { .. }
             | RunnerEvent::ToolSetChanged { .. }
-            | RunnerEvent::TextDelta { .. }
-            | RunnerEvent::Reasoning { .. } => {}
+            | RunnerEvent::TextDelta { .. } => {}
         }
 
         emitted
@@ -632,6 +638,48 @@ mod tests {
         let b = tool_pending_part_id("msg_1", "call 1");
         assert_eq!(a, b);
         assert_ne!(a, tool_pending_part_id("msg_2", "call 1"));
+    }
+
+    #[test]
+    fn metadata_only_reasoning_still_gets_part_ids_and_lifecycle() {
+        let turn_id = "msg_turn_meta_reasoning";
+        let mut tracker = PartLifecycleTracker::new(turn_id, "openai/o4-mini");
+        let mut out = Vec::new();
+        out.extend(tracker.observe(&RunnerEvent::Reasoning {
+            text: String::new(),
+            metadata: Some(serde_json::json!({
+                "provider": "openai",
+                "signature": "cipher-1"
+            })),
+        }));
+        out.extend(tracker.observe(&RunnerEvent::Done {
+            reason: FinishReason::Stop,
+            steps: 1,
+        }));
+
+        let reasoning_id = reasoning_part_id(turn_id);
+        assert_eq!(
+            count_phase_for_part(&out, &reasoning_id, PartLifecyclePhase::Start),
+            1
+        );
+        assert_eq!(
+            count_phase_for_part(&out, &reasoning_id, PartLifecyclePhase::Delta),
+            1
+        );
+        assert_eq!(
+            count_phase_for_part(&out, &reasoning_id, PartLifecyclePhase::End),
+            1
+        );
+        let delta = out
+            .iter()
+            .find(|event| event.part_id == reasoning_id && event.phase == PartLifecyclePhase::Delta)
+            .expect("reasoning delta");
+        assert_eq!(delta.metadata["provider"], "openai");
+        assert_eq!(delta.metadata["signature"], "cipher-1");
+        assert!(
+            delta.text.is_none(),
+            "metadata-only reasoning should keep text empty"
+        );
     }
 
     fn count_phase_for_part(
