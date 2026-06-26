@@ -546,6 +546,7 @@ dependencies = [
  "events",
  "format",
  "futures-util",
+ "httpdate",
  "llm",
  "lsp",
  "mcp",

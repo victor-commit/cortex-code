@@ -407,6 +407,43 @@ fn retry_after_headers_control_retry_delay() {
         sec_delay <= Duration::from_secs(4),
         "retry-after seconds delay should remain bounded, got {sec_delay:?}"
     );
+
+    let http_date = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(2));
+    let date_fixture = Fixture::start(vec![
+        ScriptedResponse::retryable_error(
+            "HTTP/1.1 429 Too Many Requests",
+            vec![("retry-after".to_owned(), http_date)],
+        ),
+        ScriptedResponse::success("RECOVERED"),
+    ]);
+    let date_home = scratch_home();
+    let date_out = run(cortex_command(&date_home, &date_fixture.base_url));
+    let (date_attempts, date_accepted_at) = date_fixture.finish();
+
+    assert_eq!(
+        date_out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&date_out.stderr)
+    );
+    assert_eq!(
+        date_attempts, 2,
+        "retry-after http-date case should retry once"
+    );
+    assert_eq!(
+        date_accepted_at.len(),
+        2,
+        "retry-after http-date fixture should observe two HTTP attempts"
+    );
+    let date_delay = date_accepted_at[1].duration_since(date_accepted_at[0]);
+    assert!(
+        date_delay >= Duration::from_millis(700),
+        "retry-after http-date delay should be honored, got {date_delay:?}"
+    );
+    assert!(
+        date_delay <= Duration::from_secs(6),
+        "retry-after http-date delay should remain bounded, got {date_delay:?}"
+    );
 }
 
 #[test]

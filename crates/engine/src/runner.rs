@@ -441,7 +441,7 @@ impl SessionRunner {
                                 classification: classification.as_str().to_owned(),
                                 message: diagnostic.to_string(),
                             });
-                            std::thread::sleep(delay);
+                            tokio::time::sleep(delay).await;
                             steps -= 1;
                             continue;
                         }
