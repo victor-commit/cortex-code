@@ -189,6 +189,8 @@ pub enum ServerRunState {
     Installing,
     /// Running with OS PID.
     Running(u32),
+    /// Installed and executable, but not currently running.
+    Available,
     /// Missing and not installable, blocked by no-net, or startup unavailable.
     Unavailable,
     /// Was running and then stopped or crashed.
@@ -203,6 +205,7 @@ impl ServerRunState {
             Self::Disabled => "disabled",
             Self::Installing => "installing",
             Self::Running(_) => "running",
+            Self::Available => "available",
             Self::Unavailable => "unavailable",
             Self::Crashed => "crashed",
         }
@@ -587,7 +590,7 @@ impl FeedbackManager {
                     if let Some(pid) = find_running_pid(server.program()) {
                         ServerRunState::Running(pid)
                     } else if command_exists(server.program()) {
-                        ServerRunState::Crashed
+                        ServerRunState::Available
                     } else if server.install().is_some() && !no_net {
                         ServerRunState::Installing
                     } else {
@@ -1258,6 +1261,7 @@ mod tests {
     #[test]
     fn server_run_state_labels_match_status_contract_vocabulary() {
         assert_eq!(ServerRunState::Disabled.label(), "disabled");
+        assert_eq!(ServerRunState::Available.label(), "available");
         assert_eq!(ServerRunState::Installing.label(), "installing");
         assert_eq!(ServerRunState::Running(1).label(), "running");
         assert_eq!(ServerRunState::Unavailable.label(), "unavailable");
@@ -1265,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn status_rows_include_install_hints_and_disabled_entries() {
+    fn status_rows_include_install_hints_and_distinguish_available_from_crashed() {
         let root = std::env::temp_dir().join(format!("cortex-lsp-status-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&root);
         let existing_program = root.join("existing-lsp");
@@ -1283,6 +1287,7 @@ mod tests {
         let installable_language = "installable";
         let unavailable_language = "unavailable";
         let disabled_language = "disabled";
+        let available_language = "available";
         let crashed_language = "crashed";
         let missing_program = format!("missing-lsp-{}-install", std::process::id());
         let missing_no_plan_program = format!("missing-lsp-{}-none", std::process::id());
@@ -1297,11 +1302,16 @@ mod tests {
             LspServerConfig::new(disabled_language, &missing_no_plan_program)
                 .with_extension("off")
                 .with_enabled(false),
+            LspServerConfig::new(available_language, existing_program.to_string_lossy())
+                .with_extension("avail"),
             LspServerConfig::new(crashed_language, existing_program.to_string_lossy())
                 .with_extension("crash"),
         ]);
 
         let mut manager = FeedbackManager::new(&root, config);
+        manager
+            .servers
+            .insert(crashed_language.to_owned(), ServerSlot::Broken);
         let rows = manager.statuses();
 
         let installable = rows
@@ -1335,6 +1345,12 @@ mod tests {
             .find(|row| row.language_id == disabled_language)
             .expect("disabled row");
         assert_eq!(disabled.state, ServerRunState::Disabled);
+
+        let available = rows
+            .iter()
+            .find(|row| row.language_id == available_language)
+            .expect("available row");
+        assert_eq!(available.state, ServerRunState::Available);
 
         let crashed = rows
             .iter()

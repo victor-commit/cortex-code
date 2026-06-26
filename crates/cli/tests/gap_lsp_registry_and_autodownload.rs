@@ -149,7 +149,7 @@ fn status_registry_covers_reference_language_matrix_with_install_guidance() {
         assert!(
             matches!(
                 state,
-                "disabled" | "installing" | "running" | "unavailable" | "crashed"
+                "disabled" | "available" | "installing" | "running" | "unavailable" | "crashed"
             ),
             "unexpected state {state:?} for {language}: {rows}"
         );
@@ -363,7 +363,7 @@ exit 1
 }
 
 #[test]
-fn status_distinguishes_disabled_installing_running_unavailable_and_crashed() {
+fn status_distinguishes_disabled_available_installing_running_unavailable_and_crashed() {
     let dir = temp_dir("status-lifecycle");
     let running_bin = PathBuf::from("/bin/sleep");
     let crashed_bin = PathBuf::from("/bin/true");
@@ -436,6 +436,6 @@ extensions = ["typ", "typc"]
     assert_eq!(state_for("python"), "disabled");
     assert_eq!(state_for("unavailablefixture"), "unavailable");
     assert_eq!(state_for("runningfixture"), "running");
-    assert_eq!(state_for("crashedfixture"), "crashed");
+    assert_eq!(state_for("crashedfixture"), "available");
     assert_eq!(state_for("tinymist"), "installing");
 }
