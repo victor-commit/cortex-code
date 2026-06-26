@@ -9,12 +9,19 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MODEL: &str = "google/gemini-2.5-flash";
 const RUN_TIMEOUT: Duration = Duration::from_secs(180);
+
+struct CapturedRun {
+    output: Output,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    home: Option<PathBuf>,
+}
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -64,7 +71,17 @@ fn cortex_in(home: &Path, cwd: &Path, key: &str, args: &[&str]) -> Command {
     command
 }
 
-fn run(mut command: Command) -> Output {
+fn run(mut command: Command) -> CapturedRun {
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let cwd = command.get_current_dir().map(Path::to_path_buf);
+    let home = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "HOME").then_some(value).flatten())
+        .map(PathBuf::from);
+
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -96,21 +113,60 @@ fn run(mut command: Command) -> Output {
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    Output {
-        status,
-        stdout: out_thread.join().expect("join stdout"),
-        stderr: err_thread.join().expect("join stderr"),
+    CapturedRun {
+        output: Output {
+            status,
+            stdout: out_thread.join().expect("join stdout"),
+            stderr: err_thread.join().expect("join stderr"),
+        },
+        args,
+        cwd,
+        home,
     }
 }
 
-fn json_doc(out: Output) -> serde_json::Value {
+fn redact_bytes(bytes: &[u8]) -> String {
+    redaction::redact(String::from_utf8_lossy(bytes).as_ref())
+}
+
+fn status_summary(status: &ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("success={} code={code}", status.success()),
+        None => format!("success={} code=<terminated by signal>", status.success()),
+    }
+}
+
+fn run_context(run: &CapturedRun) -> String {
+    let args = redaction::redact(&run.args.join(" "));
+    let home = run
+        .home
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unset>".to_owned());
+    let cwd = run
+        .cwd
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unset>".to_owned());
+
+    format!(
+        "exit_status: {}\nargs: {args}\nscratch_home: {home}\nscratch_cwd: {cwd}\nstdout(redacted, raw):\n{}\nstderr(redacted, raw):\n{}",
+        status_summary(&run.output.status),
+        redact_bytes(&run.output.stdout),
+        redact_bytes(&run.output.stderr),
+    )
+}
+
+fn json_doc(run: CapturedRun) -> serde_json::Value {
+    let context = run_context(&run);
     assert!(
-        out.status.success(),
-        "run should succeed (stderr: {})",
-        String::from_utf8_lossy(&out.stderr)
+        run.output.status.success(),
+        "run should succeed before strict JSON parse\n{context}"
     );
-    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
-    serde_json::from_str(stdout.trim_end()).expect("stdout is one strict JSON document")
+
+    serde_json::from_slice(&run.output.stdout).unwrap_or_else(|err| {
+        panic!("stdout strict JSON parse failed: {err}\n{context}");
+    })
 }
 
 fn content(doc: &serde_json::Value) -> &str {
