@@ -3,10 +3,13 @@
 //!
 //! This is the one network path in the `providers` crate. It consults the shared `CORTEX_NO_NET`
 //! outbound guard FIRST (before any socket), fetches the live models.dev dataset over the
-//! rustls-only transport, and curates the `openrouter` provider down to the recognizable ids the
-//! embedded snapshot already tracks — each refreshed with live pricing/limits. Curating against
-//! the embedded set keeps the listing stable and in sync with live models.dev without
-//! reintroducing ids that have been removed upstream (e.g. the retired Claude 3.5 models).
+//! rustls-only transport, and curates a bounded multi-provider snapshot:
+//! - `openrouter` stays stable by refreshing only the recognizable ids the embedded snapshot tracks;
+//! - selected secondary providers are refreshed from models.dev and normalized into
+//!   provider-qualified model ids (`provider/model`).
+//!
+//! Curating against a bounded set keeps listings stable and avoids reintroducing retired ids
+//! (for example Claude 3.5 under OpenRouter) while expanding beyond the OpenRouter-only snapshot.
 //!
 //! On success the curated snapshot is written to a per-user cache (alongside the auth store) so a
 //! later offline `cortex models` reflects the refresh. The write is atomic and only happens after
@@ -25,6 +28,7 @@ use serde_json::Value;
 use crate::catalogue::{Catalogue, ModelInfo, ProviderInfo};
 use crate::credentials::{ENV_DATA_DIR, non_empty_env, non_empty_env_path};
 use crate::openrouter::OPENROUTER_ID;
+use crate::provider_profiles::{self, ProviderProfile};
 
 /// The canonical live models.dev catalog endpoint.
 pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
@@ -45,6 +49,8 @@ const OUTBOUND_OPERATION: &str = "models.dev catalog refresh";
 /// Bounded connect/total timeouts so a failed refresh degrades within a bounded time (never hangs).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
+/// Keep the secondary-provider refresh bounded and deterministic.
+const MAX_SECONDARY_MODELS_PER_PROVIDER: usize = 6;
 
 /// The resolved models.dev endpoint: the `CORTEX_MODELS_DEV_URL` override when set and non-empty,
 /// else the canonical live endpoint.
@@ -109,12 +115,11 @@ async fn fetch(url: &str) -> Result<Vec<u8>, Diagnostic> {
         .map_err(|err| Diagnostic::transport_unavailable(redact(&err.to_string())))
 }
 
-/// Parse a models.dev response and curate the `openrouter` provider to the recognizable id set.
+/// Parse a models.dev response and curate a bounded multi-provider snapshot.
 ///
-/// Only the model ids the embedded snapshot already tracks are kept, each refreshed from the live
-/// response; ids absent upstream are dropped and ids outside the recognizable set (including any
-/// reintroduced after upstream removal) are never added. Each recognized model is deserialized
-/// individually so a single malformed upstream entry never fails the whole refresh.
+/// OpenRouter remains intentionally stable by refreshing only the recognizable embedded ids.
+/// Secondary providers are selected from built-in profiles and normalized to provider-qualified
+/// model ids (`provider/model`) so model resolution remains explicit and deterministic.
 fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
     let root: Value = serde_json::from_slice(bytes).map_err(|err| {
         Diagnostic::transport_unavailable(format!("models.dev response was not valid JSON: {err}"))
@@ -123,6 +128,9 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
         Diagnostic::transport_unavailable(
             "models.dev response did not include the openrouter provider".to_owned(),
         )
+    })?;
+    let root_obj = root.as_object().ok_or_else(|| {
+        Diagnostic::transport_unavailable("models.dev response root must be a JSON object")
     })?;
 
     let embedded = Catalogue::embedded()
@@ -156,7 +164,69 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
 
     let mut providers = BTreeMap::new();
     providers.insert(OPENROUTER_ID.to_owned(), provider);
+    for profile in provider_profiles::refresh_profiles() {
+        if profile.provider_id == OPENROUTER_ID {
+            continue;
+        }
+        if let Some(provider) = curate_secondary_provider(root_obj, profile) {
+            providers.insert(provider.id.clone(), provider);
+        }
+    }
     Ok(Catalogue::from_providers(providers))
+}
+
+fn curate_secondary_provider(
+    root_obj: &serde_json::Map<String, Value>,
+    profile: &ProviderProfile,
+) -> Option<ProviderInfo> {
+    let models_dev_id = profile.models_dev_id?;
+    let live_provider = root_obj.get(models_dev_id)?;
+    let live_models = live_provider.get("models")?.as_object()?;
+    let mut model_keys: Vec<&str> = live_models.keys().map(String::as_str).collect();
+    model_keys.sort_unstable();
+
+    let mut models = BTreeMap::new();
+    for key in model_keys {
+        let Some(entry) = live_models.get(key) else {
+            continue;
+        };
+        let Ok(mut info) = serde_json::from_value::<ModelInfo>(entry.clone()) else {
+            continue;
+        };
+        let model_id = canonical_model_id(profile.provider_id, key);
+        info.id = model_id.clone();
+        models.insert(model_id, info);
+        if models.len() >= MAX_SECONDARY_MODELS_PER_PROVIDER {
+            break;
+        }
+    }
+    if models.is_empty() {
+        return None;
+    }
+
+    let env = string_vec_field(live_provider, "env")
+        .or_else(|| {
+            profile
+                .default_api_key_env
+                .map(|name| vec![name.to_owned()])
+        })
+        .unwrap_or_default();
+    Some(ProviderInfo {
+        id: profile.provider_id.to_owned(),
+        name: string_field(live_provider, "name")
+            .unwrap_or_else(|| profile.display_name.to_owned()),
+        api: string_field(live_provider, "api")
+            .or_else(|| profile.default_base_url.map(ToOwned::to_owned)),
+        env,
+        models,
+    })
+}
+
+fn canonical_model_id(provider_id: &str, live_model_id: &str) -> String {
+    if provider_id == OPENROUTER_ID || live_model_id.starts_with(&format!("{provider_id}/")) {
+        return live_model_id.to_owned();
+    }
+    format!("{provider_id}/{live_model_id}")
 }
 
 /// Read a trimmed, non-empty string field from a JSON object.
@@ -266,6 +336,24 @@ mod tests {
     fn fixture() -> String {
         r#"{
           "anthropic": { "id": "anthropic", "name": "Anthropic", "models": {} },
+          "azure": {
+            "id": "azure",
+            "name": "Azure OpenAI",
+            "api": "https://azure.example.test/openai/v1",
+            "env": ["AZURE_OPENAI_API_KEY"],
+            "models": {
+              "gpt-4.1-mini": { "id": "gpt-4.1-mini", "name": "GPT-4.1 mini", "tool_call": true, "cost": { "input": 0.4, "output": 1.6 }, "limit": { "context": 1047576, "output": 32768 } }
+            }
+          },
+          "xai": {
+            "id": "xai",
+            "name": "xAI",
+            "api": "https://api.x.ai/v1",
+            "env": ["XAI_API_KEY"],
+            "models": {
+              "grok-4.20-0309-non-reasoning": { "id": "grok-4.20-0309-non-reasoning", "name": "xAI model", "tool_call": true, "cost": { "input": 3.0, "output": 15.0 }, "limit": { "context": 262144, "output": 32768 } }
+            }
+          },
           "openrouter": {
             "id": "openrouter",
             "name": "OpenRouter",
@@ -314,6 +402,25 @@ mod tests {
             Some("https://openrouter.ai/api/v1")
         );
         assert_eq!(openrouter.env, vec!["OPENROUTER_API_KEY".to_owned()]);
+    }
+
+    #[test]
+    fn curate_adds_secondary_profiles_with_provider_qualified_model_ids() {
+        let catalogue = curate(&fixture()).expect("curates");
+        let azure = catalogue.provider("azure").expect("azure provider present");
+        assert_eq!(azure.name, "Azure OpenAI");
+        assert_eq!(
+            azure.api.as_deref(),
+            Some("https://azure.example.test/openai/v1")
+        );
+        assert_eq!(azure.env, vec!["AZURE_OPENAI_API_KEY".to_owned()]);
+        assert!(
+            azure.models.contains_key("azure/gpt-4.1-mini"),
+            "secondary provider model ids must be provider-qualified"
+        );
+
+        let xai = catalogue.provider("xai").expect("xai provider present");
+        assert!(xai.models.contains_key("xai/grok-4.20-0309-non-reasoning"));
     }
 
     #[test]

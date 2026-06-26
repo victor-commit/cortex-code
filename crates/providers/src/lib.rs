@@ -19,6 +19,7 @@
 mod catalogue;
 mod credentials;
 mod openrouter;
+mod provider_profiles;
 mod refresh;
 mod runtime_config;
 mod runtime_provider;

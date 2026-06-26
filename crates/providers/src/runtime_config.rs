@@ -22,6 +22,7 @@ use crate::catalogue::{
 };
 use crate::credentials::{CredentialInputs, OPENROUTER_ENV};
 use crate::openrouter::OPENROUTER_ID;
+use crate::provider_profiles;
 
 const ROOT_PROVIDER_KEY: &str = "provider";
 const ROOT_ENABLED_KEY: &str = "enabled";
@@ -204,6 +205,11 @@ impl ProviderConfigSet {
         {
             return protocol;
         }
+        if let Some(profile) = provider_profiles::profile(provider_id)
+            && let Some(protocol) = protocol_from_profile(profile.default_protocol)
+        {
+            return protocol;
+        }
         infer_provider_protocol(provider_id)
     }
 
@@ -306,6 +312,11 @@ impl ProviderConfigSet {
         let provider = self.providers.get(provider_id);
         let env_name = provider
             .and_then(|provider| provider.auth.api_key_env.clone())
+            .or_else(|| {
+                provider_profiles::profile(provider_id)
+                    .and_then(|profile| profile.default_api_key_env)
+                    .map(ToOwned::to_owned)
+            })
             .or_else(|| (provider_id == OPENROUTER_ID).then(|| OPENROUTER_ENV.to_owned()));
         let config_value = provider.and_then(|provider| provider.auth.api_key.clone());
         CredentialInputs::from_process(env_name.as_deref(), config_value)
@@ -343,6 +354,11 @@ impl ProviderConfigSet {
     ) -> Result<String, ProviderConfigError> {
         if let Some(base_url) = self.provider_base_url(provider_id) {
             return Ok(base_url);
+        }
+        if let Some(base_url) =
+            provider_profiles::profile(provider_id).and_then(|profile| profile.default_base_url)
+        {
+            return Ok(base_url.to_owned());
         }
         if provider_id == OPENROUTER_ID {
             return Ok(crate::openrouter::OPENROUTER_API_BASE.to_owned());
@@ -913,11 +929,21 @@ fn parse_provider_protocol(
     }
 }
 
+fn protocol_from_profile(profile_protocol: &str) -> Option<ProviderProtocol> {
+    match profile_protocol {
+        "openai-chat" => Some(ProviderProtocol::OpenAiChat),
+        "openai-responses" => Some(ProviderProtocol::OpenAiResponses),
+        "anthropic-messages" => Some(ProviderProtocol::AnthropicMessages),
+        "gemini" => Some(ProviderProtocol::Gemini),
+        _ => None,
+    }
+}
+
 fn infer_provider_protocol(provider_id: &str) -> ProviderProtocol {
     match provider_id {
         "openai-responses" | "openai_responses" => ProviderProtocol::OpenAiResponses,
-        "anthropic" => ProviderProtocol::AnthropicMessages,
-        "google" | "gemini" => ProviderProtocol::Gemini,
+        "anthropic" | "bedrock" | "amazon-bedrock" => ProviderProtocol::AnthropicMessages,
+        "google" | "gemini" | "vertex" | "google-vertex" => ProviderProtocol::Gemini,
         _ => ProviderProtocol::OpenAiChat,
     }
 }
@@ -1071,5 +1097,19 @@ models = [{ id = "local/demo", cost_input = 7, cost_output = 11, cost = { input 
             .expect("configured model");
         assert_eq!(model.cost.input, 7.0);
         assert_eq!(model.cost.output, 11.0);
+    }
+
+    #[test]
+    fn built_in_profiles_seed_default_protocol_and_local_base_url() {
+        let config = ProviderConfigSet::default();
+        assert_eq!(config.provider_protocol("vertex"), ProviderProtocol::Gemini);
+        assert_eq!(
+            config.provider_protocol("bedrock"),
+            ProviderProtocol::AnthropicMessages
+        );
+        assert_eq!(
+            config.resolve_provider_base_url("ollama").as_deref(),
+            Ok("http://127.0.0.1:11434/v1")
+        );
     }
 }
