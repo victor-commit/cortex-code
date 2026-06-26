@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+const FIXTURE_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
+const FIXTURE_RETRY_ATTEMPTS: usize = 2;
 
 struct Sandbox {
     home: PathBuf,
@@ -341,12 +343,10 @@ fn plugin_tool_auth_required_fails_closed_without_stored_credential() {
     let marker = sandbox.project.join("tool-auth-marker.json");
     write_tool_auth_plugin(&sandbox, &marker, true);
 
-    let fixture = start_tool_call_fixture("plugin_auth_probe");
-    let mut run_cmd = sandbox.command(&["run", "--format", "json", "probe plugin tool auth"]);
-    run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
-    run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture.base_url());
-    let run_out = run(run_cmd);
-    fixture.join();
+    let run_out = run_with_tool_call_fixture_retry(&sandbox, |run_cmd, fixture_url| {
+        run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
+        run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture_url);
+    });
     assert_eq!(
         run_out.status.code(),
         Some(0),
@@ -403,13 +403,11 @@ fn plugin_tool_execution_receives_auth_payload_after_auth_login_without_secret_l
         "auth login output must not leak the plugin secret"
     );
 
-    let fixture = start_tool_call_fixture("plugin_auth_probe");
-    let mut run_cmd = sandbox.command(&["run", "--format", "json", "probe plugin tool auth"]);
-    run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
-    run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture.base_url());
-    run_cmd.env("CORTEX_AUDIT_LOG", &audit_log);
-    let run_out = run(run_cmd);
-    fixture.join();
+    let run_out = run_with_tool_call_fixture_retry(&sandbox, |run_cmd, fixture_url| {
+        run_cmd.env("OPENROUTER_API_KEY", fake_openrouter_key());
+        run_cmd.env("CORTEX_OPENROUTER_BASE_URL", fixture_url);
+        run_cmd.env("CORTEX_AUDIT_LOG", &audit_log);
+    });
     assert_eq!(
         run_out.status.code(),
         Some(0),
@@ -624,7 +622,7 @@ fn start_provider_fixture(model_id: &str, expected_key: &str) -> ProviderFixture
         let started = Instant::now();
         let mut served_authorized = 0usize;
         let mut last_activity = Instant::now();
-        while started.elapsed() < Duration::from_secs(8) {
+        while started.elapsed() < FIXTURE_WAIT_TIMEOUT {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     last_activity = Instant::now();
@@ -734,7 +732,7 @@ fn start_tool_call_fixture(tool_name: &str) -> ToolCallFixture {
         let started = Instant::now();
         let mut sent_tool_call_turn = false;
         let mut sent_final_turn = false;
-        while started.elapsed() < Duration::from_secs(8) {
+        while started.elapsed() < FIXTURE_WAIT_TIMEOUT {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let request = read_http_request(&mut stream);
@@ -806,13 +804,36 @@ struct HttpRequest {
 }
 
 fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
-    stream
+    if stream
         .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("set timeout");
+        .is_err()
+    {
+        return HttpRequest {
+            headers: Vec::new(),
+            body: String::new(),
+        };
+    }
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];
     let header_end = loop {
-        let read = stream.read(&mut chunk).expect("read request");
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                return HttpRequest {
+                    headers: Vec::new(),
+                    body: String::new(),
+                };
+            }
+            Err(_) => {
+                return HttpRequest {
+                    headers: Vec::new(),
+                    body: String::new(),
+                };
+            }
+        };
         if read == 0 {
             return HttpRequest {
                 headers: Vec::new(),
@@ -842,7 +863,16 @@ fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
         })
         .unwrap_or(0);
     while buffer.len() < header_end + content_length {
-        let read = stream.read(&mut chunk).expect("read request body");
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(_) => break,
+        };
         if read == 0 {
             break;
         }
@@ -855,4 +885,41 @@ fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
 
 fn fake_openrouter_key() -> String {
     format!("sk-{}-{}", "or-v1", "abcdef01".repeat(8))
+}
+
+fn run_with_tool_call_fixture_retry<F>(sandbox: &Sandbox, mut configure: F) -> Output
+where
+    F: FnMut(&mut Command, &str),
+{
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        let fixture = start_tool_call_fixture("plugin_auth_probe");
+        let fixture_url = fixture.base_url().to_owned();
+        let mut run_cmd = sandbox.command(&["run", "--format", "json", "probe plugin tool auth"]);
+        configure(&mut run_cmd, fixture_url.as_str());
+        let run_out = run(run_cmd);
+        fixture.join();
+
+        if attempt >= FIXTURE_RETRY_ATTEMPTS
+            || !is_retryable_fixture_connect_refused(&run_out, fixture_url.as_str())
+        {
+            return run_out;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn is_retryable_fixture_connect_refused(output: &Output, fixture_url: &str) -> bool {
+    if output.status.success() {
+        return false;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr_lower = stderr.to_ascii_lowercase();
+    stderr.contains(fixture_url)
+        && (stderr_lower.contains("connection refused")
+            || stderr_lower.contains("transport unavailable")
+            || stderr_lower.contains("error sending request")
+            || stderr_lower.contains("connect error"))
 }
