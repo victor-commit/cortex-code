@@ -398,6 +398,39 @@ enum SlashAction {
     Builtin,
     CustomPrompt { prompt: String },
     McpPrompt { id: String, required: Vec<String> },
+    PluginCommand { slot: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttentionEvent {
+    Completion,
+    Error,
+    Permission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttentionConfig {
+    pub enabled: bool,
+    pub quiet: bool,
+    pub audio: bool,
+    pub visual: bool,
+    pub completion: bool,
+    pub error: bool,
+    pub permission: bool,
+}
+
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            quiet: false,
+            audio: true,
+            visual: true,
+            completion: true,
+            error: true,
+            permission: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -774,6 +807,12 @@ pub struct App {
     selected_skill: Option<String>,
     /// Custom slash commands loaded from config (`[command]`) at startup.
     custom_commands: Vec<CustomSlashCommand>,
+    /// Runtime attention/audio cue settings loaded from config.
+    attention_config: AttentionConfig,
+    /// Pending terminal bell count drained by the event loop.
+    pending_bells: usize,
+    /// Active transient attention badge shown in the footer while a cue is fresh.
+    attention_badge: Option<(String, Instant)>,
     /// streaming at a safe boundary; `None` whenever no turn is in flight.
     cancel_flag: Option<Arc<AtomicBool>>,
     /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
@@ -866,6 +905,9 @@ impl App {
             prompt_stash: None,
             selected_skill: None,
             custom_commands: configured_custom_slash_commands(),
+            attention_config: AttentionConfig::default(),
+            pending_bells: 0,
+            attention_badge: None,
             cancel_flag: None,
             pending_permission: None,
             db_path: None,
@@ -942,6 +984,37 @@ impl App {
     /// Attach plugin text-completion hooks discovered at TUI startup.
     pub fn set_plugin_text_complete(&mut self, hooks: Option<PluginEventHooks>) {
         self.plugin_text_complete = hooks;
+    }
+
+    /// Set runtime attention/audio cue behavior from config.
+    pub(crate) fn set_attention_config(&mut self, config: AttentionConfig) {
+        self.attention_config = config;
+    }
+
+    /// Drain queued terminal-bell cues to the event loop.
+    pub fn drain_pending_bells(&mut self) -> usize {
+        let pending = self.pending_bells;
+        self.pending_bells = 0;
+        pending
+    }
+
+    /// Active attention badge text shown in the footer while a cue is fresh.
+    #[must_use]
+    pub fn attention_badge(&self) -> Option<&str> {
+        self.attention_badge
+            .as_ref()
+            .map(|(label, _)| label.as_str())
+    }
+
+    /// Expire a stale attention badge after its display window elapses.
+    pub fn tick_attention(&mut self) {
+        if self
+            .attention_badge
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            self.attention_badge = None;
+        }
     }
 
     /// Attach or detach the loopback server bridge used by cross-surface validation.
@@ -1105,6 +1178,37 @@ impl App {
         let overflow = self.toasts.len().saturating_sub(MAX_TOASTS);
         if overflow > 0 {
             self.toasts.drain(0..overflow);
+        }
+    }
+
+    fn attention_enabled_for(&self, event: AttentionEvent) -> bool {
+        if !self.attention_config.enabled || self.attention_config.quiet {
+            return false;
+        }
+        match event {
+            AttentionEvent::Completion => self.attention_config.completion,
+            AttentionEvent::Error => self.attention_config.error,
+            AttentionEvent::Permission => self.attention_config.permission,
+        }
+    }
+
+    fn emit_attention(&mut self, event: AttentionEvent) {
+        if !self.attention_enabled_for(event) {
+            return;
+        }
+        if self.attention_config.audio {
+            self.pending_bells = self.pending_bells.saturating_add(1);
+        }
+        if self.attention_config.visual {
+            let label = match event {
+                AttentionEvent::Completion => "completion",
+                AttentionEvent::Error => "error",
+                AttentionEvent::Permission => "permission",
+            };
+            self.attention_badge = Some((
+                label.to_owned(),
+                Instant::now() + Duration::from_millis(2200),
+            ));
         }
     }
 
@@ -1558,6 +1662,7 @@ impl App {
         self.push_toast(ToastLevel::Error, message.clone());
         self.transcript.push(Entry::Error(message));
         self.turn_errored = true;
+        self.emit_attention(AttentionEvent::Error);
     }
 
     /// Finalize a completed turn: clear the busy indicator and fold the exchange into history so the
@@ -1593,6 +1698,7 @@ impl App {
                 if let Some(usage) = turn_usage.as_ref() {
                     self.persist_usage(usage);
                 }
+                self.emit_attention(AttentionEvent::Completion);
             }
             self.start_next_queued();
             return;
@@ -1614,6 +1720,7 @@ impl App {
                 if let Some(usage) = turn_usage.as_ref() {
                     self.persist_usage(usage);
                 }
+                self.emit_attention(AttentionEvent::Completion);
             }
         }
         self.start_next_queued();
@@ -1712,6 +1819,7 @@ impl App {
             selected: 0,
             feedback: String::new(),
         });
+        self.emit_attention(AttentionEvent::Permission);
         self.pin_to_bottom();
     }
 
@@ -1892,6 +2000,34 @@ impl App {
             }
         }
 
+        if let Some(hooks) = self.plugin_text_complete.as_ref() {
+            let mut plugin_commands = hooks.command_entries();
+            plugin_commands.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+            for entry in plugin_commands {
+                let raw_name = if entry.name.trim().is_empty() {
+                    entry.id.clone()
+                } else {
+                    entry.name.clone()
+                };
+                let Some(name) = normalize_custom_command_name(&raw_name) else {
+                    continue;
+                };
+                let key = name.to_ascii_lowercase();
+                if seen.insert(key) {
+                    let description = if entry.description.trim().is_empty() {
+                        format!("Plugin command slot `{}`", entry.id)
+                    } else {
+                        entry.description
+                    };
+                    commands.push(SlashMatch {
+                        name,
+                        description,
+                        action: SlashAction::PluginCommand { slot: entry.id },
+                    });
+                }
+            }
+        }
+
         if let Some(manager) = &self.mcp_manager {
             for prompt in manager.prompts() {
                 let key = prompt.id.to_ascii_lowercase();
@@ -1951,8 +2087,8 @@ impl App {
         }
     }
 
-    /// Every slash command currently discoverable in help: built-ins, config custom commands, and
-    /// MCP prompt commands.
+    /// Every slash command currently discoverable in help: built-ins, config custom commands,
+    /// plugin slots, and MCP prompt commands.
     #[must_use]
     pub fn slash_help_entries(&self) -> Vec<(String, String)> {
         self.slash_catalogue()
@@ -2683,6 +2819,13 @@ impl App {
             SlashAction::McpPrompt { id, required } => {
                 self.run_mcp_prompt_command(&command.name, &id, &required);
             }
+            SlashAction::PluginCommand { slot } => {
+                self.transcript.push(Entry::Notice(format!(
+                    "/{} — plugin command slot `{slot}` is available on this TUI surface",
+                    command.name
+                )));
+                self.push_toast(ToastLevel::Info, "Plugin command slot");
+            }
         }
     }
 
@@ -2960,6 +3103,28 @@ impl App {
                 items.push(format!("{}  —  {}", skill.name, skill.description));
             }
         }
+        if let Some(hooks) = self.plugin_text_complete.as_ref() {
+            let mut plugin_skills = hooks.skill_entries();
+            plugin_skills.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+            for skill in plugin_skills {
+                let name = if skill.name.trim().is_empty() {
+                    skill.id
+                } else {
+                    skill.name
+                };
+                let name = name.trim();
+                if name.is_empty() || rows.iter().any(|existing| existing == name) {
+                    continue;
+                }
+                rows.push(name.to_owned());
+                let description = if skill.description.trim().is_empty() {
+                    "Plugin skill slot"
+                } else {
+                    skill.description.trim()
+                };
+                items.push(format!("{name}  —  {description} [plugin]"));
+            }
+        }
         let selected = self
             .selected_skill
             .as_ref()
@@ -3004,10 +3169,7 @@ impl App {
     /// Open the theme picker (`/themes`): the selectable themes, with the active theme
     /// pre-highlighted.
     fn open_themes_dialog(&mut self) {
-        let mut items: Vec<String> = frame::style::ThemeColors::available_themes()
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect();
+        let mut items = frame::style::ThemeColors::available_theme_names();
         if let Some(hooks) = self.plugin_text_complete.as_ref() {
             let mut plugin_themes = hooks
                 .theme_entries()
@@ -3167,6 +3329,17 @@ impl App {
         }
         if let Some(skill) = &self.selected_skill {
             items.push(format!("Selected skill: {skill}"));
+        }
+        if let Some(hooks) = self.plugin_text_complete.as_ref() {
+            let command_slots = hooks.command_entries().len();
+            let skill_slots = hooks.skill_entries().len();
+            let catalog_slots = hooks.catalog_entries().len();
+            let theme_slots = hooks.theme_entries().len();
+            if command_slots + skill_slots + catalog_slots + theme_slots > 0 {
+                items.push(format!(
+                    "Plugin slots: commands {command_slots}, skills {skill_slots}, catalog {catalog_slots}, themes {theme_slots}"
+                ));
+            }
         }
         self.open_dialog(Dialog {
             kind: DialogKind::Status,
@@ -4292,6 +4465,7 @@ impl App {
         let message = redaction::redact(&message);
         self.push_toast(ToastLevel::Error, message.clone());
         self.transcript.push(Entry::Error(message));
+        self.emit_attention(AttentionEvent::Error);
     }
 
     /// Run a leader keybind action: the same visible effects the matching slash commands produce,
@@ -6154,6 +6328,274 @@ fn effective_config() -> Option<settings::EffectiveConfig> {
         .and_then(|inputs| settings::load(inputs).ok())
 }
 
+pub(crate) fn configured_attention_config() -> AttentionConfig {
+    let mut config = AttentionConfig::default();
+    let Some(effective) = effective_config() else {
+        return config;
+    };
+
+    if let Some(quiet) = effective
+        .get("quiet")
+        .and_then(toml::Value::as_bool)
+        .or_else(|| {
+            effective
+                .get("tui")
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("quiet"))
+                .and_then(toml::Value::as_bool)
+        })
+    {
+        config.quiet = quiet;
+    }
+
+    let attention = effective
+        .get("tui")
+        .and_then(toml::Value::as_table)
+        .and_then(|table| table.get("attention"))
+        .and_then(toml::Value::as_table)
+        .or_else(|| effective.get("attention").and_then(toml::Value::as_table));
+
+    if let Some(table) = attention {
+        if let Some(value) = table.get("enabled").and_then(toml::Value::as_bool) {
+            config.enabled = value;
+        }
+        if let Some(value) = table.get("quiet").and_then(toml::Value::as_bool) {
+            config.quiet = value;
+        }
+        if let Some(value) = table.get("audio").and_then(toml::Value::as_bool) {
+            config.audio = value;
+        }
+        if let Some(value) = table.get("visual").and_then(toml::Value::as_bool) {
+            config.visual = value;
+        }
+        if let Some(events) = table.get("events").and_then(toml::Value::as_array) {
+            config.completion = false;
+            config.error = false;
+            config.permission = false;
+            for event in events.iter().filter_map(toml::Value::as_str) {
+                match event.trim().to_ascii_lowercase().as_str() {
+                    "completion" => config.completion = true,
+                    "error" => config.error = true,
+                    "permission" => config.permission = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    config
+}
+
+/// Load custom JSON themes from config and register them with the frame theme catalogue.
+///
+/// Supported config keys:
+/// - `theme_files = ["..."]`
+/// - `custom_theme_files = ["..."]`
+/// - `[tui] theme_files = ["..."]`
+/// - `[tui] custom_theme_files = ["..."]`
+pub(crate) fn load_custom_themes_from_config() -> Vec<String> {
+    frame::style::ThemeColors::clear_custom_themes();
+    let Some(config) = effective_config() else {
+        return Vec::new();
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut paths = configured_custom_theme_files(config.table(), &cwd);
+    paths.sort();
+    paths.dedup();
+
+    let mut diagnostics = Vec::new();
+    for path in paths {
+        let body = match std::fs::read_to_string(&path) {
+            Ok(body) => body,
+            Err(err) => {
+                diagnostics.push(format!(
+                    "custom theme file {} could not be read: {err}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        match parse_custom_theme_document(&body) {
+            Ok(themes) => {
+                for (name, theme) in themes {
+                    frame::style::ThemeColors::register_custom_theme(&name, theme);
+                }
+            }
+            Err(err) => diagnostics.push(format!(
+                "custom theme file {} is invalid: {err}",
+                path.display()
+            )),
+        }
+    }
+    diagnostics
+}
+
+fn configured_custom_theme_files(config: &toml::Table, cwd: &std::path::Path) -> Vec<PathBuf> {
+    let mut values = Vec::new();
+    collect_theme_file_values(config.get("theme_files"), &mut values);
+    collect_theme_file_values(config.get("custom_theme_files"), &mut values);
+    if let Some(tui) = config.get("tui").and_then(toml::Value::as_table) {
+        collect_theme_file_values(tui.get("theme_files"), &mut values);
+        collect_theme_file_values(tui.get("custom_theme_files"), &mut values);
+    }
+    values
+        .into_iter()
+        .map(|raw| resolve_theme_file_path(&raw, cwd))
+        .collect()
+}
+
+fn collect_theme_file_values(value: Option<&toml::Value>, out: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(items) = value.as_array() {
+        out.extend(
+            items
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned),
+        );
+    } else if let Some(item) = value.as_str() {
+        let item = item.trim();
+        if !item.is_empty() {
+            out.push(item.to_owned());
+        }
+    }
+}
+
+fn resolve_theme_file_path(raw: &str, cwd: &std::path::Path) -> PathBuf {
+    let expanded = if raw == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(raw))
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw))
+    } else {
+        PathBuf::from(raw)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    }
+}
+
+fn parse_custom_theme_document(
+    body: &str,
+) -> Result<Vec<(String, frame::style::ThemeColors)>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|err| format!("JSON parse error: {err}"))?;
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(parse_custom_theme_value)
+            .collect::<Result<Vec<_>, _>>(),
+        serde_json::Value::Object(mut map) => {
+            if let Some(themes) = map.remove("themes") {
+                let list = themes
+                    .as_array()
+                    .ok_or_else(|| "`themes` must be an array".to_owned())?;
+                return list
+                    .iter()
+                    .map(parse_custom_theme_value)
+                    .collect::<Result<Vec<_>, _>>();
+            }
+            Ok(vec![parse_custom_theme_value(&serde_json::Value::Object(
+                map,
+            ))?])
+        }
+        _ => Err("expected a JSON object or array".to_owned()),
+    }
+}
+
+fn parse_custom_theme_value(
+    value: &serde_json::Value,
+) -> Result<(String, frame::style::ThemeColors), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "each theme must be a JSON object".to_owned())?;
+    let name = object
+        .get("name")
+        .or_else(|| object.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "theme object must include non-empty `name` or `id`".to_owned())?
+        .to_ascii_lowercase();
+    let mut theme = object
+        .get("extends")
+        .and_then(serde_json::Value::as_str)
+        .map(frame::style::ThemeColors::from_name)
+        .unwrap_or_else(frame::style::ThemeColors::dark);
+
+    apply_color_key(object, &["primary"], &mut theme.primary)?;
+    apply_color_key(object, &["secondary"], &mut theme.secondary)?;
+    apply_color_key(object, &["accent"], &mut theme.accent)?;
+    apply_color_key(object, &["background"], &mut theme.background)?;
+    apply_color_key(object, &["text"], &mut theme.text)?;
+    apply_color_key(object, &["text_dim", "textDim"], &mut theme.text_dim)?;
+    apply_color_key(object, &["text_muted", "textMuted"], &mut theme.text_muted)?;
+    apply_color_key(object, &["success"], &mut theme.success)?;
+    apply_color_key(object, &["warning"], &mut theme.warning)?;
+    apply_color_key(object, &["error"], &mut theme.error)?;
+    apply_color_key(object, &["info"], &mut theme.info)?;
+    apply_color_key(object, &["border"], &mut theme.border)?;
+    apply_color_key(
+        object,
+        &["border_focus", "borderFocus"],
+        &mut theme.border_focus,
+    )?;
+
+    if let Some(surface) = object.get("surface").or_else(|| object.get("surfaces")) {
+        let values = surface
+            .as_array()
+            .ok_or_else(|| "`surface` must be an array of four colors".to_owned())?;
+        if values.len() != 4 {
+            return Err("`surface` must contain exactly four colors".to_owned());
+        }
+        for (index, value) in values.iter().enumerate() {
+            theme.surface[index] = parse_hex_color(value, "surface")?;
+        }
+    }
+
+    Ok((name, theme))
+}
+
+fn apply_color_key(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    target: &mut ratatui::style::Color,
+) -> Result<(), String> {
+    let value = keys.iter().find_map(|key| object.get(*key));
+    if let Some(value) = value {
+        *target = parse_hex_color(value, keys[0])?;
+    }
+    Ok(())
+}
+
+fn parse_hex_color(value: &serde_json::Value, key: &str) -> Result<ratatui::style::Color, String> {
+    let Some(raw) = value.as_str() else {
+        return Err(format!("`{key}` must be a color string like #RRGGBB"));
+    };
+    let trimmed = raw.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!("`{key}` must be #RRGGBB (got `{raw}`)"));
+    }
+    let parse = |slice: &str| {
+        u8::from_str_radix(slice, 16).map_err(|err| format!("invalid `{key}` color `{raw}`: {err}"))
+    };
+    Ok(ratatui::style::Color::Rgb(
+        parse(&hex[0..2])?,
+        parse(&hex[2..4])?,
+        parse(&hex[4..6])?,
+    ))
+}
+
 fn configured_custom_slash_commands() -> Vec<CustomSlashCommand> {
     let Some(config) = effective_config() else {
         return Vec::new();
@@ -6429,6 +6871,62 @@ mod tests {
         let _wait = deliver_permission(&mut a, "write", "marker.txt");
         assert!(a.permission_open());
         assert_eq!(a.permission_prompt(), Some(("write", "marker.txt", 0, "")));
+    }
+
+    #[test]
+    fn attention_badge_fires_for_documented_events_and_respects_quiet_mode() {
+        let mut a = app();
+        a.set_attention_config(AttentionConfig {
+            enabled: true,
+            quiet: false,
+            audio: true,
+            visual: true,
+            completion: true,
+            error: true,
+            permission: true,
+        });
+
+        // Documented completion event.
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("ping".to_owned(), rx, flag());
+        tx.send(TurnMessage::Finished).expect("finish turn");
+        a.poll_turn();
+        assert_eq!(a.attention_badge(), Some("completion"));
+        assert!(
+            a.drain_pending_bells() > 0,
+            "completion cue schedules an audible bell"
+        );
+
+        // Documented permission event.
+        let _wait = deliver_permission(&mut a, "write", "marker.txt");
+        assert_eq!(a.attention_badge(), Some("permission"));
+        let _ = a.drain_pending_bells();
+
+        // Non-documented shell actions do not trigger an attention badge.
+        a.attention_badge = None;
+        a.set_input_value("!echo hi");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.attention_badge().is_none(),
+            "shell mode command is not a documented attention cue source"
+        );
+
+        // Quiet mode suppresses documented cues.
+        a.set_attention_config(AttentionConfig {
+            quiet: true,
+            ..AttentionConfig::default()
+        });
+        a.attention_badge = None;
+        a.set_turn_error("boom".to_owned());
+        assert!(
+            a.attention_badge().is_none(),
+            "quiet mode suppresses visual attention cues"
+        );
+        assert_eq!(
+            a.drain_pending_bells(),
+            0,
+            "quiet mode suppresses audible attention cues"
+        );
     }
 
     // Pressing `y` approves the ask once: the decision is a one-shot Allow, the prompt is dismissed,
@@ -7951,6 +8449,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_custom_theme_document_accepts_partial_overrides() {
+        let parsed = parse_custom_theme_document(
+            r##"
+            {
+              "name": "nebula_custom",
+              "extends": "dark",
+              "primary": "#ff00ff",
+              "surface": ["#0a0a0a", "#141414", "#1e1e1e", "#282828"]
+            }
+            "##,
+        )
+        .expect("theme document parses");
+        assert_eq!(parsed.len(), 1);
+        let (name, theme) = &parsed[0];
+        assert_eq!(name, "nebula_custom");
+        assert_eq!(theme.primary, ratatui::style::Color::Rgb(255, 0, 255));
+        assert_eq!(theme.surface[0], ratatui::style::Color::Rgb(10, 10, 10));
+    }
+
+    #[test]
+    fn parse_custom_theme_document_rejects_invalid_hex_color() {
+        let err = parse_custom_theme_document(
+            r##"
+            {
+              "name": "broken",
+              "primary": "#zz00zz"
+            }
+            "##,
+        )
+        .expect_err("invalid color should fail");
+        assert!(
+            err.contains("primary"),
+            "error points to offending color key: {err}"
+        );
+    }
+
+    #[test]
     fn dispatching_exit_quits() {
         let mut a = app();
         type_str(&mut a, "/exit");
@@ -8495,6 +9030,24 @@ mod tests {
             a.confirm_theme_selection().is_none(),
             "only the theme picker commits a theme on confirm"
         );
+    }
+
+    #[test]
+    fn custom_runtime_theme_appears_in_the_theme_picker() {
+        frame::style::ThemeColors::clear_custom_themes();
+        let mut custom = frame::style::ThemeColors::dark();
+        custom.primary = ratatui::style::Color::Rgb(255, 0, 255);
+        frame::style::ThemeColors::register_custom_theme("nebula_custom", custom);
+
+        let mut a = app();
+        dispatch(&mut a, "themes");
+        let dialog = a.dialog().expect("theme picker opened");
+        assert!(
+            dialog.items.iter().any(|name| name == "nebula_custom"),
+            "custom runtime theme appears in picker: {:?}",
+            dialog.items
+        );
+        frame::style::ThemeColors::clear_custom_themes();
     }
 
     #[test]

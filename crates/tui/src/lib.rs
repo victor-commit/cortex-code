@@ -96,8 +96,12 @@ pub fn launch_with_options(options: LaunchOptions) -> ExitCode {
 
 fn run(options: LaunchOptions) -> io::Result<()> {
     let mut app = App::new(initial_status());
+    for diagnostic in app::load_custom_themes_from_config() {
+        app.note_error(diagnostic);
+    }
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
+    app.set_attention_config(app::configured_attention_config());
     // Apply any user keybind overrides from config so custom/leader bindings take effect at launch.
     let (keybinds, keybind_diagnostics) = keybind::Keybinds::load_with_diagnostics();
     app.set_keybinds(keybinds);
@@ -425,6 +429,16 @@ fn event_loop<B: Backend + Write>(
 
         // Expire any toasts whose display window has elapsed so they auto-dismiss on a timer.
         app.tick_toasts();
+        app.tick_attention();
+
+        let bells = app.drain_pending_bells();
+        if bells > 0 {
+            let backend = terminal.backend_mut();
+            for _ in 0..bells {
+                backend.write_all(b"\x07")?;
+            }
+            Write::flush(backend)?;
+        }
 
         if app.should_quit {
             break;

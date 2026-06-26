@@ -17,6 +17,10 @@
 //! constants are the single source of truth for the finalized single theme consumed by both the
 //! markdown renderer (`frame::markdown`) and the ported `tui-components` widgets.
 
+use std::collections::BTreeMap;
+use std::sync::RwLock;
+
+use once_cell::sync::Lazy;
 use ratatui::style::{Color, Modifier, Style};
 
 // ============================================================
@@ -138,6 +142,7 @@ pub const BORDER_HIGHLIGHT: Color = BORDER_FOCUS;
 // ============================================================
 
 /// Theme color configuration for supporting multiple themes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeColors {
     /// Primary accent color.
     pub primary: Color,
@@ -270,21 +275,288 @@ impl ThemeColors {
         }
     }
 
+    /// Dracula-inspired theme.
+    pub fn dracula() -> Self {
+        Self {
+            primary: Color::Rgb(189, 147, 249),
+            secondary: Color::Rgb(139, 233, 253),
+            accent: Color::Rgb(255, 121, 198),
+            background: Color::Rgb(40, 42, 54),
+            surface: [
+                Color::Rgb(45, 48, 62),
+                Color::Rgb(53, 57, 75),
+                Color::Rgb(64, 69, 90),
+                Color::Rgb(76, 82, 106),
+            ],
+            text: Color::Rgb(248, 248, 242),
+            text_dim: Color::Rgb(189, 192, 210),
+            text_muted: Color::Rgb(98, 114, 164),
+            success: Color::Rgb(80, 250, 123),
+            warning: Color::Rgb(241, 250, 140),
+            error: Color::Rgb(255, 85, 85),
+            info: Color::Rgb(139, 233, 253),
+            border: Color::Rgb(98, 114, 164),
+            border_focus: Color::Rgb(189, 147, 249),
+        }
+    }
+
+    /// Nord-inspired dark theme.
+    pub fn nord() -> Self {
+        Self {
+            primary: Color::Rgb(143, 188, 187),
+            secondary: Color::Rgb(136, 192, 208),
+            accent: Color::Rgb(129, 161, 193),
+            background: Color::Rgb(46, 52, 64),
+            surface: [
+                Color::Rgb(59, 66, 82),
+                Color::Rgb(67, 76, 94),
+                Color::Rgb(76, 86, 106),
+                Color::Rgb(94, 103, 124),
+            ],
+            text: Color::Rgb(236, 239, 244),
+            text_dim: Color::Rgb(216, 222, 233),
+            text_muted: Color::Rgb(129, 161, 193),
+            success: Color::Rgb(163, 190, 140),
+            warning: Color::Rgb(235, 203, 139),
+            error: Color::Rgb(191, 97, 106),
+            info: Color::Rgb(136, 192, 208),
+            border: Color::Rgb(76, 86, 106),
+            border_focus: Color::Rgb(143, 188, 187),
+        }
+    }
+
+    /// Solarized-inspired dark theme.
+    pub fn solarized_dark() -> Self {
+        Self {
+            primary: Color::Rgb(38, 139, 210),
+            secondary: Color::Rgb(42, 161, 152),
+            accent: Color::Rgb(108, 113, 196),
+            background: Color::Rgb(0, 43, 54),
+            surface: [
+                Color::Rgb(7, 54, 66),
+                Color::Rgb(15, 63, 76),
+                Color::Rgb(28, 74, 89),
+                Color::Rgb(39, 86, 102),
+            ],
+            text: Color::Rgb(131, 148, 150),
+            text_dim: Color::Rgb(101, 123, 131),
+            text_muted: Color::Rgb(88, 110, 117),
+            success: Color::Rgb(133, 153, 0),
+            warning: Color::Rgb(181, 137, 0),
+            error: Color::Rgb(220, 50, 47),
+            info: Color::Rgb(38, 139, 210),
+            border: Color::Rgb(88, 110, 117),
+            border_focus: Color::Rgb(42, 161, 152),
+        }
+    }
+
+    /// Gruvbox-inspired dark theme.
+    pub fn gruvbox_dark() -> Self {
+        Self {
+            primary: Color::Rgb(250, 189, 47),
+            secondary: Color::Rgb(131, 165, 152),
+            accent: Color::Rgb(211, 134, 155),
+            background: Color::Rgb(40, 40, 40),
+            surface: [
+                Color::Rgb(50, 48, 47),
+                Color::Rgb(60, 56, 54),
+                Color::Rgb(80, 73, 69),
+                Color::Rgb(102, 92, 84),
+            ],
+            text: Color::Rgb(235, 219, 178),
+            text_dim: Color::Rgb(213, 196, 161),
+            text_muted: Color::Rgb(146, 131, 116),
+            success: Color::Rgb(184, 187, 38),
+            warning: Color::Rgb(250, 189, 47),
+            error: Color::Rgb(251, 73, 52),
+            info: Color::Rgb(131, 165, 152),
+            border: Color::Rgb(102, 92, 84),
+            border_focus: Color::Rgb(250, 189, 47),
+        }
+    }
+
+    /// Tokyo Night-inspired dark theme.
+    pub fn tokyo_night() -> Self {
+        Self {
+            primary: Color::Rgb(122, 162, 247),
+            secondary: Color::Rgb(125, 207, 255),
+            accent: Color::Rgb(187, 154, 247),
+            background: Color::Rgb(26, 27, 38),
+            surface: [
+                Color::Rgb(31, 34, 50),
+                Color::Rgb(36, 40, 59),
+                Color::Rgb(52, 59, 88),
+                Color::Rgb(73, 83, 130),
+            ],
+            text: Color::Rgb(192, 202, 245),
+            text_dim: Color::Rgb(169, 177, 214),
+            text_muted: Color::Rgb(86, 95, 137),
+            success: Color::Rgb(158, 206, 106),
+            warning: Color::Rgb(224, 175, 104),
+            error: Color::Rgb(247, 118, 142),
+            info: Color::Rgb(122, 162, 247),
+            border: Color::Rgb(65, 72, 104),
+            border_focus: Color::Rgb(125, 207, 255),
+        }
+    }
+
+    /// Catppuccin Mocha-inspired dark theme.
+    pub fn catppuccin_mocha() -> Self {
+        Self {
+            primary: Color::Rgb(203, 166, 247),
+            secondary: Color::Rgb(137, 220, 235),
+            accent: Color::Rgb(245, 194, 231),
+            background: Color::Rgb(30, 30, 46),
+            surface: [
+                Color::Rgb(49, 50, 68),
+                Color::Rgb(69, 71, 90),
+                Color::Rgb(88, 91, 112),
+                Color::Rgb(108, 112, 134),
+            ],
+            text: Color::Rgb(205, 214, 244),
+            text_dim: Color::Rgb(186, 194, 222),
+            text_muted: Color::Rgb(127, 132, 156),
+            success: Color::Rgb(166, 227, 161),
+            warning: Color::Rgb(249, 226, 175),
+            error: Color::Rgb(243, 139, 168),
+            info: Color::Rgb(137, 220, 235),
+            border: Color::Rgb(108, 112, 134),
+            border_focus: Color::Rgb(203, 166, 247),
+        }
+    }
+
+    /// One Dark-inspired theme.
+    pub fn one_dark() -> Self {
+        Self {
+            primary: Color::Rgb(97, 175, 239),
+            secondary: Color::Rgb(86, 182, 194),
+            accent: Color::Rgb(198, 120, 221),
+            background: Color::Rgb(40, 44, 52),
+            surface: [
+                Color::Rgb(44, 49, 60),
+                Color::Rgb(50, 55, 67),
+                Color::Rgb(58, 63, 77),
+                Color::Rgb(72, 78, 94),
+            ],
+            text: Color::Rgb(171, 178, 191),
+            text_dim: Color::Rgb(146, 153, 166),
+            text_muted: Color::Rgb(92, 99, 112),
+            success: Color::Rgb(152, 195, 121),
+            warning: Color::Rgb(229, 192, 123),
+            error: Color::Rgb(224, 108, 117),
+            info: Color::Rgb(97, 175, 239),
+            border: Color::Rgb(72, 78, 94),
+            border_focus: Color::Rgb(198, 120, 221),
+        }
+    }
+
+    /// Rose Pine-inspired dark theme.
+    pub fn rose_pine() -> Self {
+        Self {
+            primary: Color::Rgb(196, 167, 231),
+            secondary: Color::Rgb(156, 207, 216),
+            accent: Color::Rgb(235, 188, 186),
+            background: Color::Rgb(25, 23, 36),
+            surface: [
+                Color::Rgb(31, 29, 46),
+                Color::Rgb(38, 35, 58),
+                Color::Rgb(49, 44, 63),
+                Color::Rgb(64, 58, 82),
+            ],
+            text: Color::Rgb(224, 222, 244),
+            text_dim: Color::Rgb(144, 140, 170),
+            text_muted: Color::Rgb(110, 106, 134),
+            success: Color::Rgb(49, 116, 143),
+            warning: Color::Rgb(246, 193, 119),
+            error: Color::Rgb(235, 111, 146),
+            info: Color::Rgb(156, 207, 216),
+            border: Color::Rgb(64, 58, 82),
+            border_focus: Color::Rgb(196, 167, 231),
+        }
+    }
+
     /// Get a theme by name.
     pub fn from_name(name: &str) -> Self {
-        match name.to_lowercase().as_str() {
+        let key = name.to_lowercase();
+        if let Some(theme) = CUSTOM_THEMES
+            .read()
+            .ok()
+            .and_then(|themes| themes.get(&key).cloned())
+        {
+            return theme;
+        }
+        match key.as_str() {
             "light" => Self::light(),
             "ocean_dark" | "ocean" => Self::ocean_dark(),
             "monokai" => Self::monokai(),
+            "dracula" => Self::dracula(),
+            "nord" => Self::nord(),
+            "solarized_dark" | "solarized" => Self::solarized_dark(),
+            "gruvbox_dark" | "gruvbox" => Self::gruvbox_dark(),
+            "tokyo_night" | "tokyonight" => Self::tokyo_night(),
+            "catppuccin_mocha" | "catppuccin" => Self::catppuccin_mocha(),
+            "one_dark" | "onedark" => Self::one_dark(),
+            "rose_pine" | "rosepine" => Self::rose_pine(),
             _ => Self::dark(),
         }
     }
 
     /// Get all available theme names.
     pub fn available_themes() -> &'static [&'static str] {
-        &["dark", "light", "ocean_dark", "monokai"]
+        BUILTIN_THEME_NAMES
+    }
+
+    /// Get all theme names, including custom JSON themes loaded at runtime.
+    #[must_use]
+    pub fn available_theme_names() -> Vec<String> {
+        let mut names = BUILTIN_THEME_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>();
+        if let Ok(custom) = CUSTOM_THEMES.read() {
+            names.extend(custom.keys().cloned());
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Register one custom theme by name (case-insensitive key).
+    pub fn register_custom_theme(name: &str, theme: ThemeColors) {
+        let key = name.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        if let Ok(mut custom) = CUSTOM_THEMES.write() {
+            custom.insert(key, theme);
+        }
+    }
+
+    /// Remove every custom runtime theme.
+    pub fn clear_custom_themes() {
+        if let Ok(mut custom) = CUSTOM_THEMES.write() {
+            custom.clear();
+        }
     }
 }
+
+const BUILTIN_THEME_NAMES: &[&str] = &[
+    "dark",
+    "light",
+    "ocean_dark",
+    "monokai",
+    "dracula",
+    "nord",
+    "solarized_dark",
+    "gruvbox_dark",
+    "tokyo_night",
+    "catppuccin_mocha",
+    "one_dark",
+    "rose_pine",
+];
+
+static CUSTOM_THEMES: Lazy<RwLock<BTreeMap<String, ThemeColors>>> =
+    Lazy::new(|| RwLock::new(BTreeMap::new()));
 
 impl Default for ThemeColors {
     fn default() -> Self {
@@ -465,6 +737,9 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static CUSTOM_THEME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn canonical_v2_tokens_locked() {
@@ -523,6 +798,8 @@ mod tests {
 
     #[test]
     fn test_theme_from_name() {
+        let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
+        ThemeColors::clear_custom_themes();
         assert_eq!(
             ThemeColors::from_name("light").background,
             Color::Rgb(255, 255, 255)
@@ -530,6 +807,10 @@ mod tests {
         assert_eq!(
             ThemeColors::from_name("monokai").primary,
             Color::Rgb(166, 226, 46)
+        );
+        assert_eq!(
+            ThemeColors::from_name("dracula").background,
+            Color::Rgb(40, 42, 54)
         );
         // Unknown falls back to dark.
         assert_eq!(
@@ -540,8 +821,32 @@ mod tests {
 
     #[test]
     fn test_available_themes() {
+        let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
+        ThemeColors::clear_custom_themes();
         let themes = ThemeColors::available_themes();
-        assert_eq!(themes.len(), 4);
+        assert_eq!(themes.len(), 12);
         assert!(themes.contains(&"monokai"));
+        assert!(themes.contains(&"catppuccin_mocha"));
+    }
+
+    #[test]
+    fn custom_theme_registration_round_trips() {
+        let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
+        ThemeColors::clear_custom_themes();
+        let mut custom = ThemeColors::dark();
+        custom.primary = Color::Rgb(255, 0, 255);
+        ThemeColors::register_custom_theme("nebula_custom", custom.clone());
+
+        let names = ThemeColors::available_theme_names();
+        assert!(
+            names.iter().any(|name| name == "nebula_custom"),
+            "custom theme appears in the theme catalogue"
+        );
+        assert_eq!(
+            ThemeColors::from_name("nebula_custom").primary,
+            custom.primary,
+            "lookup resolves to the registered runtime palette"
+        );
+        ThemeColors::clear_custom_themes();
     }
 }

@@ -2243,6 +2243,16 @@ pub fn footer_line(app: &App) -> Line<'static> {
     spans.push(sep());
     spans.push(Span::styled("queued ", label));
     spans.push(Span::styled(app.queued_count().to_string(), value));
+    if let Some(attention) = app.attention_badge() {
+        spans.push(sep());
+        spans.push(Span::styled("attention ", label));
+        spans.push(Span::styled(
+            attention.to_owned(),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     Line::from(spans)
 }
 
