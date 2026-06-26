@@ -328,22 +328,25 @@ fn gap_plugin_013_plugin_install_pins_and_is_deterministic() {
 
     let sandbox = Sandbox::new("gap-013");
     let package = sandbox.project.join("pkg");
-    let marker = sandbox.project.join("install-marker.txt");
+    let marker = sandbox.home.join("markers/install-marker.txt");
+    let cwd_marker = sandbox.project.join("install-marker.txt");
+    std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("marker dir");
     write_package_plugin(
         &package,
         "gap-install-proof",
         "2.4.6",
-        r#"
+        &(r#"
 import { appendFile } from "node:fs/promises";
 
 export default async function plugin() {
   return {
     async event() {
-      await appendFile("install-marker.txt", "loaded\n");
+      await appendFile("__MARKER__", "loaded\n");
     }
   };
 }
-"#,
+"#
+        .replace("__MARKER__", &marker.display().to_string())),
         ">=0.1.0 <1.0.0",
     );
 
@@ -391,6 +394,10 @@ export default async function plugin() {
     assert_eq!(
         String::from_utf8_lossy(&run_output.stdout).trim(),
         "installed"
+    );
+    assert!(
+        !cwd_marker.exists(),
+        "plugin fixture must not create install-marker relative to the working directory"
     );
 
     let marker_before_pure = std::fs::read_to_string(&marker).expect("plugin marker");
