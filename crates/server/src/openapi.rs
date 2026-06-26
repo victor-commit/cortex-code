@@ -383,6 +383,34 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "404": json_response("Share was not found or was revoked.", "ErrorResponse")
                     }
                 }
+            },
+            "/project/discovery": {
+                "get": {
+                    "operationId": "getProjectDiscovery",
+                    "summary": "Discover the current project directory and plugin workspace adapters.",
+                    "responses": {
+                        "200": json_response("Project discovery metadata.", "ProjectDiscoveryResponse")
+                    }
+                }
+            },
+            "/experimental/workspace/adapter": {
+                "get": {
+                    "operationId": "listWorkspaceAdapterDiscovery",
+                    "summary": "List plugin-registered experimental workspace adapters.",
+                    "responses": {
+                        "200": {
+                            "description": "Workspace adapter discovery entries.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": { "$ref": "#/components/schemas/WorkspaceAdapterDiscovery" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "components": {
@@ -539,6 +567,20 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "text": { "type": "string" }
                     }
                 },
+                "ProjectDiscoveryResponse": {
+                    "type": "object",
+                    "required": ["directory", "workspace_adapters"],
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Current server workspace directory (redacted when needed)."
+                        },
+                        "workspace_adapters": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/WorkspaceAdapterDiscovery" }
+                        }
+                    }
+                },
                 "PendingPermissionItem": {
                     "type": "object",
                     "required": ["id", "sessionId", "messageId", "tool", "subject", "waitedMs"],
@@ -664,6 +706,28 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "total_tokens": { "type": "integer", "minimum": 0 },
                         "cost": { "type": ["number", "null"], "minimum": 0 }
                     }
+                },
+                "WorkspaceAdapterDiscovery": {
+                    "type": "object",
+                    "required": ["plugin", "type", "name", "description"],
+                    "properties": {
+                        "plugin": {
+                            "type": "string",
+                            "description": "Plugin identity from the configured plugin spec (redacted)."
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Stable workspace adapter type id."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Human-readable adapter name."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Adapter description surfaced to discovery clients."
+                        }
+                    }
                 }
             }
         }
@@ -692,6 +756,8 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/session/{id}/share", &["post"]),
     ("/session/{id}/unshare", &["post"]),
     ("/share/{share_id}", &["get"]),
+    ("/project/discovery", &["get"]),
+    ("/experimental/workspace/adapter", &["get"]),
 ];
 
 fn add_auth_documentation(document: &mut serde_json::Value) {

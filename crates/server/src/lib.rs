@@ -629,6 +629,14 @@ pub fn app_with_state(state: ServerState) -> Router {
             post(unshare_session).options(preflight),
         )
         .route("/share/{share_id}", get(get_share).options(preflight))
+        .route(
+            "/project/discovery",
+            get(project_discovery).options(preflight),
+        )
+        .route(
+            "/experimental/workspace/adapter",
+            get(list_workspace_adapter_discovery).options(preflight),
+        )
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth, auth_and_cors))
 }
@@ -1046,6 +1054,32 @@ struct TodoListResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ProjectDiscoveryResponse {
+    directory: String,
+    workspace_adapters: Vec<WorkspaceAdapterDiscovery>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct WorkspaceAdapterDiscovery {
+    plugin: String,
+    #[serde(rename = "type")]
+    workspace_type: String,
+    name: String,
+    description: String,
+}
+
+impl From<plugins::PluginWorkspaceAdapterEntry> for WorkspaceAdapterDiscovery {
+    fn from(entry: plugins::PluginWorkspaceAdapterEntry) -> Self {
+        Self {
+            plugin: redaction::redact(&entry.plugin),
+            workspace_type: redaction::redact(&entry.workspace.workspace_type),
+            name: redaction::redact(&entry.workspace.name),
+            description: redaction::redact(&entry.workspace.description),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PendingPermissionResponse {
     pending: Vec<PendingPermissionItem>,
@@ -1290,6 +1324,22 @@ async fn list_todos(
         .list_for_session(&id)
         .map_err(ApiError::from_db)?;
     Ok(Json(TodoListResponse { session, todos }))
+}
+
+async fn project_discovery(
+    State(state): State<ServerState>,
+) -> Result<Json<ProjectDiscoveryResponse>, ApiError> {
+    let workspace_adapters = load_workspace_adapter_discovery(&state)?;
+    Ok(Json(ProjectDiscoveryResponse {
+        directory: redaction::redact(&state.cwd.to_string_lossy()),
+        workspace_adapters,
+    }))
+}
+
+async fn list_workspace_adapter_discovery(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<WorkspaceAdapterDiscovery>>, ApiError> {
+    Ok(Json(load_workspace_adapter_discovery(&state)?))
 }
 
 async fn list_pending_permissions(
@@ -1805,6 +1855,34 @@ async fn run_message_turn(
         usage: outcome.usage,
         finish_reason: Some(outcome.finish_reason),
     })
+}
+
+fn load_workspace_adapter_discovery(
+    state: &ServerState,
+) -> Result<Vec<WorkspaceAdapterDiscovery>, ApiError> {
+    let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
+    let effective_config = settings::load(config_inputs).map_err(config_api_error)?;
+    let plugin_config =
+        plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
+            .map_err(plugin_config_error)?;
+    let resolved_config =
+        serde_json::to_value(effective_config.table()).unwrap_or_else(|_| serde_json::json!({}));
+    let resolved_config = match resolved_config {
+        serde_json::Value::Object(object) => serde_json::Value::Object(object),
+        _ => serde_json::json!({}),
+    };
+    let plugin_hooks = plugins::PluginEventHooks::load_or_disabled_with_config(
+        &plugin_config,
+        state.config.pure_plugins(),
+        "serve",
+        resolved_config,
+    )
+    .map_err(plugin_runtime_error)?;
+    Ok(plugin_hooks
+        .workspace_adapter_entries()
+        .into_iter()
+        .map(WorkspaceAdapterDiscovery::from)
+        .collect())
 }
 
 struct ResolvedTurnProvider {

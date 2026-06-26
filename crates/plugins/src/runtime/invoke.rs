@@ -1359,6 +1359,28 @@ impl PluginEventHooks {
             .collect()
     }
 
+    /// Workspace adapters contributed by loaded plugins, annotated with plugin identity.
+    ///
+    /// This shape is intended for discovery surfaces that must expose both the adapter metadata
+    /// and which configured plugin registered it.
+    #[must_use]
+    pub fn workspace_adapter_entries(&self) -> Vec<PluginWorkspaceAdapterEntry> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| {
+                loaded
+                    .report
+                    .workspace_entries
+                    .iter()
+                    .cloned()
+                    .map(move |workspace| PluginWorkspaceAdapterEntry {
+                        plugin: loaded.spec.raw_spec().to_owned(),
+                        workspace,
+                    })
+            })
+            .collect()
+    }
+
     /// Plugin API v2 command entries contributed by loaded plugins.
     #[must_use]
     pub fn command_entries(&self) -> Vec<PluginCommandRegistration> {
@@ -1777,6 +1799,16 @@ pub struct PluginWorkspaceRegistration {
     /// Optional description shown in workspace discovery surfaces.
     #[serde(default)]
     pub description: String,
+}
+
+/// A plugin-contributed workspace adapter entry plus the registering plugin identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginWorkspaceAdapterEntry {
+    /// Plugin identity as configured in `cortex.toml` (spec/path/package string).
+    pub plugin: String,
+    /// Workspace adapter metadata contributed by this plugin.
+    #[serde(flatten)]
+    pub workspace: PluginWorkspaceRegistration,
 }
 
 /// A plugin-contributed agent entry registered through the plugin API v2 `agent` surface.

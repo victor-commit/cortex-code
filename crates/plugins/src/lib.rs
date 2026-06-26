@@ -18,6 +18,6 @@ pub use runtime::{
     PluginHookReport, PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
     PluginProviderRegistration, PluginRuntimeError, PluginSkillRegistration,
     PluginThemeRegistration, PluginToolExecution, PluginToolRegistration,
-    PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection, detect_runtime,
-    detect_runtime_in_path,
+    PluginWorkspaceAdapterEntry, PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection,
+    detect_runtime, detect_runtime_in_path,
 };

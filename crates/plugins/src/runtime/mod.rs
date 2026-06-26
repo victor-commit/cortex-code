@@ -9,5 +9,5 @@ pub use invoke::{
     PluginEventHooks, PluginHookOutput, PluginHookReport, PluginLoadReport,
     PluginModelRegistration, PluginProviderCompletion, PluginProviderRegistration,
     PluginRuntimeError, PluginSkillRegistration, PluginThemeRegistration, PluginToolExecution,
-    PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
+    PluginToolRegistration, PluginWorkspaceAdapterEntry, PluginWorkspaceRegistration, RuntimeHost,
 };

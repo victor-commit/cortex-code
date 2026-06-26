@@ -68,6 +68,8 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session/{id}/share", "post", 200);
     assert_method(paths, "/session/{id}/unshare", "post", 200);
     assert_method(paths, "/share/{share_id}", "get", 200);
+    assert_method(paths, "/project/discovery", "get", 200);
+    assert_method(paths, "/experimental/workspace/adapter", "get", 200);
     assert_eq!(
         document["components"]["securitySchemes"]["bearerAuth"]["scheme"], "bearer",
         "OpenAPI should document the Authorization bearer scheme"
@@ -94,6 +96,17 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
         document["components"]["schemas"]["PromptResponse"]["properties"]["agent"]["type"],
         "string",
         "prompt responses should document the active agent field"
+    );
+    assert_eq!(
+        document["components"]["schemas"]["WorkspaceAdapterDiscovery"]["required"],
+        serde_json::json!(["plugin", "type", "name", "description"]),
+        "workspace adapter discovery entries should expose stable plugin/type/name/description fields"
+    );
+    assert_eq!(
+        document["components"]["schemas"]["ProjectDiscoveryResponse"]["properties"]["workspace_adapters"]
+            ["items"]["$ref"],
+        "#/components/schemas/WorkspaceAdapterDiscovery",
+        "project discovery should document workspace adapter entries"
     );
     assert!(
         !document.to_string().contains("server-token"),
@@ -124,6 +137,8 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/session/{id}/share"
                     | "/session/{id}/unshare"
                     | "/share/{share_id}"
+                    | "/project/discovery"
+                    | "/experimental/workspace/adapter"
                     | "/openapi.json"
             ),
             "OpenAPI document should not advertise phantom path {path:?}"
@@ -157,6 +172,11 @@ async fn openapi_documented_gets_match_real_routes_and_unknown_paths_404() {
         declared_status(&document, "/session", "get"),
         Some(200),
         "OpenAPI should declare GET /session 200"
+    );
+    assert_eq!(
+        declared_status(&document, "/project/discovery", "get"),
+        Some(200),
+        "OpenAPI should declare GET /project/discovery 200"
     );
 
     let health = app
