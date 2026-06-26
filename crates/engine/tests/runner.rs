@@ -13,7 +13,9 @@ use std::time::Duration;
 use engine::{RunnerEvent, SessionRunner, ToolDispatchResult, ToolDispatcher, Turn};
 use errors::Diagnostic;
 use futures_util::future::{BoxFuture, pending};
-use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, ToolDef, Usage};
+use llm::{
+    FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, ToolChoice, ToolDef, Usage,
+};
 use tokio::time::sleep;
 
 /// A provider that replays a pre-scripted sequence of event batches, one batch per round-trip.
@@ -84,6 +86,90 @@ impl Provider for FailingProvider {
     ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
         let error = self.error.clone();
         Box::pin(async move { Err(error) })
+    }
+}
+
+/// Provider fixture that keeps requesting a tool while tool-choice is force-enabled. Once the
+/// runner relaxes tool-choice, it emits final text and stops.
+struct ToolChoiceLoopingProvider {
+    seen_tool_choices: Mutex<Vec<Option<ToolChoice>>>,
+}
+
+impl ToolChoiceLoopingProvider {
+    fn seen_tool_choices(&self) -> Vec<Option<ToolChoice>> {
+        self.seen_tool_choices
+            .lock()
+            .expect("tool-choice captures lock")
+            .clone()
+    }
+}
+
+impl Provider for ToolChoiceLoopingProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        let choice = request.tool_choice.clone();
+        self.seen_tool_choices
+            .lock()
+            .expect("tool-choice captures lock")
+            .push(choice.clone());
+        Box::pin(async move {
+            let events = match choice {
+                Some(ToolChoice::Required | ToolChoice::Tool { .. }) => vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_once".to_owned(),
+                        name: "todo".to_owned(),
+                        arguments: serde_json::json!({
+                            "todos": "1. [completed] forced tool"
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ],
+                _ => vec![
+                    LlmEvent::TextDelta {
+                        text: "TOOL-CHOICE-RELAXED".to_owned(),
+                    },
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+struct CountingTodoDispatcher {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ToolDispatcher for CountingTodoDispatcher {
+    fn definitions(&self) -> Vec<ToolDef> {
+        vec![ToolDef {
+            name: "todo".to_owned(),
+            description: "Record a todo list".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "todos": { "type": "string" } },
+                "required": ["todos"]
+            }),
+        }]
+    }
+
+    fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+        let calls = Arc::clone(&self.calls);
+        Box::pin(async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            ToolDispatchResult {
+                content: "todo updated".to_owned(),
+                parts: vec![protocol::ToolResultPart::text("todo updated")],
+                is_error: false,
+            }
+        })
     }
 }
 
@@ -1522,6 +1608,108 @@ async fn step_budget_is_enforced_with_an_explicit_signal() {
         }
         other => panic!("expected a Done event, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn required_tool_choice_is_relaxed_after_first_tool_round() {
+    let provider = ToolChoiceLoopingProvider {
+        seen_tool_choices: Mutex::new(Vec::new()),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = CountingTodoDispatcher {
+        calls: Arc::clone(&calls),
+    };
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "tool_choice".to_owned(),
+        serde_json::Value::String("required".to_owned()),
+    );
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "exercise forced tool choice")
+                .with_extra_params(params),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    assert!(
+        outcome.is_success(),
+        "required tool-choice should relax after one tool call"
+    );
+    assert_eq!(outcome.answer(), "TOOL-CHOICE-RELAXED");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "required mode should trigger exactly one forced tool dispatch"
+    );
+    let seen = provider.seen_tool_choices();
+    assert_eq!(seen.len(), 2, "expected one continuation request");
+    assert_eq!(seen[0], Some(ToolChoice::Required));
+    assert_eq!(
+        seen[1], None,
+        "runner must clear forced tool-choice before continuation"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, RunnerEvent::Error { kind, .. } if kind == "doom-loop" || kind == "step-limit-exceeded")),
+        "forced single-call flow must not hit loop safeguards"
+    );
+}
+
+#[tokio::test]
+async fn specific_tool_choice_is_relaxed_after_first_tool_round() {
+    let provider = ToolChoiceLoopingProvider {
+        seen_tool_choices: Mutex::new(Vec::new()),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = CountingTodoDispatcher {
+        calls: Arc::clone(&calls),
+    };
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "tool_choice".to_owned(),
+        serde_json::json!({ "type": "tool", "name": "todo" }),
+    );
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new(
+                "google/gemini-2.5-flash",
+                "",
+                "exercise specific forced tool choice",
+            )
+            .with_extra_params(params),
+            &dispatcher,
+            |_| {},
+        )
+        .await;
+
+    assert!(
+        outcome.is_success(),
+        "specific tool-choice should relax after one selected tool call"
+    );
+    assert_eq!(outcome.answer(), "TOOL-CHOICE-RELAXED");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "specific mode should dispatch the selected tool exactly once"
+    );
+    let seen = provider.seen_tool_choices();
+    assert_eq!(seen.len(), 2, "expected one continuation request");
+    assert_eq!(
+        seen[0],
+        Some(ToolChoice::Tool {
+            name: "todo".to_owned()
+        })
+    );
+    assert_eq!(
+        seen[1], None,
+        "runner must clear specific tool-choice before continuation"
+    );
 }
 
 #[tokio::test]

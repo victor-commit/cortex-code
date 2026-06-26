@@ -577,6 +577,12 @@ tool_choice = {tool_choice_toml}
         required_captures.len() >= 2 && required_captures[1].body.contains("\"functionResponse\""),
         "required mode should produce a tool response continuation"
     );
+    let required_follow_up: Value =
+        serde_json::from_str(&required_captures[1].body).expect("required follow-up request json");
+    assert!(
+        required_follow_up["toolConfig"]["functionCallingConfig"].is_null(),
+        "required mode should relax after one forced tool call: {required_follow_up}"
+    );
 
     // specific tool mode
     let (specific_out, specific_captures) = run_mode(
@@ -595,6 +601,12 @@ tool_choice = {tool_choice_toml}
     assert_eq!(
         specific_request["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
         serde_json::json!(["todo"])
+    );
+    let specific_follow_up: Value =
+        serde_json::from_str(&specific_captures[1].body).expect("specific follow-up request json");
+    assert!(
+        specific_follow_up["toolConfig"]["functionCallingConfig"].is_null(),
+        "specific mode should relax after one forced tool call: {specific_follow_up}"
     );
 }
 

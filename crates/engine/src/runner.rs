@@ -23,7 +23,10 @@
 
 use errors::Diagnostic;
 use futures_util::StreamExt;
-use llm::{LlmEvent, LlmRequest, Message, MessageContentPart, Provider, Role, ToolCall, ToolDef};
+use llm::{
+    LlmEvent, LlmRequest, Message, MessageContentPart, Provider, Role, ToolCall, ToolChoice,
+    ToolDef,
+};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -301,6 +304,7 @@ impl SessionRunner {
         let mut tail_messages = policy.tail_messages;
         let mut overflow_recoveries = 0usize;
         let mut setup_retries = 0usize;
+        let mut request_extra_params = turn.extra_params.clone();
 
         let finish_reason = 'turn: loop {
             if steps >= self.max_steps {
@@ -398,7 +402,11 @@ impl SessionRunner {
             }
             last_advertised_tool_defs = Some(tool_defs.clone());
 
-            let request = self.build_request(&turn, &messages, &tool_defs);
+            let request = self.build_request(&turn, &messages, &tool_defs, &request_extra_params);
+            let force_single_tool_choice = matches!(
+                request.tool_choice.as_ref(),
+                Some(ToolChoice::Required | ToolChoice::Tool { .. })
+            );
             let mut stream = match provider.stream(request).await {
                 Ok(stream) => {
                     // A successful stream open resets transient setup retries for subsequent
@@ -516,6 +524,10 @@ impl SessionRunner {
 
             if error.is_some() || round.tool_calls.is_empty() {
                 break round.reason;
+            }
+
+            if force_single_tool_choice {
+                clear_forced_tool_choice_params(&mut request_extra_params);
             }
 
             // Execute the requested tool calls and carry the turn forward (continuation). With a
@@ -657,13 +669,19 @@ impl SessionRunner {
 
     /// Build the provider request for one round-trip from the current working messages and the
     /// advertised tool catalogue.
-    fn build_request(&self, turn: &Turn, messages: &[Message], tools: &[ToolDef]) -> LlmRequest {
+    fn build_request(
+        &self,
+        turn: &Turn,
+        messages: &[Message],
+        tools: &[ToolDef],
+        extra_params: &JsonMap<String, JsonValue>,
+    ) -> LlmRequest {
         let mut request = LlmRequest::new(&turn.model_id);
         request.messages = messages.to_vec();
         request.tools = tools.to_vec();
         request.max_tokens = turn.max_tokens;
         request.temperature = turn.temperature;
-        request.extra_params = turn.extra_params.clone();
+        request.extra_params = extra_params.clone();
         request.extra_headers = turn.extra_headers.clone();
         request.normalize_known_params();
         request
@@ -955,6 +973,11 @@ fn append_system_instructions(messages: &mut Vec<Message>, instructions: &str) {
     } else {
         messages.insert(0, Message::system(instructions.to_owned()));
     }
+}
+
+fn clear_forced_tool_choice_params(params: &mut JsonMap<String, JsonValue>) {
+    params.remove("tool_choice");
+    params.remove("toolChoice");
 }
 
 fn message_media_parts_from_tool_result(
