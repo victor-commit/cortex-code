@@ -96,12 +96,9 @@ pub fn launch_with_options(options: LaunchOptions) -> ExitCode {
 
 fn run(options: LaunchOptions) -> io::Result<()> {
     let mut app = App::new(initial_status());
-    for diagnostic in app::load_custom_themes_from_config() {
-        app.note_error(diagnostic);
-    }
+    app::apply_startup_attention_and_theme_diagnostics(&mut app);
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
-    app.set_attention_config(app::configured_attention_config());
     // Apply any user keybind overrides from config so custom/leader bindings take effect at launch.
     let (keybinds, keybind_diagnostics) = keybind::Keybinds::load_with_diagnostics();
     app.set_keybinds(keybinds);

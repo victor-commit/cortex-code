@@ -6401,6 +6401,27 @@ pub(crate) fn configured_attention_config() -> AttentionConfig {
     config
 }
 
+/// Apply startup attention settings before surfacing any startup diagnostics so quiet/disabled
+/// attention config takes effect before custom-theme load errors call `note_error`.
+pub(crate) fn apply_startup_attention_and_theme_diagnostics(app: &mut App) {
+    apply_attention_config_and_theme_diagnostics(
+        app,
+        configured_attention_config(),
+        load_custom_themes_from_config(),
+    );
+}
+
+fn apply_attention_config_and_theme_diagnostics(
+    app: &mut App,
+    attention_config: AttentionConfig,
+    diagnostics: impl IntoIterator<Item = String>,
+) {
+    app.set_attention_config(attention_config);
+    for diagnostic in diagnostics {
+        app.note_error(diagnostic);
+    }
+}
+
 /// Load custom JSON themes from config and register them with the frame theme catalogue.
 ///
 /// Supported config keys:
@@ -6963,6 +6984,76 @@ mod tests {
             a.drain_pending_bells(),
             0,
             "quiet mode suppresses audible attention cues"
+        );
+    }
+
+    #[test]
+    fn startup_theme_diagnostics_still_surface_errors_when_attention_is_quiet_or_disabled() {
+        let secret = fake_secret();
+        let diagnostic = format!("custom theme file broken.json is invalid: leaked {secret}");
+
+        let quiet = AttentionConfig {
+            quiet: true,
+            ..AttentionConfig::default()
+        };
+        let disabled = AttentionConfig {
+            enabled: false,
+            ..AttentionConfig::default()
+        };
+
+        for config in [quiet, disabled] {
+            let mut a = app();
+            apply_attention_config_and_theme_diagnostics(&mut a, config, [diagnostic.clone()]);
+
+            assert!(
+                a.attention_badge().is_none(),
+                "quiet/disabled startup config suppresses visual cues"
+            );
+            assert_eq!(
+                a.drain_pending_bells(),
+                0,
+                "quiet/disabled startup config suppresses audible cues"
+            );
+
+            let error = match a.transcript.last() {
+                Some(Entry::Error(message)) => message,
+                other => panic!("expected startup diagnostic error entry, got {other:?}"),
+            };
+            assert!(
+                !error.contains(&secret),
+                "startup diagnostic must be redacted: {error}"
+            );
+            assert!(
+                error.contains(redaction::PLACEHOLDER),
+                "startup diagnostic should include redaction placeholder: {error}"
+            );
+            let toast = a.toasts().last().expect("startup diagnostic toast exists");
+            assert_eq!(toast.level, ToastLevel::Error);
+            assert_eq!(toast.message, error.as_str());
+        }
+    }
+
+    #[test]
+    fn startup_theme_diagnostics_emit_error_attention_when_enabled() {
+        let mut a = app();
+        apply_attention_config_and_theme_diagnostics(
+            &mut a,
+            AttentionConfig {
+                enabled: true,
+                quiet: false,
+                audio: true,
+                visual: true,
+                completion: false,
+                error: true,
+                permission: false,
+            },
+            ["custom theme file broken.json is invalid: JSON parse error".to_owned()],
+        );
+
+        assert_eq!(a.attention_badge(), Some("error"));
+        assert!(
+            a.drain_pending_bells() > 0,
+            "enabled startup error attention config should queue a bell"
         );
     }
 
