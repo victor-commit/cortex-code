@@ -52,6 +52,47 @@ async fn event_route_streams_json_sse_frames_from_the_bus() {
 }
 
 #[tokio::test]
+async fn event_route_streams_mcp_catalogue_change_events() {
+    let scratch = Scratch::new("server-event-mcp-catalogue");
+    let bus = Arc::new(EventBus::new());
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path()).with_event_bus(bus.clone()),
+    );
+    let mut stream = subscribe(&app).await;
+
+    bus.publish(&Event::mcp_resources_changed(
+        "demo",
+        vec!["notes://demo".to_owned()],
+    ));
+    bus.publish(&Event::mcp_prompts_changed(
+        "demo",
+        vec!["greet".to_owned()],
+    ));
+
+    let events = collect_data_events(&mut stream, 2, Duration::from_secs(3)).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "mcp.resources.changed"
+                && event["server"] == "demo"
+                && event["resources"]
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry == "notes://demo"))),
+        "SSE should include mcp.resources.changed payloads: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "mcp.prompts.changed"
+                && event["server"] == "demo"
+                && event["prompts"]
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry == "greet"))),
+        "SSE should include mcp.prompts.changed payloads: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery() {
     let scratch = Scratch::new("server-event-redaction");
     let bus = Arc::new(EventBus::new());
@@ -124,6 +165,44 @@ async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery
     assert!(
         events.iter().any(|event| event["kind"] == "turn.done"),
         "terminal event is still delivered after redactor flush: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn event_route_redacts_mcp_log_payloads_before_sse_delivery() {
+    let scratch = Scratch::new("server-event-mcp-log-redaction");
+    let bus = Arc::new(EventBus::new());
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path()).with_event_bus(bus.clone()),
+    );
+    let mut stream = subscribe(&app).await;
+    let secret = format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8));
+
+    bus.publish(&Event::mcp_log_message(
+        "demo",
+        "warning",
+        Some("fixture".to_owned()),
+        serde_json::json!({
+            "message": "server warning",
+            "token": secret,
+        }),
+    ));
+
+    let events = collect_data_events(&mut stream, 1, Duration::from_secs(3)).await;
+    let payload = serde_json::to_string(&events).expect("events JSON");
+    assert!(
+        !payload.contains("deadbeef"),
+        "SSE mcp.log payload must be redacted: {payload}"
+    );
+    assert!(
+        payload.contains(redaction::PLACEHOLDER),
+        "redacted mcp.log payload should include placeholder: {payload}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "mcp.log"
+            && event["server"] == "demo"
+            && event["level"] == "warning"),
+        "SSE should include the mcp.log event metadata: {events:?}"
     );
 }
 

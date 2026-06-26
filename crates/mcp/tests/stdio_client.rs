@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mcp::{McpManager, McpServerConfig, servers_from_value};
+use mcp::{McpConnectOptions, McpManager, McpServerConfig, servers_from_value};
 use serde_json::json;
 
 /// The path to the compiled echo-server fixture binary (Cargo sets this for the package's tests).
@@ -359,6 +359,65 @@ async fn resources_and_prompts_are_listed_read_and_fetched() {
         "server log must confirm a real prompts/get with args, got:\n{log_contents}"
     );
     let _ = std::fs::remove_file(&log);
+}
+
+#[tokio::test]
+async fn roots_capability_is_advertised_and_used_for_real_file_resolution() {
+    let bin = echo_server_bin();
+    let root = temp_path("roots");
+    std::fs::create_dir_all(&root).expect("create roots dir");
+    let relative = "root-note.txt";
+    let content = format!("ROOT-CONTENT-{}", std::process::id());
+    std::fs::write(root.join(relative), &content).expect("write fixture file");
+
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "environment": { "CORTEX_MCP_ECHO_ENABLE_ROOTS_TOOL": "1" }
+        }
+    }));
+
+    let manager = McpManager::connect_with(
+        servers,
+        McpConnectOptions {
+            bus: None,
+            credentials: None,
+            roots: vec![root.clone()],
+        },
+    )
+    .await;
+    assert_eq!(manager.statuses()[0].state, mcp::ConnectionState::Connected);
+    assert!(
+        manager.has_tool("demo_roots_read"),
+        "tools: {:?}",
+        tool_ids(&manager)
+    );
+
+    // VAL-GAP-MCP-001: the fixture requests roots/list from the client, confirms roots capability,
+    // and uses the returned root URI to read a real file from disk.
+    let result = manager
+        .call("demo_roots_read", json!({ "path": relative }))
+        .await
+        .expect("roots_read call succeeds");
+    assert!(
+        !result.is_error,
+        "roots_read returned an error: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains(&content),
+        "server must read file content from an advertised root, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("\"roots_capability\":true"),
+        "server must observe roots capability in initialize params, got: {}",
+        result.content
+    );
+
+    manager.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]

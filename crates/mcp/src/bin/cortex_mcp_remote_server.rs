@@ -13,10 +13,10 @@
 //!   the loopback callback with a code), `/token` (code→token and refresh_token→token), and OAuth
 //!   metadata. Proves VAL-MCP-009/010.
 //!
-//! A `POST /control/add-tool` / `POST /control/remove-tool` mutates the advertised tool set at
-//! runtime and pushes a `notifications/tools/list_changed` to every open notification stream, so the
-//! client reflects the change without a restart (VAL-MCP-008). With `CORTEX_MCP_SPAWN_CHILD` set the
-//! server (when launched over stdio elsewhere) is irrelevant here; this binary is HTTP-only.
+//! Control endpoints mutate live MCP state and emit notifications to connected clients:
+//! `/control/add-tool|remove-tool`, `/control/add-resource|remove-resource`,
+//! `/control/add-prompt|remove-prompt`, and `/control/log-message`. This lets black-box tests prove
+//! live catalogue refresh and log-notification bridging without reconnecting.
 //!
 //! This is a test/proof fixture, not part of the shipped `cortex` binary. The OAuth token value is
 //! never written to stderr or the log file.
@@ -44,6 +44,8 @@ struct State {
     label: String,
     log: Option<String>,
     extra_enabled: AtomicBool,
+    resource_enabled: AtomicBool,
+    prompt_enabled: AtomicBool,
     streams: Mutex<Vec<mpsc::UnboundedSender<String>>>,
     issued_access: Mutex<HashSet<String>>,
     issued_refresh: Mutex<HashSet<String>>,
@@ -107,14 +109,52 @@ impl State {
         tools
     }
 
-    /// Push a `notifications/tools/list_changed` to every open notification stream.
-    async fn notify_tools_changed(&self) {
-        let frame = format!(
-            "event: message\ndata: {}\n\n",
-            json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})
-        );
+    fn resources(&self) -> Vec<Value> {
+        if !self.resource_enabled.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
+        vec![json!({
+            "uri": "notes://demo",
+            "name": "demo-notes",
+            "description": "Remote resource fixture",
+            "mimeType": "text/plain"
+        })]
+    }
+
+    fn prompts(&self) -> Vec<Value> {
+        if !self.prompt_enabled.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
+        vec![json!({
+            "name": "greet",
+            "description": "Remote prompt fixture",
+            "arguments": [{ "name": "name", "required": true }]
+        })]
+    }
+
+    /// Push a notification frame to every open notification stream.
+    async fn notify(&self, method: &str, params: Option<Value>) {
+        let mut payload = json!({"jsonrpc":"2.0","method":method});
+        if let Some(params) = params {
+            payload["params"] = params;
+        }
+        let frame = format!("event: message\ndata: {payload}\n\n");
         let mut streams = self.streams.lock().await;
         streams.retain(|tx| tx.send(frame.clone()).is_ok());
+    }
+
+    async fn notify_tools_changed(&self) {
+        self.notify("notifications/tools/list_changed", None).await;
+    }
+
+    async fn notify_resources_changed(&self) {
+        self.notify("notifications/resources/list_changed", None)
+            .await;
+    }
+
+    async fn notify_prompts_changed(&self) {
+        self.notify("notifications/prompts/list_changed", None)
+            .await;
     }
 
     async fn register_stream(&self, tx: mpsc::UnboundedSender<String>) {
@@ -159,6 +199,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         label: std::env::var("CORTEX_MCP_LABEL").unwrap_or_else(|_| "remote".to_owned()),
         log: std::env::var("CORTEX_MCP_LOG").ok(),
         extra_enabled: AtomicBool::new(false),
+        resource_enabled: AtomicBool::new(false),
+        prompt_enabled: AtomicBool::new(false),
         streams: Mutex::new(Vec::new()),
         issued_access: Mutex::new(HashSet::new()),
         issued_refresh: Mutex::new(HashSet::new()),
@@ -245,6 +287,47 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
             state.notify_tools_changed().await;
             state.log("control: removed tool `extra` and notified tools/list_changed");
             write_text(&mut stream, 200, "removed").await
+        }
+        (_, "POST", "/control/add-resource") => {
+            state.resource_enabled.store(true, Ordering::SeqCst);
+            state.notify_resources_changed().await;
+            state.log("control: added resource and notified resources/list_changed");
+            write_text(&mut stream, 200, "added").await
+        }
+        (_, "POST", "/control/remove-resource") => {
+            state.resource_enabled.store(false, Ordering::SeqCst);
+            state.notify_resources_changed().await;
+            state.log("control: removed resource and notified resources/list_changed");
+            write_text(&mut stream, 200, "removed").await
+        }
+        (_, "POST", "/control/add-prompt") => {
+            state.prompt_enabled.store(true, Ordering::SeqCst);
+            state.notify_prompts_changed().await;
+            state.log("control: added prompt and notified prompts/list_changed");
+            write_text(&mut stream, 200, "added").await
+        }
+        (_, "POST", "/control/remove-prompt") => {
+            state.prompt_enabled.store(false, Ordering::SeqCst);
+            state.notify_prompts_changed().await;
+            state.log("control: removed prompt and notified prompts/list_changed");
+            write_text(&mut stream, 200, "removed").await
+        }
+        (_, "POST", "/control/log-message") => {
+            state
+                .notify(
+                    "notifications/message",
+                    Some(json!({
+                        "level": "warning",
+                        "logger": "fixture.remote",
+                        "data": {
+                            "message": "fixture warning",
+                            "token": format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8))
+                        }
+                    })),
+                )
+                .await;
+            state.log("control: emitted notifications/message");
+            write_text(&mut stream, 200, "emitted").await
         }
 
         // --- Legacy SSE transport ---
@@ -346,7 +429,12 @@ async fn dispatch(state: &State, request: &Value) -> Option<Value> {
                 "id": id,
                 "result": {
                     "protocolVersion": "2025-03-26",
-                    "capabilities": { "tools": { "listChanged": true } },
+                    "capabilities": {
+                        "logging": {},
+                        "tools": { "listChanged": true },
+                        "resources": { "listChanged": true },
+                        "prompts": { "listChanged": true }
+                    },
                     "serverInfo": { "name": "cortex-mcp-remote-fixture", "version": "0.1.0" }
                 }
             }))
@@ -357,6 +445,16 @@ async fn dispatch(state: &State, request: &Value) -> Option<Value> {
             "jsonrpc": "2.0",
             "id": id,
             "result": { "tools": state.tool_list() }
+        })),
+        "resources/list" => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "resources": state.resources() }
+        })),
+        "prompts/list" => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "prompts": state.prompts() }
         })),
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or(Value::Null);

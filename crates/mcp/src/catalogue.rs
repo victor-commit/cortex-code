@@ -261,6 +261,25 @@ impl LiveCatalogue {
         }
     }
 
+    /// Publish one redacted `mcp.log` message from a server notification, when an event bus is
+    /// attached.
+    pub fn publish_log_message(
+        &self,
+        server: &str,
+        level: &str,
+        logger: Option<String>,
+        data: serde_json::Value,
+    ) {
+        if let Some(bus) = &self.inner.bus {
+            bus.publish(&Event::mcp_log_message(
+                server.to_owned(),
+                level.to_owned(),
+                logger,
+                data,
+            ));
+        }
+    }
+
     /// The current flattened tool catalogue across every server, in stable (server, then
     /// advertised) order.
     #[must_use]

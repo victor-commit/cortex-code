@@ -40,6 +40,7 @@ pub(crate) fn connect_from_config() -> Option<McpRuntime> {
         mcp::McpConnectOptions {
             bus: Some(bus),
             credentials: credential_store_from_process(),
+            roots: std::env::current_dir().ok().into_iter().collect(),
         },
     ));
 

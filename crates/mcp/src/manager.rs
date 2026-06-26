@@ -10,6 +10,7 @@
 //! `mcp.tools.changed` event published) without a restart.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use events::EventBus;
@@ -78,6 +79,11 @@ pub struct McpConnectOptions {
     pub bus: Option<Arc<EventBus>>,
     /// The OAuth credential store consulted (and refreshed) for remote servers.
     pub credentials: Option<Arc<CredentialStore>>,
+    /// Client roots exposed to MCP servers that request `roots/list`.
+    ///
+    /// Paths are normalized to absolute file URIs before connecting each server. When empty, the
+    /// current working directory is used.
+    pub roots: Vec<PathBuf>,
 }
 
 /// The connected MCP servers for a session and their live qualified tool catalogue.
@@ -104,6 +110,7 @@ impl McpManager {
         options: McpConnectOptions,
     ) -> Self {
         let catalogue = LiveCatalogue::new(options.bus.clone());
+        let roots = roots_from_options(&options.roots);
         let mut clients = HashMap::new();
         let mut statuses = Vec::new();
 
@@ -122,10 +129,12 @@ impl McpManager {
             }
 
             let outcome = match config.transport {
-                McpTransport::Local => McpClient::connect_stdio(&name, &config, &catalogue).await,
+                McpTransport::Local => {
+                    McpClient::connect_stdio(&name, &config, &catalogue, &roots).await
+                }
                 McpTransport::Remote => {
                     let auth = resolve_auth(&name, &options.credentials).await;
-                    McpClient::connect_remote(&name, &config, auth, &catalogue).await
+                    McpClient::connect_remote(&name, &config, auth, &catalogue, &roots).await
                 }
             };
 
@@ -309,6 +318,59 @@ impl McpManager {
             client.shutdown().await;
         }
     }
+}
+
+fn roots_from_options(configured: &[PathBuf]) -> Vec<rmcp::model::Root> {
+    let mut roots: Vec<PathBuf> = if configured.is_empty() {
+        std::env::current_dir().ok().into_iter().collect()
+    } else {
+        configured.to_vec()
+    };
+    if roots.is_empty() {
+        return Vec::new();
+    }
+
+    roots.sort();
+    roots.dedup();
+
+    let mut uris = std::collections::BTreeSet::new();
+    let mut resolved = Vec::new();
+    for root in roots {
+        if let Some(uri) = to_root_uri(&root)
+            && uris.insert(uri.clone())
+        {
+            let mut entry = rmcp::model::Root::new(uri);
+            if let Some(name) = root_name(&root) {
+                entry = entry.with_name(name);
+            }
+            resolved.push(entry);
+        }
+    }
+    resolved
+}
+
+fn to_root_uri(path: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    url::Url::from_file_path(canonical)
+        .ok()
+        .map(|uri| uri.to_string())
+}
+
+fn root_name(path: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    absolute
+        .file_name()
+        .map(|segment| segment.to_string_lossy().to_string())
+        .filter(|segment| !segment.is_empty())
 }
 
 /// Resolve the OAuth bearer token for a remote server from the credential store, refreshing it in

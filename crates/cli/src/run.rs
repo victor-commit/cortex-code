@@ -582,6 +582,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         let options = mcp::McpConnectOptions {
             bus: Some(bus.clone()),
             credentials: crate::mcp_store::store_from_process(),
+            roots: vec![cwd.clone()],
         };
         Some(std::sync::Arc::new(runtime.block_on(
             mcp::McpManager::connect_with(mcp_servers, options),

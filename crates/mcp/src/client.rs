@@ -59,6 +59,7 @@ impl McpClient {
         server_name: &str,
         config: &McpServerConfig,
         catalogue: &LiveCatalogue,
+        roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
         let (program, args) = config
             .program_and_args()
@@ -87,7 +88,12 @@ impl McpClient {
             })?;
         let pid = transport.id();
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
+        let handler = NotifyHandler::new(
+            server_name.to_owned(),
+            catalogue.clone(),
+            timeout,
+            roots.to_vec(),
+        );
         let service = match tokio::time::timeout(timeout, handler.serve(transport)).await {
             Ok(Ok(service)) => service,
             Ok(Err(err)) => {
@@ -125,6 +131,7 @@ impl McpClient {
         config: &McpServerConfig,
         auth_header: Option<String>,
         catalogue: &LiveCatalogue,
+        roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
         let url = config
             .url
@@ -144,10 +151,13 @@ impl McpClient {
                     auth_header,
                     timeout,
                     catalogue,
+                    roots,
                 )
                 .await
             }
-            Probe::Sse => Self::connect_sse(server_name, url, header_map, timeout, catalogue).await,
+            Probe::Sse => {
+                Self::connect_sse(server_name, url, header_map, timeout, catalogue, roots).await
+            }
             Probe::Unreachable(message) => Err(McpError::handshake(server_name, message)),
         }
     }
@@ -160,6 +170,7 @@ impl McpClient {
         auth_header: Option<String>,
         timeout: Duration,
         catalogue: &LiveCatalogue,
+        roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
         let mut custom: HashMap<HeaderName, HeaderValue> = HashMap::new();
         let oauth_header_supplied = auth_header.is_some();
@@ -179,7 +190,12 @@ impl McpClient {
         }
         let transport = StreamableHttpClientTransport::from_config(transport_config);
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
+        let handler = NotifyHandler::new(
+            server_name.to_owned(),
+            catalogue.clone(),
+            timeout,
+            roots.to_vec(),
+        );
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
@@ -202,12 +218,18 @@ impl McpClient {
         header_map: HeaderMap,
         timeout: Duration,
         catalogue: &LiveCatalogue,
+        roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
         let transport = SseClientTransport::connect(url, header_map, timeout)
             .await
             .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
 
-        let handler = NotifyHandler::new(server_name.to_owned(), catalogue.clone(), timeout);
+        let handler = NotifyHandler::new(
+            server_name.to_owned(),
+            catalogue.clone(),
+            timeout,
+            roots.to_vec(),
+        );
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?

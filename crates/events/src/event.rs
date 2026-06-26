@@ -184,6 +184,20 @@ pub struct McpPromptsChanged {
     pub prompts: Vec<String>,
 }
 
+/// One MCP server `notifications/message` payload bridged from the MCP client notification stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct McpLogMessage {
+    /// The configured MCP server that emitted the notification.
+    pub server: String,
+    /// The MCP logging severity level (`debug`, `info`, `warning`, ...).
+    pub level: String,
+    /// Optional logger/source field from the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logger: Option<String>,
+    /// The redacted notification payload.
+    pub data: serde_json::Value,
+}
+
 /// A model requested a tool call during a turn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallEvent {
@@ -335,6 +349,9 @@ pub enum Event {
     /// A connected MCP server's advertised prompt set changed at runtime.
     #[serde(rename = "mcp.prompts.changed")]
     McpPromptsChanged(McpPromptsChanged),
+    /// A connected MCP server emitted a `notifications/message` log payload.
+    #[serde(rename = "mcp.log")]
+    McpLogMessage(McpLogMessage),
     /// A model requested a tool call during a turn.
     #[serde(rename = "tool.call")]
     ToolCall(ToolCallEvent),
@@ -375,6 +392,7 @@ impl Event {
             Event::McpToolsChanged(_) => "mcp.tools.changed",
             Event::McpResourcesChanged(_) => "mcp.resources.changed",
             Event::McpPromptsChanged(_) => "mcp.prompts.changed",
+            Event::McpLogMessage(_) => "mcp.log",
             Event::ToolCall(_) => "tool.call",
             Event::ToolResult(_) => "tool.result",
             Event::TurnStarted(_) => "turn.started",
@@ -498,6 +516,22 @@ impl Event {
         Event::McpPromptsChanged(McpPromptsChanged {
             server: server.into(),
             prompts,
+        })
+    }
+
+    /// Construct an `mcp.log` event carrying one MCP `notifications/message` payload.
+    #[must_use]
+    pub fn mcp_log_message(
+        server: impl Into<String>,
+        level: impl Into<String>,
+        logger: Option<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Event::McpLogMessage(McpLogMessage {
+            server: server.into(),
+            level: level.into(),
+            logger,
+            data,
         })
     }
 
@@ -782,6 +816,23 @@ mod tests {
         let value = serde_json::to_value(&prompts).expect("serialize");
         assert_eq!(value["kind"], "mcp.prompts.changed");
         assert_eq!(value["prompts"][0], "greet");
+    }
+
+    #[test]
+    fn mcp_log_message_serializes_with_named_typed_fields() {
+        let event = Event::mcp_log_message(
+            "demo",
+            "warning",
+            Some("fixture".to_owned()),
+            serde_json::json!({"message":"redacted"}),
+        );
+        assert_eq!(event.kind(), "mcp.log");
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["kind"], "mcp.log");
+        assert_eq!(value["server"], "demo");
+        assert_eq!(value["level"], "warning");
+        assert_eq!(value["logger"], "fixture");
+        assert_eq!(value["data"]["message"], "redacted");
     }
 
     #[test]

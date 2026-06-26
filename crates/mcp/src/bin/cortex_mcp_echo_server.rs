@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
@@ -29,11 +30,13 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Value, json};
+use url::Url;
 
 #[derive(Clone)]
 struct EchoServer {
     label: Option<String>,
     resources_prompts: bool,
+    roots_tool: bool,
     error_tool: bool,
     stall_tool: bool,
     resource_content: String,
@@ -44,6 +47,7 @@ impl EchoServer {
         Self {
             label: std::env::var("CORTEX_MCP_ECHO_LABEL").ok(),
             resources_prompts: std::env::var("CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS").is_ok(),
+            roots_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ROOTS_TOOL").is_ok(),
             error_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL").is_ok(),
             stall_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_STALL_TOOL").is_ok(),
             resource_content: std::env::var("CORTEX_MCP_ECHO_RESOURCE_CONTENT")
@@ -117,6 +121,21 @@ impl EchoServer {
                 })),
             ),
         ];
+        if self.roots_tool {
+            tools.push(Tool::new(
+                Cow::Borrowed("roots_read"),
+                Cow::Borrowed(
+                    "Request roots/list from the client and read a UTF-8 file under one of the \
+                     advertised roots.",
+                ),
+                Self::schema(json!({
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"],
+                    "additionalProperties": false
+                })),
+            ));
+        }
         if self.error_tool {
             tools.push(Tool::new(
                 Cow::Borrowed("boom"),
@@ -306,7 +325,7 @@ impl ServerHandler for EchoServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         self.log_call(request.name.as_ref(), &request.arguments);
         match request.name.as_ref() {
@@ -368,12 +387,82 @@ impl ServerHandler for EchoServer {
                 }));
                 Ok(result)
             }
+            "roots_read" if self.roots_tool => {
+                let relative = Self::arg_str(&request.arguments, "path")?;
+                let capability = context
+                    .peer
+                    .peer_info()
+                    .and_then(|info| info.capabilities.roots.as_ref())
+                    .is_some();
+                let roots = context
+                    .peer
+                    .list_roots()
+                    .await
+                    .map_err(|err| {
+                        McpError::internal_error(format!("roots/list request failed: {err}"), None)
+                    })?
+                    .roots;
+                let roots_json = roots
+                    .iter()
+                    .map(|root| root.uri.clone())
+                    .collect::<Vec<_>>();
+                let mut chosen_root = None;
+                let mut file_text = None;
+                for root in &roots {
+                    let Some(candidate) = resolve_root_candidate(root, &relative) else {
+                        continue;
+                    };
+                    if !candidate.is_file() {
+                        continue;
+                    }
+                    if let Ok(contents) = std::fs::read_to_string(&candidate) {
+                        chosen_root = Some(root.uri.clone());
+                        file_text = Some(contents);
+                        break;
+                    }
+                }
+                let Some(contents) = file_text else {
+                    let mut error = CallToolResult::error(vec![Content::text(format!(
+                        "could not resolve `{relative}` under advertised roots"
+                    ))]);
+                    error.structured_content = Some(json!({
+                        "roots_capability": capability,
+                        "roots": roots_json,
+                    }));
+                    return Ok(error);
+                };
+                let mut result = CallToolResult::success(vec![Content::text(contents.clone())]);
+                result.structured_content = Some(json!({
+                    "roots_capability": capability,
+                    "roots": roots_json,
+                    "root": chosen_root,
+                    "path": relative,
+                    "content": contents,
+                }));
+                Ok(result)
+            }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
             )),
         }
     }
+}
+
+fn resolve_root_candidate(root: &rmcp::model::Root, relative: &str) -> Option<PathBuf> {
+    let url = Url::parse(&root.uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let root_path = url.to_file_path().ok()?;
+    let mut candidate = root_path.join(relative);
+    if let Ok(canonical) = std::fs::canonicalize(&candidate) {
+        candidate = canonical;
+    }
+    if !candidate.starts_with(&root_path) {
+        return None;
+    }
+    Some(candidate)
 }
 
 #[tokio::main]

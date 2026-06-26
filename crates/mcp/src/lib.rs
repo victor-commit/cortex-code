@@ -6,10 +6,11 @@
 //! HTTP, falling back to the legacy HTTP+SSE transport) with optional headers and an OAuth bearer
 //! token. For every transport the client completes the MCP initialize handshake, issues `tools/list`
 //! to populate the session catalogue, and exposes each tool under a deterministic, sanitized,
-//! server-qualified id. The catalogue is *live*: a server's tool-list-changed notification refreshes
-//! its slice without a restart and publishes an `mcp.tools.changed` event. A real `tools/call`
-//! during an agent turn reaches the server and its genuine result is relayed back. On shutdown every
-//! spawned stdio server and its descendants are terminated by exact PID, so no orphan survives.
+//! server-qualified id. The catalogue is *live*: server list-changed notifications refresh slices
+//! without a restart and publish typed `mcp.*.changed` events, log notifications are bridged as
+//! `mcp.log`, and servers can request project roots via `roots/list`. A real `tools/call` during an
+//! agent turn reaches the server and its genuine result is relayed back. On shutdown every spawned
+//! stdio server and its descendants are terminated by exact PID, so no orphan survives.
 //!
 //! - [`McpManager`] connects every configured server, owns the live qualified tool catalogue, routes
 //!   a call to its owning server, and shuts every server down.

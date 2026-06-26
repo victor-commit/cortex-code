@@ -53,6 +53,9 @@ fn temp_path(tag: &str) -> std::path::PathBuf {
 }
 
 type ChangeEvents = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+type ResourceEvents = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+type PromptEvents = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+type LogEvents = Arc<Mutex<Vec<serde_json::Value>>>;
 
 /// A spawned fixture child, killed (with its descendants by PID) when the guard drops.
 struct Fixture {
@@ -235,6 +238,7 @@ async fn runtime_tool_change_is_reflected_and_emits_event() {
         McpConnectOptions {
             bus: Some(bus.clone()),
             credentials: None,
+            roots: Vec::new(),
         },
     )
     .await;
@@ -304,6 +308,172 @@ async fn runtime_tool_change_is_reflected_and_emits_event() {
 }
 
 #[tokio::test]
+async fn resource_and_prompt_changes_are_reflected_and_emit_events() {
+    let bus = Arc::new(EventBus::new());
+    let resources: ResourceEvents = Arc::new(Mutex::new(Vec::new()));
+    let prompts: PromptEvents = Arc::new(Mutex::new(Vec::new()));
+    let resources_sink = resources.clone();
+    let prompts_sink = prompts.clone();
+    bus.subscribe(Arc::new(move |event: &Event| match event {
+        Event::McpResourcesChanged(payload) => {
+            resources_sink
+                .lock()
+                .unwrap()
+                .push((payload.server.clone(), payload.resources.clone()));
+        }
+        Event::McpPromptsChanged(payload) => {
+            prompts_sink
+                .lock()
+                .unwrap()
+                .push((payload.server.clone(), payload.prompts.clone()));
+        }
+        _ => {}
+    }));
+
+    let _fixture = Fixture::spawn("streamable", 3220, None, &[]);
+    wait_for_port(3220).await;
+    let servers = config(json!({
+        "api": { "type": "remote", "url": "http://127.0.0.1:3220/mcp" }
+    }));
+    let manager = McpManager::connect_with(
+        servers,
+        McpConnectOptions {
+            bus: Some(bus),
+            credentials: None,
+            roots: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(manager.statuses()[0].state, ConnectionState::Connected);
+    assert!(
+        !manager.has_resource("notes://demo"),
+        "fixture starts without dynamic resource"
+    );
+    assert!(
+        !manager.has_prompt("greet"),
+        "fixture starts without dynamic prompt"
+    );
+
+    reqwest::Client::new()
+        .post("http://127.0.0.1:3220/control/add-resource")
+        .send()
+        .await
+        .expect("control add-resource");
+    reqwest::Client::new()
+        .post("http://127.0.0.1:3220/control/add-prompt")
+        .send()
+        .await
+        .expect("control add-prompt");
+
+    // VAL-GAP-MCP-003: resources/prompts list-changed notifications refresh the live catalogue.
+    let mut reflected = false;
+    for _ in 0..200 {
+        if manager.has_resource("notes://demo") && manager.has_prompt("greet") {
+            reflected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        reflected,
+        "resource and prompt catalogue updates must be visible without reconnect"
+    );
+
+    let mut emitted = false;
+    for _ in 0..80 {
+        let resources_changed = resources.lock().unwrap().iter().any(|(server, entries)| {
+            server == "api" && entries.iter().any(|uri| uri == "notes://demo")
+        });
+        let prompts_changed =
+            prompts.lock().unwrap().iter().any(|(server, entries)| {
+                server == "api" && entries.iter().any(|name| name == "greet")
+            });
+        if resources_changed && prompts_changed {
+            emitted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        emitted,
+        "resource and prompt list changes must emit typed events"
+    );
+
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn logging_notifications_are_bridged_redacted_and_non_disruptive() {
+    let bus = Arc::new(EventBus::new());
+    let logs: LogEvents = Arc::new(Mutex::new(Vec::new()));
+    let sink = logs.clone();
+    bus.subscribe(Arc::new(move |event: &Event| {
+        if let Event::McpLogMessage(payload) = event {
+            sink.lock()
+                .unwrap()
+                .push(serde_json::to_value(payload).expect("serialize mcp.log payload"));
+        }
+    }));
+
+    let _fixture = Fixture::spawn("streamable", 3221, None, &[]);
+    wait_for_port(3221).await;
+    let servers = config(json!({
+        "api": { "type": "remote", "url": "http://127.0.0.1:3221/mcp" }
+    }));
+    let manager = McpManager::connect_with(
+        servers,
+        McpConnectOptions {
+            bus: Some(bus),
+            credentials: None,
+            roots: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(manager.statuses()[0].state, ConnectionState::Connected);
+
+    reqwest::Client::new()
+        .post("http://127.0.0.1:3221/control/log-message")
+        .send()
+        .await
+        .expect("control log-message");
+
+    let mut observed = None;
+    for _ in 0..80 {
+        if let Some(payload) = logs.lock().unwrap().last().cloned() {
+            observed = Some(payload);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let payload = observed.expect("mcp.log event should be emitted");
+    let serialized = serde_json::to_string(&payload).expect("serialize log payload");
+    assert_eq!(payload["server"], "api");
+    assert_eq!(payload["level"], "warning");
+    assert_eq!(payload["logger"], "fixture.remote");
+    assert!(
+        serialized.contains(redaction::PLACEHOLDER),
+        "log payload should carry redacted data: {serialized}"
+    );
+    assert!(
+        !serialized.contains("deadbeef"),
+        "redacted payload must not leak secret-shaped content: {serialized}"
+    );
+
+    // VAL-GAP-MCP-002: notifications/message should not interrupt normal tool usage.
+    let result = manager
+        .call("api_echo", json!({ "message": "still-running" }))
+        .await
+        .expect("tool call after logging notification");
+    assert!(
+        result.content.contains("still-running"),
+        "manager must remain usable after a log notification, got: {}",
+        result.content
+    );
+
+    manager.shutdown().await;
+}
+
+#[tokio::test]
 async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
     let log = temp_path("oauth-log");
     let store_path = temp_path("oauth-store").join("credentials.json");
@@ -320,6 +490,7 @@ async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
         McpConnectOptions {
             bus: None,
             credentials: Some(credentials.clone()),
+            roots: Vec::new(),
         },
     )
     .await;
@@ -367,6 +538,7 @@ async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
         McpConnectOptions {
             bus: None,
             credentials: Some(credentials.clone()),
+            roots: Vec::new(),
         },
     )
     .await;
@@ -469,6 +641,7 @@ async fn oauth_token_is_refreshed_on_expiry() {
         McpConnectOptions {
             bus: None,
             credentials: Some(credentials.clone()),
+            roots: Vec::new(),
         },
     )
     .await;
@@ -494,6 +667,43 @@ async fn oauth_token_is_refreshed_on_expiry() {
 
     let _ = std::fs::remove_file(&log);
     let _ = std::fs::remove_dir_all(credentials.path().parent().unwrap());
+}
+
+#[tokio::test]
+async fn oauth_auto_callback_port_is_in_range_and_released_after_completion() {
+    let _fixture = Fixture::spawn("oauth", 3223, None, &[]);
+    wait_for_port(3223).await;
+
+    let oauth_config = oauth::discover("http://127.0.0.1:3223/mcp", "cortex")
+        .await
+        .expect("discover");
+    let request = oauth::begin(oauth_config, None).await.expect("begin auth");
+    let redirect_url = url::Url::parse(&request.redirect_uri).expect("redirect URI");
+    let callback_port = redirect_url.port().expect("callback port");
+    assert!(
+        (3200..=3299).contains(&callback_port),
+        "callback port must stay in the mission range, got {callback_port}"
+    );
+
+    let authorize_url = request.authorize_url.clone();
+    let completion = tokio::spawn(async move { request.complete(Duration::from_secs(10)).await });
+    let response = reqwest::Client::new()
+        .get(&authorize_url)
+        .send()
+        .await
+        .expect("authorize request");
+    assert!(response.status().is_success());
+    completion
+        .await
+        .expect("join auth completion")
+        .expect("oauth completion succeeds");
+
+    // VAL-GAP-MCP-004: callback listener is released once the flow completes.
+    let rebound = tokio::net::TcpListener::bind(("127.0.0.1", callback_port)).await;
+    assert!(
+        rebound.is_ok(),
+        "callback port should be free after completion, bind failed: {rebound:?}"
+    );
 }
 
 #[tokio::test]
