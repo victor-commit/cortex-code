@@ -1784,7 +1784,7 @@ impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
         })
     }
 
-    fn dynamic_system_instructions(&self) -> Option<String> {
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
         self.inner.dynamic_system_instructions()
     }
 }
@@ -2102,8 +2102,8 @@ mod tests {
             }))
         }
 
-        fn dynamic_system_instructions(&self) -> Option<String> {
-            Some("DYNAMIC-MEMORY-PROBE".to_owned())
+        fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
+            Ok(Some("DYNAMIC-MEMORY-PROBE".to_owned()))
         }
     }
 
@@ -2113,7 +2113,10 @@ mod tests {
         let probe = DynamicForwardingProbe;
         let wrapped = state.tool_definition_dispatcher(&probe, "ses_dynamic");
         assert_eq!(
-            wrapped.dynamic_system_instructions().as_deref(),
+            wrapped
+                .dynamic_system_instructions()
+                .expect("dynamic instructions should forward")
+                .as_deref(),
             Some("DYNAMIC-MEMORY-PROBE")
         );
     }

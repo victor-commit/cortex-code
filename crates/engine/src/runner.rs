@@ -310,10 +310,19 @@ impl SessionRunner {
             }
             steps += 1;
 
-            if let Some(dispatcher) = dispatcher
-                && let Some(addition) = dispatcher.dynamic_system_instructions()
-            {
-                append_system_instructions(&mut messages, &addition);
+            if let Some(dispatcher) = dispatcher {
+                match dispatcher.dynamic_system_instructions() {
+                    Ok(Some(addition)) => append_system_instructions(&mut messages, &addition),
+                    Ok(None) => {}
+                    Err(diag) => {
+                        sink(RunnerEvent::Error {
+                            message: diag.to_string(),
+                            kind: diag.kind().to_owned(),
+                        });
+                        error = Some(RunError::new(diag));
+                        break llm::FinishReason::Error;
+                    }
+                }
             }
 
             // compactIfNeeded before send: when needed, summarize the compactable head with a

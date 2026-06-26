@@ -6,6 +6,7 @@
 //! CLI bridges it in, so the runner stays decoupled from concrete tools (no `engine -> tools`
 //! dependency). When no dispatcher is supplied the runner advertises no tools and answers directly.
 
+use errors::Diagnostic;
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use protocol::ToolResultPart;
@@ -50,8 +51,9 @@ pub trait ToolDispatcher: Send + Sync {
 
     /// Optional dynamic system-prompt instructions that should be appended before the next model
     /// request (for example, memory instructions activated by prior tool reads).
-    #[must_use]
-    fn dynamic_system_instructions(&self) -> Option<String> {
-        None
+    ///
+    /// Returning an error fails the turn closed before the next provider request.
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, Diagnostic> {
+        Ok(None)
     }
 }

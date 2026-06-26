@@ -163,15 +163,7 @@ pub fn discover(inputs: &ConfigInputs) -> ProjectMemory {
 pub fn discover_for_paths(inputs: &ConfigInputs, extra_paths: &[PathBuf]) -> ProjectMemory {
     let mut memory = ProjectMemory::default();
     let network_disabled = no_net_enabled(&inputs.env);
-    let layers = match settings::layer_tables(inputs) {
-        Ok(layers) => layers,
-        Err(err) => {
-            memory.warnings.push(format!(
-                "project memory could not read config layers: {err}"
-            ));
-            Vec::new()
-        }
-    };
+    let layers = merged_layer_tables(inputs, extra_paths, &mut memory.warnings);
 
     let mut dirs = project_dirs(inputs, &layers);
     for path in extra_paths {
@@ -220,6 +212,48 @@ pub fn discover_for_paths(inputs: &ConfigInputs, extra_paths: &[PathBuf]) -> Pro
     }
 
     memory
+}
+
+fn merged_layer_tables(
+    inputs: &ConfigInputs,
+    extra_paths: &[PathBuf],
+    warnings: &mut Vec<String>,
+) -> Vec<ConfigLayer> {
+    let mut scopes = vec![inputs.cwd.clone()];
+    for path in extra_paths {
+        let dir = read_parent_dir(path);
+        if !scopes.contains(&dir) {
+            scopes.push(dir);
+        }
+    }
+
+    let mut merged = Vec::new();
+    let mut seen_sources = BTreeSet::new();
+    for cwd in scopes {
+        let mut scoped = inputs.clone();
+        scoped.cwd = cwd;
+        match settings::layer_tables(&scoped) {
+            Ok(layers) => {
+                for layer in layers {
+                    let key = canonical_source_key(&layer.source);
+                    if seen_sources.insert(key) {
+                        merged.push(layer);
+                    }
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "project memory could not read config layers: {err}"
+            )),
+        }
+    }
+    merged
+}
+
+fn canonical_source_key(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
 }
 
 /// Render a formatted memory block for a set of sources.
@@ -836,6 +870,48 @@ mod tests {
         assert!(update.rendered.is_some());
         assert_eq!(update.new_sources.len(), 1);
         assert_eq!(update.new_sources[0].content, "NESTED");
+    }
+
+    #[test]
+    fn dynamic_tracker_discovers_nested_config_instructions_after_reads() {
+        let (_root, home, proj) = scratch("dynamic-config-read");
+        let sub = proj.join("nested");
+        fs::create_dir_all(&sub).expect("sub");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            r#"instructions = ["rules/root.md"]"#,
+        );
+        write(&proj.join("rules/root.md"), "ROOT-RULE");
+        write(
+            &sub.join(PROJECT_CONFIG_FILE),
+            r#"instructions = ["rules/sub.md"]"#,
+        );
+        write(&sub.join("rules/sub.md"), "SUB-RULE");
+        write(&sub.join("target.txt"), "read me");
+
+        let scoped = inputs(&home, &proj);
+        let base = discover(&scoped);
+        let base_rendered = base.render().expect("base render");
+        assert!(
+            base_rendered.contains("ROOT-RULE"),
+            "base discovery should include root config instructions"
+        );
+        assert!(
+            !base_rendered.contains("SUB-RULE"),
+            "nested config instructions should not load before a nested read"
+        );
+
+        let mut tracker = DynamicMemoryTracker::new(scoped, &base);
+        let update = tracker.update_for_reads(&[sub.join("target.txt")]);
+        let update_rendered = update.rendered.expect("dynamic update render");
+        assert!(
+            update_rendered.contains("SUB-RULE"),
+            "nested config instructions should activate after reading nested files"
+        );
+        assert!(
+            !update_rendered.contains("ROOT-RULE"),
+            "dynamic update should only include newly activated sources"
+        );
     }
 
     #[test]

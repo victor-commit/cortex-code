@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engine::{RunnerEvent, SessionRunner, ToolDispatchResult, ToolDispatcher, Turn};
+use errors::Diagnostic;
 use futures_util::future::{BoxFuture, pending};
 use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, ToolDef, Usage};
 use tokio::time::sleep;
@@ -1022,6 +1023,106 @@ async fn timed_out_tool_calls_receive_synthetic_error_results() {
     assert!(
         timeout_message.content.contains("timed out"),
         "model should receive the synthesized timeout tool result"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_instruction_error_fails_closed_before_follow_up_provider_request() {
+    struct CountingProvider {
+        requests: Arc<AtomicUsize>,
+    }
+
+    impl Provider for CountingProvider {
+        fn stream<'a>(
+            &'a self,
+            _request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_1".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: "{}".to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "UNEXPECTED_SECOND_REQUEST".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct BlockingDynamicDispatcher {
+        saw_tool_call: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl ToolDispatcher for BlockingDynamicDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "read".to_owned(),
+                description: "read".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            self.saw_tool_call.store(true, Ordering::SeqCst);
+            Box::pin(async { ToolDispatchResult::text("ok") })
+        }
+
+        fn dynamic_system_instructions(&self) -> Result<Option<String>, Diagnostic> {
+            if self.saw_tool_call.load(Ordering::SeqCst) {
+                Err(Diagnostic::net_disabled(
+                    "dynamic instruction URL fetch triggered by read-path memory discovery",
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let provider = CountingProvider {
+        requests: Arc::clone(&requests),
+    };
+    let dispatcher = BlockingDynamicDispatcher {
+        saw_tool_call: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let mut events = Vec::new();
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "system", "call read"),
+            &dispatcher,
+            |event| events.push(event),
+        )
+        .await;
+
+    let error = outcome.error.expect("turn should fail closed");
+    assert_eq!(error.kind(), "net-disabled");
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "runner must stop before the follow-up provider request"
+    );
+    assert!(
+        events.iter().any(
+            |event| matches!(event, RunnerEvent::Error { kind, .. } if kind == "net-disabled")
+        ),
+        "event stream should include the net-disabled failure"
     );
 }
 

@@ -306,19 +306,23 @@ impl ToolDispatcher for RegistryDispatcher {
         })
     }
 
-    fn dynamic_system_instructions(&self) -> Option<String> {
-        let tracker = self.dynamic_memory.as_ref()?;
-        let mut tracker = tracker.lock().ok()?;
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
+        let Some(tracker) = self.dynamic_memory.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(mut tracker) = tracker.lock() else {
+            return Ok(None);
+        };
         let update = tracker.update_for_reads(&self.context.read_paths());
         for warning in update.warnings {
             eprintln!("cortex run: {warning}");
         }
         if update.net_blocked {
-            eprintln!(
-                "cortex run: network is disabled by CORTEX_NO_NET=1; remote instruction URLs cannot be fetched"
-            );
+            return Err(errors::Diagnostic::net_disabled(
+                "dynamic instruction URL fetch triggered by read-path memory discovery",
+            ));
         }
-        update.rendered
+        Ok(update.rendered)
     }
 }
 
@@ -386,10 +390,15 @@ async fn dispatch_mcp(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use engine::{RunnerEvent, SessionRunner, Turn};
+    use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider};
     use permissions::{Action, PermissionEngine, Rule, Ruleset};
     use protocol::TodoItem;
+    use settings::ConfigInputs;
 
     use super::*;
 
@@ -634,6 +643,110 @@ mod tests {
             allowed.content.contains("public data"),
             "an allowed read returns its content: {}",
             allowed.content
+        );
+    }
+
+    struct DynamicMemoryNoNetProvider {
+        requests: Arc<AtomicUsize>,
+    }
+
+    impl Provider for DynamicMemoryNoNetProvider {
+        fn stream<'a>(
+            &'a self,
+            _request: LlmRequest,
+        ) -> futures_util::future::BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_read".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "UNEXPECTED_SECOND_PROVIDER_REQUEST".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    #[test]
+    fn dynamic_remote_memory_no_net_fails_closed_before_follow_up_provider_request() {
+        let dir = scratch_dir("dynamic-memory-no-net");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(nested.join("target.txt"), "hello").expect("target");
+        std::fs::write(
+            nested.join("cortex.toml"),
+            r#"instructions = ["https://example.com/memory.md"]"#,
+        )
+        .expect("nested config");
+
+        let inputs = ConfigInputs {
+            home: Some(dir.clone()),
+            xdg_config_home: None,
+            cwd: dir.clone(),
+            env: vec![("CORTEX_NO_NET".to_owned(), "1".to_owned())],
+            cli_overrides: BTreeMap::new(),
+        };
+        let base_memory = memory::discover(&inputs);
+        let tracker = DynamicMemoryTracker::new(inputs, &base_memory);
+        let dispatcher = RegistryDispatcher::for_model(
+            dir.clone(),
+            "google/gemini-2.5-flash",
+            "ses_dynamic_no_net".to_owned(),
+            Arc::new(NoopTodos),
+        )
+        .with_dynamic_memory(tracker);
+        let provider_requests = Arc::new(AtomicUsize::new(0));
+        let provider = DynamicMemoryNoNetProvider {
+            requests: provider_requests.clone(),
+        };
+        let mut events = Vec::new();
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(SessionRunner::default().run_with_tools(
+                &provider,
+                Turn::new(
+                    "google/gemini-2.5-flash",
+                    "system",
+                    "read nested/target.txt first",
+                ),
+                &dispatcher,
+                |event| events.push(event),
+            ));
+
+        let error = outcome.error.expect("turn should fail closed");
+        assert_eq!(error.kind(), "net-disabled");
+        assert_eq!(
+            provider_requests.load(Ordering::SeqCst),
+            1,
+            "runner must stop before a follow-up provider request after dynamic remote memory discovery"
+        );
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    RunnerEvent::Error { kind, message }
+                        if kind == "net-disabled" && message.contains("instruction URL")
+                )
+            }),
+            "runner should surface a net-disabled diagnostic for dynamic remote instruction discovery"
         );
     }
 
