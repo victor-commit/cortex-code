@@ -140,12 +140,34 @@ pub enum Command {
 
     /// Inspect Language Server Protocol (LSP) server availability.
     Lsp(LspArgs),
+
+    /// Inspect formatter availability and config state.
+    #[command(alias = "format")]
+    Formatter(FormatterArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct LspArgs {
     #[command(subcommand)]
     pub command: LspCommand,
+}
+
+#[derive(Debug, Args)]
+pub struct FormatterArgs {
+    #[command(subcommand)]
+    pub command: FormatterCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FormatterCommand {
+    /// List formatter states, including configured overrides and marker gating.
+    Status(FormatterStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct FormatterStatusArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -824,6 +846,8 @@ mod tests {
             "replay",
             "completion",
             "man",
+            "lsp",
+            "formatter",
         ] {
             assert!(help.contains(sub), "help should list `{sub}`:\n{help}");
         }
@@ -994,6 +1018,33 @@ mod tests {
                 assert_eq!(args.format.format, OutputFormat::Json);
             }
             other => panic!("expected lsp diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn formatter_status_parses_format() {
+        let cli = Cli::try_parse_from(["cortex", "formatter", "status", "--format", "json"])
+            .expect("parse");
+        match cli.command {
+            Some(Command::Formatter(FormatterArgs {
+                command: FormatterCommand::Status(args),
+            })) => {
+                assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected formatter status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_alias_parses_formatter_status() {
+        let cli = Cli::try_parse_from(["cortex", "format", "status"]).expect("parse");
+        match cli.command {
+            Some(Command::Formatter(FormatterArgs {
+                command: FormatterCommand::Status(args),
+            })) => {
+                assert_eq!(args.format.format, OutputFormat::Text);
+            }
+            other => panic!("expected formatter status via alias, got {other:?}"),
         }
     }
 

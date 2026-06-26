@@ -349,6 +349,171 @@ fn custom_formatter_override_takes_precedence_over_builtin_detection() {
 
 #[cfg(unix)]
 #[test]
+fn custom_formatter_array_runs_all_matching_entries_in_order() {
+    let dir = temp_dir("custom-chain-order");
+    let first = dir.join("first.sh");
+    let second = dir.join("second.sh");
+    write_executable(
+        &first,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'first\\n' >> \"$file\"\n",
+    );
+    write_executable(
+        &second,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'second\\n' >> \"$file\"\n",
+    );
+
+    let path = dir.join("demo.foo");
+    fs::write(&path, "start\n").expect("write initial content");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n\
+[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+            first.display(),
+            second.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Custom));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read chained output"),
+        "start\nfirst\nsecond\n",
+        "both custom formatters should run in configured order"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn formatter_chain_failure_restores_pre_format_bytes() {
+    let dir = temp_dir("custom-chain-rollback");
+    let first = dir.join("first.sh");
+    let second = dir.join("second.sh");
+    write_executable(
+        &first,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'intermediate\\n' > \"$file\"\n",
+    );
+    write_executable(
+        &second,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'corrupted\\n' > \"$file\"\nprintf 'second formatter failed\\n' >&2\nexit 9\n",
+    );
+
+    let path = dir.join("demo.foo");
+    let raw = "raw bytes that must survive\n";
+    fs::write(&path, raw).expect("write initial content");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n\
+[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+            first.display(),
+            second.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    assert!(
+        matches!(
+            outcome,
+            FormatOutcome::Failed(format::FormatFailure {
+                formatter: FormatterKind::Custom,
+                status: Some(9),
+                ..
+            })
+        ),
+        "expected second formatter to fail chain, got {outcome:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read restored bytes"),
+        raw,
+        "chain failures must restore pre-format bytes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_formatter_entries_honor_disabled_and_env_per_entry() {
+    let dir = temp_dir("custom-disabled-env");
+    let marker = dir.join("env-marker.txt");
+    let script = dir.join("env-aware.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf '%s' \"${CUSTOM_MARKER_VALUE:-missing}\" > \"${CUSTOM_MARKER_PATH}\"\nprintf 'env-run\\n' >> \"$file\"\n",
+    );
+
+    let path = dir.join("demo.foo");
+    fs::write(&path, "start\n").expect("write initial content");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\ndisabled = true\n\
+[[formatter.custom]]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\nenv = {{ CUSTOM_MARKER_PATH = \"{}\", CUSTOM_MARKER_VALUE = \"entry-two\" }}\n",
+            script.display(),
+            script.display(),
+            marker.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Custom));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read formatted content"),
+        "start\nenv-run\n",
+        "only enabled custom entry should run"
+    );
+    assert_eq!(
+        fs::read_to_string(marker).expect("read env marker"),
+        "entry-two",
+        "enabled custom entry should receive its configured env values"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_extensions_override_applies_formatter_to_custom_extension() {
+    let dir = temp_dir("builtin-extension-override");
+    let script = dir.join("fake-rustfmt.sh");
+    write_executable(
+        &script,
+        "#!/usr/bin/env sh\nfile=\"$1\"\nprintf 'formatted by rustfmt override\\n' > \"$file\"\n",
+    );
+
+    let path = dir.join("demo.foo");
+    fs::write(&path, "raw\n").expect("write initial content");
+    let config = FormatterConfig::from_table(
+        toml::from_str::<toml::Value>(&format!(
+            "[formatter.rustfmt]\ncommand = [\"{}\", \"$FILE\"]\nextensions = [\".foo\"]\n",
+            script.display()
+        ))
+        .unwrap()
+        .as_table()
+        .unwrap(),
+    )
+    .expect("parse formatter config");
+
+    let outcome = FormatterRunner::with_config(&dir, config).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read formatted content"),
+        "formatted by rustfmt override\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn extended_formatter_matrix_uses_declared_shipped_paths() {
     struct Case {
         config_key: &'static str,

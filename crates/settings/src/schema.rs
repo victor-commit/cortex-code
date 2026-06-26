@@ -203,6 +203,12 @@ fn validate_formatter(table: &Table) -> Result<(), ConfigError> {
                             &format!("formatter.{builtin}.command"),
                         )?;
                     }
+                    if let Some(extensions) = config.get("extensions") {
+                        expect_string_or_array_of_strings(
+                            extensions,
+                            &format!("formatter.{builtin}.extensions"),
+                        )?;
+                    }
                     if let Some(env) = config.get("env") {
                         expect_table_of_strings(env, &format!("formatter.{builtin}.env"))?;
                     }

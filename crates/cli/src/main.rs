@@ -10,6 +10,7 @@ mod custom_modes;
 mod export_import;
 mod feature_gate;
 mod format_bridge;
+mod formatter_cmd;
 mod generate_cmd;
 mod lsp_bridge;
 mod lsp_cmd;
@@ -104,6 +105,7 @@ fn main() -> ExitCode {
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
+        Some(Command::Formatter(args)) => formatter_cmd::run(args).into(),
         Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone(), pure_plugins).into(),
     }
 }
@@ -129,6 +131,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,
         Some(Command::Lsp(_)) => Surface::Lsp,
+        Some(Command::Formatter(_)) => Surface::Config,
         Some(Command::Serve(_)) => Surface::Serve,
     }
 }

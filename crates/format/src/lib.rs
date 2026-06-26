@@ -64,6 +64,36 @@ pub enum FormatterKind {
 }
 
 impl FormatterKind {
+    /// Stable formatter identifier used in config keys and status output.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Gofmt => "gofmt",
+            Self::Biome => "biome",
+            Self::Mix => "mix",
+            Self::ClangFormat => "clang_format",
+            Self::ZigFmt => "zig_fmt",
+            Self::Ktlint => "ktlint",
+            Self::DartFormat => "dart",
+            Self::TerraformFmt => "terraform",
+            Self::Shfmt => "shfmt",
+            Self::Nixfmt => "nixfmt",
+            Self::Ocamlformat => "ocamlformat",
+            Self::Rubocop => "rubocop",
+            Self::Standardrb => "standardrb",
+            Self::Erb => "erb",
+            Self::Gleam => "gleam",
+            Self::Cljfmt => "cljfmt",
+            Self::Ormolu => "ormolu",
+            Self::Latexindent => "latexindent",
+            Self::Air => "air",
+            Self::Rustfmt => "rustfmt",
+            Self::Prettier => "prettier",
+            Self::Ruff => "ruff",
+            Self::Custom => "custom",
+        }
+    }
+
     /// The executable name expected on `PATH`.
     #[must_use]
     pub fn binary(self) -> &'static str {
@@ -158,6 +188,73 @@ pub enum FormatOutcome {
     Failed(FormatFailure),
 }
 
+/// Where a formatter's active command/config came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatterStatusSource {
+    /// Using the built-in defaults.
+    Default,
+    /// Overridden by user config.
+    Config,
+}
+
+impl FormatterStatusSource {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Config => "config",
+        }
+    }
+}
+
+/// Status category shown to users for each configured formatter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatterStatusState {
+    /// Formatter is runnable for files that match its extension + marker constraints.
+    Enabled,
+    /// Formatter is disabled by config.
+    Disabled,
+    /// Formatter command/binary is missing.
+    Missing,
+    /// Formatter needs a project marker and none was found.
+    MissingConfigMarker,
+}
+
+impl FormatterStatusState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Missing => "missing",
+            Self::MissingConfigMarker => "missing_config_marker",
+        }
+    }
+}
+
+/// Formatter status row for CLI/server/TUI inspection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatterStatus {
+    /// Stable formatter identifier.
+    pub name: String,
+    /// Formatter family.
+    pub formatter: FormatterKind,
+    /// Whether the row is defaulted or config-defined.
+    pub source: FormatterStatusSource,
+    /// Current state.
+    pub state: FormatterStatusState,
+    /// Effective command, if explicitly overridden.
+    pub command: Option<Vec<String>>,
+    /// Environment variable keys injected into the formatter process.
+    pub env_keys: Vec<String>,
+    /// Extensions this formatter is configured to match.
+    pub extensions: Vec<String>,
+    /// Whether this formatter requires a project marker.
+    pub marker_required: bool,
+    /// Whether the marker was found under the runner root (when required).
+    pub marker_found: Option<bool>,
+}
+
 /// Render a formatter failure as model-visible feedback, with stderr/status redacted.
 #[must_use]
 pub fn format_failure_note(failure: &FormatFailure) -> String {
@@ -201,6 +298,7 @@ struct FormatterOverride {
     disabled: bool,
     command: Option<Vec<String>>,
     env: BTreeMap<String, String>,
+    extensions: Option<Vec<String>>,
 }
 
 /// A configured formatter command that overrides built-in detection for matching extensions.
@@ -328,11 +426,29 @@ impl FormatterConfig {
         }
     }
 
-    fn custom_for_path(&self, path: &Path) -> Option<CustomFormatter> {
+    fn custom_for_path(&self, path: &Path) -> Vec<CustomFormatter> {
         self.custom
             .iter()
-            .find(|formatter| formatter.matches_path(path))
+            .filter(|formatter| formatter.matches_path(path))
             .cloned()
+            .collect()
+    }
+
+    fn builtin_kinds_for_path(&self, path: &Path) -> Vec<FormatterKind> {
+        let default = kinds_for_path(path);
+        builtin_kinds()
+            .iter()
+            .copied()
+            .filter(|kind| {
+                self.builtin_overrides
+                    .get(kind)
+                    .and_then(|override_| override_.extensions.as_ref())
+                    .map_or_else(
+                        || default.contains(kind),
+                        |extensions| extension_list_matches_path(extensions, path),
+                    )
+            })
+            .collect()
     }
 
     fn builtin_enabled(&self, kind: FormatterKind) -> bool {
@@ -375,19 +491,133 @@ impl FormatterRunner {
 
     /// Select the formatter that would be run for `path`, including binary/config gating.
     pub fn select(&self, path: &Path) -> Result<FormatterSelection, SkipReason> {
-        if let Some(custom) = self.config.custom_for_path(path) {
-            return Ok(FormatterSelection {
-                kind: FormatterKind::Custom,
-                current_dir: self.root.clone(),
-                command: FormatterCommand::Custom(custom),
+        self.select_chain(path)?
+            .into_iter()
+            .next()
+            .ok_or(SkipReason::UnsupportedExtension)
+    }
+
+    /// Inspect formatter status for CLI/server/TUI surfaces.
+    #[must_use]
+    pub fn status(&self) -> Vec<FormatterStatus> {
+        let mut rows = Vec::new();
+        for kind in builtin_kinds().iter().copied() {
+            let configured = self.config.builtin_overrides.contains_key(&kind);
+            let override_ = self.config.builtin_override(kind);
+            let marker_found = marker_presence_for_kind(kind, &self.root);
+            let command_missing = override_
+                .command
+                .as_ref()
+                .and_then(|command| command.first())
+                .is_some_and(|program| !command_exists(program));
+            let binary_missing = override_.command.is_none() && !binary_available(kind.binary());
+            let state = if !self.config.builtin_enabled(kind) {
+                FormatterStatusState::Disabled
+            } else if command_missing || binary_missing {
+                FormatterStatusState::Missing
+            } else if marker_found == Some(false) {
+                FormatterStatusState::MissingConfigMarker
+            } else {
+                FormatterStatusState::Enabled
+            };
+            rows.push(FormatterStatus {
+                name: kind.id().to_owned(),
+                formatter: kind,
+                source: if configured {
+                    FormatterStatusSource::Config
+                } else {
+                    FormatterStatusSource::Default
+                },
+                state,
+                command: override_.command.clone(),
+                env_keys: override_.env.keys().cloned().collect(),
+                extensions: override_
+                    .extensions
+                    .clone()
+                    .unwrap_or_else(|| default_extensions_for_kind(kind)),
+                marker_required: marker_found.is_some(),
+                marker_found,
             });
         }
 
-        let kinds = kinds_for_path(path);
+        let custom_len = self.config.custom.len();
+        for (index, custom) in self.config.custom.iter().enumerate() {
+            let name = if custom_len == 1 {
+                "custom".to_owned()
+            } else {
+                format!("custom[{index}]")
+            };
+            let missing = custom
+                .command
+                .first()
+                .is_none_or(|program| !command_exists(program));
+            rows.push(FormatterStatus {
+                name,
+                formatter: FormatterKind::Custom,
+                source: FormatterStatusSource::Config,
+                state: if missing {
+                    FormatterStatusState::Missing
+                } else {
+                    FormatterStatusState::Enabled
+                },
+                command: Some(custom.command.clone()),
+                env_keys: custom.env.keys().cloned().collect(),
+                extensions: custom.extensions.clone(),
+                marker_required: false,
+                marker_found: None,
+            });
+        }
+
+        rows
+    }
+
+    /// Run the applicable formatter in-place over `path`.
+    ///
+    /// `Skipped` outcomes never modify the file. `Formatted` means the real command exited 0.
+    /// `Failed` reports the process failure; the caller decides how to surface it.
+    #[must_use]
+    pub fn format_path(&self, path: &Path) -> FormatOutcome {
+        let selections = match self.select_chain(path) {
+            Ok(selections) => selections,
+            Err(reason) => return FormatOutcome::Skipped(reason),
+        };
+        let pre_format = fs::read(path).ok();
+        let mut first_formatter = None;
+        for selection in selections {
+            first_formatter.get_or_insert(selection.kind);
+            match run_formatter_once(path, &selection) {
+                FormatOutcome::Formatted(_) => {}
+                FormatOutcome::Failed(failure) => {
+                    if let Some(bytes) = pre_format {
+                        let _ = fs::write(path, bytes);
+                    }
+                    return FormatOutcome::Failed(failure);
+                }
+                FormatOutcome::Skipped(reason) => return FormatOutcome::Skipped(reason),
+            }
+        }
+        FormatOutcome::Formatted(first_formatter.unwrap_or(FormatterKind::Custom))
+    }
+
+    fn select_chain(&self, path: &Path) -> Result<Vec<FormatterSelection>, SkipReason> {
+        let custom = self.config.custom_for_path(path);
+        if !custom.is_empty() {
+            return Ok(custom
+                .into_iter()
+                .map(|custom| FormatterSelection {
+                    kind: FormatterKind::Custom,
+                    current_dir: self.root.clone(),
+                    command: FormatterCommand::Custom(custom),
+                })
+                .collect());
+        }
+
+        let kinds = self.config.builtin_kinds_for_path(path);
         if kinds.is_empty() {
             return Err(SkipReason::UnsupportedExtension);
         }
 
+        let mut selections = Vec::new();
         let mut last_error = SkipReason::UnsupportedExtension;
         for kind in kinds {
             if !self.config.builtin_enabled(kind) {
@@ -401,37 +631,23 @@ impl FormatterRunner {
                 continue;
             }
             match current_dir_for_kind(path, &self.root, kind) {
-                Ok(current_dir) => {
-                    return Ok(FormatterSelection {
+                Ok(current_dir) => selections.push(FormatterSelection {
+                    kind,
+                    current_dir,
+                    command: FormatterCommand::Builtin {
                         kind,
-                        current_dir,
-                        command: FormatterCommand::Builtin {
-                            kind,
-                            command: builtin_override.command,
-                            env: builtin_override.env,
-                        },
-                    });
-                }
-                Err(reason) => {
-                    last_error = reason;
-                }
+                        command: builtin_override.command,
+                        env: builtin_override.env,
+                    },
+                }),
+                Err(reason) => last_error = reason,
             }
         }
-
-        Err(last_error)
-    }
-
-    /// Run the applicable formatter in-place over `path`.
-    ///
-    /// `Skipped` outcomes never modify the file. `Formatted` means the real command exited 0.
-    /// `Failed` reports the process failure; the caller decides how to surface it.
-    #[must_use]
-    pub fn format_path(&self, path: &Path) -> FormatOutcome {
-        let selection = match self.select(path) {
-            Ok(selection) => selection,
-            Err(reason) => return FormatOutcome::Skipped(reason),
-        };
-        run_formatter(path, &selection)
+        if selections.is_empty() {
+            Err(last_error)
+        } else {
+            Ok(selections)
+        }
     }
 }
 
@@ -448,24 +664,15 @@ pub fn binary_available(binary: &str) -> bool {
     command.status().is_ok_and(|status| status.success())
 }
 
-fn run_formatter(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
-    let pre_format = fs::read(path).ok();
-    let outcome = match &selection.command {
+fn run_formatter_once(path: &Path, selection: &FormatterSelection) -> FormatOutcome {
+    match &selection.command {
         FormatterCommand::Builtin { kind, command, env } => {
             run_builtin_formatter(path, *kind, command.as_deref(), env, &selection.current_dir)
         }
         FormatterCommand::Custom(custom) => {
             run_custom_formatter(path, custom, &selection.current_dir)
         }
-    };
-
-    if matches!(outcome, FormatOutcome::Failed(_)) {
-        if let Some(bytes) = pre_format {
-            let _ = fs::write(path, bytes);
-        }
     }
-
-    outcome
 }
 
 fn run_builtin_formatter(
@@ -651,30 +858,8 @@ fn parse_builtin_overrides(
     table: &toml::value::Table,
 ) -> Result<BTreeMap<FormatterKind, FormatterOverride>, String> {
     let mut overrides = BTreeMap::new();
-    for (name, kind) in [
-        ("gofmt", FormatterKind::Gofmt),
-        ("biome", FormatterKind::Biome),
-        ("mix", FormatterKind::Mix),
-        ("clang_format", FormatterKind::ClangFormat),
-        ("zig_fmt", FormatterKind::ZigFmt),
-        ("ktlint", FormatterKind::Ktlint),
-        ("dart", FormatterKind::DartFormat),
-        ("terraform", FormatterKind::TerraformFmt),
-        ("shfmt", FormatterKind::Shfmt),
-        ("nixfmt", FormatterKind::Nixfmt),
-        ("ocamlformat", FormatterKind::Ocamlformat),
-        ("rubocop", FormatterKind::Rubocop),
-        ("standardrb", FormatterKind::Standardrb),
-        ("erb", FormatterKind::Erb),
-        ("gleam", FormatterKind::Gleam),
-        ("cljfmt", FormatterKind::Cljfmt),
-        ("ormolu", FormatterKind::Ormolu),
-        ("latexindent", FormatterKind::Latexindent),
-        ("air", FormatterKind::Air),
-        ("rustfmt", FormatterKind::Rustfmt),
-        ("prettier", FormatterKind::Prettier),
-        ("ruff", FormatterKind::Ruff),
-    ] {
+    for kind in builtin_kinds().iter().copied() {
+        let name = kind.id();
         let Some(value) = table.get(name) else {
             continue;
         };
@@ -698,18 +883,35 @@ fn parse_builtin_overrides(
             .map(parse_string_table)
             .transpose()?
             .unwrap_or_default();
-        if disabled || command.is_some() || !env.is_empty() {
+        let extensions = builtin
+            .get("extensions")
+            .map(parse_extensions)
+            .transpose()?;
+        if disabled || command.is_some() || !env.is_empty() || extensions.is_some() {
             overrides.insert(
                 kind,
                 FormatterOverride {
                     disabled,
                     command,
                     env,
+                    extensions,
                 },
             );
         }
     }
     Ok(overrides)
+}
+
+fn parse_extensions(value: &Value) -> Result<Vec<String>, String> {
+    let normalized = parse_string_or_array(value)?
+        .into_iter()
+        .map(|extension| normalize_extension(&extension))
+        .filter(|extension| !extension.is_empty())
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        return Err("formatter extensions must contain at least one extension".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn parse_custom_formatters(value: &Value) -> Result<Vec<CustomFormatter>, String> {
@@ -777,7 +979,7 @@ fn parse_custom_formatter(table: &toml::value::Table) -> Result<CustomFormatter,
     let extensions = table
         .get("extensions")
         .ok_or_else(|| "formatter.custom.extensions is required".to_owned())
-        .and_then(parse_string_or_array)?;
+        .and_then(parse_extensions)?;
     let env = table
         .get("env")
         .map(parse_string_table)
@@ -844,6 +1046,149 @@ fn normalize_extension(extension: &str) -> String {
     }
     let body = trimmed.trim_start_matches('.').to_ascii_lowercase();
     format!(".{body}")
+}
+
+fn builtin_kinds() -> &'static [FormatterKind] {
+    &[
+        FormatterKind::Gofmt,
+        FormatterKind::Biome,
+        FormatterKind::Mix,
+        FormatterKind::ClangFormat,
+        FormatterKind::ZigFmt,
+        FormatterKind::Ktlint,
+        FormatterKind::DartFormat,
+        FormatterKind::TerraformFmt,
+        FormatterKind::Shfmt,
+        FormatterKind::Nixfmt,
+        FormatterKind::Ocamlformat,
+        FormatterKind::Rubocop,
+        FormatterKind::Standardrb,
+        FormatterKind::Erb,
+        FormatterKind::Gleam,
+        FormatterKind::Cljfmt,
+        FormatterKind::Ormolu,
+        FormatterKind::Latexindent,
+        FormatterKind::Air,
+        FormatterKind::Rustfmt,
+        FormatterKind::Prettier,
+        FormatterKind::Ruff,
+    ]
+}
+
+fn extension_list_matches_path(extensions: &[String], path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let file_ext = normalize_extension(ext);
+    extensions
+        .iter()
+        .any(|candidate| candidate == "*" || candidate.eq_ignore_ascii_case(&file_ext))
+}
+
+fn default_extensions_for_kind(kind: FormatterKind) -> Vec<String> {
+    match kind {
+        FormatterKind::Gofmt => vec![".go".to_owned()],
+        FormatterKind::Biome => vec![
+            ".js".to_owned(),
+            ".jsx".to_owned(),
+            ".mjs".to_owned(),
+            ".cjs".to_owned(),
+            ".ts".to_owned(),
+            ".tsx".to_owned(),
+            ".mts".to_owned(),
+            ".cts".to_owned(),
+            ".html".to_owned(),
+            ".htm".to_owned(),
+            ".css".to_owned(),
+            ".scss".to_owned(),
+            ".sass".to_owned(),
+            ".less".to_owned(),
+            ".vue".to_owned(),
+            ".svelte".to_owned(),
+            ".json".to_owned(),
+            ".jsonc".to_owned(),
+            ".yaml".to_owned(),
+            ".yml".to_owned(),
+            ".toml".to_owned(),
+            ".xml".to_owned(),
+            ".md".to_owned(),
+            ".mdx".to_owned(),
+            ".graphql".to_owned(),
+            ".gql".to_owned(),
+        ],
+        FormatterKind::Mix => vec![
+            ".ex".to_owned(),
+            ".exs".to_owned(),
+            ".eex".to_owned(),
+            ".heex".to_owned(),
+            ".leex".to_owned(),
+            ".neex".to_owned(),
+            ".sface".to_owned(),
+        ],
+        FormatterKind::ClangFormat => vec![
+            ".c".to_owned(),
+            ".cc".to_owned(),
+            ".cpp".to_owned(),
+            ".cxx".to_owned(),
+            ".h".to_owned(),
+            ".hh".to_owned(),
+            ".hpp".to_owned(),
+            ".hxx".to_owned(),
+            ".ino".to_owned(),
+        ],
+        FormatterKind::ZigFmt => vec![".zig".to_owned(), ".zon".to_owned()],
+        FormatterKind::Ktlint => vec![".kt".to_owned(), ".kts".to_owned()],
+        FormatterKind::DartFormat => vec![".dart".to_owned()],
+        FormatterKind::TerraformFmt => vec![".tf".to_owned(), ".tfvars".to_owned()],
+        FormatterKind::Shfmt => vec![".sh".to_owned(), ".bash".to_owned()],
+        FormatterKind::Nixfmt => vec![".nix".to_owned()],
+        FormatterKind::Ocamlformat => vec![".ml".to_owned(), ".mli".to_owned()],
+        FormatterKind::Rubocop | FormatterKind::Standardrb => {
+            vec![".rb".to_owned(), ".ru".to_owned()]
+        }
+        FormatterKind::Erb => vec![".erb".to_owned()],
+        FormatterKind::Gleam => vec![".gleam".to_owned()],
+        FormatterKind::Cljfmt => vec![
+            ".clj".to_owned(),
+            ".cljs".to_owned(),
+            ".cljc".to_owned(),
+            ".edn".to_owned(),
+        ],
+        FormatterKind::Ormolu => vec![".hs".to_owned()],
+        FormatterKind::Latexindent => vec![".tex".to_owned()],
+        FormatterKind::Air => vec![".r".to_owned()],
+        FormatterKind::Rustfmt => vec![".rs".to_owned()],
+        FormatterKind::Prettier => vec![
+            ".js".to_owned(),
+            ".jsx".to_owned(),
+            ".mjs".to_owned(),
+            ".cjs".to_owned(),
+            ".ts".to_owned(),
+            ".tsx".to_owned(),
+            ".mts".to_owned(),
+            ".cts".to_owned(),
+            ".html".to_owned(),
+            ".htm".to_owned(),
+            ".css".to_owned(),
+            ".scss".to_owned(),
+            ".sass".to_owned(),
+            ".less".to_owned(),
+            ".vue".to_owned(),
+            ".svelte".to_owned(),
+            ".json".to_owned(),
+            ".jsonc".to_owned(),
+            ".yaml".to_owned(),
+            ".yml".to_owned(),
+            ".toml".to_owned(),
+            ".xml".to_owned(),
+            ".md".to_owned(),
+            ".mdx".to_owned(),
+            ".graphql".to_owned(),
+            ".gql".to_owned(),
+        ],
+        FormatterKind::Ruff => vec![".py".to_owned(), ".pyi".to_owned()],
+        FormatterKind::Custom => vec!["*".to_owned()],
+    }
 }
 
 fn kinds_for_path(path: &Path) -> Vec<FormatterKind> {
@@ -915,6 +1260,42 @@ fn kinds_for_path(path: &Path) -> Vec<FormatterKind> {
         }
     }
     deduped
+}
+
+fn marker_presence_for_kind(kind: FormatterKind, root: &Path) -> Option<bool> {
+    match kind {
+        FormatterKind::Biome => Some(has_biome_marker(root)),
+        FormatterKind::ClangFormat => Some(has_clang_format_marker(root)),
+        FormatterKind::Ocamlformat => Some(has_ocamlformat_marker(root)),
+        FormatterKind::Prettier => Some(has_prettier_marker(root)),
+        FormatterKind::Ruff => Some(has_ruff_marker(root)),
+        _ => None,
+    }
+}
+
+fn command_exists(program: &str) -> bool {
+    if program.trim().is_empty() {
+        return false;
+    }
+
+    if program.contains(std::path::MAIN_SEPARATOR)
+        || (cfg!(windows) && program.contains('/'))
+        || (cfg!(windows) && program.contains('\\'))
+    {
+        return Path::new(program).is_file();
+    }
+
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(program);
+                candidate.is_file()
+                    || (cfg!(windows) && candidate.with_extension("exe").is_file())
+                    || (cfg!(windows) && candidate.with_extension("cmd").is_file())
+                    || (cfg!(windows) && candidate.with_extension("bat").is_file())
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn current_dir_for_kind(
