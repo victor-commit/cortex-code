@@ -67,16 +67,21 @@ impl Drop for SessionGuard {
     }
 }
 
-fn launch_tui_session(sandbox: &Sandbox, session: &str) -> SessionGuard {
+fn launch_tui_session_with_size(
+    sandbox: &Sandbox,
+    session: &str,
+    cols: u16,
+    rows: u16,
+) -> SessionGuard {
     let output = Command::new("tuistory")
         .arg("launch")
         .arg("--session")
         .arg(session)
         .arg("--background")
         .arg("--cols")
-        .arg("240")
+        .arg(cols.to_string())
         .arg("--rows")
-        .arg("60")
+        .arg(rows.to_string())
         .arg("--cwd")
         .arg(sandbox.project.display().to_string())
         .arg("--env")
@@ -107,6 +112,10 @@ fn launch_tui_session(sandbox: &Sandbox, session: &str) -> SessionGuard {
     SessionGuard {
         session: session.to_owned(),
     }
+}
+
+fn launch_tui_session(sandbox: &Sandbox, session: &str) -> SessionGuard {
+    launch_tui_session_with_size(sandbox, session, 240, 60)
 }
 
 fn tuistory(session: &str, args: &[&str]) -> std::process::Output {
@@ -319,7 +328,7 @@ events = ["error"]
     );
 
     let session = format!("gap-tui-017-{}", std::process::id());
-    let _guard = launch_tui_session(&sandbox, &session);
+    let _guard = launch_tui_session_with_size(&sandbox, &session, 110, 30);
     assert!(
         tuistory(&session, &["type", "trigger an error"])
             .status
@@ -329,6 +338,11 @@ events = ["error"]
     assert!(
         wait_for_contains(&session, "attention error", Duration::from_secs(20)),
         "error turns should trigger documented visual attention cue when enabled"
+    );
+    let enabled_screen = snapshot(&session, &["--trim"]);
+    assert!(
+        enabled_screen.contains("attention error"),
+        "enabled run should expose the attention cue in the captured screen:\n{enabled_screen}"
     );
     drop(_guard);
 
@@ -345,7 +359,7 @@ events = ["error"]
 "#,
     );
     let session_quiet = format!("gap-tui-017-quiet-{}", std::process::id());
-    let _guard_quiet = launch_tui_session(&sandbox, &session_quiet);
+    let _guard_quiet = launch_tui_session_with_size(&sandbox, &session_quiet, 110, 30);
     assert!(
         tuistory(&session_quiet, &["type", "trigger another error"])
             .status
@@ -361,6 +375,14 @@ events = ["error"]
     assert!(
         !quiet_screen.contains("attention error"),
         "quiet mode should suppress documented attention cues"
+    );
+    assert!(
+        quiet_screen.contains("network disabled: CORTEX_NO_NET=1"),
+        "quiet mode should keep the normal error output visible:\n{quiet_screen}"
+    );
+    assert_ne!(
+        enabled_screen, quiet_screen,
+        "enabled and quiet captures should differ clearly"
     );
 }
 

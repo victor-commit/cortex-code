@@ -2214,7 +2214,18 @@ pub fn footer_line(app: &App) -> Line<'static> {
     let value = Style::default().fg(value_color);
     let sep = move || Span::styled(" · ", Style::default().fg(sep_color));
 
-    let mut spans = vec![
+    let mut spans = Vec::new();
+    if let Some(attention) = app.attention_badge() {
+        spans.push(Span::styled("attention ", label));
+        spans.push(Span::styled(
+            attention.to_owned(),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(sep());
+    }
+    spans.extend([
         Span::styled("model ", label),
         Span::styled(app.status.model.clone(), value),
         sep(),
@@ -2231,7 +2242,7 @@ pub fn footer_line(app: &App) -> Line<'static> {
         Span::styled(app.status.session.clone(), value),
         sep(),
         Span::styled("usage ", label),
-    ];
+    ]);
     spans.push(Span::styled(usage_text(&app.usage), value));
     let (sub_total, sub_running, sub_done) = app.subagent_footer_summary();
     spans.push(sep());
@@ -2243,16 +2254,6 @@ pub fn footer_line(app: &App) -> Line<'static> {
     spans.push(sep());
     spans.push(Span::styled("queued ", label));
     spans.push(Span::styled(app.queued_count().to_string(), value));
-    if let Some(attention) = app.attention_badge() {
-        spans.push(sep());
-        spans.push(Span::styled("attention ", label));
-        spans.push(Span::styled(
-            attention.to_owned(),
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
     Line::from(spans)
 }
 
@@ -2989,6 +2990,54 @@ mod tests {
         assert!(after.contains("↑12"), "input tokens shown: {after}");
         assert!(after.contains("↓34"), "output tokens shown: {after}");
         assert!(after.contains("$0.0021"), "cost shown: {after}");
+    }
+
+    #[test]
+    fn constrained_footer_keeps_attention_cue_visible_and_quiet_suppresses_it() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut enabled = app();
+        enabled.note_error("network disabled".to_owned());
+        let enabled_footer = plain(&footer_line(&enabled));
+        assert!(
+            enabled_footer.starts_with("attention error"),
+            "attention cue should be prioritized at the start of the footer: {enabled_footer}"
+        );
+
+        let enabled_backend = TestBackend::new(70, 12);
+        let mut enabled_terminal = Terminal::new(enabled_backend).unwrap();
+        enabled_terminal
+            .draw(|frame| draw(frame, &enabled))
+            .unwrap();
+        let enabled_screen = screen(&enabled_terminal);
+        assert!(
+            enabled_screen.contains("attention error"),
+            "narrow screens should still show the attention cue: {enabled_screen}"
+        );
+
+        let mut quiet = app();
+        quiet.set_attention_config(crate::app::AttentionConfig {
+            quiet: true,
+            ..Default::default()
+        });
+        quiet.note_error("network disabled".to_owned());
+        let quiet_backend = TestBackend::new(70, 12);
+        let mut quiet_terminal = Terminal::new(quiet_backend).unwrap();
+        quiet_terminal.draw(|frame| draw(frame, &quiet)).unwrap();
+        let quiet_screen = screen(&quiet_terminal);
+        assert!(
+            !quiet_screen.contains("attention error"),
+            "quiet mode should suppress the same attention cue on narrow screens: {quiet_screen}"
+        );
+        assert!(
+            quiet_screen.contains("network disabled"),
+            "quiet mode should still surface the normal error content: {quiet_screen}"
+        );
+        assert_ne!(
+            enabled_screen, quiet_screen,
+            "enabled and quiet snapshots should differ clearly"
+        );
     }
 
     #[test]
