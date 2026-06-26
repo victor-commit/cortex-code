@@ -152,21 +152,23 @@ pub struct ServerStatus {
     pub program: String,
     /// Current state.
     pub state: ServerRunState,
+    /// Optional auto-install guidance when the server binary is missing.
+    pub install_hint: Option<String>,
 }
 
 /// Coarse state for one managed server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerRunState {
-    /// Not started yet.
-    Idle,
+    /// Explicitly disabled in config.
+    Disabled,
+    /// Missing locally but auto-installable when network policy allows.
+    Installing,
     /// Running with OS PID.
     Running(u32),
-    /// Missing from PATH and not installable under current policy.
-    Missing,
-    /// Startup failed.
-    Failed,
+    /// Missing and not installable, blocked by no-net, or startup unavailable.
+    Unavailable,
     /// Was running and then stopped or crashed.
-    Stopped,
+    Crashed,
 }
 
 impl ServerRunState {
@@ -174,11 +176,11 @@ impl ServerRunState {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Idle => "idle",
+            Self::Disabled => "disabled",
+            Self::Installing => "installing",
             Self::Running(_) => "running",
-            Self::Missing => "missing",
-            Self::Failed => "failed",
-            Self::Stopped => "stopped",
+            Self::Unavailable => "unavailable",
+            Self::Crashed => "crashed",
         }
     }
 }
@@ -434,33 +436,45 @@ impl FeedbackManager {
     /// Point-in-time status for every configured server.
     #[must_use]
     pub fn statuses(&mut self) -> Vec<ServerStatus> {
+        let no_net = redaction::network_disabled();
         let mut rows = Vec::new();
         for server in self.config.servers() {
+            let install_hint = server.install().map(InstallPlan::description);
             let state = match self.servers.get_mut(server.language_id()) {
+                _ if !server.is_enabled() => ServerRunState::Disabled,
                 None => {
                     if let Some(pid) = find_running_pid(server.program()) {
                         ServerRunState::Running(pid)
                     } else if command_exists(server.program()) {
-                        ServerRunState::Idle
+                        ServerRunState::Crashed
+                    } else if server.install().is_some() && !no_net {
+                        ServerRunState::Installing
                     } else {
-                        ServerRunState::Missing
+                        ServerRunState::Unavailable
                     }
                 }
                 Some(ServerSlot::Running { client, .. }) => {
                     if client.is_running() {
                         ServerRunState::Running(client.child_id())
                     } else {
-                        ServerRunState::Stopped
+                        ServerRunState::Crashed
                     }
                 }
-                Some(ServerSlot::Missing) => ServerRunState::Missing,
-                Some(ServerSlot::Failed) => ServerRunState::Failed,
-                Some(ServerSlot::Broken) => ServerRunState::Stopped,
+                Some(ServerSlot::Missing) => {
+                    if server.install().is_some() && !no_net {
+                        ServerRunState::Installing
+                    } else {
+                        ServerRunState::Unavailable
+                    }
+                }
+                Some(ServerSlot::Failed) => ServerRunState::Unavailable,
+                Some(ServerSlot::Broken) => ServerRunState::Crashed,
             };
             rows.push(ServerStatus {
                 language_id: server.language_id().to_owned(),
                 program: server.program().to_owned(),
                 state,
+                install_hint,
             });
         }
         rows
@@ -819,6 +833,12 @@ fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
     if guard_outbound(&format!("LSP auto-install for {}", server.program())).is_err() {
         return InstallOutcome::NetDisabled;
     }
+    eprintln!(
+        "lsp auto-install: server={} source={} target={} version=latest",
+        server.program(),
+        plan.source(),
+        plan.target()
+    );
     let installed = match plan {
         InstallPlan::Npm { package } => Command::new("npm")
             .args(["install", "-g", package.as_str()])
@@ -826,6 +846,29 @@ fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
             .is_ok_and(|status| status.success()),
         InstallPlan::UvTool { package } => Command::new("uv")
             .args(["tool", "install", package.as_str()])
+            .status()
+            .is_ok_and(|status| status.success()),
+        InstallPlan::Cargo { package } => Command::new("cargo")
+            .args(["install", "--locked", package.as_str()])
+            .status()
+            .is_ok_and(|status| status.success()),
+        InstallPlan::Go { module } => Command::new("go")
+            .args(["install", &format!("{module}@latest")])
+            .status()
+            .is_ok_and(|status| status.success()),
+        InstallPlan::DotnetTool { package } => {
+            let installed = Command::new("dotnet")
+                .args(["tool", "install", "--global", package.as_str()])
+                .status()
+                .is_ok_and(|status| status.success());
+            installed
+                || Command::new("dotnet")
+                    .args(["tool", "update", "--global", package.as_str()])
+                    .status()
+                    .is_ok_and(|status| status.success())
+        }
+        InstallPlan::Gem { package } => Command::new("gem")
+            .args(["install", package.as_str()])
             .status()
             .is_ok_and(|status| status.success()),
     };
@@ -1061,5 +1104,93 @@ mod tests {
 
         assert_eq!(result, Err(crate::LspError::ServerError { code: -32601 }));
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn server_run_state_labels_match_status_contract_vocabulary() {
+        assert_eq!(ServerRunState::Disabled.label(), "disabled");
+        assert_eq!(ServerRunState::Installing.label(), "installing");
+        assert_eq!(ServerRunState::Running(1).label(), "running");
+        assert_eq!(ServerRunState::Unavailable.label(), "unavailable");
+        assert_eq!(ServerRunState::Crashed.label(), "crashed");
+    }
+
+    #[test]
+    fn status_rows_include_install_hints_and_disabled_entries() {
+        let root = std::env::temp_dir().join(format!("cortex-lsp-status-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let existing_program = root.join("existing-lsp");
+        std::fs::write(&existing_program, "#!/bin/sh\nexit 0\n").expect("write fake lsp program");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&existing_program)
+                .expect("fake lsp metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&existing_program, perms).expect("chmod fake lsp");
+        }
+
+        let installable_language = "installable";
+        let unavailable_language = "unavailable";
+        let disabled_language = "disabled";
+        let crashed_language = "crashed";
+        let missing_program = format!("missing-lsp-{}-install", std::process::id());
+        let missing_no_plan_program = format!("missing-lsp-{}-none", std::process::id());
+        let config = LspConfigSet::from_servers(vec![
+            LspServerConfig::new(installable_language, &missing_program)
+                .with_extension("ins")
+                .with_install(InstallPlan::Npm {
+                    package: "example-lsp".to_owned(),
+                }),
+            LspServerConfig::new(unavailable_language, &missing_no_plan_program)
+                .with_extension("none"),
+            LspServerConfig::new(disabled_language, &missing_no_plan_program)
+                .with_extension("off")
+                .with_enabled(false),
+            LspServerConfig::new(crashed_language, existing_program.to_string_lossy())
+                .with_extension("crash"),
+        ]);
+
+        let mut manager = FeedbackManager::new(&root, config);
+        let rows = manager.statuses();
+
+        let installable = rows
+            .iter()
+            .find(|row| row.language_id == installable_language)
+            .expect("installable row");
+        assert!(
+            matches!(
+                installable.state,
+                ServerRunState::Installing | ServerRunState::Unavailable
+            ),
+            "installable language should be installable unless no-net is active: {installable:?}"
+        );
+        assert!(
+            installable
+                .install_hint
+                .as_ref()
+                .is_some_and(|hint| hint.contains("npm install -g")),
+            "installable row should surface install guidance: {installable:?}"
+        );
+
+        let unavailable = rows
+            .iter()
+            .find(|row| row.language_id == unavailable_language)
+            .expect("unavailable row");
+        assert_eq!(unavailable.state, ServerRunState::Unavailable);
+        assert!(unavailable.install_hint.is_none());
+
+        let disabled = rows
+            .iter()
+            .find(|row| row.language_id == disabled_language)
+            .expect("disabled row");
+        assert_eq!(disabled.state, ServerRunState::Disabled);
+
+        let crashed = rows
+            .iter()
+            .find(|row| row.language_id == crashed_language)
+            .expect("crashed row");
+        assert_eq!(crashed.state, ServerRunState::Crashed);
     }
 }

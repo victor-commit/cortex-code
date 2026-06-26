@@ -50,6 +50,8 @@ struct StatusRow {
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install: Option<String>,
 }
 
 fn diagnostics(args: LspDiagnosticsArgs) -> Exit {
@@ -260,6 +262,7 @@ fn status(format: OutputFormat) -> Exit {
                 program: status.program,
                 state,
                 pid,
+                install: status.install_hint,
             }
         })
         .collect::<Vec<_>>();
@@ -285,6 +288,9 @@ fn status(format: OutputFormat) -> Exit {
                     );
                 } else {
                     println!("{}\t{}\t{}", row.language, row.program, row.state);
+                }
+                if let Some(install) = row.install {
+                    println!("  install: {install}");
                 }
             }
             Exit::Success

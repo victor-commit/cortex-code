@@ -157,7 +157,8 @@ pub enum LspCommand {
     /// reported as `no_server`, while a pre-installed server can still return real diagnostics
     /// offline.
     Diagnostics(LspDiagnosticsArgs),
-    /// List configured language servers and whether they are idle, running, missing, or failed.
+    /// List configured language servers and whether they are disabled, installing, running,
+    /// unavailable, or crashed.
     Status(LspStatusArgs),
 }
 

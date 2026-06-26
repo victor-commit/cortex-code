@@ -53,12 +53,26 @@ pub(crate) fn from_effective(
                         return Err(type_mismatch(&key, "a table", describe(entry_value)));
                     };
                     let disabled = bool_field(entry, "disabled", &key)?;
+                    let existing = by_language.get(language_id).cloned();
                     if disabled.unwrap_or(false) {
-                        by_language.remove(language_id);
+                        let placeholder = existing.unwrap_or_else(|| {
+                            let program = string_field(entry, "program", &key)
+                                .ok()
+                                .flatten()
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or_else(|| format!("{language_id}-language-server"));
+                            let mut server = lsp::LspServerConfig::new(language_id, program);
+                            if let Some(extensions) =
+                                string_array_field(entry, "extensions", &key).ok().flatten()
+                            {
+                                server = server.with_exact_extensions(extensions);
+                            }
+                            server
+                        });
+                        by_language.insert(language_id.to_owned(), placeholder.with_enabled(false));
                         continue;
                     }
 
-                    let existing = by_language.get(language_id).cloned();
                     let program = string_field(entry, "program", &key)?
                         .or_else(|| existing.as_ref().map(|server| server.program().to_owned()));
                     let program = match program {
@@ -94,7 +108,8 @@ pub(crate) fn from_effective(
                         .with_program(program)
                         .with_exact_args(args)
                         .with_exact_extensions(extensions)
-                        .with_envs(env);
+                        .with_envs(env)
+                        .with_enabled(true);
                     by_language.insert(language_id.to_owned(), merged);
                 }
             }
