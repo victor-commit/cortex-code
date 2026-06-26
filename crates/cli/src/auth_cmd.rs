@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal, Read, Write};
+use std::time::Duration;
 
 use errors::Exit;
 use plugins::{PluginAuthMethodType, PluginAuthPrompt};
@@ -106,9 +107,9 @@ fn login(args: AuthLoginArgs, plugin_state: &PluginState) -> Exit {
         "received credential for auth login"
     );
 
-    let preserve_structured = selected_method
-        .as_ref()
-        .is_some_and(|method| method.source == "plugin");
+    let preserve_structured = selected_method.as_ref().is_some_and(|method| {
+        method.source == "plugin" || method.method_type == AuthMethodType::Oauth
+    });
     if let Err(error) = store_auth_payload(&path, &provider, &credential, preserve_structured) {
         eprintln!(
             "cortex auth login: failed to persist credential for provider `{provider}`: {error}"
@@ -327,6 +328,7 @@ fn available_methods(plugin_state: &PluginState) -> Vec<AuthMethodDescriptor> {
 fn builtin_auth_methods() -> Vec<AuthMethodDescriptor> {
     vec![
         builtin_api_method("copilot", "GitHub Copilot", &["GITHUB_COPILOT_TOKEN"]),
+        builtin_oauth_method("copilot", "GitHub Copilot"),
         builtin_api_method("codex", "OpenAI Codex", &["OPENAI_API_KEY"]),
         builtin_api_method("gitlab", "GitLab", &["GITLAB_TOKEN", "GITLAB_API_TOKEN"]),
         builtin_api_method("azure", "Azure OpenAI", &["AZURE_OPENAI_API_KEY"]),
@@ -353,6 +355,41 @@ fn builtin_api_method(
             placeholder: None,
         }],
         env: env.iter().map(|value| (*value).to_owned()).collect(),
+    }
+}
+
+fn builtin_oauth_method(provider_id: &str, provider_name: &str) -> AuthMethodDescriptor {
+    AuthMethodDescriptor {
+        source: "builtin",
+        plugin: None,
+        provider_id: provider_id.to_owned(),
+        provider_name: provider_name.to_owned(),
+        method_id: "oauth".to_owned(),
+        method_type: AuthMethodType::Oauth,
+        label: "OAuth authorization code".to_owned(),
+        prompts: vec![
+            AuthPromptDescriptor::Text {
+                key: "client_id".to_owned(),
+                message: "OAuth client id".to_owned(),
+                placeholder: None,
+            },
+            AuthPromptDescriptor::Text {
+                key: "client_secret".to_owned(),
+                message: "OAuth client secret".to_owned(),
+                placeholder: Some("optional".to_owned()),
+            },
+            AuthPromptDescriptor::Text {
+                key: "authorize_endpoint".to_owned(),
+                message: "OAuth authorize endpoint".to_owned(),
+                placeholder: None,
+            },
+            AuthPromptDescriptor::Text {
+                key: "token_endpoint".to_owned(),
+                message: "OAuth token endpoint".to_owned(),
+                placeholder: None,
+            },
+        ],
+        env: vec![],
     }
 }
 
@@ -487,6 +524,9 @@ fn gather_method_inputs(
         if inputs.contains_key(key) {
             continue;
         }
+        if method.source == "builtin" && key == "client_secret" {
+            continue;
+        }
         if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("token") {
             if let Some(secret) =
                 resolve_login_secret(args, provider).or_else(|| env_secret_for_method(method))
@@ -536,6 +576,48 @@ fn parse_auth_inputs(values: &[String]) -> Result<BTreeMap<String, String>, Stri
         map.insert(key.to_owned(), raw.to_owned());
     }
     Ok(map)
+}
+
+fn required_auth_input(inputs: &BTreeMap<String, String>, key: &str) -> Result<String, String> {
+    non_empty(inputs.get(key).map(String::as_str))
+        .ok_or_else(|| format!("missing required auth input `{key}` (pass --auth-input {key}=...)"))
+}
+
+fn parse_optional_callback_port(value: Option<&String>) -> Result<Option<u16>, String> {
+    let Some(value) = value.and_then(|value| non_empty(Some(value.as_str()))) else {
+        return Ok(None);
+    };
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid callback_port `{value}` (expected integer 3200-3299)"))?;
+    Ok(Some(port))
+}
+
+fn parse_optional_timeout_seconds(value: Option<&String>) -> Result<Duration, String> {
+    let Some(value) = value.and_then(|value| non_empty(Some(value.as_str()))) else {
+        return Ok(Duration::from_secs(120));
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| format!("invalid timeout_seconds `{value}` (expected integer >= 1)"))?;
+    if seconds == 0 {
+        return Err("invalid timeout_seconds `0` (expected integer >= 1)".to_owned());
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+fn parse_scope_inputs(inputs: &BTreeMap<String, String>) -> Vec<String> {
+    inputs
+        .get("scopes")
+        .or_else(|| inputs.get("scope"))
+        .map(|raw| {
+            raw.split([',', ' '])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn prompt_for_value(prompt: &AuthPromptDescriptor) -> io::Result<Option<String>> {
@@ -637,6 +719,10 @@ fn authorize_oauth_method(
     inputs: BTreeMap<String, String>,
     args: &AuthLoginArgs,
 ) -> Result<JsonValue, String> {
+    if method.source != "plugin" {
+        return authorize_builtin_oauth_method(method, inputs, args);
+    }
+
     let input_json = JsonValue::Object(
         inputs
             .iter()
@@ -704,6 +790,72 @@ fn authorize_oauth_method(
     let callback =
         plugin_state.complete_auth_callback(&method.provider_id, &callback_id, code.as_deref())?;
     parse_credential_response(callback)
+}
+
+fn authorize_builtin_oauth_method(
+    _method: &AuthMethodDescriptor,
+    inputs: BTreeMap<String, String>,
+    _args: &AuthLoginArgs,
+) -> Result<JsonValue, String> {
+    let client_id = required_auth_input(&inputs, "client_id")?;
+    let authorize_endpoint = required_auth_input(&inputs, "authorize_endpoint")?;
+    let token_endpoint = required_auth_input(&inputs, "token_endpoint")?;
+    let client_secret = non_empty(inputs.get("client_secret").map(String::as_str));
+    let callback_port = parse_optional_callback_port(inputs.get("callback_port"))?;
+    let scopes = parse_scope_inputs(&inputs);
+    let timeout = parse_optional_timeout_seconds(inputs.get("timeout_seconds"))?;
+
+    let oauth_config = mcp::oauth::OAuthConfig {
+        authorize_endpoint,
+        token_endpoint,
+        client_id: client_id.clone(),
+        scopes,
+    };
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("failed to start OAuth runtime: {err}"))?;
+    let request = runtime
+        .block_on(mcp::oauth::begin(oauth_config, callback_port))
+        .map_err(|err| err.to_string())?;
+    eprintln!(
+        "cortex auth login: open this URL to authorize: {}",
+        request.authorize_url
+    );
+    eprintln!(
+        "cortex auth login: waiting for OAuth callback on {}",
+        request.redirect_uri
+    );
+    let token = runtime
+        .block_on(request.complete(timeout))
+        .map_err(|err| err.to_string())?;
+
+    let mut credential = serde_json::Map::new();
+    credential.insert("type".to_owned(), JsonValue::String("oauth".to_owned()));
+    credential.insert(
+        "access_token".to_owned(),
+        JsonValue::String(token.access_token),
+    );
+    credential.insert("token_type".to_owned(), JsonValue::String(token.token_type));
+    if let Some(refresh_token) = token.refresh_token {
+        credential.insert("refresh_token".to_owned(), JsonValue::String(refresh_token));
+    }
+    if let Some(expires_at) = token.expires_at {
+        credential.insert(
+            "expires_at".to_owned(),
+            JsonValue::Number(expires_at.into()),
+        );
+    }
+    credential.insert(
+        "token_endpoint".to_owned(),
+        JsonValue::String(token.token_endpoint),
+    );
+    credential.insert("client_id".to_owned(), JsonValue::String(token.client_id));
+    if let Some(secret) = client_secret {
+        credential.insert("client_secret".to_owned(), JsonValue::String(secret));
+    }
+    Ok(JsonValue::Object(credential))
 }
 
 fn read_interactive_oauth_code() -> Option<String> {

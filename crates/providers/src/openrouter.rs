@@ -110,9 +110,25 @@ pub fn openai_compatible_provider_with_options(
     extra_headers: Option<&[(String, String)]>,
     idle_timeout: Option<Duration>,
 ) -> Result<OpenAiCompatible, Diagnostic> {
+    openai_compatible_provider_with_api_key(
+        provider_id,
+        credential.expose(),
+        base_url,
+        extra_headers,
+        idle_timeout,
+    )
+}
+
+pub(crate) fn openai_compatible_provider_with_api_key(
+    provider_id: &str,
+    api_key: &str,
+    base_url: &str,
+    extra_headers: Option<&[(String, String)]>,
+    idle_timeout: Option<Duration>,
+) -> Result<OpenAiCompatible, Diagnostic> {
     let mut config = OpenAiConfig {
         base_url: base_url.to_owned(),
-        api_key: credential.expose().to_owned(),
+        api_key: api_key.to_owned(),
         provider_name: provider_id.to_owned(),
         extra_headers: extra_headers
             .map(|headers| headers.to_vec())

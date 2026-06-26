@@ -12,11 +12,10 @@ use llm::{
     OpenAiResponses, OpenAiResponsesConfig,
 };
 
-use crate::credentials::resolve_credential;
-use crate::openrouter::OPENROUTER_ID;
+use crate::openrouter::{OPENROUTER_ID, openai_compatible_provider_with_api_key};
+use crate::runtime_auth::resolve_provider_api_key;
 use crate::{
-    ProviderConfigError, ProviderConfigSet, ProviderProtocol,
-    openai_compatible_provider_with_options, resolve_openrouter_with_options,
+    ProviderConfigError, ProviderConfigSet, ProviderProtocol, resolve_openrouter_with_options,
 };
 
 /// A ready provider plus endpoint metadata for audit/network reporting.
@@ -122,10 +121,10 @@ fn resolve_openai_compatible(
     extra_headers: Option<&[(String, String)]>,
     idle_timeout: Option<Duration>,
 ) -> Result<OpenAiCompatible, Diagnostic> {
-    let credential = resolve_credential(provider_id, credentials)?;
-    openai_compatible_provider_with_options(
+    let api_key = resolve_provider_api_key(provider_id, credentials)?;
+    openai_compatible_provider_with_api_key(
         provider_id,
-        &credential,
+        &api_key,
         base_url,
         extra_headers,
         idle_timeout,
@@ -139,10 +138,10 @@ fn resolve_openai_responses(
     extra_headers: Option<&[(String, String)]>,
     idle_timeout: Option<Duration>,
 ) -> Result<OpenAiResponses, Diagnostic> {
-    let credential = resolve_credential(provider_id, credentials)?;
+    let api_key = resolve_provider_api_key(provider_id, credentials)?;
     let mut config = OpenAiResponsesConfig {
         base_url: base_url.to_owned(),
-        api_key: credential.expose().to_owned(),
+        api_key,
         provider_name: provider_id.to_owned(),
         extra_headers: extra_headers.map(ToOwned::to_owned).unwrap_or_default(),
         transport: llm::TransportConfig::default(),
@@ -160,10 +159,10 @@ fn resolve_anthropic(
     extra_headers: Option<&[(String, String)]>,
     idle_timeout: Option<Duration>,
 ) -> Result<AnthropicMessages, Diagnostic> {
-    let credential = resolve_credential(provider_id, credentials)?;
+    let api_key = resolve_provider_api_key(provider_id, credentials)?;
     let mut config = AnthropicConfig {
         base_url: base_url.to_owned(),
-        api_key: credential.expose().to_owned(),
+        api_key,
         provider_name: provider_id.to_owned(),
         extra_headers: extra_headers.map(ToOwned::to_owned).unwrap_or_default(),
         transport: llm::TransportConfig::default(),
@@ -181,10 +180,10 @@ fn resolve_gemini(
     extra_headers: Option<&[(String, String)]>,
     idle_timeout: Option<Duration>,
 ) -> Result<GeminiProvider, Diagnostic> {
-    let credential = resolve_credential(provider_id, credentials)?;
+    let api_key = resolve_provider_api_key(provider_id, credentials)?;
     let mut config = GeminiConfig {
         base_url: base_url.to_owned(),
-        api_key: credential.expose().to_owned(),
+        api_key,
         provider_name: provider_id.to_owned(),
         extra_headers: extra_headers.map(ToOwned::to_owned).unwrap_or_default(),
         transport: llm::TransportConfig::default(),
