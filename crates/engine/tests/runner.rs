@@ -342,6 +342,107 @@ async fn errored_tool_results_are_reinjected_with_error_context() {
 }
 
 #[tokio::test]
+async fn tool_result_media_parts_are_reinjected_for_follow_up_rounds() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.lock().expect("requests lock").len();
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push(request.messages.clone());
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_read".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: r#"{"path":"fixture.png"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "done".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct MediaDispatcher;
+
+    impl ToolDispatcher for MediaDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "read".to_owned(),
+                description: "Read a file".to_owned(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, _call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            Box::pin(async {
+                ToolDispatchResult {
+                    content: "[image attachment: fixture.png (image/png)]".to_owned(),
+                    parts: vec![
+                        protocol::ToolResultPart::text("read: fixture.png returned an image"),
+                        protocol::ToolResultPart::image("image/png", "fixture.png"),
+                    ],
+                    is_error: false,
+                }
+            })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let dispatcher = MediaDispatcher;
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new("google/gemini-2.5-flash", "", "inspect fixture"),
+            &dispatcher,
+            |_| {},
+        )
+        .await;
+    assert!(outcome.is_success());
+
+    let requests = provider.requests.lock().expect("requests lock");
+    let second = requests
+        .get(1)
+        .expect("second provider round after tool reinjection");
+    let tool_message = second
+        .iter()
+        .find(|message| message.role == llm::Role::Tool)
+        .expect("tool message");
+    assert!(
+        tool_message.parts.iter().any(|part| matches!(
+            part,
+            llm::MessageContentPart::Image { media_type, path }
+                if media_type == "image/png" && path == "fixture.png"
+        )),
+        "tool result media should be carried in message parts: {:?}",
+        tool_message.parts
+    );
+}
+
+#[tokio::test]
 async fn tool_definitions_are_refreshed_before_each_provider_request() {
     struct CapturingProvider {
         requests: Mutex<Vec<Vec<String>>>,

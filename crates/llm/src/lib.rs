@@ -20,6 +20,7 @@ mod anthropic;
 mod error;
 mod event;
 mod gemini;
+mod media;
 mod openai;
 mod provider;
 mod request;

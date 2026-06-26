@@ -622,7 +622,11 @@ impl SessionRunner {
                         if call.name == "skill" && !is_error {
                             append_skill_guidance_to_system(&mut messages, &tool_content);
                         }
-                        messages.push(Message::tool_result(call.id.clone(), tool_content));
+                        let media_parts = message_media_parts_from_tool_result(&result.parts);
+                        messages.push(
+                            Message::tool_result(call.id.clone(), tool_content)
+                                .with_parts(media_parts),
+                        );
                     }
                 }
                 None => {
@@ -950,6 +954,29 @@ fn append_system_instructions(messages: &mut Vec<Message>, instructions: &str) {
     } else {
         messages.insert(0, Message::system(instructions.to_owned()));
     }
+}
+
+fn message_media_parts_from_tool_result(
+    parts: &[protocol::ToolResultPart],
+) -> Vec<MessageContentPart> {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            protocol::ToolResultPart::Image { media_type, path } => {
+                Some(MessageContentPart::Image {
+                    media_type: media_type.clone(),
+                    path: path.clone(),
+                })
+            }
+            protocol::ToolResultPart::Document { media_type, path } => {
+                Some(MessageContentPart::Document {
+                    media_type: media_type.clone(),
+                    path: path.clone(),
+                })
+            }
+            protocol::ToolResultPart::Text { .. } => None,
+        })
+        .collect()
 }
 
 /// Execute one tool call with a per-call timeout, yielding a synthesized timeout result if needed.

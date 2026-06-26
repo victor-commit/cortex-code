@@ -33,8 +33,9 @@ pub struct Message {
     pub content: String,
     /// Optional non-text media parts associated with this message.
     ///
-    /// OpenAI-compatible providers ignore this field today; plugin providers receive it verbatim
-    /// so hook code can observe attachment-aware requests.
+    /// Provider adapters serialize these into native multimodal payloads when supported; when a
+    /// provider or message role cannot carry binary media they are reduced to safe
+    /// `[Attached <media-type>]` text stubs.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub parts: Vec<MessageContentPart>,
     /// For [`Role::Tool`] messages: the [`ToolCall::id`] this result answers.

@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 use crate::event::Usage;
-use crate::request::{LlmRequest, Message, Role, ToolDef};
+use crate::media::{encode_media_part, is_image_part, strip_media_stub};
+use crate::request::{LlmRequest, Message, MessageContentPart, Role, ToolDef};
 
 /// Serialize a canonical [`LlmRequest`] into a streaming Chat-completions request body.
 ///
@@ -77,7 +78,7 @@ struct StreamOptions {
 #[derive(Serialize)]
 struct WireMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -88,7 +89,7 @@ impl<'a> From<&'a Message> for WireMessage<'a> {
     fn from(message: &'a Message) -> Self {
         WireMessage {
             role: role_str(message.role),
-            content: &message.content,
+            content: wire_content(message),
             tool_call_id: message.tool_call_id.as_deref(),
             tool_calls: message
                 .tool_calls
@@ -104,6 +105,55 @@ impl<'a> From<&'a Message> for WireMessage<'a> {
                 .collect(),
         }
     }
+}
+
+fn wire_content(message: &Message) -> serde_json::Value {
+    if message.parts.is_empty() {
+        return serde_json::Value::String(message.content.clone());
+    }
+
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(serde_json::json!({
+            "type": "text",
+            "text": message.content,
+        }));
+    }
+
+    let allow_media = role_accepts_media(message.role);
+    let mut strip_stubs = Vec::new();
+    for part in &message.parts {
+        match openai_media_part(part, allow_media) {
+            Some(media_part) => parts.push(media_part),
+            None => strip_stubs.push(strip_media_stub(part)),
+        }
+    }
+
+    if !strip_stubs.is_empty() {
+        parts.push(serde_json::json!({
+            "type": "text",
+            "text": strip_stubs.join("\n"),
+        }));
+    }
+
+    serde_json::Value::Array(parts)
+}
+
+fn role_accepts_media(role: Role) -> bool {
+    matches!(role, Role::User | Role::Tool)
+}
+
+fn openai_media_part(part: &MessageContentPart, allow_media: bool) -> Option<serde_json::Value> {
+    if !allow_media || !is_image_part(part) {
+        return None;
+    }
+    let encoded = encode_media_part(part).ok()?;
+    Some(serde_json::json!({
+        "type": "image_url",
+        "image_url": {
+            "url": format!("data:{};base64,{}", encoded.media_type, encoded.base64),
+        }
+    }))
 }
 
 #[derive(Serialize)]
@@ -336,7 +386,22 @@ impl ChatError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "cortex-openai-wire-{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, bytes).expect("write temp attachment");
+        path
+    }
 
     #[test]
     fn request_body_marks_streaming_and_includes_usage_option() {
@@ -483,6 +548,86 @@ mod tests {
                 .get("anyOf")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn user_image_parts_serialize_to_multimodal_content_array() {
+        let image = temp_file(
+            "img.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let request =
+            LlmRequest::new("m").message(Message::user("read this image").with_parts(vec![
+                MessageContentPart::Image {
+                    media_type: "image/png".to_owned(),
+                    path: image.to_string_lossy().into_owned(),
+                },
+            ]));
+        let body = build_chat_request(&request, false, "openrouter").expect("encode");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        let content = value["messages"][0]["content"]
+            .as_array()
+            .expect("multimodal array content");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert!(
+            content[1]["image_url"]["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("data:image/png;base64,")),
+            "expected data URL image part, got {}",
+            content[1]
+        );
+    }
+
+    #[test]
+    fn unsupported_media_parts_fallback_to_strip_media_stub_text() {
+        let doc = temp_file("doc.pdf", b"%PDF-1.7\n");
+        let request =
+            LlmRequest::new("m").message(Message::user("summarize attachment").with_parts(vec![
+                MessageContentPart::Document {
+                    media_type: "application/pdf".to_owned(),
+                    path: doc.to_string_lossy().into_owned(),
+                },
+            ]));
+        let body = build_chat_request(&request, false, "openrouter").expect("encode");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        let content = value["messages"][0]["content"]
+            .as_array()
+            .expect("multimodal array");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "[Attached application/pdf]");
+    }
+
+    #[test]
+    fn tool_role_messages_can_carry_image_parts() {
+        let image = temp_file(
+            "tool.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let message = Message::tool_result("call_1", "tool produced an image").with_parts(vec![
+            MessageContentPart::Image {
+                media_type: "image/png".to_owned(),
+                path: image.to_string_lossy().into_owned(),
+            },
+        ]);
+        let request = LlmRequest::new("m").message(message);
+        let body = build_chat_request(&request, false, "openrouter").expect("encode");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(value["messages"][0]["role"], "tool");
+        assert_eq!(value["messages"][0]["tool_call_id"], "call_1");
+        assert_eq!(value["messages"][0]["content"][1]["type"], "image_url");
     }
 
     #[test]

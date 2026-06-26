@@ -15,8 +15,9 @@ use serde_json::Value as JsonValue;
 
 use crate::error::LlmError;
 use crate::event::{FinishReason, LlmEvent, ToolCall, Usage};
+use crate::media::{encode_media_part, is_image_part, strip_media_stub};
 use crate::provider::{LlmStream, Provider};
-use crate::request::{LlmRequest, Role};
+use crate::request::{LlmRequest, MessageContentPart, Role};
 use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 
 /// Default Anthropic API base (without `/messages`).
@@ -120,14 +121,43 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
     for message in &request.messages {
         match message.role {
             Role::System => {
-                if !message.content.is_empty() {
-                    system_parts.push(message.content.clone());
+                let mut text = message.content.clone();
+                if !message.parts.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(
+                        &message
+                            .parts
+                            .iter()
+                            .map(strip_media_stub)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                }
+                if !text.is_empty() {
+                    system_parts.push(text);
                 }
             }
             Role::User => {
+                let mut content = Vec::new();
+                if !message.content.is_empty() {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": message.content,
+                    }));
+                }
+                let (media_blocks, strip_stubs) = anthropic_media_blocks(&message.parts);
+                content.extend(media_blocks);
+                if !strip_stubs.is_empty() {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": strip_stubs.join("\n"),
+                    }));
+                }
                 messages.push(serde_json::json!({
                     "role": "user",
-                    "content": [{"type": "text", "text": message.content}],
+                    "content": content,
                 }));
             }
             Role::Assistant => {
@@ -143,18 +173,43 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
                         "input": parse_json_arguments(&call.arguments),
                     }));
                 }
+                if !message.parts.is_empty() {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": message.parts.iter().map(strip_media_stub).collect::<Vec<_>>().join("\n"),
+                    }));
+                }
                 messages.push(serde_json::json!({
                     "role": "assistant",
                     "content": content,
                 }));
             }
             Role::Tool => {
+                let (media_blocks, strip_stubs) = anthropic_media_blocks(&message.parts);
+                let mut tool_content = Vec::new();
+                if !message.content.is_empty() {
+                    tool_content.push(serde_json::json!({
+                        "type": "text",
+                        "text": message.content,
+                    }));
+                }
+                tool_content.extend(media_blocks);
+                if !strip_stubs.is_empty() {
+                    tool_content.push(serde_json::json!({
+                        "type": "text",
+                        "text": strip_stubs.join("\n"),
+                    }));
+                }
                 messages.push(serde_json::json!({
                     "role": "user",
                     "content": [{
                         "type": "tool_result",
                         "tool_use_id": message.tool_call_id.clone().unwrap_or_else(|| "tool_call".to_owned()),
-                        "content": message.content,
+                        "content": if tool_content.is_empty() {
+                            JsonValue::String(message.content.clone())
+                        } else {
+                            JsonValue::Array(tool_content)
+                        },
                     }],
                 }));
             }
@@ -197,6 +252,37 @@ fn build_messages_request(request: &LlmRequest) -> Result<String, LlmError> {
     }
     serde_json::to_string(&body)
         .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))
+}
+
+fn anthropic_media_blocks(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<String>) {
+    let mut blocks = Vec::new();
+    let mut strip_stubs = Vec::new();
+    for part in parts {
+        let Ok(encoded) = encode_media_part(part) else {
+            strip_stubs.push(strip_media_stub(part));
+            continue;
+        };
+        if is_image_part(part) {
+            blocks.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": encoded.media_type,
+                    "data": encoded.base64,
+                }
+            }));
+        } else {
+            blocks.push(serde_json::json!({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": encoded.media_type,
+                    "data": encoded.base64,
+                }
+            }));
+        }
+    }
+    (blocks, strip_stubs)
 }
 
 fn is_reserved_messages_param(name: &str) -> bool {
@@ -469,13 +555,27 @@ fn finish_reason(stop_reason: Option<&str>, saw_tool_calls: bool) -> FinishReaso
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use bytes::Bytes;
 
     use super::*;
-    use crate::request::Message;
+    use crate::request::{Message, MessageContentPart};
     use crate::transport::sse_data_frames;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "cortex-anthropic-wire-{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, bytes).expect("write temp attachment");
+        path
+    }
 
     #[test]
     fn request_maps_tool_results_to_tool_result_blocks() {
@@ -493,6 +593,61 @@ mod tests {
                     entry["content"][0]["type"] == "tool_result"
                         && entry["content"][0]["tool_use_id"] == "call_1"
                 })
+        );
+    }
+
+    #[test]
+    fn user_image_parts_serialize_to_image_blocks() {
+        let image = temp_file(
+            "img.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let request = LlmRequest::new("anthropic/claude-sonnet-4").message(
+            Message::user("inspect image").with_parts(vec![MessageContentPart::Image {
+                media_type: "image/png".to_owned(),
+                path: image.to_string_lossy().into_owned(),
+            }]),
+        );
+        let encoded = build_messages_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert_eq!(json["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            json["messages"][0]["content"][1]["source"]["type"],
+            "base64"
+        );
+    }
+
+    #[test]
+    fn tool_results_can_include_media_arrays() {
+        let image = temp_file(
+            "tool.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let request = LlmRequest::new("anthropic/claude-sonnet-4").message(
+            Message::tool_result("call_1", "tool output").with_parts(vec![
+                MessageContentPart::Image {
+                    media_type: "image/png".to_owned(),
+                    path: image.to_string_lossy().into_owned(),
+                },
+            ]),
+        );
+        let encoded = build_messages_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert_eq!(
+            json["messages"][0]["content"][0]["content"][1]["type"],
+            "image"
         );
     }
 

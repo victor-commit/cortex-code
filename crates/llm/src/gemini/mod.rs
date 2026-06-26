@@ -15,8 +15,9 @@ use serde_json::Value as JsonValue;
 
 use crate::error::LlmError;
 use crate::event::{FinishReason, LlmEvent, ToolCall, Usage};
+use crate::media::{encode_media_part, strip_media_stub};
 use crate::provider::{LlmStream, Provider};
-use crate::request::{LlmRequest, Role};
+use crate::request::{LlmRequest, MessageContentPart, Role};
 use crate::transport::{HttpTransport, TransportConfig, sse_data_frames};
 
 /// Default Gemini API base.
@@ -122,14 +123,37 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
     for message in &request.messages {
         match message.role {
             Role::System => {
-                if !message.content.is_empty() {
-                    system_parts.push(serde_json::json!({ "text": message.content }));
+                let mut text = message.content.clone();
+                if !message.parts.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(
+                        &message
+                            .parts
+                            .iter()
+                            .map(strip_media_stub)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                }
+                if !text.is_empty() {
+                    system_parts.push(serde_json::json!({ "text": text }));
                 }
             }
             Role::User => {
+                let mut parts = Vec::new();
+                if !message.content.is_empty() {
+                    parts.push(serde_json::json!({ "text": message.content }));
+                }
+                let (media_parts, strip_stubs) = gemini_media_parts(&message.parts);
+                parts.extend(media_parts);
+                if !strip_stubs.is_empty() {
+                    parts.push(serde_json::json!({ "text": strip_stubs.join("\n") }));
+                }
                 contents.push(serde_json::json!({
                     "role": "user",
-                    "parts": [{ "text": message.content }],
+                    "parts": parts,
                 }));
             }
             Role::Assistant => {
@@ -145,23 +169,34 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
                         }
                     }));
                 }
+                if !message.parts.is_empty() {
+                    parts.push(serde_json::json!({
+                        "text": message.parts.iter().map(strip_media_stub).collect::<Vec<_>>().join("\n"),
+                    }));
+                }
                 contents.push(serde_json::json!({
                     "role": "model",
                     "parts": parts,
                 }));
             }
             Role::Tool => {
+                let (media_parts, strip_stubs) = gemini_media_parts(&message.parts);
+                let mut parts = vec![serde_json::json!({
+                    "functionResponse": {
+                        "name": message
+                            .tool_call_id
+                            .clone()
+                            .unwrap_or_else(|| "tool_result".to_owned()),
+                        "response": { "content": message.content },
+                    }
+                })];
+                parts.extend(media_parts);
+                if !strip_stubs.is_empty() {
+                    parts.push(serde_json::json!({ "text": strip_stubs.join("\n") }));
+                }
                 contents.push(serde_json::json!({
                     "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": message
-                                .tool_call_id
-                                .clone()
-                                .unwrap_or_else(|| "tool_result".to_owned()),
-                            "response": { "content": message.content },
-                        }
-                    }],
+                    "parts": parts,
                 }));
             }
         }
@@ -198,6 +233,24 @@ fn build_gemini_request(request: &LlmRequest) -> Result<String, LlmError> {
     }
     serde_json::to_string(&body)
         .map_err(|err| LlmError::transport(format!("failed to encode request: {err}")))
+}
+
+fn gemini_media_parts(parts: &[MessageContentPart]) -> (Vec<JsonValue>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut strip_stubs = Vec::new();
+    for part in parts {
+        let Ok(encoded) = encode_media_part(part) else {
+            strip_stubs.push(strip_media_stub(part));
+            continue;
+        };
+        out.push(serde_json::json!({
+            "inlineData": {
+                "mimeType": encoded.media_type,
+                "data": encoded.base64,
+            }
+        }));
+    }
+    (out, strip_stubs)
 }
 
 fn is_reserved_gemini_param(name: &str) -> bool {
@@ -421,12 +474,27 @@ fn map_finish_reason(value: &str) -> FinishReason {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use bytes::Bytes;
 
     use super::*;
+    use crate::request::{Message, MessageContentPart};
     use crate::transport::sse_data_frames;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "cortex-gemini-wire-{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, bytes).expect("write temp attachment");
+        path
+    }
 
     #[test]
     fn request_maps_prefixed_google_models_to_native_model_path() {
@@ -442,6 +510,58 @@ mod tests {
             provider.stream_url("google/gemini-2.5-flash"),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
         );
+    }
+
+    #[test]
+    fn user_image_parts_serialize_to_inline_data() {
+        let image = temp_file(
+            "img.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let request = LlmRequest::new("google/gemini-2.5-flash").message(
+            Message::user("inspect image").with_parts(vec![MessageContentPart::Image {
+                media_type: "image/png".to_owned(),
+                path: image.to_string_lossy().into_owned(),
+            }]),
+        );
+        let encoded = build_gemini_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert!(json["contents"][0]["parts"][1]["inlineData"].is_object());
+        assert_eq!(
+            json["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn tool_results_include_media_inline_data_parts() {
+        let image = temp_file(
+            "tool.png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let request = LlmRequest::new("google/gemini-2.5-flash").message(
+            Message::tool_result("call_1", "tool output").with_parts(vec![
+                MessageContentPart::Image {
+                    media_type: "image/png".to_owned(),
+                    path: image.to_string_lossy().into_owned(),
+                },
+            ]),
+        );
+        let encoded = build_gemini_request(&request).expect("request");
+        let json: JsonValue = serde_json::from_str(&encoded).expect("json");
+        assert!(json["contents"][0]["parts"][1]["inlineData"].is_object());
     }
 
     #[tokio::test]
