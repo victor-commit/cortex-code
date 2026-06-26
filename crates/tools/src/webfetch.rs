@@ -29,6 +29,8 @@ const OUTBOUND_OPERATION: &str = "webfetch HTTP request";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MIN_TIMEOUT_MS: u64 = 50;
+const MIN_TIMEOUT_SECS: u64 = 1;
+const MAX_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
 const MAX_MAX_BYTES: usize = 5 * 1024 * 1024;
 const MIN_MAX_BYTES: usize = 1024;
@@ -162,8 +164,7 @@ fn options_from(arguments: &Value) -> Result<FetchOptions, String> {
         let Some(seconds) = value.as_u64() else {
             return Err("webfetch: 'timeout' must be an integer number of seconds".to_owned());
         };
-        let timeout_ms = seconds.saturating_mul(1000);
-        options.timeout = Duration::from_millis(timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
+        options.timeout = Duration::from_secs(seconds.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS));
     }
     if let Some(value) = arguments
         .get("max_bytes")
@@ -1192,5 +1193,35 @@ mod tests {
                 && record["status"] == 200
         }));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn options_timeout_seconds_zero_clamps_to_one_second() {
+        let options = options_from(&json!({ "timeout": 0 })).expect("options");
+        assert_eq!(options.timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn options_timeout_seconds_one_remains_one_second() {
+        let options = options_from(&json!({ "timeout": 1 })).expect("options");
+        assert_eq!(options.timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn options_timeout_seconds_clamps_to_maximum() {
+        let options = options_from(&json!({ "timeout": 999 })).expect("options");
+        assert_eq!(options.timeout, Duration::from_secs(MAX_TIMEOUT_SECS));
+    }
+
+    #[test]
+    fn options_timeout_ms_zero_keeps_millisecond_minimum() {
+        let options = options_from(&json!({ "timeout_ms": 0 })).expect("options");
+        assert_eq!(options.timeout, Duration::from_millis(MIN_TIMEOUT_MS));
+    }
+
+    #[test]
+    fn options_timeout_ms_camel_case_alias_keeps_millisecond_minimum() {
+        let options = options_from(&json!({ "timeoutMs": 0 })).expect("options");
+        assert_eq!(options.timeout, Duration::from_millis(MIN_TIMEOUT_MS));
     }
 }
