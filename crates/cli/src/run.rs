@@ -531,6 +531,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
 
     // Derive the compaction policy from the resolved model's context window before the model id is
     // moved out, so an over-large turn is compacted/recovered rather than crashing (VAL-LLM-025/026).
+    let resolved_model = run_config.model.clone();
     let compaction = compaction_policy(&run_config.model);
     let model_id = run_config.model.model_id;
     let small_model_id = resolve_small_model_for_turn(
@@ -694,6 +695,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             OutputFormat::Text => {
                 stream_text(
                     provider.as_ref(),
+                    &resolved_model,
                     &model_id,
                     agent.name(),
                     mode.as_ref().map(custom_modes::ActiveMode::name),
@@ -711,6 +713,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             OutputFormat::Jsonl => {
                 stream_jsonl(
                     provider.as_ref(),
+                    &resolved_model,
                     &model_id,
                     agent.name(),
                     mode.as_ref().map(custom_modes::ActiveMode::name),
@@ -730,6 +733,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             OutputFormat::Json => {
                 emit_json(
                     provider.as_ref(),
+                    &resolved_model,
                     &model_id,
                     agent.name(),
                     mode.as_ref().map(custom_modes::ActiveMode::name),
@@ -1450,6 +1454,19 @@ fn serialize_legacy_compaction_summary_content(
     .to_string()
 }
 
+fn apply_estimated_usage_cost(model: &ResolvedModel, outcome: &mut RunOutcome) {
+    let Some(usage) = outcome.usage.as_mut() else {
+        return;
+    };
+    if usage.cost.is_some() {
+        return;
+    }
+    let Some(info) = model.info.as_ref() else {
+        return;
+    };
+    usage.cost = providers::estimate_usage_cost(info, usage);
+}
+
 /// Record this turn's token usage and cost so the session's cumulative totals stay accurate across
 /// separate `cortex run` invocations. Recorded in every output format (not just JSON) so a session
 /// that mixes formats still accumulates correctly. A persistence failure is reported on stderr but
@@ -1666,6 +1683,7 @@ fn parse_idle_timeout_ms(raw: Option<&str>) -> Option<Duration> {
 #[allow(clippy::too_many_arguments)]
 async fn stream_text(
     provider: &dyn llm::Provider,
+    resolved_model: &ResolvedModel,
     model_id: &str,
     agent: &str,
     _mode: Option<&str>,
@@ -1716,6 +1734,7 @@ async fn stream_text(
         }
     };
     plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
+    apply_estimated_usage_cost(resolved_model, &mut outcome);
 
     if let Some(err) = &outcome.error {
         if wrote_any {
@@ -1763,6 +1782,7 @@ async fn stream_text(
 #[allow(clippy::too_many_arguments)]
 async fn stream_jsonl(
     provider: &dyn llm::Provider,
+    resolved_model: &ResolvedModel,
     model_id: &str,
     agent: &str,
     mode: Option<&str>,
@@ -1819,6 +1839,7 @@ async fn stream_jsonl(
         }
     };
     plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
+    apply_estimated_usage_cost(resolved_model, &mut outcome);
 
     drop(handle);
     if let Some(err) = &outcome.error {
@@ -1946,6 +1967,7 @@ struct SessionEvent<'a> {
 #[allow(clippy::too_many_arguments)]
 async fn emit_json(
     provider: &dyn llm::Provider,
+    resolved_model: &ResolvedModel,
     model_id: &str,
     agent: &str,
     mode: Option<&str>,
@@ -1998,6 +2020,7 @@ async fn emit_json(
         }
     };
     plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
+    apply_estimated_usage_cost(resolved_model, &mut outcome);
 
     if let Some(err) = &outcome.error {
         eprintln!("cortex run: {err}");
@@ -3837,6 +3860,7 @@ mod tests {
                 total_tokens: 17,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: Some(0.0000056),
             }),
             finish_reason: llm::FinishReason::Stop,
@@ -4149,6 +4173,7 @@ mod tests {
                 total_tokens: 8,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: None,
             }),
             RunnerEvent::Done {

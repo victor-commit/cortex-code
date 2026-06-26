@@ -91,6 +91,9 @@ pub struct Usage {
     /// Prompt-cache read tokens, when the provider reports them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
+    /// Output tokens attributed to hidden reasoning/thinking content, when reported separately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u32>,
     /// Monetary cost of the turn when the provider reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<f64>,
@@ -181,6 +184,7 @@ mod tests {
                 total_tokens: 7,
                 cache_creation_input_tokens: Some(2),
                 cache_read_input_tokens: Some(1),
+                reasoning_output_tokens: Some(1),
                 cost: Some(0.0001),
             }),
             LlmEvent::Error {

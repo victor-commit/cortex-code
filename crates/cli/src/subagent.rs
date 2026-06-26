@@ -803,6 +803,7 @@ mod tests {
                 total_tokens: 3,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: Some(0.01),
             }),
             LlmEvent::Done {

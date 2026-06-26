@@ -10,8 +10,8 @@ use engine::{CompactionRecord, ToolDispatcher};
 use events::{Event, Subscriber};
 use futures_util::future::BoxFuture;
 use llm::{
-    FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Message, Provider, Role, ToolCall,
-    ToolDef, Usage,
+    FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Message, Provider, RequestMiddleware,
+    Role, ToolCall, ToolDef, Usage, with_request_middlewares,
 };
 use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
@@ -524,10 +524,12 @@ impl PluginState {
     #[must_use]
     pub(crate) fn wrap_provider(&self, inner: Arc<dyn Provider>) -> Arc<dyn Provider> {
         if self.has_request_shaping_hooks() {
-            Arc::new(PluginShapingProvider {
+            with_request_middlewares(
                 inner,
-                state: self.clone(),
-            })
+                vec![Arc::new(PluginRequestMiddleware {
+                    state: self.clone(),
+                })],
+            )
         } else {
             inner
         }
@@ -1594,6 +1596,12 @@ fn usage_from_json_object(object: &serde_json::Map<String, JsonValue>) -> Option
             .and_then(JsonValue::as_object)
             .and_then(|details| json_u32(details.get("cached_tokens")))
     });
+    let reasoning_output_tokens = json_u32(object.get("reasoning_output_tokens")).or_else(|| {
+        object
+            .get("output_tokens_details")
+            .and_then(JsonValue::as_object)
+            .and_then(|details| json_u32(details.get("reasoning_tokens")))
+    });
     let cost = object
         .get("cost")
         .and_then(JsonValue::as_f64)
@@ -1604,6 +1612,7 @@ fn usage_from_json_object(object: &serde_json::Map<String, JsonValue>) -> Option
         total_tokens,
         cache_creation_input_tokens,
         cache_read_input_tokens,
+        reasoning_output_tokens,
         cost,
     })
 }
@@ -1740,20 +1749,15 @@ fn system_output_to_string(value: JsonValue) -> String {
     }
 }
 
-struct PluginShapingProvider {
-    inner: Arc<dyn Provider>,
+struct PluginRequestMiddleware {
     state: PluginState,
 }
 
-impl Provider for PluginShapingProvider {
-    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
-        Box::pin(async move {
-            let request = self
-                .state
-                .shape_request(request)
-                .map_err(|err| LlmError::upstream(err.to_string()))?;
-            self.inner.stream(request).await
-        })
+impl RequestMiddleware for PluginRequestMiddleware {
+    fn transform_request(&self, request: LlmRequest) -> Result<LlmRequest, LlmError> {
+        self.state
+            .shape_request(request)
+            .map_err(|err| LlmError::upstream(err.to_string()))
     }
 }
 
@@ -2114,6 +2118,7 @@ mod tests {
             total_tokens: 15,
             cache_creation_input_tokens: Some(7),
             cache_read_input_tokens: Some(3),
+            reasoning_output_tokens: None,
             cost: None,
         };
         let cost = plugin_usage_cost(&model, &usage).expect("cost");

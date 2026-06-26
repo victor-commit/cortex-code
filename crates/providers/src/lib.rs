@@ -26,8 +26,8 @@ mod runtime_config;
 mod runtime_provider;
 
 pub use catalogue::{
-    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelInfo, ModelLimit, ProviderInfo,
-    ResolvedModel, resolve_model, validate_model_id,
+    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelCostTier, ModelInfo, ModelLimit,
+    ProviderInfo, ResolvedModel, estimate_usage_cost, resolve_model, validate_model_id,
 };
 pub use credentials::{
     AUTH_FILE_NAME, AuthPathInputs, Credential, CredentialInputs, CredentialSource, ENV_AUTH_FILE,

@@ -648,6 +648,7 @@ impl NormalizeState {
                 total_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: None,
             },
             saw_usage: false,
@@ -867,6 +868,14 @@ fn update_cache_usage_fields(usage: &mut Usage, value: &JsonValue) {
     {
         usage.cache_read_input_tokens = Some(tokens);
     }
+    if let Some(tokens) = value
+        .get("reasoning_output_tokens")
+        .or_else(|| value.get("thinking_tokens"))
+        .and_then(JsonValue::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+    {
+        usage.reasoning_output_tokens = Some(tokens);
+    }
 }
 
 fn finish_reason(stop_reason: Option<&str>, saw_tool_calls: bool) -> FinishReason {
@@ -1044,7 +1053,7 @@ mod tests {
                 "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2,\"cache_read_input_tokens\":4}}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2,\"cache_read_input_tokens\":4,\"thinking_tokens\":1}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from("data: [DONE]\n\n")),
         ]);
@@ -1066,6 +1075,7 @@ mod tests {
             LlmEvent::Usage(usage)
                 if usage.cache_creation_input_tokens == Some(6)
                     && usage.cache_read_input_tokens == Some(4)
+                    && usage.reasoning_output_tokens == Some(1)
         )));
         assert_eq!(
             events.last(),

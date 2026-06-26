@@ -1814,9 +1814,10 @@ async fn run_message_turn(
         });
     };
     let TurnRunResult {
-        outcome,
+        mut outcome,
         runner_events,
     } = result;
+    apply_estimated_usage_cost(&resolved.model, &mut outcome);
 
     if let Some(error) = &outcome.error {
         return Err(ApiError::from_run_error(error));
@@ -2170,6 +2171,19 @@ fn persist_usage(db: &Database, session_id: &str, outcome: &RunOutcome) {
     ) {
         eprintln!("cortex serve: failed to persist usage for session {session_id}: {err}");
     }
+}
+
+fn apply_estimated_usage_cost(model: &ResolvedModel, outcome: &mut RunOutcome) {
+    let Some(usage) = outcome.usage.as_mut() else {
+        return;
+    };
+    if usage.cost.is_some() {
+        return;
+    }
+    let Some(info) = model.info.as_ref() else {
+        return;
+    };
+    usage.cost = providers::estimate_usage_cost(info, usage);
 }
 
 fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {

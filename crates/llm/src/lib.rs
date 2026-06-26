@@ -35,7 +35,7 @@ pub use openai::{
     OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig, OpenAiResponses, OpenAiResponsesConfig,
     normalize_chat_sse,
 };
-pub use provider::{LlmStream, Provider};
+pub use provider::{LlmStream, Provider, RequestMiddleware, with_request_middlewares};
 pub use request::{LlmRequest, Message, MessageContentPart, Role, ToolDef};
 pub use transport::{
     ByteStream, HttpTransport, TransportConfig, classify_upstream, sse_data_frames,

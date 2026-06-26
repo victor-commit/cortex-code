@@ -2890,6 +2890,7 @@ impl Provider for CheckpointEditingProvider {
                         total_tokens: 18,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -2927,6 +2928,7 @@ impl Provider for BashRmProvider {
                         total_tokens: 18,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -2969,6 +2971,7 @@ impl Provider for PermissionPendingProvider {
                         total_tokens: 13,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3027,6 +3030,7 @@ impl Provider for QuestionPendingProvider {
                         total_tokens: 15,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3081,6 +3085,7 @@ impl Provider for ScopedPermissionPendingProvider {
                         total_tokens: 13,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3125,6 +3130,7 @@ impl Provider for TodoWritingProvider {
                         total_tokens: 18,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3176,6 +3182,7 @@ impl Provider for RichPartsProvider {
                         total_tokens: 16,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3224,6 +3231,7 @@ impl Provider for AbortableToolProvider {
                         total_tokens: 15,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
@@ -3296,6 +3304,7 @@ impl Provider for EchoProvider {
                     total_tokens: 18,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
                     cost: Some(0.000_001),
                 }),
                 LlmEvent::Done {

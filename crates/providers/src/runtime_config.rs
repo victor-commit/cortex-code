@@ -17,8 +17,8 @@ use toml::Value;
 use toml::value::Table;
 
 use crate::catalogue::{
-    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelInfo, ModelLimit, ProviderInfo,
-    ResolvedModel,
+    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelCostTier, ModelInfo, ModelLimit,
+    ProviderInfo, ResolvedModel,
 };
 use crate::credentials::{CredentialInputs, OPENROUTER_ENV};
 use crate::openrouter::OPENROUTER_ID;
@@ -58,6 +58,14 @@ const MODEL_COST_INPUT_KEY: &str = "input";
 const MODEL_COST_OUTPUT_KEY: &str = "output";
 const MODEL_COST_INPUT_ALIAS_KEY: &str = "cost_input";
 const MODEL_COST_OUTPUT_ALIAS_KEY: &str = "cost_output";
+const MODEL_COST_CACHE_WRITE_KEY: &str = "cache_write";
+const MODEL_COST_CACHE_READ_KEY: &str = "cache_read";
+const MODEL_COST_REASONING_KEY: &str = "reasoning";
+const MODEL_COST_CACHE_WRITE_ALIAS_KEY: &str = "cost_cache_write";
+const MODEL_COST_CACHE_READ_ALIAS_KEY: &str = "cost_cache_read";
+const MODEL_COST_REASONING_ALIAS_KEY: &str = "cost_reasoning";
+const MODEL_COST_OVER_THRESHOLD_KEY: &str = "over_input_threshold";
+const MODEL_COST_THRESHOLD_KEY: &str = "threshold_input_tokens";
 
 /// One typed provider-auth section.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -820,6 +828,38 @@ fn parse_model_table(
         &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_OUTPUT_KEY}"),
     )?)
     .unwrap_or(0.0);
+    let cost_cache_write = parse_optional_f64(
+        table.get(MODEL_COST_CACHE_WRITE_ALIAS_KEY),
+        &format!("{key_path}.{MODEL_COST_CACHE_WRITE_ALIAS_KEY}"),
+    )?
+    .or(parse_optional_f64(
+        nested_cost.and_then(|cost| cost.get(MODEL_COST_CACHE_WRITE_KEY)),
+        &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_CACHE_WRITE_KEY}"),
+    )?);
+    let cost_cache_read = parse_optional_f64(
+        table.get(MODEL_COST_CACHE_READ_ALIAS_KEY),
+        &format!("{key_path}.{MODEL_COST_CACHE_READ_ALIAS_KEY}"),
+    )?
+    .or(parse_optional_f64(
+        nested_cost.and_then(|cost| cost.get(MODEL_COST_CACHE_READ_KEY)),
+        &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_CACHE_READ_KEY}"),
+    )?);
+    let cost_reasoning = parse_optional_f64(
+        table.get(MODEL_COST_REASONING_ALIAS_KEY),
+        &format!("{key_path}.{MODEL_COST_REASONING_ALIAS_KEY}"),
+    )?
+    .or(parse_optional_f64(
+        nested_cost.and_then(|cost| cost.get(MODEL_COST_REASONING_KEY)),
+        &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_REASONING_KEY}"),
+    )?);
+    let over_input_threshold =
+        match nested_cost.and_then(|cost| cost.get(MODEL_COST_OVER_THRESHOLD_KEY)) {
+            Some(value) => Some(parse_cost_tier(
+                value,
+                &format!("{key_path}.{MODEL_COST_KEY}.{MODEL_COST_OVER_THRESHOLD_KEY}"),
+            )?),
+            None => None,
+        };
 
     Ok(ModelInfo {
         id,
@@ -830,11 +870,56 @@ fn parse_model_table(
         cost: ModelCost {
             input: cost_input,
             output: cost_output,
+            cache_write: cost_cache_write,
+            cache_read: cost_cache_read,
+            reasoning: cost_reasoning,
+            over_input_threshold,
         },
         limit: ModelLimit {
             context: context_length,
             output: max_output_limit,
         },
+    })
+}
+
+fn parse_cost_tier(value: &Value, key_path: &str) -> Result<ModelCostTier, ProviderConfigError> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| ProviderConfigError::type_mismatch(key_path, "a table", value))?;
+    let tier_cutoff = parse_optional_u64(
+        table.get(MODEL_COST_THRESHOLD_KEY),
+        &format!("{key_path}.{MODEL_COST_THRESHOLD_KEY}"),
+    )?
+    .unwrap_or(200_000);
+    let input = parse_optional_f64(
+        table.get(MODEL_COST_INPUT_KEY),
+        &format!("{key_path}.{MODEL_COST_INPUT_KEY}"),
+    )?
+    .unwrap_or(0.0);
+    let output = parse_optional_f64(
+        table.get(MODEL_COST_OUTPUT_KEY),
+        &format!("{key_path}.{MODEL_COST_OUTPUT_KEY}"),
+    )?
+    .unwrap_or(0.0);
+    let cache_write = parse_optional_f64(
+        table.get(MODEL_COST_CACHE_WRITE_KEY),
+        &format!("{key_path}.{MODEL_COST_CACHE_WRITE_KEY}"),
+    )?;
+    let cache_read = parse_optional_f64(
+        table.get(MODEL_COST_CACHE_READ_KEY),
+        &format!("{key_path}.{MODEL_COST_CACHE_READ_KEY}"),
+    )?;
+    let reasoning = parse_optional_f64(
+        table.get(MODEL_COST_REASONING_KEY),
+        &format!("{key_path}.{MODEL_COST_REASONING_KEY}"),
+    )?;
+    Ok(ModelCostTier {
+        threshold_input_tokens: tier_cutoff,
+        input,
+        output,
+        cache_write,
+        cache_read,
+        reasoning,
     })
 }
 
@@ -1097,6 +1182,32 @@ models = [{ id = "local/demo", cost_input = 7, cost_output = 11, cost = { input 
             .expect("configured model");
         assert_eq!(model.cost.input, 7.0);
         assert_eq!(model.cost.output, 11.0);
+    }
+
+    #[test]
+    fn nested_model_cost_parses_cache_reasoning_and_tier_fields() {
+        let config = parse_set(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:3200"
+models = [{ id = "local/demo", cost = { input = 2, output = 3, cache_write = 1.1, cache_read = 0.7, reasoning = 4.2, over_input_threshold = { threshold_input_tokens = 123456, input = 5, output = 8, cache_write = 2, cache_read = 1, reasoning = 9 } } }]
+"#,
+        );
+        let model = config
+            .providers
+            .get("local")
+            .and_then(|provider| provider.models.get("local/demo"))
+            .expect("configured model");
+        assert_eq!(model.cost.cache_write, Some(1.1));
+        assert_eq!(model.cost.cache_read, Some(0.7));
+        assert_eq!(model.cost.reasoning, Some(4.2));
+        let tier = model.cost.over_input_threshold.expect("tier");
+        assert_eq!(tier.threshold_input_tokens, 123_456);
+        assert_eq!(tier.input, 5.0);
+        assert_eq!(tier.output, 8.0);
+        assert_eq!(tier.cache_write, Some(2.0));
+        assert_eq!(tier.cache_read, Some(1.0));
+        assert_eq!(tier.reasoning, Some(9.0));
     }
 
     #[test]

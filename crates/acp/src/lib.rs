@@ -469,9 +469,10 @@ impl AcpService {
             return;
         };
         let TurnRunResult {
-            outcome,
+            mut outcome,
             runner_events,
         } = result;
+        apply_estimated_usage_cost(&resolved.model, &mut outcome);
 
         if let Some(error) = &outcome.error {
             let _ = writer.send_error(id, -32000, error.to_string());
@@ -1099,6 +1100,19 @@ fn persist_usage(db: &Database, session_id: &str, outcome: &RunOutcome) {
     }
 }
 
+fn apply_estimated_usage_cost(model: &ResolvedModel, outcome: &mut RunOutcome) {
+    let Some(usage) = outcome.usage.as_mut() else {
+        return;
+    };
+    if usage.cost.is_some() {
+        return;
+    }
+    let Some(info) = model.info.as_ref() else {
+        return;
+    };
+    usage.cost = providers::estimate_usage_cost(info, usage);
+}
+
 fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
     let (context, output) = match &model.info {
         Some(info) => (
@@ -1321,6 +1335,7 @@ mod tests {
                         total_tokens: 4,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000002),
                     }),
                     LlmEvent::Done {
@@ -1395,6 +1410,7 @@ mod tests {
                     total_tokens: 2,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
                     cost: Some(0.000001),
                 }));
                 events.push(LlmEvent::Done {

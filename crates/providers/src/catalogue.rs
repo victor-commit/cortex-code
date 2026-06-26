@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use llm::Usage;
 use serde::{Deserialize, Serialize};
 
 /// The default provider used when a model id is not found in the snapshot.
@@ -46,6 +47,45 @@ pub struct ModelCost {
     /// USD per million output/completion tokens.
     #[serde(default)]
     pub output: f64,
+    /// USD per million cache-write (cache creation) input tokens. Falls back to `input`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+    /// USD per million cache-read input tokens. Falls back to `input`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    /// USD per million reasoning/thinking output tokens. Falls back to `output`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<f64>,
+    /// Optional "over threshold" tier (for example OpenRouter's over-200k context tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over_input_threshold: Option<ModelCostTier>,
+}
+
+/// One optional over-threshold pricing tier.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, Serialize)]
+pub struct ModelCostTier {
+    /// Input-token threshold above which this tier applies.
+    #[serde(default = "default_tier_threshold")]
+    pub threshold_input_tokens: u64,
+    /// USD per million input/prompt tokens in this tier.
+    #[serde(default)]
+    pub input: f64,
+    /// USD per million output/completion tokens in this tier.
+    #[serde(default)]
+    pub output: f64,
+    /// USD per million cache-write input tokens in this tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+    /// USD per million cache-read input tokens in this tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    /// USD per million reasoning output tokens in this tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<f64>,
+}
+
+const fn default_tier_threshold() -> u64 {
+    200_000
 }
 
 /// Metadata for a single model in the catalogue.
@@ -202,6 +242,78 @@ pub fn resolve_model(requested: Option<&str>) -> ResolvedModel {
     Catalogue::embedded().resolve_model(requested)
 }
 
+/// Estimate turn cost from model pricing metadata when the provider does not report `usage.cost`.
+///
+/// Returns `None` when all configured rates are zero, so callers can keep the existing "unknown
+/// cost" behavior unless a non-zero schedule is available. When a tier is configured, it applies
+/// once `usage.input_tokens` exceeds `threshold_input_tokens` (default 200k).
+#[must_use]
+pub fn estimate_usage_cost(model: &ModelInfo, usage: &Usage) -> Option<f64> {
+    let rates = pricing_rates(model.cost, usage.input_tokens);
+    let has_non_zero_rate = rates.input > 0.0
+        || rates.output > 0.0
+        || rates.cache_write > 0.0
+        || rates.cache_read > 0.0
+        || rates.reasoning > 0.0;
+    if !has_non_zero_rate {
+        return None;
+    }
+
+    let cache_write_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
+    let cache_read_tokens = usage.cache_read_input_tokens.unwrap_or(0);
+    let regular_input_tokens = usage
+        .input_tokens
+        .saturating_sub(cache_write_tokens.saturating_add(cache_read_tokens));
+    let reasoning_output_tokens = usage
+        .reasoning_output_tokens
+        .unwrap_or(0)
+        .min(usage.output_tokens);
+    let visible_output_tokens = usage.output_tokens.saturating_sub(reasoning_output_tokens);
+
+    let input_cost = f64::from(regular_input_tokens) * rates.input / 1_000_000.0;
+    let cache_write_cost = f64::from(cache_write_tokens) * rates.cache_write / 1_000_000.0;
+    let cache_read_cost = f64::from(cache_read_tokens) * rates.cache_read / 1_000_000.0;
+    let output_cost = f64::from(visible_output_tokens) * rates.output / 1_000_000.0;
+    let reasoning_cost = f64::from(reasoning_output_tokens) * rates.reasoning / 1_000_000.0;
+    Some(input_cost + cache_write_cost + cache_read_cost + output_cost + reasoning_cost)
+}
+
+#[derive(Clone, Copy)]
+struct PricingRates {
+    input: f64,
+    output: f64,
+    cache_write: f64,
+    cache_read: f64,
+    reasoning: f64,
+}
+
+fn pricing_rates(cost: ModelCost, input_tokens: u32) -> PricingRates {
+    let tier = cost
+        .over_input_threshold
+        .filter(|tier| u64::from(input_tokens) > tier.threshold_input_tokens);
+    let input = tier.map_or(cost.input, |tier| tier.input);
+    let output = tier.map_or(cost.output, |tier| tier.output);
+    let cache_write = tier
+        .and_then(|tier| tier.cache_write)
+        .or(cost.cache_write)
+        .unwrap_or(input);
+    let cache_read = tier
+        .and_then(|tier| tier.cache_read)
+        .or(cost.cache_read)
+        .unwrap_or(input);
+    let reasoning = tier
+        .and_then(|tier| tier.reasoning)
+        .or(cost.reasoning)
+        .unwrap_or(output);
+    PricingRates {
+        input,
+        output,
+        cache_write,
+        cache_read,
+        reasoning,
+    }
+}
+
 /// Validate that a model id is a fully-qualified `provider/model` identifier.
 ///
 /// Cortex lets OpenRouter reject well-formed but unknown model ids upstream, so this only rejects
@@ -309,5 +421,107 @@ mod tests {
     #[test]
     fn malformed_snapshot_is_an_error_not_a_panic() {
         assert!(Catalogue::from_json("{ not json").is_err());
+    }
+
+    #[test]
+    fn estimate_usage_cost_accounts_for_cache_and_reasoning_tokens() {
+        let model = ModelInfo {
+            id: "local/tiered".to_owned(),
+            name: "Tiered".to_owned(),
+            attachment: false,
+            reasoning: true,
+            tool_call: true,
+            limit: ModelLimit::default(),
+            cost: ModelCost {
+                input: 1.0,
+                output: 2.0,
+                cache_write: Some(0.5),
+                cache_read: Some(0.25),
+                reasoning: Some(3.0),
+                over_input_threshold: None,
+            },
+        };
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 40,
+            total_tokens: 140,
+            cache_creation_input_tokens: Some(10),
+            cache_read_input_tokens: Some(20),
+            reasoning_output_tokens: Some(5),
+            cost: None,
+        };
+        let cost = estimate_usage_cost(&model, &usage).expect("cost");
+        let expected = ((70.0 * 1.0) + (10.0 * 0.5) + (20.0 * 0.25) + (35.0 * 2.0) + (5.0 * 3.0))
+            / 1_000_000.0;
+        assert!(
+            (cost - expected).abs() < 1e-12,
+            "expected {expected}, got {cost}"
+        );
+    }
+
+    #[test]
+    fn estimate_usage_cost_switches_to_over_threshold_tier() {
+        let model = ModelInfo {
+            id: "local/tiered".to_owned(),
+            name: "Tiered".to_owned(),
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            limit: ModelLimit::default(),
+            cost: ModelCost {
+                input: 1.0,
+                output: 2.0,
+                cache_write: None,
+                cache_read: None,
+                reasoning: None,
+                over_input_threshold: Some(ModelCostTier {
+                    threshold_input_tokens: 200_000,
+                    input: 4.0,
+                    output: 8.0,
+                    cache_write: Some(2.0),
+                    cache_read: Some(1.0),
+                    reasoning: Some(9.0),
+                }),
+            },
+        };
+        let usage = Usage {
+            input_tokens: 250_000,
+            output_tokens: 10,
+            total_tokens: 250_010,
+            cache_creation_input_tokens: Some(50),
+            cache_read_input_tokens: Some(100),
+            reasoning_output_tokens: None,
+            cost: None,
+        };
+        let cost = estimate_usage_cost(&model, &usage).expect("cost");
+        let expected =
+            ((249_850.0 * 4.0) + (50.0 * 2.0) + (100.0 * 1.0) + (10.0 * 8.0)) / 1_000_000.0;
+        assert!(
+            (cost - expected).abs() < 1e-12,
+            "expected {expected}, got {cost}"
+        );
+    }
+
+    #[test]
+    fn estimate_usage_cost_returns_none_for_zero_priced_models() {
+        let model = ModelInfo {
+            id: "local/free".to_owned(),
+            name: "Free".to_owned(),
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            limit: ModelLimit::default(),
+            cost: ModelCost::default(),
+        };
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
+            cost: None,
+        };
+        assert!(estimate_usage_cost(&model, &usage).is_none());
     }
 }

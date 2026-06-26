@@ -498,6 +498,7 @@ impl Provider for StreamingEchoProvider {
                     total_tokens: 6,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
                     cost: Some(0.000_001),
                 }),
                 LlmEvent::Done {
@@ -547,6 +548,7 @@ impl Provider for ToolCallingProvider {
                         total_tokens: 10,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
                         cost: Some(0.000_002),
                     }),
                     LlmEvent::Done {

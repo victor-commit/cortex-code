@@ -230,6 +230,14 @@ pub(crate) fn accumulate_usage(acc: Option<Usage>, next: Usage) -> Usage {
                 (Some(left), None) => Some(left),
                 (None, right) => right,
             },
+            reasoning_output_tokens: match (
+                prev.reasoning_output_tokens,
+                next.reasoning_output_tokens,
+            ) {
+                (Some(left), Some(right)) => Some(left.saturating_add(right)),
+                (Some(left), None) => Some(left),
+                (None, right) => right,
+            },
             cost: match (prev.cost, next.cost) {
                 (Some(a), Some(b)) => Some(a + b),
                 (Some(a), None) => Some(a),
@@ -325,6 +333,7 @@ mod tests {
             total_tokens: 7,
             cache_creation_input_tokens: Some(2),
             cache_read_input_tokens: None,
+            reasoning_output_tokens: Some(1),
             cost: Some(0.001),
         };
         let b = Usage {
@@ -333,6 +342,7 @@ mod tests {
             total_tokens: 11,
             cache_creation_input_tokens: Some(1),
             cache_read_input_tokens: Some(4),
+            reasoning_output_tokens: Some(2),
             cost: Some(0.002),
         };
         let summed = accumulate_usage(Some(a), b);
@@ -341,6 +351,7 @@ mod tests {
         assert_eq!(summed.total_tokens, 18);
         assert_eq!(summed.cache_creation_input_tokens, Some(3));
         assert_eq!(summed.cache_read_input_tokens, Some(4));
+        assert_eq!(summed.reasoning_output_tokens, Some(3));
         assert_eq!(summed.cost, Some(0.003));
     }
 
@@ -352,6 +363,7 @@ mod tests {
             total_tokens: 3,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
             cost: None,
         };
         assert_eq!(accumulate_usage(None, next.clone()), next);

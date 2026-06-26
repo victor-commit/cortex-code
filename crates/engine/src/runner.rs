@@ -488,14 +488,13 @@ impl SessionRunner {
                         total_usage = Some(accumulate_usage(total_usage.take(), usage));
                     }
                     LlmEvent::Error { message, kind } => {
-                        // Reclassify a mid-stream upstream error that is actually a context-overflow
-                        // so the surfaced diagnostic is the specific context-overflow class.
-                        let kind =
-                            if kind == "upstream" && compaction::is_context_overflow(&message) {
-                                "context-overflow".to_owned()
-                            } else {
-                                kind
-                            };
+                        // Reclassify any mid-stream error that actually describes a context
+                        // overflow so the surfaced diagnostic is always specific and actionable.
+                        let kind = if compaction::is_context_overflow(&message) {
+                            "context-overflow".to_owned()
+                        } else {
+                            kind
+                        };
                         sink(RunnerEvent::Error {
                             message: message.clone(),
                             kind: kind.clone(),

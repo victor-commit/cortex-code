@@ -516,6 +516,17 @@ fn parse_usage(value: Option<&JsonValue>) -> Option<Usage> {
                 .and_then(JsonValue::as_u64)
                 .and_then(|value| u32::try_from(value).ok())
         });
+    let reasoning_output_tokens = usage
+        .get("reasoning_output_tokens")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| {
+            usage
+                .get("output_tokens_details")
+                .and_then(|details| details.get("reasoning_tokens"))
+                .and_then(JsonValue::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+        });
     let cost = usage.get("cost").and_then(JsonValue::as_f64);
     Some(Usage {
         input_tokens,
@@ -523,6 +534,7 @@ fn parse_usage(value: Option<&JsonValue>) -> Option<Usage> {
         total_tokens,
         cache_creation_input_tokens,
         cache_read_input_tokens,
+        reasoning_output_tokens,
         cost,
     })
 }
@@ -568,7 +580,7 @@ mod tests {
                 "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"\\\"Cargo.toml\\\"}\"}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from("data: [DONE]\n\n")),
         ]);
@@ -585,6 +597,7 @@ mod tests {
             LlmEvent::Usage(usage)
                 if usage.total_tokens == 6
                     && usage.cache_read_input_tokens == Some(3)
+                    && usage.reasoning_output_tokens == Some(1)
         )));
         assert!(matches!(events.last(), Some(LlmEvent::Done { .. })));
     }

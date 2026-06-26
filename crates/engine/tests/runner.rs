@@ -98,6 +98,7 @@ fn usage() -> LlmEvent {
         total_tokens: 8,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        reasoning_output_tokens: None,
         cost: Some(0.0001),
     })
 }
@@ -1428,6 +1429,32 @@ async fn mid_stream_error_is_forwarded_then_terminated_once() {
     assert_eq!(done_count(&events), 1, "exactly one terminal Done");
     let error = outcome.error.as_ref().expect("a normalized error");
     assert_eq!(error.kind(), "upstream");
+}
+
+#[tokio::test]
+async fn mid_stream_context_overflow_is_reclassified_even_for_non_upstream_kind() {
+    let provider = ScriptedProvider::new(vec![vec![
+        text("partial"),
+        LlmEvent::Error {
+            message: "request exceeds the model context window".to_owned(),
+            kind: "provider".to_owned(),
+        },
+        LlmEvent::Done {
+            reason: FinishReason::Error,
+        },
+    ]]);
+    let (events, outcome) = run(&provider, Turn::new("google/gemini-2.5-flash", "", "hi")).await;
+
+    assert_eq!(concat_text(&events), "partial");
+    assert!(
+        events.iter().any(
+            |event| matches!(event, RunnerEvent::Error { kind, .. } if kind == "context-overflow")
+        ),
+        "mid-stream overflow should surface as context-overflow"
+    );
+    assert_eq!(done_count(&events), 1, "exactly one terminal Done");
+    let error = outcome.error.as_ref().expect("a normalized error");
+    assert_eq!(error.kind(), "context-overflow");
 }
 
 // VAL-RUN-003: a turn that would require more than the step budget stops at exactly MAX_STEPS with

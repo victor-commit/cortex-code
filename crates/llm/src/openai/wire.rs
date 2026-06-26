@@ -376,6 +376,8 @@ pub struct ChatUsage {
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+    #[serde(default)]
     cost: Option<f64>,
 }
 
@@ -386,12 +388,16 @@ impl ChatUsage {
             self.prompt_tokens_details
                 .and_then(|details| details.cached_tokens)
         });
+        let reasoning_output_tokens = self
+            .completion_tokens_details
+            .and_then(|details| details.reasoning_tokens);
         Usage {
             input_tokens: self.prompt_tokens,
             output_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
             cache_creation_input_tokens: self.cache_creation_input_tokens,
             cache_read_input_tokens,
+            reasoning_output_tokens,
             cost: self.cost,
         }
     }
@@ -401,6 +407,12 @@ impl ChatUsage {
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -687,7 +699,8 @@ mod tests {
                 "prompt_tokens": 9,
                 "completion_tokens": 3,
                 "total_tokens": 12,
-                "prompt_tokens_details": { "cached_tokens": 4 }
+                "prompt_tokens_details": { "cached_tokens": 4 },
+                "completion_tokens_details": { "reasoning_tokens": 2 }
             }"#,
         )
         .expect("parse usage");
@@ -696,5 +709,6 @@ mod tests {
         assert_eq!(usage.output_tokens, 3);
         assert_eq!(usage.total_tokens, 12);
         assert_eq!(usage.cache_read_input_tokens, Some(4));
+        assert_eq!(usage.reasoning_output_tokens, Some(2));
     }
 }

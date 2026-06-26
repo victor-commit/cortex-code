@@ -408,6 +408,7 @@ mod tests {
                 total_tokens: 5,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: Some(0.000001),
             }),
             RunnerEvent::Done {
@@ -423,6 +424,7 @@ mod tests {
                 total_tokens: 5,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                reasoning_output_tokens: None,
                 cost: Some(0.000001),
             }),
             finish_reason: FinishReason::Stop,

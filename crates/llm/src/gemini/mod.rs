@@ -648,12 +648,18 @@ fn parse_usage(value: Option<&JsonValue>) -> Option<Usage> {
         .and_then(JsonValue::as_u64)
         .map(|value| value as u32)
         .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    let reasoning_output_tokens = usage
+        .get("thoughtsTokenCount")
+        .or_else(|| usage.get("thoughtTokenCount"))
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
     Some(Usage {
         input_tokens,
         output_tokens,
         total_tokens,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        reasoning_output_tokens,
         cost: None,
     })
 }
@@ -767,7 +773,7 @@ mod tests {
                 "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking\",\"thought\":true}]}}]}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from(
-                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"Cargo.toml\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2,\"totalTokenCount\":6}}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"Cargo.toml\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2,\"totalTokenCount\":6,\"thoughtsTokenCount\":1}}\n\n",
             )),
             Ok::<Bytes, LlmError>(Bytes::from("data: [DONE]\n\n")),
         ]);
@@ -783,11 +789,11 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, LlmEvent::ToolCall(call) if call.name == "read"))
         );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, LlmEvent::Usage(usage) if usage.total_tokens == 6))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            LlmEvent::Usage(usage)
+                if usage.total_tokens == 6 && usage.reasoning_output_tokens == Some(1)
+        )));
         assert_eq!(
             events.last(),
             Some(&LlmEvent::Done {
