@@ -184,6 +184,46 @@ pub fn normalize_language_name(lang: &str) -> Option<&'static str> {
     }
 }
 
+/// Extract the language token from a fenced-code info string.
+///
+/// Markdown info strings may include language aliases and trailing attributes, for example:
+/// - `python`
+/// - `python title="demo"`
+/// - `language-javascript`
+/// - `{.typescript .numberLines}`
+///
+/// This helper extracts and normalizes the first language-like token so fenced code blocks can
+/// resolve the correct renderer in streaming and final markdown paths.
+pub fn extract_fence_language(info: &str) -> Option<String> {
+    let mut token = info.split_whitespace().next()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    // Handle markdown attribute forms like `{.python}` or `{.python`
+    token = token.trim_matches(|c: char| c == '{' || c == '}');
+
+    // Handle class-style forms like `.python`
+    token = token.strip_prefix('.').unwrap_or(token);
+
+    // Handle `language-foo` commonly emitted by markdown processors.
+    if token
+        .get(..9)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("language-"))
+    {
+        token = &token[9..];
+    }
+
+    // Ignore trailing punctuation from loose attribute notation.
+    token = token.trim_matches(|c: char| c == ',' || c == ';');
+
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
 // ============================================================================
 // Default Highlighter Singleton
 // ============================================================================
@@ -461,6 +501,31 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_fence_language() {
+        assert_eq!(extract_fence_language("python"), Some("python".to_string()));
+        assert_eq!(
+            extract_fence_language("python title=\"adder\""),
+            Some("python".to_string())
+        );
+        assert_eq!(
+            extract_fence_language("language-javascript"),
+            Some("javascript".to_string())
+        );
+        assert_eq!(
+            extract_fence_language("Language-TypeScript"),
+            Some("TypeScript".to_string())
+        );
+        assert_eq!(
+            extract_fence_language("{.typescript .numberLines}"),
+            Some("typescript".to_string())
+        );
+        assert_eq!(extract_fence_language(".go"), Some("go".to_string()));
+        assert_eq!(extract_fence_language("{.}"), None);
+        assert_eq!(extract_fence_language(""), None);
+        assert_eq!(extract_fence_language("   "), None);
+    }
+
+    #[test]
     fn test_is_language_available_bash() {
         // Bash is registered
         assert!(is_language_available("bash"));
@@ -657,10 +722,7 @@ mod tests {
             ("toml", "name = \"cortex\"\nversion = 1"),
             ("markdown", "# Header\n\n`inline`"),
             ("c", "int main(void) { return 0; }"),
-            (
-                "cpp",
-                "class Widget { public: int value; };",
-            ),
+            ("cpp", "class Widget { public: int value; };"),
             (
                 "java",
                 "class Main { public static void main(String[] args) { String s = \"hi\"; } }",
@@ -673,7 +735,10 @@ mod tests {
                 .unwrap_or_else(|error| panic!("failed to highlight '{language}': {error}"));
 
             assert!(
-                highlighted.spans().iter().any(|span| !span.style.is_empty()),
+                highlighted
+                    .spans()
+                    .iter()
+                    .any(|span| !span.style.is_empty()),
                 "expected styled spans for language '{language}'"
             );
         }

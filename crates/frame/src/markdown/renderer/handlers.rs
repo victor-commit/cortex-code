@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::markdown::inline::{render_blockquote_prefix, render_hr};
+use crate::markdown::languages::extract_fence_language;
 use crate::markdown::list::ListContext;
 use crate::markdown::table::{TableBuilder, render_table_simple};
 
@@ -45,10 +46,7 @@ impl<'a> RenderState<'a> {
         self.in_code_block = true;
         self.code_buffer.clear();
         self.code_language = match kind {
-            CodeBlockKind::Fenced(lang) => {
-                let lang = lang.to_string();
-                if lang.is_empty() { None } else { Some(lang) }
-            }
+            CodeBlockKind::Fenced(lang) => extract_fence_language(lang.as_ref()),
             CodeBlockKind::Indented => None,
         };
     }

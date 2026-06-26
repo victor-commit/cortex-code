@@ -136,21 +136,57 @@ fn bash_alias_sh_is_highlighted() {
 #[test]
 fn common_language_fences_render_non_plain_styles() {
     let fixtures = [
-        ("python", "def add(a, b):\n    return a + b"),
-        ("javascript", "function add(a, b) { return a + b; }"),
-        ("typescript", "interface User { id: number; name: string }\nconst user: User = { id: 1, name: \"Ada\" };"),
-        ("go", "package main\nfunc main() { var n int = 1 }"),
-        ("json", "{ \"name\": \"cortex\", \"enabled\": true, \"count\": 3 }"),
-        ("yaml", "name: cortex\nenabled: true\ncount: 3"),
-        ("toml", "name = \"cortex\"\nenabled = true\ncount = 3"),
-        ("markdown", "# Header\n\n- item\n\n`inline`"),
-        ("c", "int main(void) { return 0; }"),
-        ("cpp", "class Widget { public: int value; };"),
-        ("java", "class Main { public static void main(String[] args) {} }"),
-        ("sh", "if true; then echo ok; fi"),
+        (
+            "python",
+            "def add(a: int, b: int) -> int:\n    return a + b  # comment",
+            2usize,
+        ),
+        (
+            "javascript",
+            "function add(a, b) { return `${a + b}`; }",
+            2usize,
+        ),
+        (
+            "typescript",
+            "interface User { id: number; name: string }\nconst user: User = { id: 1, name: \"Ada\" };",
+            2usize,
+        ),
+        (
+            "go",
+            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(42) }",
+            2usize,
+        ),
+        (
+            "json",
+            "{ \"name\": \"cortex\", \"enabled\": true, \"count\": 3 }",
+            2usize,
+        ),
+        ("yaml", "name: cortex\nenabled: true\ncount: 3", 2usize),
+        (
+            "toml",
+            "name = \"cortex\"\nenabled = true\ncount = 3",
+            2usize,
+        ),
+        ("markdown", "# Header\n\n- item\n\n`inline`", 1usize),
+        (
+            "c",
+            "#include <stdio.h>\nint main(void) { printf(\"%d\", 42); return 0; }",
+            2usize,
+        ),
+        (
+            "cpp",
+            "#include <string>\nclass Widget { public: std::string name = \"w\"; };",
+            1usize,
+        ),
+        (
+            "java",
+            "class Main { public static void main(String[] args) { String s = \"hi\"; int n = 1; } }",
+            1usize,
+        ),
+        ("sh", "if true; then echo ok; fi", 2usize),
     ];
 
-    for (language, code) in fixtures {
+    for (language, code, min_colors) in fixtures {
         let md = format!("```{language}\n{code}\n```");
         let lines = render_markdown(&md, W);
         let text = flatten(&lines);
@@ -161,8 +197,58 @@ fn common_language_fences_render_non_plain_styles() {
             "expected bordered code block for language '{language}':\n{text}"
         );
         assert!(
-            colors.len() >= 1,
-            "expected non-plain syntax color for language '{language}', got {:?}\n{text}",
+            colors.len() >= min_colors,
+            "expected language-specific syntax colors for '{language}' (min {min_colors}), got {:?}\n{text}",
+            colors
+        );
+    }
+}
+
+// VAL-GAP-TUI-001: code-fence info strings with attributes and aliases still resolve to the
+// correct language renderer.
+#[test]
+fn fence_info_strings_with_attributes_use_language_renderer() {
+    let fixtures = [
+        (
+            "python title=\"adder\"",
+            "def add(a, b):\n    return a + b",
+            2usize,
+            "python",
+        ),
+        (
+            "language-javascript",
+            "function add(a, b) { return `${a + b}`; }",
+            2usize,
+            "javascript",
+        ),
+        (
+            "{.typescript .numberLines}",
+            "interface User { id: number; name: string }\nconst user: User = { id: 1, name: \"Ada\" };",
+            2usize,
+            "typescript",
+        ),
+        (
+            ".go",
+            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(42) }",
+            2usize,
+            "go",
+        ),
+        ("c++", "class Widget { public: int value; };", 1usize, "cpp"),
+    ];
+
+    for (fence_info, code, min_colors, expected_label) in fixtures {
+        let md = format!("```{fence_info}\n{code}\n```");
+        let lines = render_markdown(&md, W);
+        let colors = distinct_token_colors(&lines);
+        let text = flatten(&lines);
+
+        assert!(
+            text.contains(&format!("┌─ {expected_label}")),
+            "expected normalized code-fence label '{expected_label}' for info '{fence_info}':\n{text}"
+        );
+        assert!(
+            colors.len() >= min_colors,
+            "expected highlighted colors for fence info '{fence_info}' (min {min_colors}), got {:?}\n{text}",
             colors
         );
     }
