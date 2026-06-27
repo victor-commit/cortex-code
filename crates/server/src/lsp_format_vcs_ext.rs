@@ -39,7 +39,7 @@ pub(super) async fn lsp_status(
     let effective = settings::load(inputs).map_err(config_api_error)?;
     let config = crate::lsp_config::from_effective(&effective).map_err(config_api_error)?;
     let mut manager = lsp::FeedbackManager::new(state.cwd.clone(), config);
-    let rows = manager
+    let rows: Vec<LspStatusRow> = manager
         .statuses()
         .into_iter()
         .map(|status| {
@@ -56,6 +56,17 @@ pub(super) async fn lsp_status(
             }
         })
         .collect();
+    for row in &rows {
+        if row.state == "running" {
+            state
+                .event_bus
+                .publish(&events::Event::LspUpdated(events::LspUpdated {
+                    server: Some(row.language.clone()),
+                    path: None,
+                    diagnostic_count: None,
+                }));
+        }
+    }
     Ok(Json(rows))
 }
 
@@ -175,6 +186,18 @@ pub(super) async fn vcs_diff(
         numstat_args.push(path);
     }
     let files = parse_numstat(run_git_shared(&state.cwd, &numstat_args).unwrap_or_default());
+
+    if let Some(branch) = run_git_shared(&state.cwd, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        let branch = branch.trim().to_owned();
+        if !branch.is_empty() {
+            state
+                .event_bus
+                .publish(&events::Event::VcsBranchUpdated(events::VcsBranchUpdated {
+                    branch: redaction::redact(&branch),
+                    dirty: Some(!files.is_empty()),
+                }));
+        }
+    }
 
     Ok(Json(VcsDiffResponse {
         repository: true,

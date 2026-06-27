@@ -2146,7 +2146,38 @@ pub(crate) fn openapi_document() -> serde_json::Value {
         }
     });
     add_auth_documentation(&mut document);
+    add_event_taxonomy(&mut document);
     document
+}
+
+/// Publish the full SSE event taxonomy onto the OpenAPI document so a generated SDK can enumerate
+/// and decode every event family into a typed variant without special-casing server-only names.
+fn add_event_taxonomy(document: &mut serde_json::Value) {
+    let kinds: Vec<&'static str> = events::Event::all_kinds().to_vec();
+    document["x-event-families"] = serde_json::json!(kinds);
+    if let Some(schemas) = document
+        .get_mut("components")
+        .and_then(|components| components.get_mut("schemas"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        schemas.insert(
+            "Event".to_owned(),
+            serde_json::json!({
+                "type": "object",
+                "required": ["kind"],
+                "description": "A typed Cortex event. The `kind` discriminator selects the family; \
+                                payload fields are flat alongside it.",
+                "discriminator": { "propertyName": "kind" },
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": "Stable event family name.",
+                        "enum": kinds,
+                    }
+                }
+            }),
+        );
+    }
 }
 
 const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[

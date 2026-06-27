@@ -214,6 +214,12 @@ pub(super) async fn create_pty(
     };
     let summary = session.summary(&id);
     state.ptys.lock()?.insert(id.clone(), session);
+    state
+        .event_bus
+        .publish(&events::Event::PtyCreated(events::PtyEvent {
+            id: id.clone(),
+            shell: Some(redaction::redact(&program)),
+        }));
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
@@ -369,6 +375,17 @@ pub(super) async fn close_pty(
     let pid = session.pid;
     let _ = session.child.kill();
     let exited = session.child.wait().is_ok();
+    state
+        .event_bus
+        .publish(&events::Event::PtyDeleted(events::PtyRef {
+            id: id.clone(),
+        }));
+    state
+        .event_bus
+        .publish(&events::Event::PtyExited(events::PtyExited {
+            id,
+            exit_code: None,
+        }));
     Ok(Json(PtyCloseResponse {
         status: "closed",
         pid,

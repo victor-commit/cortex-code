@@ -162,6 +162,11 @@ pub(super) async fn append_prompt(
         ));
     }
     state
+        .event_bus
+        .publish(&events::Event::TuiPromptAppend(events::TuiPromptAppend {
+            text: payload.text.clone(),
+        }));
+    state
         .tui_control
         .enqueue_and_wait("append-prompt", json!({ "text": payload.text }))
         .await
@@ -214,6 +219,11 @@ pub(super) async fn execute_command(
             "execute-command body must include a command",
         ));
     }
+    state.event_bus.publish(&events::Event::TuiCommandExecute(
+        events::TuiCommandExecute {
+            command: command.to_owned(),
+        },
+    ));
     state
         .tui_control
         .enqueue_and_wait("execute-command", json!({ "command": command }))
@@ -240,6 +250,12 @@ pub(super) async fn show_toast(
             "show-toast body must include a message",
         ));
     }
+    state
+        .event_bus
+        .publish(&events::Event::TuiToastShow(events::TuiToastShow {
+            message: payload.message.clone(),
+            level: payload.variant.clone(),
+        }));
     let mut body = json!({ "message": payload.message });
     if let Some(variant) = payload.variant {
         body["variant"] = Value::String(variant);
@@ -267,6 +283,11 @@ pub(super) async fn select_session(
             "select-session body must include a session_id",
         ));
     }
+    state
+        .event_bus
+        .publish(&events::Event::TuiSessionSelect(events::TuiSessionSelect {
+            session_id: session_id.to_owned(),
+        }));
     state
         .tui_control
         .enqueue_and_wait("select-session", json!({ "session_id": session_id }))

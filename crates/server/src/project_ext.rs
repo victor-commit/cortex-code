@@ -46,7 +46,13 @@ pub(super) async fn list_projects(
 pub(super) async fn current_project_route(
     State(state): State<ServerState>,
 ) -> Result<Json<Project>, ApiError> {
-    Ok(Json(current_project(&state.cwd)))
+    let project = current_project(&state.cwd);
+    state
+        .event_bus
+        .publish(&events::Event::ProjectUpdated(events::ProjectUpdated {
+            path: project.directory.clone(),
+        }));
+    Ok(Json(project))
 }
 
 /// Workspace summary: the root directory, VCS, and number of attached worktrees.

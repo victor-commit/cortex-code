@@ -54,7 +54,7 @@ async fn server_response_sse_and_audit_redact_and_attribute_security_events() {
         "server response should carry placeholder: {body_text}"
     );
 
-    let events = collect_data_events(&mut stream, 2, Duration::from_secs(3)).await;
+    let events = collect_until_kind(&mut stream, "turn.done", Duration::from_secs(3)).await;
     let events_text = serde_json::to_string(&events).expect("events json");
     assert!(!events_text.contains(&secret), "SSE leaked: {events_text}");
     assert!(
@@ -103,15 +103,15 @@ async fn subscribe(app: &axum::Router) -> axum::body::BodyDataStream {
     response.into_body().into_data_stream()
 }
 
-async fn collect_data_events(
+async fn collect_until_kind(
     stream: &mut axum::body::BodyDataStream,
-    min_events: usize,
+    terminal_kind: &str,
     timeout: Duration,
 ) -> Vec<serde_json::Value> {
     let start = Instant::now();
     let mut buffer = String::new();
-    let mut events = Vec::new();
-    while events.len() < min_events && start.elapsed() < timeout {
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    while start.elapsed() < timeout {
         let remaining = timeout.saturating_sub(start.elapsed());
         let Ok(Some(chunk)) = tokio::time::timeout(remaining, stream.next()).await else {
             break;
@@ -122,6 +122,9 @@ async fn collect_data_events(
             .iter()
             .map(|line| serde_json::from_str(line).expect("JSON data frame"))
             .collect();
+        if events.iter().any(|event| event["kind"] == terminal_kind) {
+            break;
+        }
     }
     events
 }

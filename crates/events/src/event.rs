@@ -3,6 +3,17 @@
 use protocol::MessagePart;
 use serde::{Deserialize, Serialize};
 
+use crate::families::{
+    CommandExecuted, FileEdited, FileWatcherUpdated, InstallationUpdated, LspUpdated,
+    MessagePartRemoved, MessagePartUpdated, MessageRemoved, MessageUpdated, ProjectUpdated,
+    PtyEvent, PtyExited, PtyRef, QuestionAsked, QuestionRejected, QuestionReplied,
+    SessionAgentSwitched, SessionCompactedEvent, SessionContext, SessionDiffEvent,
+    SessionErrorEvent, SessionModelSwitched, SessionRef, SessionRetried, SessionStatusEvent,
+    StepEvent, StreamBoundary, StreamDelta, TodoUpdated, ToolEnded, ToolStarted, TuiCommandExecute,
+    TuiPromptAppend, TuiSessionSelect, TuiToastShow, VcsBranchUpdated, WorkspaceEvent,
+    WorkspaceStatus, WorktreeFailed, WorktreeReady,
+};
+
 /// The surface that produced an event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -379,6 +390,150 @@ pub enum Event {
     /// Rich parts persisted for a message.
     #[serde(rename = "message.parts")]
     MessageParts(MessagePartsEvent),
+    /// A persisted message changed (created or rewritten).
+    #[serde(rename = "message.updated")]
+    MessageUpdated(MessageUpdated),
+    /// A persisted message was removed.
+    #[serde(rename = "message.removed")]
+    MessageRemoved(MessageRemoved),
+    /// A persisted message part changed.
+    #[serde(rename = "message.part.updated")]
+    MessagePartUpdated(MessagePartUpdated),
+    /// A persisted message part was removed.
+    #[serde(rename = "message.part.removed")]
+    MessagePartRemoved(MessagePartRemoved),
+    /// The granular text channel started streaming for a turn.
+    #[serde(rename = "session.next.text.start")]
+    SessionNextTextStart(StreamBoundary),
+    /// A granular text fragment for a turn.
+    #[serde(rename = "session.next.text.delta")]
+    SessionNextTextDelta(StreamDelta),
+    /// The granular text channel finished for a turn.
+    #[serde(rename = "session.next.text.end")]
+    SessionNextTextEnd(StreamBoundary),
+    /// The granular reasoning channel started streaming for a turn.
+    #[serde(rename = "session.next.reasoning.start")]
+    SessionNextReasoningStart(StreamBoundary),
+    /// A granular reasoning fragment for a turn.
+    #[serde(rename = "session.next.reasoning.delta")]
+    SessionNextReasoningDelta(StreamDelta),
+    /// The granular reasoning channel finished for a turn.
+    #[serde(rename = "session.next.reasoning.end")]
+    SessionNextReasoningEnd(StreamBoundary),
+    /// A tool call started streaming for a turn.
+    #[serde(rename = "session.next.tool.started")]
+    SessionNextToolStarted(ToolStarted),
+    /// A tool call finished for a turn.
+    #[serde(rename = "session.next.tool.ended")]
+    SessionNextToolEnded(ToolEnded),
+    /// A step started for a turn.
+    #[serde(rename = "session.next.step.started")]
+    SessionNextStepStarted(StepEvent),
+    /// A step finished for a turn.
+    #[serde(rename = "session.next.step.finished")]
+    SessionNextStepFinished(StepEvent),
+    /// The runner scheduled a retry attempt for a turn.
+    #[serde(rename = "session.next.retried")]
+    SessionNextRetried(SessionRetried),
+    /// The turn's effective context-window usage changed.
+    #[serde(rename = "session.next.context.updated")]
+    SessionNextContextUpdated(SessionContext),
+    /// The turn's active model was selected/switched.
+    #[serde(rename = "session.next.model.switched")]
+    SessionNextModelSwitched(SessionModelSwitched),
+    /// The turn's active agent was selected/switched.
+    #[serde(rename = "session.next.agent.switched")]
+    SessionNextAgentSwitched(SessionAgentSwitched),
+    /// A persisted session changed.
+    #[serde(rename = "session.updated")]
+    SessionUpdated(SessionRef),
+    /// A session's busy/idle status changed.
+    #[serde(rename = "session.status")]
+    SessionStatus(SessionStatusEvent),
+    /// A session became idle (its active turn finished).
+    #[serde(rename = "session.idle")]
+    SessionIdle(SessionRef),
+    /// A normalized session-level error.
+    #[serde(rename = "session.error")]
+    SessionError(SessionErrorEvent),
+    /// A session's working-tree diff summary changed.
+    #[serde(rename = "session.diff")]
+    SessionDiff(SessionDiffEvent),
+    /// A session's context was compacted through an LLM summary.
+    #[serde(rename = "session.compacted")]
+    SessionCompacted(SessionCompactedEvent),
+    /// A question was asked of the user.
+    #[serde(rename = "question.asked")]
+    QuestionAsked(QuestionAsked),
+    /// A question was answered.
+    #[serde(rename = "question.replied")]
+    QuestionReplied(QuestionReplied),
+    /// A question was rejected/dismissed.
+    #[serde(rename = "question.rejected")]
+    QuestionRejected(QuestionRejected),
+    /// A session's todo list changed.
+    #[serde(rename = "todo.updated")]
+    TodoUpdated(TodoUpdated),
+    /// A file was written/edited.
+    #[serde(rename = "file.edited")]
+    FileEdited(FileEdited),
+    /// A watched file changed on disk.
+    #[serde(rename = "file.watcher.updated")]
+    FileWatcherUpdated(FileWatcherUpdated),
+    /// An LSP server produced new state/diagnostics.
+    #[serde(rename = "lsp.updated")]
+    LspUpdated(LspUpdated),
+    /// The VCS branch/dirty state changed.
+    #[serde(rename = "vcs.branch.updated")]
+    VcsBranchUpdated(VcsBranchUpdated),
+    /// A project's state changed.
+    #[serde(rename = "project.updated")]
+    ProjectUpdated(ProjectUpdated),
+    /// A command was executed.
+    #[serde(rename = "command.executed")]
+    CommandExecuted(CommandExecuted),
+    /// An installation/version transition.
+    #[serde(rename = "installation.updated")]
+    InstallationUpdated(InstallationUpdated),
+    /// A worktree became ready.
+    #[serde(rename = "worktree.ready")]
+    WorktreeReady(WorktreeReady),
+    /// A worktree operation failed.
+    #[serde(rename = "worktree.failed")]
+    WorktreeFailed(WorktreeFailed),
+    /// A workspace became ready.
+    #[serde(rename = "workspace.ready")]
+    WorkspaceReady(WorkspaceEvent),
+    /// A workspace operation failed.
+    #[serde(rename = "workspace.failed")]
+    WorkspaceFailed(WorkspaceEvent),
+    /// A workspace status transition.
+    #[serde(rename = "workspace.status")]
+    WorkspaceStatus(WorkspaceStatus),
+    /// A PTY was created.
+    #[serde(rename = "pty.created")]
+    PtyCreated(PtyEvent),
+    /// A PTY was updated.
+    #[serde(rename = "pty.updated")]
+    PtyUpdated(PtyEvent),
+    /// A PTY was removed.
+    #[serde(rename = "pty.deleted")]
+    PtyDeleted(PtyRef),
+    /// A PTY process exited.
+    #[serde(rename = "pty.exited")]
+    PtyExited(PtyExited),
+    /// A remote TUI requested text appended to the prompt.
+    #[serde(rename = "tui.prompt.append")]
+    TuiPromptAppend(TuiPromptAppend),
+    /// A remote TUI requested a command be executed.
+    #[serde(rename = "tui.command.execute")]
+    TuiCommandExecute(TuiCommandExecute),
+    /// A remote TUI requested a toast be shown.
+    #[serde(rename = "tui.toast.show")]
+    TuiToastShow(TuiToastShow),
+    /// A remote TUI requested a session be selected.
+    #[serde(rename = "tui.session.select")]
+    TuiSessionSelect(TuiSessionSelect),
 }
 
 impl Event {
@@ -402,7 +557,130 @@ impl Event {
             Event::TurnError(_) => "turn.error",
             Event::TurnDone(_) => "turn.done",
             Event::MessageParts(_) => "message.parts",
+            Event::MessageUpdated(_) => "message.updated",
+            Event::MessageRemoved(_) => "message.removed",
+            Event::MessagePartUpdated(_) => "message.part.updated",
+            Event::MessagePartRemoved(_) => "message.part.removed",
+            Event::SessionNextTextStart(_) => "session.next.text.start",
+            Event::SessionNextTextDelta(_) => "session.next.text.delta",
+            Event::SessionNextTextEnd(_) => "session.next.text.end",
+            Event::SessionNextReasoningStart(_) => "session.next.reasoning.start",
+            Event::SessionNextReasoningDelta(_) => "session.next.reasoning.delta",
+            Event::SessionNextReasoningEnd(_) => "session.next.reasoning.end",
+            Event::SessionNextToolStarted(_) => "session.next.tool.started",
+            Event::SessionNextToolEnded(_) => "session.next.tool.ended",
+            Event::SessionNextStepStarted(_) => "session.next.step.started",
+            Event::SessionNextStepFinished(_) => "session.next.step.finished",
+            Event::SessionNextRetried(_) => "session.next.retried",
+            Event::SessionNextContextUpdated(_) => "session.next.context.updated",
+            Event::SessionNextModelSwitched(_) => "session.next.model.switched",
+            Event::SessionNextAgentSwitched(_) => "session.next.agent.switched",
+            Event::SessionUpdated(_) => "session.updated",
+            Event::SessionStatus(_) => "session.status",
+            Event::SessionIdle(_) => "session.idle",
+            Event::SessionError(_) => "session.error",
+            Event::SessionDiff(_) => "session.diff",
+            Event::SessionCompacted(_) => "session.compacted",
+            Event::QuestionAsked(_) => "question.asked",
+            Event::QuestionReplied(_) => "question.replied",
+            Event::QuestionRejected(_) => "question.rejected",
+            Event::TodoUpdated(_) => "todo.updated",
+            Event::FileEdited(_) => "file.edited",
+            Event::FileWatcherUpdated(_) => "file.watcher.updated",
+            Event::LspUpdated(_) => "lsp.updated",
+            Event::VcsBranchUpdated(_) => "vcs.branch.updated",
+            Event::ProjectUpdated(_) => "project.updated",
+            Event::CommandExecuted(_) => "command.executed",
+            Event::InstallationUpdated(_) => "installation.updated",
+            Event::WorktreeReady(_) => "worktree.ready",
+            Event::WorktreeFailed(_) => "worktree.failed",
+            Event::WorkspaceReady(_) => "workspace.ready",
+            Event::WorkspaceFailed(_) => "workspace.failed",
+            Event::WorkspaceStatus(_) => "workspace.status",
+            Event::PtyCreated(_) => "pty.created",
+            Event::PtyUpdated(_) => "pty.updated",
+            Event::PtyDeleted(_) => "pty.deleted",
+            Event::PtyExited(_) => "pty.exited",
+            Event::TuiPromptAppend(_) => "tui.prompt.append",
+            Event::TuiCommandExecute(_) => "tui.command.execute",
+            Event::TuiToastShow(_) => "tui.toast.show",
+            Event::TuiSessionSelect(_) => "tui.session.select",
         }
+    }
+
+    /// Every stable event-kind name in the taxonomy, in declaration order.
+    ///
+    /// This catalogue backs spec/SDK discovery: a typed client generated from the OpenAPI document
+    /// can enumerate the families it must decode, and a server-side test can assert the OpenAPI
+    /// listing stays in lockstep with the typed [`Event`] variants.
+    #[must_use]
+    pub const fn all_kinds() -> &'static [&'static str] {
+        &[
+            "lifecycle",
+            "permission.asked",
+            "permission.replied",
+            "mcp.tools.changed",
+            "mcp.resources.changed",
+            "mcp.prompts.changed",
+            "mcp.log",
+            "tool.call",
+            "tool.result",
+            "turn.started",
+            "assistant.text_delta",
+            "assistant.reasoning_delta",
+            "turn.usage",
+            "turn.error",
+            "turn.done",
+            "message.parts",
+            "message.updated",
+            "message.removed",
+            "message.part.updated",
+            "message.part.removed",
+            "session.next.text.start",
+            "session.next.text.delta",
+            "session.next.text.end",
+            "session.next.reasoning.start",
+            "session.next.reasoning.delta",
+            "session.next.reasoning.end",
+            "session.next.tool.started",
+            "session.next.tool.ended",
+            "session.next.step.started",
+            "session.next.step.finished",
+            "session.next.retried",
+            "session.next.context.updated",
+            "session.next.model.switched",
+            "session.next.agent.switched",
+            "session.updated",
+            "session.status",
+            "session.idle",
+            "session.error",
+            "session.diff",
+            "session.compacted",
+            "question.asked",
+            "question.replied",
+            "question.rejected",
+            "todo.updated",
+            "file.edited",
+            "file.watcher.updated",
+            "lsp.updated",
+            "vcs.branch.updated",
+            "project.updated",
+            "command.executed",
+            "installation.updated",
+            "worktree.ready",
+            "worktree.failed",
+            "workspace.ready",
+            "workspace.failed",
+            "workspace.status",
+            "pty.created",
+            "pty.updated",
+            "pty.deleted",
+            "pty.exited",
+            "tui.prompt.append",
+            "tui.command.execute",
+            "tui.toast.show",
+            "tui.session.select",
+        ]
     }
 
     /// Construct a lifecycle event.
@@ -706,6 +984,216 @@ impl Event {
             parts,
         })
     }
+
+    /// Construct a `message.updated` event.
+    #[must_use]
+    pub fn message_updated(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        role: impl Into<String>,
+        time_created: Option<String>,
+    ) -> Self {
+        Event::MessageUpdated(MessageUpdated {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            role: role.into(),
+            time_created,
+        })
+    }
+
+    /// Construct a `message.part.updated` event.
+    #[must_use]
+    pub fn message_part_updated(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        part: MessagePart,
+    ) -> Self {
+        let part_id = part.id.clone();
+        Event::MessagePartUpdated(MessagePartUpdated {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            part_id,
+            part,
+        })
+    }
+
+    /// Construct a `session.status` event.
+    #[must_use]
+    pub fn session_status(session_id: impl Into<String>, status: impl Into<String>) -> Self {
+        Event::SessionStatus(SessionStatusEvent {
+            session_id: session_id.into(),
+            status: status.into(),
+        })
+    }
+
+    /// Construct a `session.idle` event.
+    #[must_use]
+    pub fn session_idle(session_id: impl Into<String>) -> Self {
+        Event::SessionIdle(SessionRef {
+            session_id: session_id.into(),
+        })
+    }
+
+    /// Construct a `session.error` event.
+    #[must_use]
+    pub fn session_error(
+        session_id: impl Into<String>,
+        message_id: Option<String>,
+        error_kind: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Event::SessionError(SessionErrorEvent {
+            session_id: session_id.into(),
+            message_id,
+            error_kind: error_kind.into(),
+            message: message.into(),
+        })
+    }
+
+    /// Construct a `session.compacted` event.
+    #[must_use]
+    pub fn session_compacted(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        tail_start_id: impl Into<String>,
+        model: Option<String>,
+    ) -> Self {
+        Event::SessionCompacted(SessionCompactedEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            tail_start_id: tail_start_id.into(),
+            model,
+        })
+    }
+
+    /// Construct a `session.next.step.started` event.
+    #[must_use]
+    pub fn session_step_started(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        step: usize,
+    ) -> Self {
+        Event::SessionNextStepStarted(StepEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            step,
+        })
+    }
+
+    /// Construct a `session.next.step.finished` event.
+    #[must_use]
+    pub fn session_step_finished(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        step: usize,
+    ) -> Self {
+        Event::SessionNextStepFinished(StepEvent {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            step,
+        })
+    }
+
+    /// Construct a `session.next.retried` event.
+    #[must_use]
+    pub fn session_retried(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        attempt: usize,
+        max_attempts: usize,
+        delay_ms: u64,
+        classification: impl Into<String>,
+    ) -> Self {
+        Event::SessionNextRetried(SessionRetried {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            attempt,
+            max_attempts,
+            delay_ms,
+            classification: classification.into(),
+        })
+    }
+
+    /// Construct a `session.next.context.updated` event.
+    #[must_use]
+    pub fn session_context_updated(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        tokens: u32,
+        context_limit: Option<u32>,
+    ) -> Self {
+        Event::SessionNextContextUpdated(SessionContext {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            tokens,
+            context_limit,
+        })
+    }
+
+    /// Construct a `session.next.model.switched` event.
+    #[must_use]
+    pub fn session_model_switched(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Event::SessionNextModelSwitched(SessionModelSwitched {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            model: model.into(),
+        })
+    }
+
+    /// Construct a `session.next.agent.switched` event.
+    #[must_use]
+    pub fn session_agent_switched(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        agent: impl Into<String>,
+    ) -> Self {
+        Event::SessionNextAgentSwitched(SessionAgentSwitched {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            agent: agent.into(),
+        })
+    }
+
+    /// Construct a `command.executed` event.
+    #[must_use]
+    pub fn command_executed(
+        session_id: Option<String>,
+        command: impl Into<String>,
+        exit_code: Option<i32>,
+    ) -> Self {
+        Event::CommandExecuted(CommandExecuted {
+            session_id,
+            command: command.into(),
+            exit_code,
+        })
+    }
+
+    /// Construct a `file.edited` event.
+    #[must_use]
+    pub fn file_edited(
+        session_id: Option<String>,
+        path: impl Into<String>,
+        edit_kind: Option<String>,
+    ) -> Self {
+        Event::FileEdited(FileEdited {
+            session_id,
+            path: path.into(),
+            edit_kind,
+        })
+    }
+
+    /// Construct a `todo.updated` event.
+    #[must_use]
+    pub fn todo_updated(session_id: impl Into<String>, todos: serde_json::Value) -> Self {
+        Event::TodoUpdated(TodoUpdated {
+            session_id: session_id.into(),
+            todos,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -849,5 +1337,90 @@ mod tests {
         let value = serde_json::to_value(&result).expect("serialize");
         assert_eq!(value["kind"], "tool.result");
         assert_eq!(value["is_error"], false);
+    }
+
+    #[test]
+    fn all_kinds_is_unique_and_covers_the_reference_families() {
+        let kinds = Event::all_kinds();
+        let unique: std::collections::BTreeSet<&str> = kinds.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            kinds.len(),
+            "the event taxonomy must not advertise duplicate kinds"
+        );
+        for required in [
+            "message.updated",
+            "message.part.updated",
+            "session.next.text.start",
+            "session.next.text.delta",
+            "session.next.text.end",
+            "session.next.tool.started",
+            "session.next.tool.ended",
+            "session.next.step.started",
+            "session.next.retried",
+            "session.next.context.updated",
+            "session.next.model.switched",
+            "session.next.agent.switched",
+            "session.status",
+            "session.idle",
+            "session.error",
+            "session.diff",
+            "session.compacted",
+            "question.asked",
+            "todo.updated",
+            "file.edited",
+            "lsp.updated",
+            "vcs.branch.updated",
+            "project.updated",
+            "command.executed",
+            "installation.updated",
+            "worktree.ready",
+            "workspace.status",
+            "pty.created",
+            "tui.toast.show",
+        ] {
+            assert!(
+                unique.contains(required),
+                "taxonomy is missing required reference family {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn reference_family_constructors_carry_their_serde_tag() {
+        let cases: Vec<(Event, &str)> = vec![
+            (
+                Event::message_updated("s", "m", "assistant", None),
+                "message.updated",
+            ),
+            (Event::session_status("s", "busy"), "session.status"),
+            (Event::session_idle("s"), "session.idle"),
+            (
+                Event::session_model_switched("s", "m", "google/gemini-2.5-flash"),
+                "session.next.model.switched",
+            ),
+            (
+                Event::session_compacted("s", "m", "tail-1", None),
+                "session.compacted",
+            ),
+            (
+                Event::command_executed(None, "echo hi", Some(0)),
+                "command.executed",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.kind(), expected, "kind() reports the family tag");
+            let value = serde_json::to_value(&event).expect("serialize");
+            assert_eq!(
+                value["kind"], expected,
+                "serde tag matches kind() for {expected}"
+            );
+            let decoded: Event = serde_json::from_value(value).expect("round-trip decode");
+            assert_eq!(
+                decoded.kind(),
+                expected,
+                "round-trips into the typed variant"
+            );
+        }
     }
 }

@@ -35,7 +35,9 @@ use engine::{
     ToolDispatcher, Turn, TurnQueue, build_assistant_message_parts, extract_message_content_parts,
     project_history,
 };
-use events::{Event, EventBus, LifecyclePhase, Surface};
+use events::{
+    Event, EventBus, LifecyclePhase, StreamBoundary, StreamDelta, Surface, ToolEnded, ToolStarted,
+};
 use futures_util::{future::BoxFuture, stream};
 use llm::{Provider, ToolCall, ToolDef, Usage};
 use permissions::{PermissionEngine, RuleError};
@@ -1090,6 +1092,7 @@ async fn event_stream(
 struct EventStreamState {
     receiver: broadcast::Receiver<Event>,
     redactors: HashMap<StreamRedactionKey, redaction::StreamingRedactor>,
+    started: HashSet<StreamRedactionKey>,
     pending_frames: VecDeque<SseEvent>,
 }
 
@@ -1098,64 +1101,176 @@ impl EventStreamState {
         Self {
             receiver,
             redactors: HashMap::new(),
+            started: HashSet::new(),
             pending_frames: VecDeque::new(),
         }
+    }
+
+    fn push(&mut self, event: Event) {
+        self.pending_frames.push_back(redacted_sse_frame(event));
     }
 
     fn enqueue(&mut self, event: Event) {
         match event {
             Event::TurnStarted(payload) => {
                 self.clear_message(&payload.session_id, &payload.message_id);
-                self.pending_frames
-                    .push_back(redacted_sse_frame(Event::TurnStarted(payload)));
+                let session_id = payload.session_id.clone();
+                self.push(Event::TurnStarted(payload));
+                self.push(Event::session_status(session_id, "busy"));
             }
             Event::AssistantTextDelta(mut payload) => {
                 let key = StreamRedactionKey::text(&payload.session_id, &payload.message_id);
                 payload.text = self.redactors.entry(key).or_default().push(&payload.text);
-                if !payload.text.is_empty() {
-                    self.pending_frames
-                        .push_back(redacted_sse_frame(Event::AssistantTextDelta(payload)));
-                }
+                self.emit_stream_fragment(
+                    StreamChannel::Text,
+                    payload.session_id,
+                    payload.message_id,
+                    payload.text,
+                );
             }
             Event::AssistantReasoningDelta(mut payload) => {
                 let key = StreamRedactionKey::reasoning(&payload.session_id, &payload.message_id);
                 payload.text = self.redactors.entry(key).or_default().push(&payload.text);
-                if !payload.text.is_empty() {
-                    self.pending_frames
-                        .push_back(redacted_sse_frame(Event::AssistantReasoningDelta(payload)));
+                self.emit_stream_fragment(
+                    StreamChannel::Reasoning,
+                    payload.session_id,
+                    payload.message_id,
+                    payload.text,
+                );
+            }
+            Event::ToolCall(payload) => {
+                let compat = match (&payload.session_id, &payload.message_id) {
+                    (Some(session_id), Some(message_id)) => {
+                        Some(Event::SessionNextToolStarted(ToolStarted {
+                            session_id: session_id.clone(),
+                            message_id: message_id.clone(),
+                            id: payload.id.clone(),
+                            name: payload.name.clone(),
+                        }))
+                    }
+                    _ => None,
+                };
+                self.push(Event::ToolCall(payload));
+                if let Some(compat) = compat {
+                    self.push(compat);
+                }
+            }
+            Event::ToolResult(payload) => {
+                let compat = match (&payload.session_id, &payload.message_id) {
+                    (Some(session_id), Some(message_id)) => {
+                        Some(Event::SessionNextToolEnded(ToolEnded {
+                            session_id: session_id.clone(),
+                            message_id: message_id.clone(),
+                            id: payload.id.clone(),
+                            name: payload.name.clone(),
+                            is_error: payload.is_error,
+                        }))
+                    }
+                    _ => None,
+                };
+                self.push(Event::ToolResult(payload));
+                if let Some(compat) = compat {
+                    self.push(compat);
                 }
             }
             Event::TurnError(payload) => {
                 self.flush_message(&payload.session_id, &payload.message_id);
-                self.pending_frames
-                    .push_back(redacted_sse_frame(Event::TurnError(payload)));
+                let session_id = payload.session_id.clone();
+                let message_id = payload.message_id.clone();
+                let error_kind = payload.error_kind.clone();
+                let message = payload.message.clone();
+                self.push(Event::TurnError(payload));
+                self.push(Event::session_error(
+                    session_id.clone(),
+                    Some(message_id),
+                    error_kind,
+                    message,
+                ));
+                self.push(Event::session_idle(session_id.clone()));
+                self.push(Event::session_status(session_id, "idle"));
             }
             Event::TurnDone(payload) => {
                 self.flush_message(&payload.session_id, &payload.message_id);
-                self.pending_frames
-                    .push_back(redacted_sse_frame(Event::TurnDone(payload)));
+                let session_id = payload.session_id.clone();
+                self.push(Event::TurnDone(payload));
+                self.push(Event::session_idle(session_id.clone()));
+                self.push(Event::session_status(session_id, "idle"));
             }
-            other => self.pending_frames.push_back(redacted_sse_frame(other)),
+            other => self.push(other),
         }
+    }
+
+    /// Emit one (already stream-redacted) text/reasoning fragment as both the legacy
+    /// `assistant.*_delta` vocabulary and the compatible `session.next.*.delta` vocabulary,
+    /// emitting the channel's `start` marker once before the first visible fragment.
+    fn emit_stream_fragment(
+        &mut self,
+        channel: StreamChannel,
+        session_id: String,
+        message_id: String,
+        text: String,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let key = StreamRedactionKey::new(&session_id, &message_id, channel);
+        if self.started.insert(key) {
+            let boundary = StreamBoundary {
+                session_id: session_id.clone(),
+                message_id: message_id.clone(),
+            };
+            let start = match channel {
+                StreamChannel::Text => Event::SessionNextTextStart(boundary),
+                StreamChannel::Reasoning => Event::SessionNextReasoningStart(boundary),
+            };
+            self.push(start);
+        }
+        let legacy = match channel {
+            StreamChannel::Text => {
+                Event::assistant_text_delta(&session_id, &message_id, text.clone())
+            }
+            StreamChannel::Reasoning => {
+                Event::assistant_reasoning_delta(&session_id, &message_id, text.clone())
+            }
+        };
+        self.push(legacy);
+        let delta = StreamDelta {
+            session_id,
+            message_id,
+            text,
+        };
+        let next = match channel {
+            StreamChannel::Text => Event::SessionNextTextDelta(delta),
+            StreamChannel::Reasoning => Event::SessionNextReasoningDelta(delta),
+        };
+        self.push(next);
     }
 
     fn flush_message(&mut self, session_id: &str, message_id: &str) {
         for channel in [StreamChannel::Text, StreamChannel::Reasoning] {
             let key = StreamRedactionKey::new(session_id, message_id, channel);
-            let Some(mut redactor) = self.redactors.remove(&key) else {
-                continue;
-            };
-            let text = redactor.finish();
-            if text.is_empty() {
-                continue;
-            }
-            let event = match channel {
-                StreamChannel::Text => Event::assistant_text_delta(session_id, message_id, text),
-                StreamChannel::Reasoning => {
-                    Event::assistant_reasoning_delta(session_id, message_id, text)
+            if let Some(mut redactor) = self.redactors.remove(&key) {
+                let text = redactor.finish();
+                if !text.is_empty() {
+                    self.emit_stream_fragment(
+                        channel,
+                        session_id.to_owned(),
+                        message_id.to_owned(),
+                        text,
+                    );
                 }
-            };
-            self.pending_frames.push_back(redacted_sse_frame(event));
+            }
+            if self.started.remove(&key) {
+                let boundary = StreamBoundary {
+                    session_id: session_id.to_owned(),
+                    message_id: message_id.to_owned(),
+                };
+                let end = match channel {
+                    StreamChannel::Text => Event::SessionNextTextEnd(boundary),
+                    StreamChannel::Reasoning => Event::SessionNextReasoningEnd(boundary),
+                };
+                self.push(end);
+            }
         }
     }
 
@@ -1163,6 +1278,7 @@ impl EventStreamState {
         for channel in [StreamChannel::Text, StreamChannel::Reasoning] {
             let key = StreamRedactionKey::new(session_id, message_id, channel);
             self.redactors.remove(&key);
+            self.started.remove(&key);
         }
     }
 }
@@ -1780,6 +1896,11 @@ async fn execute_command(
         .ok_or_else(|| ApiError::bad_request("command body must include a non-empty command"))?;
     let output = run_session_bash(&state, &id, &command).await?;
     let is_error = output.is_error;
+    state.event_bus.publish(&Event::command_executed(
+        Some(id.clone()),
+        redaction::redact(&command),
+        Some(i32::from(is_error)),
+    ));
     Ok(Json(CommandResponse {
         status: if is_error { "error" } else { "completed" },
         command: redaction::redact(&command),
@@ -2044,6 +2165,27 @@ async fn run_message_turn(
     let started_event = Event::turn_started(&session_id, &user_message.id);
     state.event_bus.publish(&started_event);
     plugin_hooks.invoke_event(&started_event);
+    state.event_bus.publish(&Event::message_updated(
+        &session_id,
+        &user_message.id,
+        &user_message.role,
+        Some(user_message.created_at.clone()),
+    ));
+    state.event_bus.publish(&Event::session_model_switched(
+        &session_id,
+        &user_message.id,
+        &resolved.model_id,
+    ));
+    state.event_bus.publish(&Event::session_agent_switched(
+        &session_id,
+        &user_message.id,
+        selected_agent.name(),
+    ));
+    state.event_bus.publish(&Event::session_step_started(
+        &session_id,
+        &user_message.id,
+        1,
+    ));
 
     let system =
         render_system_context(&resolved.model_id, &selected_agent, project_memory.render());
@@ -2138,6 +2280,53 @@ async fn run_message_turn(
         assistant.id.clone(),
         assistant_parts.clone(),
     ));
+    state.event_bus.publish(&Event::message_updated(
+        &session_id,
+        &assistant.id,
+        &assistant.role,
+        Some(assistant.created_at.clone()),
+    ));
+    for part in &assistant_parts {
+        state.event_bus.publish(&Event::message_part_updated(
+            &session_id,
+            &assistant.id,
+            part.clone(),
+        ));
+    }
+    if let Some(usage) = outcome.usage.as_ref() {
+        let context_limit = resolved
+            .model
+            .info
+            .as_ref()
+            .and_then(|info| u32::try_from(info.limit.context).ok());
+        state.event_bus.publish(&Event::session_context_updated(
+            &session_id,
+            &user_message.id,
+            usage.total_tokens,
+            context_limit,
+        ));
+    }
+    for compaction in &outcome.compactions {
+        state.event_bus.publish(&Event::session_compacted(
+            &session_id,
+            &user_message.id,
+            &compaction.tail_start_id,
+            compaction.model.clone(),
+        ));
+    }
+    state.event_bus.publish(&Event::session_step_finished(
+        &session_id,
+        &user_message.id,
+        outcome.steps,
+    ));
+    if let Ok(todos) = db.todos().list_for_session(&session_id)
+        && !todos.is_empty()
+        && let Ok(todos_json) = serde_json::to_value(&todos)
+    {
+        state
+            .event_bus
+            .publish(&Event::todo_updated(&session_id, todos_json));
+    }
     let content = redaction::redact(outcome.answer());
 
     Ok(PromptResponse {
@@ -2411,7 +2600,20 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             *steps,
         )),
         RunnerEvent::ToolSetChanged { .. } => {}
-        RunnerEvent::Retry { .. } => {}
+        RunnerEvent::Retry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            classification,
+            ..
+        } => bus.publish(&Event::session_retried(
+            session_id.to_owned(),
+            message_id.to_owned(),
+            *attempt,
+            *max_attempts,
+            *delay_ms,
+            classification.clone(),
+        )),
     }
 }
 

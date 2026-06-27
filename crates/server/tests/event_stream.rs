@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::body::{Body, Bytes, to_bytes};
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use db::Session;
 use events::{Event, EventBus};
@@ -40,15 +40,34 @@ async fn event_route_streams_json_sse_frames_from_the_bus() {
         "ses_test", "msg_test", "hello",
     ));
 
-    let bytes = next_chunk(&mut stream).await;
-    let text = String::from_utf8(bytes.to_vec()).expect("utf8 sse frame");
-    let data = data_values(&text);
-    assert_eq!(data.len(), 1, "one data line in frame: {text:?}");
-    let parsed: serde_json::Value = serde_json::from_str(&data[0]).expect("data JSON");
-    assert_eq!(parsed["kind"], "assistant.text_delta");
-    assert_eq!(parsed["session_id"], "ses_test");
-    assert_eq!(parsed["message_id"], "msg_test");
-    assert_eq!(parsed["text"], "hello");
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.text.delta",
+        Duration::from_secs(3),
+    )
+    .await;
+    let legacy = events
+        .iter()
+        .find(|event| event["kind"] == "assistant.text_delta")
+        .expect("legacy assistant.text_delta frame present");
+    assert_eq!(legacy["session_id"], "ses_test");
+    assert_eq!(legacy["message_id"], "msg_test");
+    assert_eq!(legacy["text"], "hello");
+
+    let compat = events
+        .iter()
+        .find(|event| event["kind"] == "session.next.text.delta")
+        .expect("compatible session.next.text.delta frame present");
+    assert_eq!(compat["session_id"], "ses_test");
+    assert_eq!(compat["message_id"], "msg_test");
+    assert_eq!(compat["text"], "hello");
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "session.next.text.start"),
+        "the granular text channel start marker precedes its deltas: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -133,7 +152,7 @@ async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery
     }
     bus.publish(&Event::turn_done("ses_split", "msg_split", "stop", 1));
 
-    let events = collect_data_events(&mut stream, 7, Duration::from_secs(3)).await;
+    let events = collect_until_kind(&mut stream, "turn.done", Duration::from_secs(3)).await;
     let delivered = serde_json::to_string(&events).expect("events JSON");
     assert!(
         !delivered.contains(&secret),
@@ -153,6 +172,13 @@ async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery
         text,
         format!("text before {} text after", redaction::PLACEHOLDER)
     );
+    // The compatible granular vocabulary reconstructs the same redacted text.
+    let next_text = events
+        .iter()
+        .filter(|event| event["kind"] == "session.next.text.delta")
+        .filter_map(|event| event["text"].as_str())
+        .collect::<String>();
+    assert_eq!(next_text, text, "granular text deltas match legacy deltas");
     let reasoning = events
         .iter()
         .filter(|event| event["kind"] == "assistant.reasoning_delta")
@@ -165,6 +191,12 @@ async fn event_route_redacts_split_text_and_reasoning_deltas_before_sse_delivery
     assert!(
         events.iter().any(|event| event["kind"] == "turn.done"),
         "terminal event is still delivered after redactor flush: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "session.next.text.end"),
+        "granular text channel emits an end marker after flush: {events:?}"
     );
 }
 
@@ -232,8 +264,18 @@ async fn prompt_turn_fans_out_correlated_text_deltas_to_multiple_subscribers() {
         .expect("message response");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let first_events = collect_data_events(&mut first, 4, Duration::from_secs(3)).await;
-    let second_events = collect_data_events(&mut second, 4, Duration::from_secs(3)).await;
+    let first_events = collect_until_kind(
+        &mut first,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
+    let second_events = collect_until_kind(
+        &mut second,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
     for events in [&first_events, &second_events] {
         let deltas: Vec<&serde_json::Value> = events
             .iter()
@@ -256,6 +298,37 @@ async fn prompt_turn_fans_out_correlated_text_deltas_to_multiple_subscribers() {
             "deltas reconstruct the answer: {reconstructed:?}"
         );
     }
+
+    // VAL-GAP-SSE-006: both subscribers observe an identical, ordered event kind sequence with
+    // exactly one terminal event.
+    let first_kinds: Vec<&str> = first_events
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+    let second_kinds: Vec<&str> = second_events
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+    assert_eq!(
+        first_kinds, second_kinds,
+        "fan-out subscribers receive identical ordered event sequences"
+    );
+    assert_eq!(
+        first_kinds
+            .iter()
+            .filter(|kind| **kind == "turn.done")
+            .count(),
+        1,
+        "exactly one terminal turn.done event is delivered: {first_kinds:?}"
+    );
+    assert_eq!(
+        first_kinds
+            .iter()
+            .filter(|kind| **kind == "session.idle")
+            .count(),
+        1,
+        "exactly one terminal session.idle event is delivered: {first_kinds:?}"
+    );
 }
 
 #[tokio::test]
@@ -289,7 +362,12 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
         "final assistant text should include the observable tool marker: {body:?}"
     );
 
-    let events = collect_data_events(&mut stream, 7, Duration::from_secs(3)).await;
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
     assert!(
         events.iter().any(|event| event["kind"] == "tool.call"
             && event["name"] == "bash"
@@ -301,6 +379,22 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
             && event["name"] == "bash"
             && event["session_id"] == session.id),
         "SSE should include a correlated bash tool-result event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "session.next.tool.started"
+                && event["name"] == "bash"
+                && event["session_id"] == session.id),
+        "SSE should include a granular session.next.tool.started event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "session.next.tool.ended"
+                && event["name"] == "bash"
+                && event["session_id"] == session.id),
+        "SSE should include a granular session.next.tool.ended event: {events:?}"
     );
     assert!(
         events.iter().any(|event| event["kind"] == "message.parts"
@@ -344,7 +438,7 @@ async fn command_route_surfaces_correlated_tool_lifecycle_events() {
         "command response should include stdout marker: {body:?}"
     );
 
-    let events = collect_data_events(&mut stream, 2, Duration::from_secs(3)).await;
+    let events = collect_until_kind(&mut stream, "command.executed", Duration::from_secs(3)).await;
     assert!(
         events.iter().any(|event| event["kind"] == "tool.call"
             && event["name"] == "bash"
@@ -357,6 +451,12 @@ async fn command_route_surfaces_correlated_tool_lifecycle_events() {
             && event["session_id"] == session.id
             && event["is_error"] == false),
         "SSE should include a correlated bash tool-result event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "command.executed" && event["session_id"] == session.id),
+        "SSE should include a command.executed subsystem event: {events:?}"
     );
 }
 
@@ -415,7 +515,7 @@ async fn posted_tui_turn_events_are_rebroadcast_and_abort_observes_remote_activi
     )
     .await;
 
-    let events = collect_data_events(&mut stream, 3, Duration::from_secs(3)).await;
+    let events = collect_until_kind(&mut stream, "turn.done", Duration::from_secs(3)).await;
     assert!(
         events.iter().any(|event| event["kind"] == "turn.started"
             && event["session_id"] == session.id
@@ -434,6 +534,559 @@ async fn posted_tui_turn_events_are_rebroadcast_and_abort_observes_remote_activi
             && event["reason"] == "stop"),
         "posted turn.done should be visible on SSE: {events:?}"
     );
+}
+
+// VAL-GAP-SSE-001: message and part updates use stable, client-consumable event names whose
+// payload IDs match the REST session/message IDs.
+#[tokio::test]
+async fn message_and_part_updates_carry_stable_names_and_rest_correlated_ids() {
+    let scratch = Scratch::new("server-event-message-updates");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"count please"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let assistant_id = body["message"]["id"]
+        .as_str()
+        .expect("assistant message id in REST response")
+        .to_owned();
+
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let user_updated = events
+        .iter()
+        .find(|event| event["kind"] == "message.updated" && event["role"] == "user")
+        .expect("user message.updated event");
+    assert_eq!(user_updated["session_id"], session.id);
+
+    let assistant_updated = events
+        .iter()
+        .find(|event| event["kind"] == "message.updated" && event["role"] == "assistant")
+        .expect("assistant message.updated event");
+    assert_eq!(assistant_updated["session_id"], session.id);
+    assert_eq!(
+        assistant_updated["message_id"], assistant_id,
+        "message.updated id matches the REST assistant message id"
+    );
+
+    let part_updated = events
+        .iter()
+        .find(|event| {
+            event["kind"] == "message.part.updated" && event["message_id"] == assistant_id
+        })
+        .expect("message.part.updated event for the assistant message");
+    assert_eq!(part_updated["session_id"], session.id);
+    assert!(
+        part_updated["part"].is_object(),
+        "message.part.updated carries the typed part payload: {part_updated:?}"
+    );
+}
+
+// VAL-GAP-SSE-002: streaming emits granular text start/delta/end (and tool start/end) so a client
+// can reconstruct a full turn from SSE; reconstructed text equals the final message.
+#[tokio::test]
+async fn granular_streaming_reconstructs_the_turn_without_polling() {
+    let scratch = Scratch::new("server-event-granular");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"count please"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let final_text = body["content"].as_str().expect("final content").to_owned();
+
+    let events =
+        collect_until_kind(&mut stream, "session.next.text.end", Duration::from_secs(5)).await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+
+    let start = kinds
+        .iter()
+        .position(|kind| *kind == "session.next.text.start")
+        .expect("text start present");
+    let first_delta = kinds
+        .iter()
+        .position(|kind| *kind == "session.next.text.delta")
+        .expect("text delta present");
+    let end = kinds
+        .iter()
+        .position(|kind| *kind == "session.next.text.end")
+        .expect("text end present");
+    assert!(
+        start < first_delta && first_delta < end,
+        "granular text channel is ordered start < delta < end: {kinds:?}"
+    );
+
+    let reconstructed = events
+        .iter()
+        .filter(|event| event["kind"] == "session.next.text.delta")
+        .filter_map(|event| event["text"].as_str())
+        .collect::<String>();
+    assert_eq!(
+        reconstructed, final_text,
+        "granular deltas reconstruct the final message text"
+    );
+}
+
+// VAL-GAP-SSE-003: step, model, agent, and context transitions are emitted per turn; retry and
+// compaction transitions are observable on the stream when triggered.
+#[tokio::test]
+async fn runner_transition_events_are_emitted_with_session_and_turn_ids() {
+    let scratch = Scratch::new("server-event-transitions");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"text":"hi","model":"anthropic/claude-sonnet-4"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
+    for (kind, label) in [
+        ("session.next.model.switched", "model"),
+        ("session.next.agent.switched", "agent"),
+        ("session.next.step.started", "step start"),
+        ("session.next.step.finished", "step finish"),
+        ("session.next.context.updated", "context"),
+    ] {
+        assert!(
+            events
+                .iter()
+                .any(|event| event["kind"] == kind && event["session_id"] == session.id),
+            "expected {label} transition event ({kind}) with session id: {events:?}"
+        );
+    }
+    let model = events
+        .iter()
+        .find(|event| event["kind"] == "session.next.model.switched")
+        .expect("model.switched present");
+    assert_eq!(
+        model["model"], "anthropic/claude-sonnet-4",
+        "model.switched reports the per-turn model override"
+    );
+
+    // Retry and compaction transitions are observable on the stream when triggered (proven here via
+    // the publish path the runner/handler use to surface them).
+    let mut retry_stream = subscribe(&app).await;
+    post_event(
+        &app,
+        &Event::session_retried(session.id.clone(), "msg_retry", 1, 3, 250, "rate_limit"),
+    )
+    .await;
+    post_event(
+        &app,
+        &Event::session_compacted(session.id.clone(), "msg_retry", "tail-42", None),
+    )
+    .await;
+    let triggered = collect_until_kind(
+        &mut retry_stream,
+        "session.compacted",
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        triggered
+            .iter()
+            .any(|event| event["kind"] == "session.next.retried"
+                && event["classification"] == "rate_limit"),
+        "retry transition observable: {triggered:?}"
+    );
+    assert!(
+        triggered.iter().any(
+            |event| event["kind"] == "session.compacted" && event["tail_start_id"] == "tail-42"
+        ),
+        "compaction transition observable: {triggered:?}"
+    );
+}
+
+// VAL-GAP-SSE-004: per-subsystem event families are observable with redacted secrets.
+#[tokio::test]
+async fn subsystem_event_families_are_observable_and_redacted() {
+    let scratch = Scratch::new("server-event-subsystems");
+    let bus = Arc::new(EventBus::new());
+    let state = server::ServerState::new(scratch.db_path()).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let secret = format!("sk-{}-{}", "or-v1", "c0ffee00".repeat(8));
+    let family_events = vec![
+        Event::QuestionAsked(events::QuestionAsked {
+            session_id: Some(session.id.clone()),
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            options: vec!["yes".to_owned(), "no".to_owned()],
+        }),
+        Event::todo_updated(
+            session.id.clone(),
+            serde_json::json!([{ "id": "t1", "content": "do it", "status": "pending" }]),
+        ),
+        Event::FileEdited(events::FileEdited {
+            session_id: Some(session.id.clone()),
+            path: "src/lib.rs".to_owned(),
+            edit_kind: Some("edit".to_owned()),
+        }),
+        Event::LspUpdated(events::LspUpdated {
+            server: Some("rust".to_owned()),
+            path: Some("src/lib.rs".to_owned()),
+            diagnostic_count: Some(2),
+        }),
+        Event::VcsBranchUpdated(events::VcsBranchUpdated {
+            branch: "main".to_owned(),
+            dirty: Some(true),
+        }),
+        Event::PtyCreated(events::PtyEvent {
+            id: "pty-1".to_owned(),
+            // Carry a secret to prove subsystem payloads are redacted on the stream.
+            shell: Some(format!("/bin/sh --token {secret}")),
+        }),
+        Event::InstallationUpdated(events::InstallationUpdated {
+            version: "0.1.0".to_owned(),
+        }),
+        Event::WorktreeReady(events::WorktreeReady {
+            path: "/tmp/worktree".to_owned(),
+        }),
+        Event::WorkspaceStatus(events::WorkspaceStatus {
+            status: "ready".to_owned(),
+        }),
+        Event::TuiToastShow(events::TuiToastShow {
+            message: "saved".to_owned(),
+            level: Some("info".to_owned()),
+        }),
+    ];
+    for event in &family_events {
+        post_event(&app, event).await;
+    }
+
+    let events = collect_until_kind(&mut stream, "tui.toast.show", Duration::from_secs(3)).await;
+    for kind in [
+        "question.asked",
+        "todo.updated",
+        "file.edited",
+        "lsp.updated",
+        "vcs.branch.updated",
+        "pty.created",
+        "installation.updated",
+        "worktree.ready",
+        "workspace.status",
+        "tui.toast.show",
+    ] {
+        assert!(
+            events.iter().any(|event| event["kind"] == kind),
+            "subsystem family {kind} should be observable on SSE: {events:?}"
+        );
+    }
+    let delivered = serde_json::to_string(&events).expect("events JSON");
+    assert!(
+        !delivered.contains(&secret),
+        "subsystem payload secret must be redacted: {delivered}"
+    );
+    assert!(
+        delivered.contains(redaction::PLACEHOLDER),
+        "redacted subsystem payload should include the placeholder: {delivered}"
+    );
+}
+
+// VAL-GAP-SSE-005: the SSE event taxonomy is spec-discoverable and every family decodes into a
+// distinct typed variant, so a generated SDK client never special-cases server-only names.
+#[tokio::test]
+async fn event_taxonomy_is_spec_discoverable_and_decodes_into_typed_variants() {
+    let scratch = Scratch::new("server-event-taxonomy");
+    let app = server::app_with_db_path(scratch.db_path());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/openapi.json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("openapi response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value = json_body(response).await;
+
+    let families: Vec<String> = document["x-event-families"]
+        .as_array()
+        .expect("x-event-families array")
+        .iter()
+        .map(|value| value.as_str().expect("family string").to_owned())
+        .collect();
+    let canonical: Vec<String> = events::Event::all_kinds()
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .collect();
+    assert_eq!(
+        families, canonical,
+        "OpenAPI x-event-families stays in lockstep with the typed Event taxonomy"
+    );
+    let schema_enum: Vec<String> = document["components"]["schemas"]["Event"]["properties"]["kind"]
+        ["enum"]
+        .as_array()
+        .expect("Event schema kind enum")
+        .iter()
+        .map(|value| value.as_str().expect("enum string").to_owned())
+        .collect();
+    assert_eq!(
+        schema_enum, canonical,
+        "the Event schema enum documents every typed family"
+    );
+
+    // Each representative family round-trips: serialize → deserialize into the typed Event enum and
+    // confirm the discriminator resolves to the same variant the SDK would dispatch on.
+    for event in representative_events() {
+        let wire = serde_json::to_string(&event).expect("serialize event");
+        let decoded: Event = serde_json::from_str(&wire).expect("typed client decodes family");
+        assert_eq!(
+            decoded.kind(),
+            event.kind(),
+            "family {} decodes into its typed variant",
+            event.kind()
+        );
+    }
+    // The representatives cover every advertised family.
+    let covered: std::collections::BTreeSet<&str> =
+        representative_events().iter().map(Event::kind).collect();
+    for kind in events::Event::all_kinds() {
+        assert!(
+            covered.contains(kind),
+            "representative coverage missing family {kind}"
+        );
+    }
+}
+
+/// One representative [`Event`] per family, used to prove typed decodability of the full taxonomy.
+fn representative_events() -> Vec<Event> {
+    use events::{
+        FileWatcherUpdated, MessagePartRemoved, MessageRemoved, ProjectUpdated, PtyExited, PtyRef,
+        QuestionAsked, QuestionRejected, QuestionReplied, SessionRef, ToolEnded, ToolStarted,
+        TuiCommandExecute, TuiPromptAppend, TuiSessionSelect, WorkspaceEvent, WorktreeFailed,
+    };
+    let part = protocol::MessagePart::text("hi");
+    vec![
+        Event::lifecycle(
+            events::LifecyclePhase::Startup,
+            events::Surface::Serve,
+            "0.1.0",
+        ),
+        Event::permission_asked("bash", "rm *", "rm a"),
+        Event::permission_replied(
+            "bash",
+            "rm *",
+            "rm a",
+            events::PermissionDecision::Deny,
+            None,
+        ),
+        Event::mcp_tools_changed("demo", vec!["a".to_owned()]),
+        Event::mcp_resources_changed("demo", vec!["notes://demo".to_owned()]),
+        Event::mcp_prompts_changed("demo", vec!["greet".to_owned()]),
+        Event::mcp_log_message("demo", "info", None, serde_json::json!({"m":"x"})),
+        Event::tool_call("c1", "bash", "{}"),
+        Event::tool_result("c1", "bash", false),
+        Event::turn_started("s", "m"),
+        Event::assistant_text_delta("s", "m", "hi"),
+        Event::assistant_reasoning_delta("s", "m", "think"),
+        Event::turn_usage("s", "m", 1, 1, 2, None, None, None),
+        Event::turn_error("s", "m", "upstream", "boom"),
+        Event::turn_done("s", "m", "stop", 1),
+        Event::message_parts("s", "m", vec![part.clone()]),
+        Event::message_updated("s", "m", "assistant", None),
+        Event::MessageRemoved(MessageRemoved {
+            session_id: "s".to_owned(),
+            message_id: "m".to_owned(),
+        }),
+        Event::message_part_updated("s", "m", part.clone()),
+        Event::MessagePartRemoved(MessagePartRemoved {
+            session_id: "s".to_owned(),
+            message_id: "m".to_owned(),
+            part_id: "p".to_owned(),
+        }),
+        Event::SessionNextTextStart(boundary("s", "m")),
+        Event::SessionNextTextDelta(delta("s", "m", "hi")),
+        Event::SessionNextTextEnd(boundary("s", "m")),
+        Event::SessionNextReasoningStart(boundary("s", "m")),
+        Event::SessionNextReasoningDelta(delta("s", "m", "think")),
+        Event::SessionNextReasoningEnd(boundary("s", "m")),
+        Event::SessionNextToolStarted(ToolStarted {
+            session_id: "s".to_owned(),
+            message_id: "m".to_owned(),
+            id: "c1".to_owned(),
+            name: "bash".to_owned(),
+        }),
+        Event::SessionNextToolEnded(ToolEnded {
+            session_id: "s".to_owned(),
+            message_id: "m".to_owned(),
+            id: "c1".to_owned(),
+            name: "bash".to_owned(),
+            is_error: false,
+        }),
+        Event::session_step_started("s", "m", 1),
+        Event::session_step_finished("s", "m", 1),
+        Event::session_retried("s", "m", 1, 3, 250, "rate_limit"),
+        Event::session_context_updated("s", "m", 10, Some(1000)),
+        Event::session_model_switched("s", "m", "google/gemini-2.5-flash"),
+        Event::session_agent_switched("s", "m", "build"),
+        Event::SessionUpdated(SessionRef {
+            session_id: "s".to_owned(),
+        }),
+        Event::session_status("s", "busy"),
+        Event::session_idle("s"),
+        Event::session_error("s", Some("m".to_owned()), "upstream", "boom"),
+        Event::SessionDiff(events::SessionDiffEvent {
+            session_id: "s".to_owned(),
+            files: vec!["a.rs".to_owned()],
+        }),
+        Event::session_compacted("s", "m", "tail-1", None),
+        Event::QuestionAsked(QuestionAsked {
+            session_id: None,
+            id: "q".to_owned(),
+            question: "?".to_owned(),
+            options: Vec::new(),
+        }),
+        Event::QuestionReplied(QuestionReplied {
+            session_id: None,
+            id: "q".to_owned(),
+            answer: "y".to_owned(),
+        }),
+        Event::QuestionRejected(QuestionRejected {
+            session_id: None,
+            id: "q".to_owned(),
+            reason: None,
+        }),
+        Event::todo_updated("s", serde_json::json!([])),
+        Event::file_edited(None, "a.rs", Some("edit".to_owned())),
+        Event::FileWatcherUpdated(FileWatcherUpdated {
+            path: "a.rs".to_owned(),
+            change: "modified".to_owned(),
+        }),
+        Event::LspUpdated(events::LspUpdated {
+            server: Some("rust".to_owned()),
+            path: None,
+            diagnostic_count: None,
+        }),
+        Event::VcsBranchUpdated(events::VcsBranchUpdated {
+            branch: "main".to_owned(),
+            dirty: None,
+        }),
+        Event::ProjectUpdated(ProjectUpdated {
+            path: "/p".to_owned(),
+        }),
+        Event::command_executed(None, "echo hi", Some(0)),
+        Event::InstallationUpdated(events::InstallationUpdated {
+            version: "0.1.0".to_owned(),
+        }),
+        Event::WorktreeReady(events::WorktreeReady {
+            path: "/w".to_owned(),
+        }),
+        Event::WorktreeFailed(WorktreeFailed {
+            path: "/w".to_owned(),
+            message: "bad".to_owned(),
+        }),
+        Event::WorkspaceReady(WorkspaceEvent { id: None }),
+        Event::WorkspaceFailed(WorkspaceEvent { id: None }),
+        Event::WorkspaceStatus(events::WorkspaceStatus {
+            status: "ready".to_owned(),
+        }),
+        Event::PtyCreated(events::PtyEvent {
+            id: "p".to_owned(),
+            shell: None,
+        }),
+        Event::PtyUpdated(events::PtyEvent {
+            id: "p".to_owned(),
+            shell: None,
+        }),
+        Event::PtyDeleted(PtyRef { id: "p".to_owned() }),
+        Event::PtyExited(PtyExited {
+            id: "p".to_owned(),
+            exit_code: Some(0),
+        }),
+        Event::TuiPromptAppend(TuiPromptAppend {
+            text: "hi".to_owned(),
+        }),
+        Event::TuiCommandExecute(TuiCommandExecute {
+            command: "help".to_owned(),
+        }),
+        Event::TuiToastShow(events::TuiToastShow {
+            message: "saved".to_owned(),
+            level: None,
+        }),
+        Event::TuiSessionSelect(TuiSessionSelect {
+            session_id: "s".to_owned(),
+        }),
+    ]
+}
+
+fn boundary(session_id: &str, message_id: &str) -> events::StreamBoundary {
+    events::StreamBoundary {
+        session_id: session_id.to_owned(),
+        message_id: message_id.to_owned(),
+    }
+}
+
+fn delta(session_id: &str, message_id: &str, text: &str) -> events::StreamDelta {
+    events::StreamDelta {
+        session_id: session_id.to_owned(),
+        message_id: message_id.to_owned(),
+        text: text.to_owned(),
+    }
 }
 
 fn assert_sse_content_type(response: &axum::response::Response) {
@@ -485,14 +1138,6 @@ async fn subscribe(app: &axum::Router) -> axum::body::BodyDataStream {
     response.into_body().into_data_stream()
 }
 
-async fn next_chunk(stream: &mut axum::body::BodyDataStream) -> Bytes {
-    tokio::time::timeout(Duration::from_secs(3), stream.next())
-        .await
-        .expect("next SSE chunk before timeout")
-        .expect("SSE stream should stay open")
-        .expect("SSE chunk should be ok")
-}
-
 async fn collect_data_events(
     stream: &mut axum::body::BodyDataStream,
     min_events: usize,
@@ -517,6 +1162,33 @@ async fn collect_data_events(
     events
 }
 
+/// Collect SSE data events until one with `kind` appears (inclusive) or the timeout elapses.
+async fn collect_until_kind(
+    stream: &mut axum::body::BodyDataStream,
+    kind: &str,
+    timeout: Duration,
+) -> Vec<serde_json::Value> {
+    let start = Instant::now();
+    let mut buffer = String::new();
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    while start.elapsed() < timeout {
+        if events.iter().any(|event| event["kind"] == kind) {
+            break;
+        }
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let Ok(Some(chunk)) = tokio::time::timeout(remaining, stream.next()).await else {
+            break;
+        };
+        let chunk = chunk.expect("SSE chunk");
+        buffer.push_str(std::str::from_utf8(&chunk).expect("utf8 SSE"));
+        events = data_values(&buffer)
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("JSON data frame"))
+            .collect();
+    }
+    events
+}
+
 fn data_values(frame_text: &str) -> Vec<String> {
     frame_text
         .lines()
@@ -531,7 +1203,9 @@ async fn json_body<T>(response: axum::response::Response) -> T
 where
     T: serde::de::DeserializeOwned,
 {
-    let bytes = to_bytes(response.into_body(), 8192).await.expect("body");
+    let bytes = to_bytes(response.into_body(), 4_194_304)
+        .await
+        .expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
 }
 
