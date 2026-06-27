@@ -14,6 +14,40 @@ pub(crate) fn openapi_document() -> serde_json::Value {
             "version": env!("CARGO_PKG_VERSION"),
             "description": "Loopback-only HTTP/SSE surface for local Cortex Code sessions."
         },
+        "x-cortex-compatibility": {
+            "decision": "wire-compatible",
+            "recorded_backlog_item": "gap-server-wire-compatibility-decision",
+            "route_contract": {
+                "primary_namespace": "legacy-flat",
+                "compatibility_target": "reference-wire",
+                "rules": [
+                    "OpenAPI is the source of truth for every implemented route and method.",
+                    "Compatibility aliases are additive and must not remove existing stable paths.",
+                    "New route families should converge on reference-compatible naming and shapes."
+                ]
+            },
+            "schema_contract": {
+                "rules": [
+                    "Responses use stable object schemas with explicit required fields.",
+                    "Identifiers are treated as opaque strings across HTTP, SSE, ACP, and SDK surfaces.",
+                    "Schema changes require additive evolution or explicit migration notes."
+                ]
+            },
+            "event_contract": {
+                "rules": [
+                    "Event names remain stable and machine-consumable.",
+                    "SSE payloads carry enough identifiers to correlate with REST resources.",
+                    "Legacy and compatibility event vocabularies may coexist while parity work lands."
+                ]
+            },
+            "sdk_contract": {
+                "rules": [
+                    "Generated SDK clients consume this OpenAPI document as the canonical contract.",
+                    "Typed event clients must reconstruct turn state from SSE without polling.",
+                    "Wire-compatibility gaps remain explicit until matching route and event coverage ships."
+                ]
+            }
+        },
         "servers": [
             {
                 "url": "http://127.0.0.1:{port}",

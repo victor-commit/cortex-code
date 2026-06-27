@@ -42,6 +42,44 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
         document["paths"].is_object(),
         "paths object required: {document:?}"
     );
+    assert_eq!(
+        document["x-cortex-compatibility"]["decision"], "wire-compatible",
+        "OpenAPI should expose the selected API compatibility decision"
+    );
+    assert_eq!(
+        document["x-cortex-compatibility"]["recorded_backlog_item"],
+        "gap-server-wire-compatibility-decision",
+        "OpenAPI should reference the backlog decision item"
+    );
+    assert_eq!(
+        document["x-cortex-compatibility"]["route_contract"]["compatibility_target"],
+        "reference-wire",
+        "OpenAPI should lock the route compatibility contract"
+    );
+    assert!(
+        document["x-cortex-compatibility"]["route_contract"]["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty()),
+        "Route compatibility rules should be non-empty: {document:?}"
+    );
+    assert!(
+        document["x-cortex-compatibility"]["schema_contract"]["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty()),
+        "Schema compatibility rules should be non-empty: {document:?}"
+    );
+    assert!(
+        document["x-cortex-compatibility"]["event_contract"]["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty()),
+        "Event compatibility rules should be non-empty: {document:?}"
+    );
+    assert!(
+        document["x-cortex-compatibility"]["sdk_contract"]["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty()),
+        "SDK compatibility rules should be non-empty: {document:?}"
+    );
 
     let paths = document["paths"].as_object().expect("paths object");
     assert_method(paths, "/health", "get", 200);
