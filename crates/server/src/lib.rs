@@ -48,10 +48,13 @@ use tokio::{net::TcpListener, sync::broadcast, sync::watch};
 use tools::{ToolContext, ToolRegistry};
 
 mod auth_ext;
+mod catalog_ext;
 mod config_ext;
 #[allow(dead_code)]
 #[path = "../../cli/src/custom_agents.rs"]
 mod custom_agents;
+mod file_ext;
+mod find_ext;
 mod openapi;
 mod session_ext;
 
@@ -744,6 +747,25 @@ pub fn app_with_state(state: ServerState) -> Router {
             "/auth/{provider}/authorize",
             post(auth_ext::oauth_authorize).options(preflight),
         )
+        .route("/file", get(file_ext::list_files).options(preflight))
+        .route("/file/content", get(file_ext::read_file).options(preflight))
+        .route(
+            "/file/status",
+            get(file_ext::file_status).options(preflight),
+        )
+        .route("/find", get(find_ext::find_text).options(preflight))
+        .route("/find/file", get(find_ext::find_file).options(preflight))
+        .route(
+            "/find/symbol",
+            get(find_ext::find_symbol).options(preflight),
+        )
+        .route("/agent", get(catalog_ext::list_agents).options(preflight))
+        .route("/model", get(catalog_ext::list_models).options(preflight))
+        .route(
+            "/command",
+            get(catalog_ext::list_commands).options(preflight),
+        )
+        .route("/skill", get(catalog_ext::list_skills).options(preflight))
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth, auth_and_cors))
 }
@@ -2024,6 +2046,22 @@ async fn run_message_turn(
 fn load_workspace_adapter_discovery(
     state: &ServerState,
 ) -> Result<Vec<WorkspaceAdapterDiscovery>, ApiError> {
+    let plugin_hooks = load_plugin_hooks(state)?;
+    Ok(plugin_hooks
+        .workspace_adapter_entries()
+        .into_iter()
+        .map(WorkspaceAdapterDiscovery::from)
+        .collect())
+}
+
+/// Load the configured plugin registry for discovery routes, honoring `--pure`/`CORTEX_PURE`.
+///
+/// This is the shared seam behind workspace-adapter and catalog discovery so plugin-registered
+/// providers, models, agents, commands, and skills surface from a single, consistent load rather
+/// than each route rolling its own plugin bootstrap.
+pub(crate) fn load_plugin_hooks(
+    state: &ServerState,
+) -> Result<plugins::PluginEventHooks, ApiError> {
     let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
     let effective_config = settings::load(config_inputs).map_err(config_api_error)?;
     let plugin_config =
@@ -2035,18 +2073,13 @@ fn load_workspace_adapter_discovery(
         serde_json::Value::Object(object) => serde_json::Value::Object(object),
         _ => serde_json::json!({}),
     };
-    let plugin_hooks = plugins::PluginEventHooks::load_or_disabled_with_config(
+    plugins::PluginEventHooks::load_or_disabled_with_config(
         &plugin_config,
         state.config.pure_plugins(),
         "serve",
         resolved_config,
     )
-    .map_err(plugin_runtime_error)?;
-    Ok(plugin_hooks
-        .workspace_adapter_entries()
-        .into_iter()
-        .map(WorkspaceAdapterDiscovery::from)
-        .collect())
+    .map_err(plugin_runtime_error)
 }
 
 struct ResolvedTurnProvider {

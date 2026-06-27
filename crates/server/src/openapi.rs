@@ -859,10 +859,251 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "400": json_response("Missing required OAuth fields.", "ErrorResponse")
                     }
                 }
+            },
+            "/file": {
+                "get": {
+                    "operationId": "listFiles",
+                    "summary": "List files and directories under a workspace-relative path.",
+                    "parameters": [file_path_query(false)],
+                    "responses": {
+                        "200": json_array_response("Files and directories.", "FileNode"),
+                        "400": json_response("Path is not a directory.", "ErrorResponse"),
+                        "403": json_response("Path is outside the workspace directory.", "ErrorResponse"),
+                        "404": json_response("Path was not found in the workspace.", "ErrorResponse")
+                    }
+                }
+            },
+            "/file/content": {
+                "get": {
+                    "operationId": "readFile",
+                    "summary": "Read a workspace file's text or binary/media metadata.",
+                    "parameters": [file_path_query(true)],
+                    "responses": {
+                        "200": json_response("File content.", "FileContent"),
+                        "400": json_response("Path is a directory or missing.", "ErrorResponse"),
+                        "403": json_response("Path is outside the workspace directory.", "ErrorResponse"),
+                        "404": json_response("File was not found in the workspace.", "ErrorResponse")
+                    }
+                }
+            },
+            "/file/status": {
+                "get": {
+                    "operationId": "fileStatus",
+                    "summary": "Report the git working-tree status of the workspace.",
+                    "responses": {
+                        "200": json_array_response("Changed files.", "FileStatus")
+                    }
+                }
+            },
+            "/find": {
+                "get": {
+                    "operationId": "findText",
+                    "summary": "Search file contents for a text pattern using ripgrep.",
+                    "parameters": [
+                        { "name": "pattern", "in": "query", "required": true, "schema": { "type": "string" } },
+                        find_limit_query()
+                    ],
+                    "responses": {
+                        "200": json_array_response("Text matches.", "TextMatch"),
+                        "400": json_response("Pattern is required.", "ErrorResponse")
+                    }
+                }
+            },
+            "/find/file": {
+                "get": {
+                    "operationId": "findFiles",
+                    "summary": "Search for files or directories by name in the workspace.",
+                    "parameters": [
+                        { "name": "query", "in": "query", "required": false, "schema": { "type": "string" } },
+                        { "name": "dirs", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"] } },
+                        { "name": "type", "in": "query", "required": false, "schema": { "type": "string", "enum": ["file", "directory"] } },
+                        find_limit_query()
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Matching file paths.",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "type": "array", "items": { "type": "string" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/find/symbol": {
+                "get": {
+                    "operationId": "findSymbols",
+                    "summary": "Search source-symbol definitions across the workspace.",
+                    "parameters": [
+                        { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } },
+                        find_limit_query()
+                    ],
+                    "responses": {
+                        "200": json_array_response("Workspace symbols.", "Symbol"),
+                        "400": json_response("Query is required.", "ErrorResponse")
+                    }
+                }
+            },
+            "/agent": {
+                "get": {
+                    "operationId": "listAgents",
+                    "summary": "List built-in, custom, and plugin agents.",
+                    "responses": {
+                        "200": json_array_response("Agent catalog entries.", "AgentEntry")
+                    }
+                }
+            },
+            "/model": {
+                "get": {
+                    "operationId": "listModels",
+                    "summary": "List every catalog model, including plugin-registered models.",
+                    "responses": {
+                        "200": json_response("Model catalog with the default model.", "ModelCatalog")
+                    }
+                }
+            },
+            "/command": {
+                "get": {
+                    "operationId": "listCommands",
+                    "summary": "List config-defined custom commands and plugin commands.",
+                    "responses": {
+                        "200": json_array_response("Command catalog entries.", "CommandEntry")
+                    }
+                }
+            },
+            "/skill": {
+                "get": {
+                    "operationId": "listSkills",
+                    "summary": "List discovered skills and plugin skills.",
+                    "responses": {
+                        "200": json_array_response("Skill catalog entries.", "SkillEntry")
+                    }
+                }
             }
         },
         "components": {
             "schemas": {
+                "FileNode": {
+                    "type": "object",
+                    "required": ["name", "path", "absolute", "type", "ignored"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "path": { "type": "string" },
+                        "absolute": { "type": "string" },
+                        "type": { "type": "string", "enum": ["file", "directory"] },
+                        "ignored": { "type": "boolean" }
+                    }
+                },
+                "FileContent": {
+                    "type": "object",
+                    "required": ["type", "content"],
+                    "properties": {
+                        "type": { "type": "string", "enum": ["text", "binary"] },
+                        "content": { "type": "string" },
+                        "encoding": { "type": "string", "enum": ["base64"] },
+                        "mimeType": { "type": "string" }
+                    }
+                },
+                "FileStatus": {
+                    "type": "object",
+                    "required": ["path", "added", "removed", "status"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "added": { "type": "integer", "minimum": 0 },
+                        "removed": { "type": "integer", "minimum": 0 },
+                        "status": { "type": "string", "enum": ["added", "deleted", "modified"] }
+                    }
+                },
+                "TextMatch": {
+                    "type": "object",
+                    "required": ["path", "lines", "line_number", "absolute_offset", "submatches"],
+                    "properties": {
+                        "path": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" } } },
+                        "lines": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" } } },
+                        "line_number": { "type": "integer", "minimum": 0 },
+                        "absolute_offset": { "type": "integer", "minimum": 0 },
+                        "submatches": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["match", "start", "end"],
+                                "properties": {
+                                    "match": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" } } },
+                                    "start": { "type": "integer", "minimum": 0 },
+                                    "end": { "type": "integer", "minimum": 0 }
+                                }
+                            }
+                        }
+                    }
+                },
+                "Symbol": {
+                    "type": "object",
+                    "required": ["name", "kind", "location"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "kind": { "type": "integer", "minimum": 0 },
+                        "location": {
+                            "type": "object",
+                            "required": ["uri", "range"],
+                            "properties": {
+                                "uri": { "type": "string" },
+                                "range": {
+                                    "type": "object",
+                                    "required": ["start", "end"],
+                                    "properties": {
+                                        "start": { "$ref": "#/components/schemas/SymbolPosition" },
+                                        "end": { "$ref": "#/components/schemas/SymbolPosition" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "SymbolPosition": {
+                    "type": "object",
+                    "required": ["line", "character"],
+                    "properties": {
+                        "line": { "type": "integer", "minimum": 0 },
+                        "character": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "AgentEntry": {
+                    "type": "object",
+                    "required": ["name", "description", "mode", "source"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "mode": { "type": "string" },
+                        "source": { "type": "string", "enum": ["builtin", "custom", "plugin"] }
+                    }
+                },
+                "CommandEntry": {
+                    "type": "object",
+                    "required": ["name", "description", "source"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "source": { "type": "string", "enum": ["config", "plugin"] }
+                    }
+                },
+                "SkillEntry": {
+                    "type": "object",
+                    "required": ["name", "description", "source"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "source": { "type": "string", "enum": ["config", "plugin"] }
+                    }
+                },
+                "ModelCatalog": {
+                    "type": "object",
+                    "required": ["default_model", "models"],
+                    "properties": {
+                        "default_model": { "type": "string" },
+                        "models": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+                    }
+                },
                 "AbortResponse": {
                     "type": "object",
                     "required": ["status", "active"],
@@ -1460,6 +1701,16 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/auth", &["get"]),
     ("/auth/{provider}", &["put", "delete"]),
     ("/auth/{provider}/authorize", &["post"]),
+    ("/file", &["get"]),
+    ("/file/content", &["get"]),
+    ("/file/status", &["get"]),
+    ("/find", &["get"]),
+    ("/find/file", &["get"]),
+    ("/find/symbol", &["get"]),
+    ("/agent", &["get"]),
+    ("/model", &["get"]),
+    ("/command", &["get"]),
+    ("/skill", &["get"]),
 ];
 
 fn add_auth_documentation(document: &mut serde_json::Value) {
@@ -1526,6 +1777,40 @@ fn json_response(description: &str, schema: &str) -> serde_json::Value {
                 "schema": { "$ref": format!("#/components/schemas/{schema}") }
             }
         }
+    })
+}
+
+fn json_array_response(description: &str, schema: &str) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "array",
+                    "items": { "$ref": format!("#/components/schemas/{schema}") }
+                }
+            }
+        }
+    })
+}
+
+fn file_path_query(required: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": "path",
+        "in": "query",
+        "required": required,
+        "schema": { "type": "string" },
+        "description": "Workspace-relative path. Paths outside the workspace are refused."
+    })
+}
+
+fn find_limit_query() -> serde_json::Value {
+    serde_json::json!({
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1 },
+        "description": "Maximum number of results to return (bounded by the server)."
     })
 }
 

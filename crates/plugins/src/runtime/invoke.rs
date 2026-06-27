@@ -1381,6 +1381,27 @@ impl PluginEventHooks {
             .collect()
     }
 
+    /// Providers (and their models) contributed by loaded plugins through `provider` hooks.
+    ///
+    /// Discovery surfaces (server catalog routes, `cortex models`) use this to surface
+    /// plugin-registered providers/models alongside the static offline catalogue.
+    #[must_use]
+    pub fn provider_entries(&self) -> Vec<PluginProviderRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.providers.iter().cloned())
+            .collect()
+    }
+
+    /// Plugin API v2 agent entries contributed by loaded plugins.
+    #[must_use]
+    pub fn agent_entries(&self) -> Vec<PluginAgentRegistration> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.agent_entries.iter().cloned())
+            .collect()
+    }
+
     /// Plugin API v2 command entries contributed by loaded plugins.
     #[must_use]
     pub fn command_entries(&self) -> Vec<PluginCommandRegistration> {

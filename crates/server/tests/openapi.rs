@@ -146,6 +146,16 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/auth/{provider}", "put", 200);
     assert_method(paths, "/auth/{provider}", "delete", 200);
     assert_method(paths, "/auth/{provider}/authorize", "post", 200);
+    assert_method(paths, "/file", "get", 200);
+    assert_method(paths, "/file/content", "get", 200);
+    assert_method(paths, "/file/status", "get", 200);
+    assert_method(paths, "/find", "get", 200);
+    assert_method(paths, "/find/file", "get", 200);
+    assert_method(paths, "/find/symbol", "get", 200);
+    assert_method(paths, "/agent", "get", 200);
+    assert_method(paths, "/model", "get", 200);
+    assert_method(paths, "/command", "get", 200);
+    assert_method(paths, "/skill", "get", 200);
     assert_eq!(
         document["components"]["securitySchemes"]["bearerAuth"]["scheme"], "bearer",
         "OpenAPI should document the Authorization bearer scheme"
@@ -154,6 +164,9 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_protected_operation(&document, "/session/{id}/message", "post");
     assert_protected_operation(&document, "/event", "get");
     assert_protected_operation(&document, "/permission/pending", "get");
+    assert_protected_operation(&document, "/file/content", "get");
+    assert_protected_operation(&document, "/find", "get");
+    assert_protected_operation(&document, "/agent", "get");
     assert_eq!(
         document["components"]["schemas"]["MessageRequest"]["properties"]["model"]["type"],
         "string",
@@ -238,6 +251,16 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/auth/callback"
                     | "/auth/{provider}"
                     | "/auth/{provider}/authorize"
+                    | "/file"
+                    | "/file/content"
+                    | "/file/status"
+                    | "/find"
+                    | "/find/file"
+                    | "/find/symbol"
+                    | "/agent"
+                    | "/model"
+                    | "/command"
+                    | "/skill"
                     | "/openapi.json"
             ),
             "OpenAPI document should not advertise phantom path {path:?}"

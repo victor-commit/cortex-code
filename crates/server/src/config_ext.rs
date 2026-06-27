@@ -143,6 +143,18 @@ pub(super) async fn list_providers(
             });
         }
     }
+    // Surface plugin-registered providers so a plugin registry is discoverable alongside the
+    // offline catalogue. Plugin providers serve their own models and need no external credential.
+    for provider in &context.plugin_providers {
+        if listed.insert(provider.id.clone()) {
+            providers.push(ProviderState {
+                id: provider.id.clone(),
+                name: non_empty(&provider.name).unwrap_or_else(|| provider.id.clone()),
+                authenticated: true,
+                source: "plugin",
+            });
+        }
+    }
     Ok(Json(ProvidersResponse {
         default_model: context.default_model.clone(),
         providers,
@@ -157,9 +169,15 @@ pub(super) struct ProviderContext {
     builtin_source: &'static str,
     merged: Catalogue,
     default_model: String,
+    plugin_providers: Vec<plugins::PluginProviderRegistration>,
 }
 
 impl ProviderContext {
+    /// The resolved default model id for this server, used by catalog routes.
+    pub(super) fn default_model(&self) -> &str {
+        &self.default_model
+    }
+
     fn provider_source(&self, provider_id: &str) -> &'static str {
         if self.builtin.provider(provider_id).is_some() {
             self.builtin_source
@@ -176,7 +194,7 @@ impl ProviderContext {
     }
 
     fn provider_docs(&self) -> Result<Vec<ProviderDoc>, ApiError> {
-        let docs = self
+        let mut docs: Vec<ProviderDoc> = self
             .merged
             .providers()
             .filter(|provider| self.provider_config.provider_enabled(&provider.id))
@@ -211,11 +229,58 @@ impl ProviderContext {
                     .collect(),
             })
             .collect();
+        // Surface plugin-registered providers/models so a plugin registry is discoverable here, not
+        // only through the static offline catalogue. Providers already in the merged catalogue are
+        // left as-is; only genuinely plugin-only providers are appended.
+        let known: std::collections::HashSet<String> =
+            docs.iter().map(|doc| doc.id.clone()).collect();
+        for provider in &self.plugin_providers {
+            if known.contains(&provider.id) {
+                continue;
+            }
+            docs.push(ProviderDoc {
+                id: provider.id.clone(),
+                name: non_empty(&provider.name).unwrap_or_else(|| provider.id.clone()),
+                source: "plugin",
+                models: provider
+                    .models
+                    .iter()
+                    .map(|model| ModelDoc {
+                        id: model.id.clone(),
+                        name: non_empty(&model.name).unwrap_or_else(|| model.id.clone()),
+                        provider: provider.id.clone(),
+                        default: model.id == self.default_model,
+                        attachment: model.attachment,
+                        tool_call: model.tool_call,
+                        reasoning: model.reasoning,
+                        cost: ModelCostDoc {
+                            input: model.cost_input,
+                            output: model.cost_output,
+                        },
+                        context_length: model.context,
+                        max_output_tokens: model.output,
+                        source: "plugin",
+                    })
+                    .collect(),
+            });
+        }
         Ok(docs)
+    }
+
+    /// Flatten the provider catalogue (including plugin entries) into a single ordered model list
+    /// for the `/model` catalog route, so it surfaces the same entities as `/config/providers`.
+    pub(super) fn flat_models(&self) -> Result<Vec<ModelDoc>, ApiError> {
+        let mut models: Vec<ModelDoc> = self
+            .provider_docs()?
+            .into_iter()
+            .flat_map(|provider| provider.models)
+            .collect();
+        models.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(models)
     }
 }
 
-fn provider_context(state: &ServerState) -> Result<ProviderContext, ApiError> {
+pub(super) fn provider_context(state: &ServerState) -> Result<ProviderContext, ApiError> {
     let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
     let effective = settings::load(config_inputs.clone()).map_err(config_api_error)?;
     let provider_config =
@@ -226,6 +291,7 @@ fn provider_context(state: &ServerState) -> Result<ProviderContext, ApiError> {
         .resolve_model(&merged, Some(effective.model()))
         .map_err(provider_config_api_error)?
         .model_id;
+    let plugin_providers = super::load_plugin_hooks(state)?.provider_entries();
     Ok(ProviderContext {
         config_inputs,
         provider_config,
@@ -233,6 +299,7 @@ fn provider_context(state: &ServerState) -> Result<ProviderContext, ApiError> {
         builtin_source,
         merged,
         default_model,
+        plugin_providers,
     })
 }
 
@@ -301,6 +368,12 @@ fn state_env_present(state: &ServerState, name: &str) -> bool {
         .any(|(key, value)| key == name && !value.trim().is_empty())
 }
 
+/// Trim a string, returning `None` when it is empty so callers can fall back to a stable id.
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct ModelsDocument {
     default_model: String,
@@ -317,7 +390,7 @@ struct ProviderDoc {
 }
 
 #[derive(Debug, Serialize)]
-struct ModelDoc {
+pub(super) struct ModelDoc {
     id: String,
     name: String,
     provider: String,
