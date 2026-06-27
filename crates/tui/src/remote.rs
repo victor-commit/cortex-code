@@ -27,6 +27,14 @@ pub struct RemoteShare {
     pub url: String,
 }
 
+/// A control request the attached server wants this TUI to apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteControl {
+    pub id: String,
+    pub action: String,
+    pub body: serde_json::Value,
+}
+
 impl RemoteServer {
     pub fn from_url(url: &str) -> Result<Self, String> {
         let trimmed = url.trim().trim_end_matches('/');
@@ -120,7 +128,75 @@ impl RemoteServer {
             .unwrap_or(false))
     }
 
+    /// Poll the attached server for the next TUI control request, if any.
+    ///
+    /// Returns `Ok(None)` when the server has nothing queued (`204 No Content`) so the caller can
+    /// poll cheaply on each event-loop tick.
+    pub fn next_control(&self) -> Result<Option<RemoteControl>, String> {
+        let response = self.request("GET", "/tui/control/next", None)?;
+        if response.status == 204 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(format!(
+                "server control poll failed with HTTP {}: {}",
+                response.status, response.body
+            ));
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&response.body).map_err(|err| err.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "control request did not include an id".to_owned())?
+            .to_owned();
+        let action = value
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .filter(|action| !action.trim().is_empty())
+            .ok_or_else(|| "control request did not include an action".to_owned())?
+            .to_owned();
+        let body = value
+            .get("body")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        Ok(Some(RemoteControl { id, action, body }))
+    }
+
+    /// Report the outcome of a control request back to the attached server.
+    pub fn respond_control(
+        &self,
+        id: &str,
+        success: bool,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let mut payload = serde_json::json!({ "id": id, "success": success });
+        if let Some(error) = error {
+            payload["error"] = serde_json::Value::String(error.to_owned());
+        }
+        let body = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
+        let response = self.post_json("/tui/control/response", &body)?;
+        if (200..300).contains(&response.status) {
+            Ok(())
+        } else {
+            Err(format!(
+                "server control response failed with HTTP {}: {}",
+                response.status, response.body
+            ))
+        }
+    }
+
     fn post_json(&self, path: &str, body: &str) -> Result<HttpResponse, String> {
+        self.request("POST", path, Some(body))
+    }
+
+    fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<HttpResponse, String> {
         let mut stream =
             TcpStream::connect_timeout(&self.addr, Duration::from_secs(2)).map_err(|err| {
                 format!(
@@ -130,8 +206,9 @@ impl RemoteServer {
             })?;
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let body = body.unwrap_or("");
         let request = format!(
-            "POST {path} HTTP/1.1\r\n\
+            "{method} {path} HTTP/1.1\r\n\
              Host: {host}\r\n\
              Content-Type: application/json\r\n\
              Accept: application/json\r\n\

@@ -841,6 +841,8 @@ pub struct App {
     seen_message_ids: BTreeSet<String>,
     /// Last time the attached-session store was polled for server-created messages.
     last_remote_sync: Option<Instant>,
+    /// Last time the attached server was polled for a TUI control request.
+    last_remote_control: Option<Instant>,
 }
 
 impl App {
@@ -922,6 +924,7 @@ impl App {
             remote_server: None,
             seen_message_ids: BTreeSet::new(),
             last_remote_sync: None,
+            last_remote_control: None,
         }
     }
 
@@ -1483,6 +1486,118 @@ impl App {
         let _ = std::fs::remove_file(marker);
         self.interrupt_turn();
         true
+    }
+
+    /// Poll the attached server for queued TUI control requests and apply them locally.
+    ///
+    /// Each request is applied to this TUI (append/clear/submit the prompt, open the model picker,
+    /// show a toast, run a command, switch sessions) and its success/error outcome is reported back
+    /// so the client that issued the control sees whether the attached TUI honored it. Several
+    /// queued requests are drained per poll so a burst of controls applies promptly.
+    pub fn poll_remote_control(&mut self) -> bool {
+        let Some(server) = self.remote_server.clone() else {
+            return false;
+        };
+        if self
+            .last_remote_control
+            .is_some_and(|last| last.elapsed() < Duration::from_millis(120))
+        {
+            return false;
+        }
+        self.last_remote_control = Some(Instant::now());
+
+        let mut applied = false;
+        for _ in 0..8 {
+            match server.next_control() {
+                Ok(Some(control)) => {
+                    let outcome = self.apply_remote_control(&control.action, &control.body);
+                    let (success, error) = match outcome {
+                        Ok(()) => (true, None),
+                        Err(message) => (false, Some(message)),
+                    };
+                    let _ = server.respond_control(&control.id, success, error.as_deref());
+                    applied = true;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        applied
+    }
+
+    /// Apply a single server-issued control request to this TUI, returning an error message when the
+    /// control cannot be honored (unknown action or missing required field).
+    fn apply_remote_control(
+        &mut self,
+        action: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), String> {
+        match action {
+            "append-prompt" => {
+                let text = body
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "append-prompt requires text".to_owned())?;
+                let current = self.input.value();
+                self.input.set_value(&format!("{current}{text}"));
+                Ok(())
+            }
+            "clear-prompt" => {
+                self.input.set_value("");
+                self.composer_attachments.clear();
+                Ok(())
+            }
+            "submit-prompt" => {
+                self.submit();
+                Ok(())
+            }
+            "open-models" => {
+                self.open_models_dialog();
+                Ok(())
+            }
+            "execute-command" => {
+                let command = body
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|command| command.trim().trim_start_matches('/'))
+                    .filter(|command| !command.is_empty())
+                    .ok_or_else(|| "execute-command requires a command".to_owned())?;
+                self.dispatch_builtin_command(command, "remote command");
+                Ok(())
+            }
+            "show-toast" => {
+                let message = body
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|message| !message.trim().is_empty())
+                    .ok_or_else(|| "show-toast requires a message".to_owned())?;
+                let level = match body.get("variant").and_then(serde_json::Value::as_str) {
+                    Some("success") => ToastLevel::Success,
+                    Some("warning") | Some("warn") => ToastLevel::Warning,
+                    Some("error") => ToastLevel::Error,
+                    _ => ToastLevel::Info,
+                };
+                self.push_toast(level, message.to_owned());
+                Ok(())
+            }
+            "select-session" => {
+                let session_id = body
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "select-session requires a session_id".to_owned())?;
+                match self.load_persisted_session(session_id) {
+                    Ok(Some(_)) => {
+                        self.load_session(session_id);
+                        Ok(())
+                    }
+                    Ok(None) => Err(format!("session {session_id} does not exist")),
+                    Err(err) => Err(format!("could not load session {session_id}: {err}")),
+                }
+            }
+            other => Err(format!("unknown TUI control action: {other}")),
+        }
     }
 
     /// Apply a single turn message to the application state.

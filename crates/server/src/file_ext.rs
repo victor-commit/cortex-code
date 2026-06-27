@@ -165,7 +165,7 @@ pub(super) async fn file_status(
 
 /// Resolve a workspace-relative (or absolute) request path and refuse anything that escapes the
 /// workspace directory, including via `..` traversal or symlinks.
-fn resolve_in_workspace(cwd: &Path, requested: &str) -> Result<PathBuf, ApiError> {
+pub(super) fn resolve_in_workspace(cwd: &Path, requested: &str) -> Result<PathBuf, ApiError> {
     let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let candidate = if Path::new(requested).is_absolute() {
         PathBuf::from(requested)
@@ -386,6 +386,13 @@ fn numstat_map(cwd: &Path) -> std::collections::HashMap<String, (u64, u64)> {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
+    run_git_shared(cwd, args)
+}
+
+/// Run a read-only `git` command in `cwd`, returning its trimmed stdout on success or `None` when
+/// git is unavailable, the directory is not a repository, or the command fails. Shared by the file,
+/// VCS, project, workspace, and worktree route families.
+pub(super) fn run_git_shared(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)

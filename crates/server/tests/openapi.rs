@@ -156,6 +156,31 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/model", "get", 200);
     assert_method(paths, "/command", "get", 200);
     assert_method(paths, "/skill", "get", 200);
+    assert_method(paths, "/lsp", "get", 200);
+    assert_method(paths, "/formatter", "get", 200);
+    assert_method(paths, "/vcs/diff", "get", 200);
+    assert_method(paths, "/vcs/apply", "post", 200);
+    assert_method(paths, "/project", "get", 200);
+    assert_method(paths, "/project/current", "get", 200);
+    assert_method(paths, "/workspace", "get", 200);
+    assert_method(paths, "/worktree", "get", 200);
+    assert_method(paths, "/path", "get", 200);
+    assert_method(paths, "/pty", "get", 200);
+    assert_method(paths, "/pty", "post", 201);
+    assert_method(paths, "/pty/{id}", "get", 200);
+    assert_method(paths, "/pty/{id}", "delete", 200);
+    assert_method(paths, "/pty/{id}/input", "post", 200);
+    assert_method(paths, "/pty/{id}/resize", "post", 200);
+    assert_method(paths, "/pty/{id}/stream", "get", 200);
+    assert_method(paths, "/tui/append-prompt", "post", 200);
+    assert_method(paths, "/tui/submit-prompt", "post", 200);
+    assert_method(paths, "/tui/clear-prompt", "post", 200);
+    assert_method(paths, "/tui/open-models", "post", 200);
+    assert_method(paths, "/tui/execute-command", "post", 200);
+    assert_method(paths, "/tui/show-toast", "post", 200);
+    assert_method(paths, "/tui/select-session", "post", 200);
+    assert_method(paths, "/tui/control/next", "get", 200);
+    assert_method(paths, "/tui/control/response", "post", 200);
     assert_eq!(
         document["components"]["securitySchemes"]["bearerAuth"]["scheme"], "bearer",
         "OpenAPI should document the Authorization bearer scheme"
@@ -261,6 +286,29 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/model"
                     | "/command"
                     | "/skill"
+                    | "/lsp"
+                    | "/formatter"
+                    | "/vcs/diff"
+                    | "/vcs/apply"
+                    | "/project"
+                    | "/project/current"
+                    | "/workspace"
+                    | "/worktree"
+                    | "/path"
+                    | "/pty"
+                    | "/pty/{id}"
+                    | "/pty/{id}/input"
+                    | "/pty/{id}/resize"
+                    | "/pty/{id}/stream"
+                    | "/tui/append-prompt"
+                    | "/tui/submit-prompt"
+                    | "/tui/clear-prompt"
+                    | "/tui/open-models"
+                    | "/tui/execute-command"
+                    | "/tui/show-toast"
+                    | "/tui/select-session"
+                    | "/tui/control/next"
+                    | "/tui/control/response"
                     | "/openapi.json"
             ),
             "OpenAPI document should not advertise phantom path {path:?}"

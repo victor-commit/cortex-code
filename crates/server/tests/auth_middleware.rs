@@ -213,12 +213,16 @@ async fn json_body<T>(response: axum::response::Response) -> T
 where
     T: serde::de::DeserializeOwned,
 {
-    let bytes = to_bytes(response.into_body(), 65_536).await.expect("body");
+    let bytes = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
 }
 
 async fn body_string(response: axum::response::Response) -> String {
-    let bytes = to_bytes(response.into_body(), 65_536).await.expect("body");
+    let bytes = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body");
     String::from_utf8(bytes.to_vec()).expect("UTF-8 body")
 }
 

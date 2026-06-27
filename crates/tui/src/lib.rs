@@ -421,6 +421,10 @@ fn event_loop<B: Backend + Write>(
         // Pull in messages appended to the attached session by the server surface.
         app.poll_remote_session();
 
+        // Apply any TUI control requests an attached server has queued (append/submit/clear prompt,
+        // open the model picker, show a toast, run a command, switch sessions).
+        app.poll_remote_control();
+
         // Expire/resolve any Esc-prefix probe so buffered text or inert residues do not linger.
         app.tick_nav_escape_probe();
 

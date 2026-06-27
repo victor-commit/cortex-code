@@ -980,6 +980,276 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "200": json_array_response("Skill catalog entries.", "SkillEntry")
                     }
                 }
+            },
+            "/lsp": {
+                "get": {
+                    "operationId": "lspStatus",
+                    "summary": "Report configured language server status (mirrors `cortex lsp status`).",
+                    "responses": {
+                        "200": json_array_response("Language server status rows.", "LspStatusRow")
+                    }
+                }
+            },
+            "/formatter": {
+                "get": {
+                    "operationId": "formatterStatus",
+                    "summary": "Report formatter status (mirrors `cortex formatter status`).",
+                    "responses": {
+                        "200": json_array_response("Formatter status rows.", "FormatterStatusRow")
+                    }
+                }
+            },
+            "/vcs/diff": {
+                "get": {
+                    "operationId": "vcsDiff",
+                    "summary": "Report the working-tree git diff (read-only).",
+                    "parameters": [
+                        file_path_query(false),
+                        { "name": "staged", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Diff against HEAD (staged + unstaged) instead of only unstaged changes." }
+                    ],
+                    "responses": {
+                        "200": json_response("Working-tree diff and per-file stats.", "VcsDiffResponse")
+                    }
+                }
+            },
+            "/vcs/apply": {
+                "post": {
+                    "operationId": "vcsApply",
+                    "summary": "Apply a unified diff to the working tree via git apply.",
+                    "requestBody": json_request_body("VcsApplyRequest"),
+                    "responses": {
+                        "200": json_response("Patch applied or validated.", "VcsApplyResponse"),
+                        "400": json_response("Missing diff or not a git repository.", "ErrorResponse"),
+                        "422": json_response("Patch did not apply cleanly.", "ErrorResponse")
+                    }
+                }
+            },
+            "/project": {
+                "get": {
+                    "operationId": "listProjects",
+                    "summary": "List projects known to this server (the active workspace project).",
+                    "responses": {
+                        "200": json_array_response("Projects.", "Project")
+                    }
+                }
+            },
+            "/project/current": {
+                "get": {
+                    "operationId": "currentProject",
+                    "summary": "Describe the active workspace project.",
+                    "responses": {
+                        "200": json_response("The active project.", "Project")
+                    }
+                }
+            },
+            "/workspace": {
+                "get": {
+                    "operationId": "currentWorkspace",
+                    "summary": "Describe the current workspace from git/filesystem state.",
+                    "responses": {
+                        "200": json_response("The current workspace.", "Workspace")
+                    }
+                }
+            },
+            "/worktree": {
+                "get": {
+                    "operationId": "listWorktrees",
+                    "summary": "List git worktrees attached to the workspace repository.",
+                    "responses": {
+                        "200": json_array_response("Git worktrees.", "Worktree")
+                    }
+                }
+            },
+            "/path": {
+                "get": {
+                    "operationId": "pathInfo",
+                    "summary": "Workspace paths summary, or metadata for a specific workspace path.",
+                    "parameters": [ file_path_query(false) ],
+                    "responses": {
+                        "200": json_response("Path summary or metadata.", "PathInfoResponse"),
+                        "403": json_response("Path escapes the workspace.", "ErrorResponse"),
+                        "404": json_response("Path was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/pty": {
+                "get": {
+                    "operationId": "listPtys",
+                    "summary": "List live PTY sessions.",
+                    "responses": {
+                        "200": json_array_response("PTY sessions.", "PtySummary")
+                    }
+                },
+                "post": {
+                    "operationId": "createPty",
+                    "summary": "Create a PTY running a real child process.",
+                    "requestBody": json_request_body("CreatePtyRequest"),
+                    "responses": {
+                        "201": json_response("Created PTY session.", "PtySummary"),
+                        "400": json_response("Could not spawn the requested command.", "ErrorResponse")
+                    }
+                }
+            },
+            "/pty/{id}": {
+                "get": {
+                    "operationId": "getPty",
+                    "summary": "Report one PTY session's state.",
+                    "parameters": [ pty_id_parameter() ],
+                    "responses": {
+                        "200": json_response("PTY session state.", "PtySummary"),
+                        "404": json_response("No such PTY.", "ErrorResponse")
+                    }
+                },
+                "delete": {
+                    "operationId": "closePty",
+                    "summary": "Kill the PTY child by its exact handle and drop the session.",
+                    "parameters": [ pty_id_parameter() ],
+                    "responses": {
+                        "200": json_response("PTY closed.", "PtyCloseResponse"),
+                        "404": json_response("No such PTY.", "ErrorResponse")
+                    }
+                }
+            },
+            "/pty/{id}/input": {
+                "post": {
+                    "operationId": "ptyInput",
+                    "summary": "Write input bytes to the PTY.",
+                    "parameters": [ pty_id_parameter() ],
+                    "requestBody": json_request_body("PtyInputRequest"),
+                    "responses": {
+                        "200": json_response("Input written.", "PtyInputResponse"),
+                        "404": json_response("No such PTY.", "ErrorResponse")
+                    }
+                }
+            },
+            "/pty/{id}/resize": {
+                "post": {
+                    "operationId": "ptyResize",
+                    "summary": "Resize the PTY and update its stored dimensions.",
+                    "parameters": [ pty_id_parameter() ],
+                    "requestBody": json_request_body("PtyResizeRequest"),
+                    "responses": {
+                        "200": json_response("PTY resized.", "PtySummary"),
+                        "404": json_response("No such PTY.", "ErrorResponse")
+                    }
+                }
+            },
+            "/pty/{id}/stream": {
+                "get": {
+                    "operationId": "ptyStream",
+                    "summary": "Stream PTY output as Server-Sent Events.",
+                    "parameters": [ pty_id_parameter() ],
+                    "responses": {
+                        "200": {
+                            "description": "SSE stream of base64-encoded PTY output frames.",
+                            "content": {
+                                "text/event-stream": {
+                                    "schema": { "type": "string", "description": "SSE frames: `output` data events and a terminal `exit` event." }
+                                }
+                            }
+                        },
+                        "404": json_response("No such PTY.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/append-prompt": {
+                "post": {
+                    "operationId": "tuiAppendPrompt",
+                    "summary": "Append text to the attached TUI's prompt composer.",
+                    "requestBody": json_request_body("AppendPromptRequest"),
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "400": json_response("Missing text.", "ErrorResponse"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/submit-prompt": {
+                "post": {
+                    "operationId": "tuiSubmitPrompt",
+                    "summary": "Submit the attached TUI's current prompt.",
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/clear-prompt": {
+                "post": {
+                    "operationId": "tuiClearPrompt",
+                    "summary": "Clear the attached TUI's prompt composer.",
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/open-models": {
+                "post": {
+                    "operationId": "tuiOpenModels",
+                    "summary": "Open the model picker in the attached TUI.",
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/execute-command": {
+                "post": {
+                    "operationId": "tuiExecuteCommand",
+                    "summary": "Run a named TUI command in the attached TUI.",
+                    "requestBody": json_request_body("ExecuteCommandRequest"),
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "400": json_response("Missing command.", "ErrorResponse"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/show-toast": {
+                "post": {
+                    "operationId": "tuiShowToast",
+                    "summary": "Show a toast notification in the attached TUI.",
+                    "requestBody": json_request_body("ShowToastRequest"),
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "400": json_response("Missing message.", "ErrorResponse"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/select-session": {
+                "post": {
+                    "operationId": "tuiSelectSession",
+                    "summary": "Switch the attached TUI to a different session.",
+                    "requestBody": json_request_body("SelectSessionRequest"),
+                    "responses": {
+                        "200": json_response("Control applied by the attached TUI.", "ControlAck"),
+                        "400": json_response("Missing session id.", "ErrorResponse"),
+                        "503": json_response("No attached TUI responded.", "ErrorResponse")
+                    }
+                }
+            },
+            "/tui/control/next": {
+                "get": {
+                    "operationId": "tuiControlNext",
+                    "summary": "Attached TUI polls for the next control request.",
+                    "responses": {
+                        "200": json_response("Next control request.", "ControlRequest"),
+                        "204": { "description": "No control request is queued." }
+                    }
+                }
+            },
+            "/tui/control/response": {
+                "post": {
+                    "operationId": "tuiControlResponse",
+                    "summary": "Attached TUI reports the outcome of a control request.",
+                    "requestBody": json_request_body("ControlResponseRequest"),
+                    "responses": {
+                        "200": json_response("Outcome recorded.", "ControlResponseAck"),
+                        "400": json_response("Missing request id.", "ErrorResponse")
+                    }
+                }
             }
         },
         "components": {
@@ -1103,6 +1373,231 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "default_model": { "type": "string" },
                         "models": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
                     }
+                },
+                "LspStatusRow": {
+                    "type": "object",
+                    "required": ["language", "program", "state"],
+                    "properties": {
+                        "language": { "type": "string" },
+                        "program": { "type": "string" },
+                        "state": { "type": "string", "enum": ["disabled", "installing", "running", "available", "unavailable", "crashed"] },
+                        "pid": { "type": "integer", "minimum": 0 },
+                        "install": { "type": "string" }
+                    }
+                },
+                "FormatterStatusRow": {
+                    "type": "object",
+                    "required": ["name", "formatter", "state", "source", "marker_required"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "formatter": { "type": "string" },
+                        "state": { "type": "string", "enum": ["enabled", "disabled", "missing", "missing_config_marker"] },
+                        "source": { "type": "string", "enum": ["default", "config"] },
+                        "command": { "type": "array", "items": { "type": "string" } },
+                        "env_keys": { "type": "array", "items": { "type": "string" } },
+                        "extensions": { "type": "array", "items": { "type": "string" } },
+                        "marker_required": { "type": "boolean" },
+                        "marker_found": { "type": "boolean" }
+                    }
+                },
+                "VcsFile": {
+                    "type": "object",
+                    "required": ["path", "added", "removed", "status"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "added": { "type": "integer", "minimum": 0 },
+                        "removed": { "type": "integer", "minimum": 0 },
+                        "status": { "type": "string" }
+                    }
+                },
+                "VcsDiffResponse": {
+                    "type": "object",
+                    "required": ["repository", "diff", "files"],
+                    "properties": {
+                        "repository": { "type": "boolean" },
+                        "diff": { "type": "string" },
+                        "files": { "type": "array", "items": { "$ref": "#/components/schemas/VcsFile" } }
+                    }
+                },
+                "VcsApplyRequest": {
+                    "type": "object",
+                    "required": ["diff"],
+                    "properties": {
+                        "diff": { "type": "string", "description": "Unified diff to apply via git apply." },
+                        "check": { "type": "boolean", "description": "Validate only (git apply --check); never writes to disk." },
+                        "reverse": { "type": "boolean", "description": "Apply the patch in reverse (git apply --reverse)." }
+                    },
+                    "additionalProperties": false
+                },
+                "VcsApplyResponse": {
+                    "type": "object",
+                    "required": ["status", "applied", "checked"],
+                    "properties": {
+                        "status": { "type": "string", "enum": ["applied", "valid"] },
+                        "applied": { "type": "boolean" },
+                        "checked": { "type": "boolean" }
+                    }
+                },
+                "Project": {
+                    "type": "object",
+                    "required": ["id", "directory", "worktree"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "directory": { "type": "string" },
+                        "worktree": { "type": "string" },
+                        "vcs": { "type": "string", "enum": ["git"] }
+                    }
+                },
+                "Workspace": {
+                    "type": "object",
+                    "required": ["id", "root", "directory", "worktrees"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "root": { "type": "string" },
+                        "directory": { "type": "string" },
+                        "vcs": { "type": "string", "enum": ["git"] },
+                        "worktrees": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "Worktree": {
+                    "type": "object",
+                    "required": ["path", "bare", "detached", "locked"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "head": { "type": "string" },
+                        "branch": { "type": "string" },
+                        "bare": { "type": "boolean" },
+                        "detached": { "type": "boolean" },
+                        "locked": { "type": "boolean" }
+                    }
+                },
+                "PathInfoResponse": {
+                    "type": "object",
+                    "description": "Workspace paths summary (directory/worktree/root/config) or path metadata (path/absolute/type/exists).",
+                    "additionalProperties": true
+                },
+                "PtySummary": {
+                    "type": "object",
+                    "required": ["id", "cols", "rows", "command", "running"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "pid": { "type": "integer", "minimum": 0 },
+                        "cols": { "type": "integer", "minimum": 1 },
+                        "rows": { "type": "integer", "minimum": 1 },
+                        "command": { "type": "string" },
+                        "running": { "type": "boolean" }
+                    }
+                },
+                "CreatePtyRequest": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Program to run; defaults to $SHELL or /bin/sh." },
+                        "args": { "type": "array", "items": { "type": "string" } },
+                        "cwd": { "type": "string", "description": "Workspace-relative working directory." },
+                        "cols": { "type": "integer", "minimum": 1 },
+                        "rows": { "type": "integer", "minimum": 1 },
+                        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+                    },
+                    "additionalProperties": false
+                },
+                "PtyInputRequest": {
+                    "type": "object",
+                    "required": ["data"],
+                    "properties": {
+                        "data": { "type": "string" },
+                        "base64": { "type": "boolean", "description": "Interpret data as base64 raw bytes instead of UTF-8 text." }
+                    },
+                    "additionalProperties": false
+                },
+                "PtyInputResponse": {
+                    "type": "object",
+                    "required": ["status", "bytes"],
+                    "properties": {
+                        "status": { "type": "string", "const": "written" },
+                        "bytes": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "PtyResizeRequest": {
+                    "type": "object",
+                    "required": ["cols", "rows"],
+                    "properties": {
+                        "cols": { "type": "integer", "minimum": 1 },
+                        "rows": { "type": "integer", "minimum": 1 }
+                    },
+                    "additionalProperties": false
+                },
+                "PtyCloseResponse": {
+                    "type": "object",
+                    "required": ["status", "exited"],
+                    "properties": {
+                        "status": { "type": "string", "const": "closed" },
+                        "pid": { "type": "integer", "minimum": 0 },
+                        "exited": { "type": "boolean" }
+                    }
+                },
+                "ControlRequest": {
+                    "type": "object",
+                    "required": ["id", "action", "body"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "action": { "type": "string" },
+                        "body": { "type": "object", "additionalProperties": true }
+                    }
+                },
+                "ControlAck": {
+                    "type": "object",
+                    "required": ["status", "action"],
+                    "properties": {
+                        "status": { "type": "string", "enum": ["ok", "error"] },
+                        "action": { "type": "string" },
+                        "error": { "type": "string" }
+                    }
+                },
+                "ControlResponseRequest": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "success": { "type": "boolean" },
+                        "error": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                },
+                "ControlResponseAck": {
+                    "type": "object",
+                    "required": ["status", "matched"],
+                    "properties": {
+                        "status": { "type": "string", "const": "ok" },
+                        "matched": { "type": "boolean" }
+                    }
+                },
+                "AppendPromptRequest": {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": { "text": { "type": "string" } },
+                    "additionalProperties": false
+                },
+                "ExecuteCommandRequest": {
+                    "type": "object",
+                    "required": ["command"],
+                    "properties": { "command": { "type": "string" } },
+                    "additionalProperties": false
+                },
+                "ShowToastRequest": {
+                    "type": "object",
+                    "required": ["message"],
+                    "properties": {
+                        "message": { "type": "string" },
+                        "variant": { "type": "string", "enum": ["info", "success", "warning", "error"] },
+                        "title": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                },
+                "SelectSessionRequest": {
+                    "type": "object",
+                    "required": ["session_id"],
+                    "properties": { "session_id": { "type": "string" } },
+                    "additionalProperties": false
                 },
                 "AbortResponse": {
                     "type": "object",
@@ -1711,6 +2206,29 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/model", &["get"]),
     ("/command", &["get"]),
     ("/skill", &["get"]),
+    ("/lsp", &["get"]),
+    ("/formatter", &["get"]),
+    ("/vcs/diff", &["get"]),
+    ("/vcs/apply", &["post"]),
+    ("/project", &["get"]),
+    ("/project/current", &["get"]),
+    ("/workspace", &["get"]),
+    ("/worktree", &["get"]),
+    ("/path", &["get"]),
+    ("/pty", &["get", "post"]),
+    ("/pty/{id}", &["get", "delete"]),
+    ("/pty/{id}/input", &["post"]),
+    ("/pty/{id}/resize", &["post"]),
+    ("/pty/{id}/stream", &["get"]),
+    ("/tui/append-prompt", &["post"]),
+    ("/tui/submit-prompt", &["post"]),
+    ("/tui/clear-prompt", &["post"]),
+    ("/tui/open-models", &["post"]),
+    ("/tui/execute-command", &["post"]),
+    ("/tui/show-toast", &["post"]),
+    ("/tui/select-session", &["post"]),
+    ("/tui/control/next", &["get"]),
+    ("/tui/control/response", &["post"]),
 ];
 
 fn add_auth_documentation(document: &mut serde_json::Value) {
@@ -1791,6 +2309,27 @@ fn json_array_response(description: &str, schema: &str) -> serde_json::Value {
                 }
             }
         }
+    })
+}
+
+fn json_request_body(schema: &str) -> serde_json::Value {
+    serde_json::json!({
+        "required": true,
+        "content": {
+            "application/json": {
+                "schema": { "$ref": format!("#/components/schemas/{schema}") }
+            }
+        }
+    })
+}
+
+fn pty_id_parameter() -> serde_json::Value {
+    serde_json::json!({
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Opaque PTY session id."
     })
 }
 

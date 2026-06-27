@@ -55,8 +55,15 @@ mod config_ext;
 mod custom_agents;
 mod file_ext;
 mod find_ext;
+#[allow(dead_code)]
+#[path = "../../cli/src/lsp_config.rs"]
+mod lsp_config;
+mod lsp_format_vcs_ext;
 mod openapi;
+mod project_ext;
+mod pty_ext;
 mod session_ext;
+mod tui_control;
 
 /// First allowed port for `cortex serve` and server test fixtures.
 pub const MIN_PORT: u16 = 3200;
@@ -97,6 +104,8 @@ pub struct ServerState {
     local_shares: LocalShares,
     permissions: PendingPermissions,
     pending_auth: auth_ext::PendingAuth,
+    ptys: pty_ext::PtyRegistry,
+    tui_control: tui_control::TuiControl,
 }
 
 impl ServerState {
@@ -118,6 +127,8 @@ impl ServerState {
             local_shares: LocalShares::default(),
             permissions: PendingPermissions::default(),
             pending_auth: auth_ext::PendingAuth::default(),
+            ptys: pty_ext::PtyRegistry::default(),
+            tui_control: tui_control::TuiControl::default(),
         }
     }
 
@@ -139,6 +150,8 @@ impl ServerState {
             local_shares: LocalShares::default(),
             permissions: PendingPermissions::default(),
             pending_auth: auth_ext::PendingAuth::default(),
+            ptys: pty_ext::PtyRegistry::default(),
+            tui_control: tui_control::TuiControl::default(),
         }
     }
 
@@ -766,6 +779,99 @@ pub fn app_with_state(state: ServerState) -> Router {
             get(catalog_ext::list_commands).options(preflight),
         )
         .route("/skill", get(catalog_ext::list_skills).options(preflight))
+        .route(
+            "/lsp",
+            get(lsp_format_vcs_ext::lsp_status).options(preflight),
+        )
+        .route(
+            "/formatter",
+            get(lsp_format_vcs_ext::formatter_status).options(preflight),
+        )
+        .route(
+            "/vcs/diff",
+            get(lsp_format_vcs_ext::vcs_diff).options(preflight),
+        )
+        .route(
+            "/vcs/apply",
+            post(lsp_format_vcs_ext::vcs_apply).options(preflight),
+        )
+        .route(
+            "/project",
+            get(project_ext::list_projects).options(preflight),
+        )
+        .route(
+            "/project/current",
+            get(project_ext::current_project_route).options(preflight),
+        )
+        .route(
+            "/workspace",
+            get(project_ext::current_workspace).options(preflight),
+        )
+        .route(
+            "/worktree",
+            get(project_ext::list_worktrees).options(preflight),
+        )
+        .route("/path", get(project_ext::path_info).options(preflight))
+        .route(
+            "/pty",
+            get(pty_ext::list_ptys)
+                .post(pty_ext::create_pty)
+                .options(preflight),
+        )
+        .route(
+            "/pty/{id}",
+            get(pty_ext::get_pty)
+                .delete(pty_ext::close_pty)
+                .options(preflight),
+        )
+        .route(
+            "/pty/{id}/input",
+            post(pty_ext::pty_input).options(preflight),
+        )
+        .route(
+            "/pty/{id}/resize",
+            post(pty_ext::pty_resize).options(preflight),
+        )
+        .route(
+            "/pty/{id}/stream",
+            get(pty_ext::pty_stream).options(preflight),
+        )
+        .route(
+            "/tui/append-prompt",
+            post(tui_control::append_prompt).options(preflight),
+        )
+        .route(
+            "/tui/submit-prompt",
+            post(tui_control::submit_prompt).options(preflight),
+        )
+        .route(
+            "/tui/clear-prompt",
+            post(tui_control::clear_prompt).options(preflight),
+        )
+        .route(
+            "/tui/open-models",
+            post(tui_control::open_models).options(preflight),
+        )
+        .route(
+            "/tui/execute-command",
+            post(tui_control::execute_command).options(preflight),
+        )
+        .route(
+            "/tui/show-toast",
+            post(tui_control::show_toast).options(preflight),
+        )
+        .route(
+            "/tui/select-session",
+            post(tui_control::select_session).options(preflight),
+        )
+        .route(
+            "/tui/control/next",
+            get(tui_control::control_next).options(preflight),
+        )
+        .route(
+            "/tui/control/response",
+            post(tui_control::control_response).options(preflight),
+        )
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth, auth_and_cors))
 }
@@ -825,12 +931,16 @@ pub async fn serve_with_signals(
     state: ServerState,
 ) -> Result<(), ServeError> {
     let version = version.into();
-    serve_with_shutdown(
+    let ptys = state.ptys.clone();
+    let result = serve_with_shutdown(
         listener,
         app_with_state(state.with_event_bus(bus.clone())),
         shutdown_signal(bus, version),
     )
-    .await
+    .await;
+    // Kill and reap every PTY child by its exact handle so no terminal child is orphaned on exit.
+    ptys.shutdown();
+    result
 }
 
 async fn health() -> Json<HealthResponse> {

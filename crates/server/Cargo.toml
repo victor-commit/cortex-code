@@ -16,12 +16,15 @@ db = { workspace = true }
 engine = { workspace = true }
 errors = { workspace = true }
 events = { workspace = true }
+format = { workspace = true }
 futures-util = { workspace = true }
 llm = { workspace = true }
+lsp = { workspace = true }
 memory = { workspace = true }
 permissions = { workspace = true }
 plugins = { workspace = true }
 policy = { workspace = true }
+portable-pty = { workspace = true }
 protocol = { workspace = true }
 providers = { workspace = true }
 redaction = { workspace = true }
