@@ -172,12 +172,297 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "404": json_response("Session was not found.", "ErrorResponse")
                     }
                 },
+                "patch": {
+                    "operationId": "updateSession",
+                    "summary": "Update a session's title and/or model selection.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/UpdateSessionRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Updated session.", "Session"),
+                        "400": json_response("Update body was empty or invalid.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                },
                 "delete": {
                     "operationId": "deleteSession",
                     "summary": "Delete one persisted session.",
                     "responses": {
                         "204": { "description": "Session deleted." },
                         "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/status": {
+                "get": {
+                    "operationId": "getSessionStatusMap",
+                    "summary": "Report the status of every persisted session.",
+                    "responses": {
+                        "200": {
+                            "description": "Map of session id to status.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "additionalProperties": { "$ref": "#/components/schemas/SessionStatus" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/session/{id}/status": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "getSessionStatus",
+                    "summary": "Report whether one session is running, waiting, or idle.",
+                    "responses": {
+                        "200": json_response("Session status.", "SessionStatus"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/wait": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "waitSession",
+                    "summary": "Block until the session is no longer running, then report status.",
+                    "responses": {
+                        "200": json_response("Final session status.", "SessionStatus"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/context": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "getSessionContext",
+                    "summary": "Report the assembled turn context (model/agent/token estimate).",
+                    "responses": {
+                        "200": json_response("Session context.", "SessionContext"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/children": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "listSessionChildren",
+                    "summary": "List the sessions forked from this one.",
+                    "responses": {
+                        "200": {
+                            "description": "Child session list.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": { "$ref": "#/components/schemas/Session" }
+                                    }
+                                }
+                            }
+                        },
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/diff": {
+                "parameters": [session_id_parameter()],
+                "get": {
+                    "operationId": "getSessionDiff",
+                    "summary": "Report the net file changes produced by this session's turns.",
+                    "responses": {
+                        "200": {
+                            "description": "Per-file diffs.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": { "$ref": "#/components/schemas/FileDiff" }
+                                    }
+                                }
+                            }
+                        },
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/fork": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "forkSession",
+                    "summary": "Create a child session inheriting this session's transcript.",
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ForkRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "201": json_response("Created child session.", "Session"),
+                        "400": json_response("Fork cutoff message was not found.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/init": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "initSession",
+                    "summary": "Analyze the project and create/update an AGENTS.md file.",
+                    "responses": {
+                        "200": json_response("Init turn result.", "PromptResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "503": json_response("Network is disabled or service is unavailable.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/summarize": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "summarizeSession",
+                    "summary": "Produce a concise AI summary of the session.",
+                    "responses": {
+                        "200": json_response("Summary result.", "SummaryResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "503": json_response("Network is disabled or service is unavailable.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/compact": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "compactSession",
+                    "summary": "Compact the session history into an AI summary.",
+                    "responses": {
+                        "200": json_response("Compaction result.", "SummaryResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "503": json_response("Network is disabled or service is unavailable.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/prompt_async": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "promptSessionAsync",
+                    "summary": "Admit a prompt and return immediately; the turn streams over SSE.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/MessageRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "202": json_response("Prompt accepted for async execution.", "AsyncPromptResponse"),
+                        "400": json_response("Prompt body was empty or invalid.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/shell": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "shellSession",
+                    "summary": "Run a shell command in the session context and persist it.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CommandRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Shell result.", "ShellResponse"),
+                        "400": json_response("Command body was empty or invalid.", "ErrorResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/revert": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "revertSession",
+                    "summary": "Undo the session's recent file changes via the checkpoint store.",
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/RevertRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Revert result.", "RevertResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "409": json_response("Revert refused due to out-of-band changes.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/unrevert": {
+                "parameters": [session_id_parameter()],
+                "post": {
+                    "operationId": "unrevertSession",
+                    "summary": "Redo previously reverted file changes and clear reverted state.",
+                    "responses": {
+                        "200": json_response("Unrevert result.", "RevertResponse"),
+                        "404": json_response("Session was not found.", "ErrorResponse"),
+                        "409": json_response("Unrevert refused due to out-of-band changes.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/message/{message_id}": {
+                "parameters": [session_id_parameter(), message_id_parameter()],
+                "get": {
+                    "operationId": "getSessionMessage",
+                    "summary": "Fetch a single message with its rich parts.",
+                    "responses": {
+                        "200": json_response("Message.", "Message"),
+                        "404": json_response("Message was not found.", "ErrorResponse")
+                    }
+                },
+                "delete": {
+                    "operationId": "deleteSessionMessage",
+                    "summary": "Delete a single message and its parts.",
+                    "responses": {
+                        "200": json_response("Message deleted.", "DeleteResponse"),
+                        "404": json_response("Message was not found.", "ErrorResponse")
+                    }
+                }
+            },
+            "/session/{id}/message/{message_id}/part/{part_id}": {
+                "parameters": [session_id_parameter(), message_id_parameter(), part_id_parameter()],
+                "patch": {
+                    "operationId": "updateMessagePart",
+                    "summary": "Replace one rich message part.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/RichMessagePart" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Updated part.", "RichMessagePart"),
+                        "404": json_response("Message or part was not found.", "ErrorResponse")
+                    }
+                },
+                "delete": {
+                    "operationId": "deleteMessagePart",
+                    "summary": "Delete one rich message part.",
+                    "responses": {
+                        "200": json_response("Part deleted.", "DeleteResponse"),
+                        "404": json_response("Message or part was not found.", "ErrorResponse")
                     }
                 }
             },
@@ -666,7 +951,9 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "title": { "type": ["string", "null"] },
                         "created_at": { "type": "string" },
                         "updated_at": { "type": "string" },
-                        "model": { "type": ["string", "null"] }
+                        "model": { "type": ["string", "null"] },
+                        "parent_id": { "type": ["string", "null"] },
+                        "reverted_message_id": { "type": ["string", "null"] }
                     }
                 },
                 "ShareResponse": {
@@ -762,6 +1049,135 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                             "description": "Adapter description surfaced to discovery clients."
                         }
                     }
+                },
+                "UpdateSessionRequest": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": ["string", "null"] },
+                        "model": { "type": ["string", "null"] }
+                    }
+                },
+                "SessionStatus": {
+                    "type": "object",
+                    "required": ["id", "status", "busy", "reverted", "pendingPermissions"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["running", "waiting", "idle"]
+                        },
+                        "busy": { "type": "boolean" },
+                        "reverted": { "type": "boolean" },
+                        "pendingPermissions": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "SessionContext": {
+                    "type": "object",
+                    "required": ["id", "model", "agent", "messageCount", "estimatedTokens", "reverted", "busy"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "model": { "type": "string" },
+                        "agent": { "type": "string" },
+                        "messageCount": { "type": "integer", "minimum": 0 },
+                        "estimatedTokens": { "type": "integer", "minimum": 0 },
+                        "reverted": { "type": "boolean" },
+                        "busy": { "type": "boolean" }
+                    }
+                },
+                "FileDiff": {
+                    "type": "object",
+                    "required": ["path", "status", "diff"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["added", "modified", "deleted"]
+                        },
+                        "diff": {
+                            "type": "string",
+                            "description": "Unified diff of net session changes for this path."
+                        }
+                    }
+                },
+                "ForkRequest": {
+                    "type": "object",
+                    "properties": {
+                        "messageId": {
+                            "type": ["string", "null"],
+                            "description": "Truncate the inherited transcript at this message id."
+                        },
+                        "title": { "type": ["string", "null"] }
+                    }
+                },
+                "RevertRequest": {
+                    "type": "object",
+                    "properties": {
+                        "messageId": { "type": ["string", "null"] }
+                    }
+                },
+                "RevertResponse": {
+                    "type": "object",
+                    "required": ["status", "session"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["reverted", "unreverted", "nothing"]
+                        },
+                        "session": { "$ref": "#/components/schemas/Session" },
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "conflicts": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                },
+                "SummaryResponse": {
+                    "type": "object",
+                    "required": ["status", "model", "summary", "message"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["summarized", "compacted"]
+                        },
+                        "model": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "message": { "$ref": "#/components/schemas/Message" }
+                    }
+                },
+                "AsyncPromptResponse": {
+                    "type": "object",
+                    "required": ["status", "operationId", "sessionId", "queued"],
+                    "properties": {
+                        "status": { "type": "string", "const": "accepted" },
+                        "operationId": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "queued": { "type": "boolean" }
+                    }
+                },
+                "ShellResponse": {
+                    "type": "object",
+                    "required": ["status", "command", "output", "isError", "message"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["completed", "error"]
+                        },
+                        "command": { "type": "string" },
+                        "output": { "type": "string" },
+                        "isError": { "type": "boolean" },
+                        "message": { "$ref": "#/components/schemas/Message" }
+                    }
+                },
+                "DeleteResponse": {
+                    "type": "object",
+                    "required": ["status", "deleted"],
+                    "properties": {
+                        "status": { "type": "string", "const": "deleted" },
+                        "deleted": { "type": "boolean" }
+                    }
                 }
             }
         }
@@ -773,8 +1189,27 @@ pub(crate) fn openapi_document() -> serde_json::Value {
 const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/event", &["get", "post"]),
     ("/session", &["get", "post"]),
-    ("/session/{id}", &["get", "delete"]),
+    ("/session/status", &["get"]),
+    ("/session/{id}", &["get", "patch", "delete"]),
+    ("/session/{id}/status", &["get"]),
+    ("/session/{id}/wait", &["get"]),
+    ("/session/{id}/context", &["get"]),
+    ("/session/{id}/children", &["get"]),
+    ("/session/{id}/diff", &["get"]),
+    ("/session/{id}/fork", &["post"]),
+    ("/session/{id}/init", &["post"]),
+    ("/session/{id}/summarize", &["post"]),
+    ("/session/{id}/compact", &["post"]),
+    ("/session/{id}/prompt_async", &["post"]),
+    ("/session/{id}/shell", &["post"]),
+    ("/session/{id}/revert", &["post"]),
+    ("/session/{id}/unrevert", &["post"]),
     ("/session/{id}/message", &["get", "post"]),
+    ("/session/{id}/message/{message_id}", &["get", "delete"]),
+    (
+        "/session/{id}/message/{message_id}/part/{part_id}",
+        &["patch", "delete"],
+    ),
     ("/session/{id}/todo", &["get"]),
     ("/session/{id}/todos", &["get"]),
     ("/session/{id}/prompt", &["get"]),
@@ -878,5 +1313,25 @@ fn share_id_parameter() -> serde_json::Value {
         "required": true,
         "schema": { "type": "string" },
         "description": "Ephemeral local share id."
+    })
+}
+
+fn message_id_parameter() -> serde_json::Value {
+    serde_json::json!({
+        "name": "message_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Opaque message id."
+    })
+}
+
+fn part_id_parameter() -> serde_json::Value {
+    serde_json::json!({
+        "name": "part_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Opaque message part id."
     })
 }

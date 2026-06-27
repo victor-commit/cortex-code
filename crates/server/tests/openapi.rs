@@ -88,9 +88,38 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/session", "get", 200);
     assert_method(paths, "/session", "post", 201);
     assert_method(paths, "/session/{id}", "get", 200);
+    assert_method(paths, "/session/{id}", "patch", 200);
     assert_method(paths, "/session/{id}", "delete", 204);
+    assert_method(paths, "/session/status", "get", 200);
+    assert_method(paths, "/session/{id}/status", "get", 200);
+    assert_method(paths, "/session/{id}/wait", "get", 200);
+    assert_method(paths, "/session/{id}/context", "get", 200);
+    assert_method(paths, "/session/{id}/children", "get", 200);
+    assert_method(paths, "/session/{id}/diff", "get", 200);
+    assert_method(paths, "/session/{id}/fork", "post", 201);
+    assert_method(paths, "/session/{id}/init", "post", 200);
+    assert_method(paths, "/session/{id}/summarize", "post", 200);
+    assert_method(paths, "/session/{id}/compact", "post", 200);
+    assert_method(paths, "/session/{id}/prompt_async", "post", 202);
+    assert_method(paths, "/session/{id}/shell", "post", 200);
+    assert_method(paths, "/session/{id}/revert", "post", 200);
+    assert_method(paths, "/session/{id}/unrevert", "post", 200);
     assert_method(paths, "/session/{id}/message", "get", 200);
     assert_method(paths, "/session/{id}/message", "post", 200);
+    assert_method(paths, "/session/{id}/message/{message_id}", "get", 200);
+    assert_method(paths, "/session/{id}/message/{message_id}", "delete", 200);
+    assert_method(
+        paths,
+        "/session/{id}/message/{message_id}/part/{part_id}",
+        "patch",
+        200,
+    );
+    assert_method(
+        paths,
+        "/session/{id}/message/{message_id}/part/{part_id}",
+        "delete",
+        200,
+    );
     assert_method(paths, "/session/{id}/todo", "get", 200);
     assert_method(paths, "/session/{id}/todos", "get", 200);
     assert_method(paths, "/session/{id}/prompt", "get", 200);
@@ -158,8 +187,24 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                 "/health"
                     | "/event"
                     | "/session"
+                    | "/session/status"
                     | "/session/{id}"
+                    | "/session/{id}/status"
+                    | "/session/{id}/wait"
+                    | "/session/{id}/context"
+                    | "/session/{id}/children"
+                    | "/session/{id}/diff"
+                    | "/session/{id}/fork"
+                    | "/session/{id}/init"
+                    | "/session/{id}/summarize"
+                    | "/session/{id}/compact"
+                    | "/session/{id}/prompt_async"
+                    | "/session/{id}/shell"
+                    | "/session/{id}/revert"
+                    | "/session/{id}/unrevert"
                     | "/session/{id}/message"
+                    | "/session/{id}/message/{message_id}"
+                    | "/session/{id}/message/{message_id}/part/{part_id}"
                     | "/session/{id}/todo"
                     | "/session/{id}/todos"
                     | "/session/{id}/prompt"
@@ -311,7 +356,7 @@ async fn json_body<T>(response: axum::response::Response) -> T
 where
     T: serde::de::DeserializeOwned,
 {
-    let bytes = to_bytes(response.into_body(), 65_536).await.expect("body");
+    let bytes = to_bytes(response.into_body(), 524_288).await.expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
 }
 

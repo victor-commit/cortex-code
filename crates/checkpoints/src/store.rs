@@ -17,7 +17,7 @@
 //! a fresh turn while the cursor is behind the end truncates the abandoned redo branch, so a new
 //! edit after an undo permanently supersedes what was undone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -163,6 +163,17 @@ impl HistorySummary {
     }
 }
 
+/// A computed file-level diff across a session's recorded turns.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FileDiff {
+    /// Workspace-relative path, `/`-separated.
+    pub path: String,
+    /// One of `added`, `modified`, or `deleted`.
+    pub status: String,
+    /// Unified diff between the session's pre-image and post-image of the file.
+    pub diff: String,
+}
+
 /// A handle on the shadow checkpoint store for one workspace.
 #[derive(Clone, Debug)]
 pub struct ShadowStore {
@@ -224,6 +235,62 @@ impl ShadowStore {
             total_turns: journal.turns.len(),
             applied: journal.applied,
         })
+    }
+
+    /// Compute the net file diffs produced by every applied turn recorded under `label`.
+    ///
+    /// For each file the session touched, the earliest pre-image and the latest post-image are
+    /// compared; files whose content is unchanged across the whole session are omitted. The diff is
+    /// the unified diff between those two images, so it reflects exactly what the session changed on
+    /// disk. Only applied turns (those still in effect, ahead of the undo cursor) are considered.
+    ///
+    /// # Errors
+    /// Returns a [`CheckpointError`] when the journal or object database cannot be read.
+    pub fn session_file_diffs(&self, label: &str) -> Result<Vec<FileDiff>, CheckpointError> {
+        let journal = self.load_journal()?;
+        let mut order: Vec<String> = Vec::new();
+        let mut pre: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
+        let mut post: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
+        for turn in journal.turns.iter().take(journal.applied) {
+            if turn.label != label {
+                continue;
+            }
+            for file in &turn.files {
+                if !pre.contains_key(&file.rel_path) {
+                    pre.insert(file.rel_path.clone(), file.pre.clone());
+                    order.push(file.rel_path.clone());
+                }
+                post.insert(file.rel_path.clone(), file.post.clone());
+            }
+        }
+        if order.is_empty() {
+            return Ok(Vec::new());
+        }
+        let empty_oid = self.store_blob(b"")?;
+        let mut diffs = Vec::with_capacity(order.len());
+        for path in order {
+            let pre_image = pre.get(&path).cloned().flatten();
+            let post_image = post.get(&path).cloned().flatten();
+            if pre_image.as_ref().map(|image| &image.oid)
+                == post_image.as_ref().map(|image| &image.oid)
+            {
+                continue;
+            }
+            let status = match (&pre_image, &post_image) {
+                (None, Some(_)) => "added",
+                (Some(_), None) => "deleted",
+                _ => "modified",
+            };
+            let pre_oid = pre_image.map_or_else(|| empty_oid.clone(), |image| image.oid);
+            let post_oid = post_image.map_or_else(|| empty_oid.clone(), |image| image.oid);
+            let raw = self.git.run(&["diff", "--no-color", &pre_oid, &post_oid])?;
+            diffs.push(FileDiff {
+                path,
+                status: status.to_owned(),
+                diff: String::from_utf8_lossy(&raw).into_owned(),
+            });
+        }
+        Ok(diffs)
     }
 
     /// Undo the most recently applied turn, restoring every file it changed to its pre-turn bytes

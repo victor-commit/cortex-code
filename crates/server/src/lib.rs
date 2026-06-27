@@ -26,7 +26,7 @@ use axum::{
         Html, IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
@@ -51,6 +51,7 @@ use tools::{ToolContext, ToolRegistry};
 #[path = "../../cli/src/custom_agents.rs"]
 mod custom_agents;
 mod openapi;
+mod session_ext;
 
 /// First allowed port for `cortex serve` and server test fixtures.
 pub const MIN_PORT: u16 = 3200;
@@ -575,12 +576,83 @@ pub fn app_with_state(state: ServerState) -> Router {
             get(list_sessions).post(create_session).options(preflight),
         )
         .route(
+            "/session/status",
+            get(session_ext::session_status_map).options(preflight),
+        )
+        .route(
             "/session/{id}",
-            get(get_session).delete(delete_session).options(preflight),
+            get(get_session)
+                .patch(session_ext::update_session)
+                .delete(delete_session)
+                .options(preflight),
+        )
+        .route(
+            "/session/{id}/status",
+            get(session_ext::session_status).options(preflight),
+        )
+        .route(
+            "/session/{id}/wait",
+            get(session_ext::wait_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/context",
+            get(session_ext::session_context).options(preflight),
+        )
+        .route(
+            "/session/{id}/children",
+            get(session_ext::list_children).options(preflight),
+        )
+        .route(
+            "/session/{id}/diff",
+            get(session_ext::session_diff).options(preflight),
+        )
+        .route(
+            "/session/{id}/fork",
+            post(session_ext::fork_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/init",
+            post(session_ext::init_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/summarize",
+            post(session_ext::summarize_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/compact",
+            post(session_ext::compact_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/prompt_async",
+            post(session_ext::prompt_async).options(preflight),
+        )
+        .route(
+            "/session/{id}/shell",
+            post(session_ext::shell_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/revert",
+            post(session_ext::revert_session).options(preflight),
+        )
+        .route(
+            "/session/{id}/unrevert",
+            post(session_ext::unrevert_session).options(preflight),
         )
         .route(
             "/session/{id}/message",
             get(list_messages).post(post_message).options(preflight),
+        )
+        .route(
+            "/session/{id}/message/{message_id}",
+            get(session_ext::get_message)
+                .delete(session_ext::delete_message)
+                .options(preflight),
+        )
+        .route(
+            "/session/{id}/message/{message_id}/part/{part_id}",
+            patch(session_ext::update_part)
+                .delete(session_ext::delete_part)
+                .options(preflight),
         )
         .route("/session/{id}/todo", get(list_todos).options(preflight))
         .route("/session/{id}/todos", get(list_todos).options(preflight))
@@ -1041,11 +1113,27 @@ struct MessagePart {
     text: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageListQuery {
+    /// Maximum number of messages to return; omitted means all remaining.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Return only messages that appear strictly after this message id (forward paging).
+    #[serde(default)]
+    cursor: Option<String>,
+    /// Reference-compatible alias for `cursor`: return messages strictly after this id.
+    #[serde(default)]
+    after: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct MessageListResponse {
     session: Session,
     messages: Vec<Message>,
     usage: UsageTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1299,18 +1387,43 @@ async fn delete_session(
 async fn list_messages(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
+    axum::extract::Query(query): axum::extract::Query<MessageListQuery>,
 ) -> Result<Json<MessageListResponse>, ApiError> {
     let db = open_database(&state)?;
     let session = db.sessions().require(&id).map_err(ApiError::from_db)?;
-    let messages = db
+    let mut messages = db
         .messages()
         .list_for_session(&id)
         .map_err(ApiError::from_db)?;
     let usage = db.usage().session_totals(&id).map_err(ApiError::from_db)?;
+
+    let cursor = query.cursor.as_deref().or(query.after.as_deref());
+    if let Some(cursor) = cursor {
+        match messages.iter().position(|message| message.id == cursor) {
+            Some(index) => {
+                messages.drain(..=index);
+            }
+            None => {
+                return Err(ApiError::bad_request(format!(
+                    "cursor `{cursor}` does not match any message in this session"
+                )));
+            }
+        }
+    }
+
+    let mut next_cursor = None;
+    if let Some(limit) = query.limit
+        && messages.len() > limit
+    {
+        messages.truncate(limit);
+        next_cursor = messages.last().map(|message| message.id.clone());
+    }
+
     Ok(Json(MessageListResponse {
         session,
         messages,
         usage,
+        next_cursor,
     }))
 }
 
@@ -1499,14 +1612,32 @@ async fn execute_command(
     require_session(&state, &id)?;
     let command = non_empty(&payload.command)
         .ok_or_else(|| ApiError::bad_request("command body must include a non-empty command"))?;
+    let output = run_session_bash(&state, &id, &command).await?;
+    let is_error = output.is_error;
+    Ok(Json(CommandResponse {
+        status: if is_error { "error" } else { "completed" },
+        command: redaction::redact(&command),
+        output: redaction::redact(&output.model_content()),
+        is_error,
+    }))
+}
+
+/// Run a single bash command in the session's working directory through the real tool registry,
+/// publishing tool-call/tool-result events and honoring the session's permission ruleset and audit
+/// sink. Shared by the `/command` and `/shell` routes.
+pub(crate) async fn run_session_bash(
+    state: &ServerState,
+    id: &str,
+    command: &str,
+) -> Result<tools::ToolOutput, ApiError> {
     let call_id = format!(
         "remote-command-{}-{}",
         std::process::id(),
         REMOTE_COMMAND_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let arguments = serde_json::json!({ "command": &command }).to_string();
+    let arguments = serde_json::json!({ "command": command }).to_string();
     state.event_bus.publish(&Event::tool_call_for_turn(
-        id.clone(),
+        id.to_owned(),
         call_id.clone(),
         call_id.clone(),
         "bash",
@@ -1520,14 +1651,14 @@ async fn execute_command(
     let turn_permissions = permission_engine_for_turn(
         state.event_bus.clone(),
         state.permissions.clone(),
-        &id,
+        id,
         &call_id,
         &config_inputs,
         &selected_agent,
     )?;
-    let audit_sink = audit_sink_for(&state, &id);
+    let audit_sink = audit_sink_for(state, id);
     let mut context = ToolContext::new(state.cwd.clone())
-        .with_session(id.clone())
+        .with_session(id.to_owned())
         .with_todo_store(Arc::new(ServerTodoStore {
             db_path: state.db_path.clone(),
         }))
@@ -1541,19 +1672,13 @@ async fn execute_command(
     context.background_jobs().shutdown().await;
     turn_permissions.persist_if_changed();
     state.event_bus.publish(&Event::tool_result_for_turn(
-        id,
+        id.to_owned(),
         call_id.clone(),
         call_id,
         "bash",
         output.is_error,
     ));
-    let is_error = output.is_error;
-    Ok(Json(CommandResponse {
-        status: if is_error { "error" } else { "completed" },
-        command: redaction::redact(&command),
-        output: redaction::redact(&output.model_content()),
-        is_error,
-    }))
+    Ok(output)
 }
 
 async fn abort_session(
@@ -2519,6 +2644,20 @@ fn open_checkpoint_recorder(
         None => checkpoints::ShadowStore::open_default(cwd).ok().flatten(),
     }?;
     Some(Arc::new(store.begin_turn(session_id.to_owned())))
+}
+
+/// Open the shadow checkpoint store for the server's workspace, mirroring the recorder's location
+/// resolution. Used by the diff/revert/unrevert routes.
+pub(crate) fn open_checkpoint_store(state: &ServerState) -> Option<checkpoints::ShadowStore> {
+    match &state.checkpoint_base {
+        Some(base) => {
+            let git_dir = base.join(checkpoints::workspace_key(&state.cwd));
+            checkpoints::ShadowStore::open(&state.cwd, &git_dir).ok()
+        }
+        None => checkpoints::ShadowStore::open_default(&state.cwd)
+            .ok()
+            .flatten(),
+    }
 }
 
 struct ServerTodoStore {

@@ -108,7 +108,6 @@ impl<'a> MessageRepo<'a> {
     }
 
     /// List the messages under a session in chronological order (oldest first).
-    ///
     /// Ordering is by `created_at`, then by `rowid` so messages written within the same clock
     /// second (timestamps are second-granular) are returned in true insertion order rather than by
     /// the random hex id. This keeps a turn's `user` prompt ahead of its `assistant` reply when
@@ -128,6 +127,101 @@ impl<'a> MessageRepo<'a> {
             message.parts = parts_by_message.remove(&message.id).unwrap_or_default();
         }
         Ok(messages)
+    }
+
+    /// Fetch one message (with its rich parts) by id, or `None` if it does not exist.
+    pub fn get(&self, message_id: &str) -> DbResult<Option<Message>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, session_id, role, content, created_at FROM messages WHERE id = ?1",
+        )?;
+        let mut rows = statement.query_map(params![message_id], Message::from_row)?;
+        match rows.next() {
+            Some(row) => {
+                let mut message = row?;
+                message.parts = self.list_parts_for_message(&message.id)?;
+                Ok(Some(message))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch one message by id, erroring with [`DbError::NotFound`] if it is absent.
+    pub fn require(&self, message_id: &str) -> DbResult<Message> {
+        self.get(message_id)?.ok_or_else(|| DbError::NotFound {
+            kind: "message",
+            id: message_id.to_owned(),
+        })
+    }
+
+    /// Delete one message and (via `ON DELETE CASCADE`) its parts, returning whether a row was
+    /// removed. Deleting an unknown id is not an error: it returns `false`.
+    pub fn delete(&self, message_id: &str) -> DbResult<bool> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
+        Ok(affected > 0)
+    }
+
+    /// Fetch one rich message part by its stable part id, or `None` if it does not exist.
+    pub fn part(&self, part_id: &str) -> DbResult<Option<MessagePart>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, part_json, created_at FROM message_parts WHERE id = ?1")?;
+        let mut rows = statement.query_map(params![part_id], |row| {
+            let id: String = row.get("id")?;
+            let part_json: String = row.get("part_json")?;
+            let created_at: String = row.get("created_at")?;
+            Ok((id, part_json, created_at))
+        })?;
+        match rows.next() {
+            Some(row) => {
+                let (id, part_json, created_at) = row?;
+                let mut part: MessagePart =
+                    serde_json::from_str(&part_json).map_err(|err| DbError::Operation {
+                        message: format!("failed to deserialize message part {id}: {err}"),
+                    })?;
+                part.id = id;
+                part.created_at = Some(created_at);
+                Ok(Some(part))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Replace the stored body of one rich message part, preserving its id, ordinal, and creation
+    /// timestamp. Returns the persisted part. Errors with [`DbError::NotFound`] when the part id is
+    /// unknown.
+    pub fn update_part(&self, part_id: &str, part: &MessagePart) -> DbResult<MessagePart> {
+        let mut payload = part.clone();
+        payload.id = part_id.to_owned();
+        payload.created_at = None;
+        let serialized = serde_json::to_string(&payload).map_err(|err| DbError::Operation {
+            message: format!("failed to serialize message part: {err}"),
+        })?;
+        let redacted = redaction::redact(&serialized);
+        let affected = self.conn.execute(
+            "UPDATE message_parts SET part_json = ?2 WHERE id = ?1",
+            params![part_id, redacted],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound {
+                kind: "message_part",
+                id: part_id.to_owned(),
+            });
+        }
+        self.part(part_id)?.ok_or_else(|| DbError::NotFound {
+            kind: "message_part",
+            id: part_id.to_owned(),
+        })
+    }
+
+    /// Delete one rich message part by id, returning whether a row was removed. Deleting an unknown
+    /// id is not an error: it returns `false`.
+    pub fn delete_part(&self, part_id: &str) -> DbResult<bool> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM message_parts WHERE id = ?1", params![part_id])?;
+        Ok(affected > 0)
     }
 
     fn insert_parts(
