@@ -5,17 +5,20 @@
 //! [`engine::SessionRunner`], streams assistant text as ACP `session/update` notifications, and
 //! cancels in-flight turns by dropping the runner future at the stdio boundary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
-    Implementation, InitializeRequest, InitializeResponse, MessageId, NewSessionRequest,
-    NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
-    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+    AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodId, CancelNotification, ContentBlock,
+    ContentChunk, EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
+    MessageId, NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest,
+    PromptResponse, SessionCapabilities, SessionCloseCapabilities, SessionDeleteCapabilities,
+    SessionId, SessionListCapabilities, SessionNotification, SessionResumeCapabilities,
+    SessionUpdate, StopReason, TextContent,
 };
 use db::{Database, DbPathInputs};
 use engine::{
@@ -35,6 +38,14 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::watch;
 use tools::{ToolContext, ToolRegistry};
+
+mod client;
+mod sessions;
+
+use client::{
+    AcpPermissionResponder, AcpReadTool, AcpTerminalTool, AcpWriteTool, ClientConnection,
+    OutboundSink,
+};
 
 const OUTBOUND_OPERATION: &str = "ACP LLM turn";
 
@@ -81,6 +92,66 @@ struct AcpState {
     event_bus: Arc<EventBus>,
     active_turns: TurnQueue,
     initialized: StdMutex<bool>,
+    client_capabilities: StdMutex<ClientCapabilitiesSnapshot>,
+    client_pending: StdMutex<HashMap<String, client::PendingReply>>,
+    client_seq: AtomicU64,
+    sessions: StdMutex<HashMap<String, SessionRuntime>>,
+    credentials: StdMutex<HashMap<String, String>>,
+}
+
+/// The subset of client capabilities the ACP surface acts on, captured at `initialize`.
+#[derive(Clone, Copy, Default)]
+struct ClientCapabilitiesSnapshot {
+    fs_read: bool,
+    fs_write: bool,
+    terminal: bool,
+}
+
+/// Per-session runtime state layered over the durable record: the active mode/agent, an in-memory
+/// model override, and whether the session is open in this connection.
+#[derive(Clone, Default)]
+struct SessionRuntime {
+    mode: Option<String>,
+    model: Option<String>,
+    open: bool,
+}
+
+impl AcpState {
+    fn deliver_client_response(&self, id: &str, result: Result<Value, String>) {
+        if let Some(pending) = self
+            .client_pending
+            .lock()
+            .expect("client pending mutex")
+            .remove(id)
+        {
+            pending.resolve(result);
+        }
+    }
+
+    fn client_capabilities(&self) -> ClientCapabilitiesSnapshot {
+        *self
+            .client_capabilities
+            .lock()
+            .expect("client capabilities mutex")
+    }
+
+    fn session_runtime(&self, session_id: &str) -> SessionRuntime {
+        self.sessions
+            .lock()
+            .expect("sessions mutex")
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn update_session_runtime(&self, session_id: &str, update: impl FnOnce(&mut SessionRuntime)) {
+        let mut sessions = self.sessions.lock().expect("sessions mutex");
+        update(sessions.entry(session_id.to_owned()).or_default());
+    }
+
+    fn credential_overrides(&self) -> HashMap<String, String> {
+        self.credentials.lock().expect("credentials mutex").clone()
+    }
 }
 
 #[derive(Clone)]
@@ -130,6 +201,11 @@ impl AcpService {
                 event_bus,
                 active_turns: TurnQueue::default(),
                 initialized: StdMutex::new(false),
+                client_capabilities: StdMutex::new(ClientCapabilitiesSnapshot::default()),
+                client_pending: StdMutex::new(HashMap::new()),
+                client_seq: AtomicU64::new(0),
+                sessions: StdMutex::new(HashMap::new()),
+                credentials: StdMutex::new(HashMap::new()),
             }),
         }
     }
@@ -172,6 +248,18 @@ impl AcpService {
         if !object.contains_key("method")
             && (object.contains_key("result") || object.contains_key("error"))
         {
+            if let Some(id) = object.get("id").and_then(Value::as_str) {
+                let outcome = if let Some(error) = object.get("error") {
+                    Err(error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| error.to_string()))
+                } else {
+                    Ok(object.get("result").cloned().unwrap_or(Value::Null))
+                };
+                self.state.deliver_client_response(id, outcome);
+            }
             return Ok(());
         }
         let id = match object.get("id") {
@@ -230,11 +318,71 @@ impl AcpService {
     {
         match method {
             "initialize" => self.initialize(id, params, writer),
+            "authenticate" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.authenticate(id, params, writer)
+            }
             "session/new" => {
                 if !self.is_initialized() {
                     return writer.send_error(id, -32002, "ACP connection is not initialized");
                 }
                 self.new_session(id, params, writer)
+            }
+            "session/load" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.load_session(id, params, writer)
+            }
+            "session/list" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.list_sessions(id, params, writer)
+            }
+            "session/resume" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.resume_session(id, params, writer)
+            }
+            "session/close" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.close_session(id, params, writer)
+            }
+            "session/fork" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.fork_session(id, params, writer)
+            }
+            "session/delete" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.delete_session(id, params, writer)
+            }
+            "session/set_mode" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.set_session_mode(id, params, writer)
+            }
+            "session/set_model" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.set_session_model(id, params, writer)
+            }
+            "session/set_config_option" => {
+                if !self.is_initialized() {
+                    return writer.send_error(id, -32002, "ACP connection is not initialized");
+                }
+                self.set_session_config_option(id, params, writer)
             }
             "session/prompt" => {
                 if !self.is_initialized() {
@@ -295,11 +443,33 @@ impl AcpService {
             } else {
                 requested
             };
+        let client_caps = ClientCapabilitiesSnapshot {
+            fs_read: request.client_capabilities.fs.read_text_file,
+            fs_write: request.client_capabilities.fs.write_text_file,
+            terminal: request.client_capabilities.terminal,
+        };
+        *self
+            .state
+            .client_capabilities
+            .lock()
+            .expect("client capabilities mutex") = client_caps;
         let capabilities = AgentCapabilities::new()
+            .load_session(true)
             .prompt_capabilities(PromptCapabilities::new().embedded_context(true))
-            .session_capabilities(SessionCapabilities::new());
+            .session_capabilities(
+                SessionCapabilities::new()
+                    .list(Some(SessionListCapabilities::new()))
+                    .resume(Some(SessionResumeCapabilities::new()))
+                    .close(Some(SessionCloseCapabilities::new()))
+                    .delete(Some(SessionDeleteCapabilities::new())),
+            );
         let response = InitializeResponse::new(protocol_version)
             .agent_capabilities(capabilities)
+            .auth_methods(vec![AuthMethod::Agent(
+                AuthMethodAgent::new(AuthMethodId::new("api-key"), "API key").description(Some(
+                    "Provide a provider API key via authenticate".to_owned(),
+                )),
+            )])
             .agent_info(Some(
                 Implementation::new("cortex", env!("CARGO_PKG_VERSION"))
                     .title(Some("Cortex Code".to_owned())),
@@ -417,8 +587,22 @@ impl AcpService {
             .event_bus
             .publish(&Event::turn_started(&prompt.session_id, &user_message.id));
 
-        let system =
-            SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process()).render();
+        let runtime = self.state.session_runtime(&prompt.session_id);
+        let agent = runtime
+            .mode
+            .as_deref()
+            .and_then(|mode| engine::Agent::from_name(mode).ok())
+            .unwrap_or(engine::Agent::Build);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        let sink: Arc<dyn OutboundSink> = Arc::new(writer.clone());
+        let connection = ClientConnection::new(self.state.clone(), sink, prompt.session_id.clone());
+
+        emit_prompt_start_updates(&writer, &prompt.session_id, agent.name());
+
+        let system = SystemContext::for_model(&resolved.model_id, EnvironmentBlock::from_process())
+            .with_agent(agent)
+            .render();
         let mut turn = Turn::new(&resolved.model_id, system, prompt.text.clone())
             .with_history(history)
             .with_compaction(compaction_policy(&resolved.model));
@@ -429,6 +613,8 @@ impl AcpService {
             self.state.event_bus.clone(),
             &prompt.session_id,
             &user_message.id,
+            agent,
+            connection.clone(),
         ) {
             Ok(permissions) => permissions,
             Err(message) => {
@@ -437,11 +623,13 @@ impl AcpService {
             }
         };
         let dispatcher = AcpToolDispatcher::for_model(
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd.clone(),
             &resolved.model_id,
             prompt.session_id.clone(),
             self.state.db_path.clone(),
             permissions,
+            self.state.client_capabilities(),
+            connection,
         );
         let result = run_cancellable_turn(
             resolved.provider.as_ref(),
@@ -453,6 +641,8 @@ impl AcpService {
                 session_id: prompt.session_id.clone(),
                 message_id: user_message.id.clone(),
                 writer: writer.clone(),
+                cwd,
+                db_path: self.state.db_path.clone(),
             },
         )
         .await;
@@ -487,7 +677,7 @@ impl AcpService {
         let part_timestamps = lifecycle.part_timestamps();
         let assistant_parts = build_assistant_message_parts(
             &resolved.model_id,
-            "general",
+            agent.name(),
             &user_message.id,
             &runner_events,
             &outcome,
@@ -543,8 +733,9 @@ impl AcpService {
             .map_err(|err| format!("cannot load configuration context: {err}"))?;
         let effective = settings::load(config_inputs.clone())
             .map_err(|err| format!("cannot load configuration: {err}"))?;
-        let provider_config = providers::ProviderConfigSet::from_table(effective.table())
+        let mut provider_config = providers::ProviderConfigSet::from_table(effective.table())
             .map_err(|err| format!("cannot parse provider configuration: {err}"))?;
+        apply_credential_overrides(&mut provider_config, &self.state.credential_overrides());
         match &self.state.provider {
             #[cfg(test)]
             ProviderSource::Fixed { model_id, provider } => {
@@ -826,6 +1017,8 @@ struct TurnEventSink<W> {
     session_id: String,
     message_id: String,
     writer: JsonRpcWriter<W>,
+    cwd: PathBuf,
+    db_path: PathBuf,
 }
 
 async fn run_cancellable_turn<W>(
@@ -843,12 +1036,14 @@ where
     let bus = events.bus;
     let session_id = events.session_id;
     let message_id = events.message_id;
+    let cwd = events.cwd;
+    let db_path = events.db_path;
     let captured_events: Arc<StdMutex<Vec<RunnerEvent>>> = Arc::new(StdMutex::new(Vec::new()));
     let captured_for_sink = captured_events.clone();
     tokio::select! {
         outcome = runner.run_with_tools(provider, turn, dispatcher, move |event| {
             publish_runner_event(&bus, &session_id, &message_id, &event);
-            write_acp_update(&notify, &session_id, &message_id, &event);
+            write_acp_update(&notify, &session_id, &message_id, &cwd, &db_path, &event);
             if let Ok(mut captured) = captured_for_sink.lock() {
                 captured.push(event.clone());
             }
@@ -873,10 +1068,29 @@ fn write_acp_update<W>(
     writer: &JsonRpcWriter<W>,
     session_id: &str,
     message_id: &str,
+    cwd: &std::path::Path,
+    db_path: &std::path::Path,
     event: &RunnerEvent,
 ) where
     W: Write,
 {
+    match event {
+        RunnerEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => {
+            emit_tool_call_update(writer, session_id, cwd, id, name, arguments);
+            return;
+        }
+        RunnerEvent::ToolResult {
+            id, name, is_error, ..
+        } => {
+            emit_tool_result_update(writer, session_id, db_path, id, name, *is_error);
+            return;
+        }
+        _ => {}
+    }
     let update = match event {
         RunnerEvent::TextDelta { text } if !text.is_empty() => {
             Some(SessionUpdate::AgentMessageChunk(
@@ -890,43 +1104,6 @@ fn write_acp_update<W>(
                     .message_id(Some(MessageId::new(format!("{message_id}-thought")))),
             ))
         }
-        RunnerEvent::ToolCall {
-            id,
-            name,
-            arguments,
-        } => Some(SessionUpdate::AgentThoughtChunk(
-            ContentChunk::new(ContentBlock::Text(TextContent::new(
-                serde_json::json!({
-                    "type": "tool",
-                    "state": "pending",
-                    "call_id": id,
-                    "name": name,
-                    "arguments": arguments,
-                })
-                .to_string(),
-            )))
-            .message_id(Some(MessageId::new(format!("{message_id}-tool-{id}")))),
-        )),
-        RunnerEvent::ToolResult {
-            id,
-            name,
-            parts,
-            is_error,
-        } => Some(SessionUpdate::AgentThoughtChunk(
-            ContentChunk::new(ContentBlock::Text(TextContent::new(
-                serde_json::json!({
-                    "type": "tool",
-                    "state": if *is_error { "error" } else { "completed" },
-                    "call_id": id,
-                    "name": name,
-                    "parts": parts,
-                })
-                .to_string(),
-            )))
-            .message_id(Some(MessageId::new(format!(
-                "{message_id}-tool-result-{id}"
-            )))),
-        )),
         RunnerEvent::Retry {
             attempt,
             max_attempts,
@@ -975,6 +1152,174 @@ fn write_acp_update<W>(
             serde_json::to_value(notification).expect("serialize session/update"),
         );
     }
+}
+
+fn send_session_update_json<W: Write>(writer: &JsonRpcWriter<W>, session_id: &str, update: Value) {
+    let _ = writer.send_notification(
+        "session/update",
+        json!({ "sessionId": session_id, "update": update }),
+    );
+}
+
+/// Emit the typed `tool_call` (and, for mutating tools, a `tool_call_update` carrying the file
+/// diff) the ACP spec requires so clients render structured tool activity, not only thought text.
+fn emit_tool_call_update<W: Write>(
+    writer: &JsonRpcWriter<W>,
+    session_id: &str,
+    cwd: &std::path::Path,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+) {
+    let parsed_args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    send_session_update_json(
+        writer,
+        session_id,
+        json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": call_id,
+            "title": tool_call_title(name, &parsed_args),
+            "kind": client::tool_kind(name),
+            "status": "pending",
+            "rawInput": parsed_args,
+        }),
+    );
+    if let Some(diff) = tool_diff(name, cwd, &parsed_args) {
+        send_session_update_json(
+            writer,
+            session_id,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": call_id,
+                "status": "in_progress",
+                "content": [diff],
+            }),
+        );
+    }
+}
+
+fn emit_tool_result_update<W: Write>(
+    writer: &JsonRpcWriter<W>,
+    session_id: &str,
+    db_path: &std::path::Path,
+    call_id: &str,
+    name: &str,
+    is_error: bool,
+) {
+    send_session_update_json(
+        writer,
+        session_id,
+        json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": call_id,
+            "status": if is_error { "failed" } else { "completed" },
+        }),
+    );
+    if name == "todo"
+        && let Some(plan) = plan_update_from_todos(db_path, session_id)
+    {
+        send_session_update_json(writer, session_id, plan);
+    }
+}
+
+fn tool_call_title(name: &str, args: &Value) -> String {
+    if let Some(path) = args.get("path").and_then(Value::as_str) {
+        return format!("{name} {path}");
+    }
+    if let Some(command) = args.get("command").and_then(Value::as_str) {
+        return format!("{name}: {command}");
+    }
+    name.to_owned()
+}
+
+/// Build a `diff` tool-call content block from a mutating tool's arguments so the client can render
+/// the proposed change. `write` carries the full new content; `edit` carries the old/new strings.
+fn tool_diff(name: &str, cwd: &std::path::Path, args: &Value) -> Option<Value> {
+    let path = args.get("path").and_then(Value::as_str)?;
+    let absolute = if std::path::Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    let path = absolute.to_string_lossy().to_string();
+    match name {
+        "write" => {
+            let new_text = args.get("content").and_then(Value::as_str)?;
+            Some(json!({ "type": "diff", "path": path, "newText": new_text }))
+        }
+        "edit" => {
+            let new_text = args
+                .get("new_string")
+                .or_else(|| args.get("newText"))
+                .and_then(Value::as_str)?;
+            let old_text = args
+                .get("old_string")
+                .or_else(|| args.get("oldText"))
+                .and_then(Value::as_str);
+            let mut diff = json!({ "type": "diff", "path": path, "newText": new_text });
+            if let Some(old_text) = old_text {
+                diff["oldText"] = json!(old_text);
+            }
+            Some(diff)
+        }
+        _ => None,
+    }
+}
+
+fn plan_update_from_todos(db_path: &std::path::Path, session_id: &str) -> Option<Value> {
+    let db = Database::open(db_path).ok()?;
+    let todos = db.todos().list_for_session(session_id).ok()?;
+    if todos.is_empty() {
+        return None;
+    }
+    let entries = todos
+        .iter()
+        .map(|todo| {
+            json!({
+                "content": todo.content,
+                "priority": "medium",
+                "status": todo_status_name(&todo.status),
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(json!({ "sessionUpdate": "plan", "entries": entries }))
+}
+
+fn todo_status_name(status: &protocol::TodoStatus) -> &'static str {
+    match status {
+        protocol::TodoStatus::Pending => "pending",
+        protocol::TodoStatus::InProgress => "in_progress",
+        // ACP plan entries have no cancelled state; report a settled task as completed.
+        protocol::TodoStatus::Completed | protocol::TodoStatus::Cancelled => "completed",
+    }
+}
+
+/// Emit the `available_commands_update` and `current_mode_update` at prompt start so the update
+/// stream always advertises the slash-command catalogue and the active mode.
+fn emit_prompt_start_updates<W: Write>(
+    writer: &JsonRpcWriter<W>,
+    session_id: &str,
+    current_mode: &str,
+) {
+    let commands = [
+        ("plan", "Switch to the read-only planning mode"),
+        ("build", "Switch to the default build mode"),
+        ("explore", "Switch to the read-only exploration mode"),
+        ("general", "Switch to the general-purpose mode"),
+    ]
+    .iter()
+    .map(|(name, description)| json!({ "name": name, "description": description }))
+    .collect::<Vec<_>>();
+    send_session_update_json(
+        writer,
+        session_id,
+        json!({ "sessionUpdate": "available_commands_update", "availableCommands": commands }),
+    );
+    send_session_update_json(
+        writer,
+        session_id,
+        json!({ "sessionUpdate": "current_mode_update", "currentModeId": current_mode }),
+    );
 }
 
 fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, event: &RunnerEvent) {
@@ -1152,6 +1497,8 @@ fn permission_engine_for_turn(
     bus: Arc<EventBus>,
     session_id: &str,
     message_id: &str,
+    agent: engine::Agent,
+    connection: ClientConnection,
 ) -> Result<Option<Arc<PermissionEngine>>, String> {
     let inputs = settings::ConfigInputs::from_process(BTreeMap::new())
         .map_err(|err| format!("cannot load permission configuration context: {err}"))?;
@@ -1163,14 +1510,58 @@ fn permission_engine_for_turn(
     }
     let trust =
         policy::resolve_trust(&inputs).map_err(|err| format!("cannot load trust policy: {err}"))?;
+    let mut hard_denies = readonly_agent_restriction_rules(agent);
     for rule in policy::trust_ruleset(trust).rules() {
-        ruleset.push(rule.clone());
+        if rule.action == permissions::Action::Deny {
+            hard_denies.push(rule.clone());
+        } else {
+            ruleset.push(rule.clone());
+        }
     }
+    let responder = Arc::new(AcpPermissionResponder::new(connection));
     Ok(Some(Arc::new(
         PermissionEngine::new(ruleset)
+            .with_hard_denies(permissions::Ruleset::new(hard_denies))
+            .with_responder(responder)
             .with_bus(bus)
             .with_event_context(session_id.to_owned(), message_id.to_owned()),
     )))
+}
+
+/// Read-only mutation blocks for `plan`/`explore`, installed as hard denies so a saved "always
+/// allow" cannot bypass them (mirrors the server/TUI agent-mode restriction invariant).
+fn readonly_agent_restriction_rules(agent: engine::Agent) -> Vec<permissions::Rule> {
+    match agent {
+        engine::Agent::Plan | engine::Agent::Explore => {
+            ["write", "edit", "apply_patch", "format", "bash"]
+                .into_iter()
+                .map(|tool| permissions::Rule::new(tool, "*", permissions::Action::Deny))
+                .collect()
+        }
+        engine::Agent::Build | engine::Agent::General => Vec::new(),
+    }
+}
+
+/// Inject client-supplied credentials (from `authenticate`) into the resolved provider config so a
+/// later prompt resolves the provider without a separate CLI/env credential. An already-configured
+/// or env credential still wins (the override is the lowest-precedence config value).
+fn apply_credential_overrides(
+    provider_config: &mut providers::ProviderConfigSet,
+    overrides: &HashMap<String, String>,
+) {
+    for (provider_id, key) in overrides {
+        let entry = provider_config
+            .providers
+            .entry(provider_id.clone())
+            .or_insert_with(|| providers::ProviderRuntimeConfig {
+                id: provider_id.clone(),
+                enabled: true,
+                ..Default::default()
+            });
+        if entry.auth.api_key.is_none() {
+            entry.auth.api_key = Some(key.clone());
+        }
+    }
 }
 
 struct AcpToolDispatcher {
@@ -1185,13 +1576,24 @@ impl AcpToolDispatcher {
         session_id: String,
         db_path: PathBuf,
         permissions: Option<Arc<PermissionEngine>>,
+        client_capabilities: ClientCapabilitiesSnapshot,
+        connection: ClientConnection,
     ) -> Self {
-        let registry = match ModelFamily::from_model_id(model_id) {
+        let mut registry = match ModelFamily::from_model_id(model_id) {
             ModelFamily::Gpt | ModelFamily::Codex => ToolRegistry::gpt(),
             ModelFamily::Anthropic | ModelFamily::Gemini | ModelFamily::Default => {
                 ToolRegistry::builtin()
             }
         };
+        if client_capabilities.fs_read {
+            registry.override_tool(Box::new(AcpReadTool::new(connection.clone())));
+        }
+        if client_capabilities.fs_write {
+            registry.override_tool(Box::new(AcpWriteTool::new(connection.clone())));
+        }
+        if client_capabilities.terminal {
+            registry.override_tool(Box::new(AcpTerminalTool::new(connection.clone())));
+        }
         let mut context = ToolContext::new(cwd)
             .with_session(session_id)
             .with_todo_store(Arc::new(AcpTodoStore { db_path }));
@@ -2187,5 +2589,916 @@ mod tests {
             .filter(|value| value.get("method") == Some(&json!("session/update")))
             .count();
         assert_eq!(later_count, update_count);
+    }
+
+    /// A provider that emits one round of tool calls and then a final text answer, so a turn
+    /// exercises the full dispatch path (tool-call updates, client callbacks, permission gating).
+    struct ToolCallingProvider {
+        tool_calls: Vec<(String, String, Value)>,
+        final_text: String,
+        requests: Arc<StdMutex<Vec<LlmRequest>>>,
+    }
+
+    impl ToolCallingProvider {
+        fn new(tool_calls: Vec<(&str, &str, Value)>, final_text: &str) -> Self {
+            Self {
+                tool_calls: tool_calls
+                    .into_iter()
+                    .map(|(id, name, args)| (id.to_owned(), name.to_owned(), args))
+                    .collect(),
+                final_text: final_text.to_owned(),
+                requests: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Provider for ToolCallingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let tool_calls = self.tool_calls.clone();
+            let final_text = self.final_text.clone();
+            let requests = self.requests.clone();
+            async move {
+                let call_index = {
+                    let mut guard = requests.lock().expect("requests mutex");
+                    let index = guard.len();
+                    guard.push(request);
+                    index
+                };
+                let events = if call_index == 0 {
+                    let mut events = tool_calls
+                        .iter()
+                        .map(|(id, name, args)| {
+                            LlmEvent::ToolCall(llm::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments: args.to_string(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    events.push(LlmEvent::Done {
+                        reason: llm::FinishReason::ToolCalls,
+                    });
+                    events
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: final_text.clone(),
+                        },
+                        LlmEvent::Usage(Usage {
+                            input_tokens: 1,
+                            output_tokens: 1,
+                            total_tokens: 2,
+                            cache_creation_input_tokens: None,
+                            cache_read_input_tokens: None,
+                            reasoning_output_tokens: None,
+                            cost: Some(0.000001),
+                        }),
+                        LlmEvent::Done {
+                            reason: llm::FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(stream::iter(events)) as LlmStream)
+            }
+            .boxed()
+        }
+    }
+
+    fn initialize_with_caps(
+        service: &AcpService,
+        writer: &JsonRpcWriter<SharedBuffer>,
+        capabilities: Value,
+    ) {
+        service
+            .handle_value(
+                request(
+                    1,
+                    "initialize",
+                    json!({
+                        "protocolVersion": 1,
+                        "clientCapabilities": capabilities,
+                        "clientInfo": { "name": "test", "version": "0" }
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("initialize");
+    }
+
+    fn send_prompt(
+        service: &AcpService,
+        writer: &JsonRpcWriter<SharedBuffer>,
+        id: i64,
+        session_id: &str,
+        text: &str,
+    ) {
+        service
+            .handle_value(
+                request(
+                    id,
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": text }]
+                    }),
+                ),
+                writer.clone(),
+            )
+            .expect("prompt");
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cortex-acp-{name}-{}-{id}", process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// Wait for the first agent->client request of `method` at or after `after`, deliver `result`
+    /// as the client's JSON-RPC response, and return the captured request.
+    async fn answer_client_request(
+        service: &AcpService,
+        writer: &JsonRpcWriter<SharedBuffer>,
+        buffer: &SharedBuffer,
+        method: &str,
+        after: usize,
+        result: Value,
+    ) -> Value {
+        let values = wait_for(buffer, |values| {
+            values.iter().skip(after).any(|value| {
+                value.get("method") == Some(&json!(method))
+                    && value
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id.starts_with("acp-srv-"))
+            })
+        })
+        .await;
+        let req = values
+            .into_iter()
+            .skip(after)
+            .find(|value| value.get("method") == Some(&json!(method)))
+            .expect("client request");
+        let id = req.get("id").cloned().expect("client request id");
+        service
+            .handle_value(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                writer.clone(),
+            )
+            .expect("deliver client response");
+        req
+    }
+
+    fn session_update_kinds(values: &[Value]) -> Vec<String> {
+        values
+            .iter()
+            .filter(|value| value.get("method") == Some(&json!("session/update")))
+            .filter_map(|value| value.pointer("/params/update/sessionUpdate"))
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn listed_session_ids(value: &Value) -> Vec<String> {
+        value
+            .pointer("/result/sessions")
+            .and_then(Value::as_array)
+            .expect("sessions array")
+            .iter()
+            .filter_map(|session| session.get("sessionId").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // VAL-GAP-ACP-001
+    #[tokio::test]
+    async fn authenticate_stores_credential_and_advertises_method() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+
+        let init = buffer.values()[0].clone();
+        let auth_methods = init
+            .pointer("/result/authMethods")
+            .and_then(Value::as_array)
+            .expect("authMethods advertised");
+        assert!(
+            auth_methods
+                .iter()
+                .any(|method| method.get("id").and_then(Value::as_str) == Some("api-key")),
+            "initialize must advertise the api-key auth method: {auth_methods:?}"
+        );
+
+        let provided = "acp-fixture-value-001";
+        service
+            .handle_value(
+                request(
+                    7,
+                    "authenticate",
+                    json!({ "methodId": "api-key", "provider": "openrouter", "apiKey": provided }),
+                ),
+                writer.clone(),
+            )
+            .expect("authenticate");
+
+        let values = buffer.values();
+        let response = response_with_id(&values, 7);
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(response.get("result").is_some());
+
+        assert_eq!(
+            service
+                .state
+                .credential_overrides()
+                .get("openrouter")
+                .map(String::as_str),
+            Some(provided),
+            "authenticate must store the credential for later prompts"
+        );
+        let on_the_wire = serde_json::to_string(&values).expect("serialize wire");
+        assert!(
+            !on_the_wire.contains(provided),
+            "the API key must never be echoed back on the wire"
+        );
+    }
+
+    // VAL-GAP-ACP-001 (provider credential injection)
+    #[test]
+    fn apply_credential_overrides_injects_only_a_missing_api_key() {
+        let mut config = providers::ProviderConfigSet::default();
+        let mut overrides = HashMap::new();
+        overrides.insert("openrouter".to_owned(), "injected-value".to_owned());
+        apply_credential_overrides(&mut config, &overrides);
+        assert_eq!(
+            config
+                .providers
+                .get("openrouter")
+                .and_then(|entry| entry.auth.api_key.as_deref()),
+            Some("injected-value")
+        );
+
+        let mut later = HashMap::new();
+        later.insert("openrouter".to_owned(), "other-value".to_owned());
+        apply_credential_overrides(&mut config, &later);
+        assert_eq!(
+            config
+                .providers
+                .get("openrouter")
+                .and_then(|entry| entry.auth.api_key.as_deref()),
+            Some("injected-value"),
+            "an existing credential must win over the authenticate override"
+        );
+    }
+
+    // VAL-GAP-ACP-002
+    #[tokio::test]
+    async fn sessions_list_load_resume_close_fork_are_functional() {
+        let answer = "ACP-SESSION-ANSWER";
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[answer])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_a = new_session_with_id(&service, &writer, 2);
+        let session_b = new_session_with_id(&service, &writer, 3);
+
+        let marker = "remember-acp-002";
+        send_prompt(&service, &writer, 10, &session_a, &format!("note {marker}"));
+        wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(10)))
+        })
+        .await;
+
+        service
+            .handle_value(request(20, "session/list", json!({})), writer.clone())
+            .expect("list");
+        let values = buffer.values();
+        let ids = listed_session_ids(response_with_id(&values, 20));
+        assert!(ids.contains(&session_a), "list missing session A: {ids:?}");
+        assert!(ids.contains(&session_b), "list missing session B: {ids:?}");
+
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(21, "session/load", json!({ "sessionId": session_a })),
+                writer.clone(),
+            )
+            .expect("load");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(21)))
+        })
+        .await;
+        let replay = update_texts(&values[start..]).concat();
+        assert!(
+            replay.contains(marker),
+            "load did not replay user text: {replay:?}"
+        );
+        assert!(
+            replay.contains(answer),
+            "load did not replay agent text: {replay:?}"
+        );
+        assert!(
+            response_with_id(&values, 21)
+                .pointer("/result/modes/currentModeId")
+                .is_some(),
+            "load result must report the session mode state"
+        );
+
+        service
+            .handle_value(
+                request(22, "session/resume", json!({ "sessionId": session_a })),
+                writer.clone(),
+            )
+            .expect("resume");
+        let values = buffer.values();
+        assert_eq!(
+            response_with_id(&values, 22).pointer("/result/sessionId"),
+            Some(&json!(session_a))
+        );
+
+        service
+            .handle_value(
+                request(23, "session/fork", json!({ "sessionId": session_a })),
+                writer.clone(),
+            )
+            .expect("fork");
+        let values = buffer.values();
+        let child = response_with_id(&values, 23)
+            .pointer("/result/sessionId")
+            .and_then(Value::as_str)
+            .expect("fork child id")
+            .to_owned();
+        assert_ne!(child, session_a, "fork must create a new session id");
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(24, "session/load", json!({ "sessionId": child })),
+                writer.clone(),
+            )
+            .expect("load child");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(24)))
+        })
+        .await;
+        let child_replay = update_texts(&values[start..]).concat();
+        assert!(
+            child_replay.contains(marker),
+            "fork child did not inherit the parent transcript: {child_replay:?}"
+        );
+
+        service
+            .handle_value(
+                request(25, "session/close", json!({ "sessionId": session_a })),
+                writer.clone(),
+            )
+            .expect("close");
+        let values = buffer.values();
+        assert!(response_with_id(&values, 25).get("error").is_none());
+
+        let db_path = service.state.db_path.clone();
+        let restarted = AcpService::with_provider(
+            db_path,
+            "google/gemini-2.5-flash",
+            Arc::new(FakeProvider::new(&[])),
+        );
+        let restart_buffer = SharedBuffer::default();
+        let restart_writer = JsonRpcWriter::new(restart_buffer.clone());
+        initialize(&restarted, &restart_writer);
+        restarted
+            .handle_value(
+                request(30, "session/list", json!({})),
+                restart_writer.clone(),
+            )
+            .expect("list after restart");
+        let values = restart_buffer.values();
+        let ids = listed_session_ids(response_with_id(&values, 30));
+        assert!(
+            ids.contains(&session_a),
+            "session A lost across restart: {ids:?}"
+        );
+        assert!(
+            ids.contains(&session_b),
+            "session B lost across restart: {ids:?}"
+        );
+    }
+
+    // VAL-GAP-ACP-003
+    #[tokio::test]
+    async fn mode_model_config_updates_emit_notifications_and_persist() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&["ok"])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    10,
+                    "session/set_mode",
+                    json!({ "sessionId": session_id, "modeId": "plan" }),
+                ),
+                writer.clone(),
+            )
+            .expect("set_mode");
+        let values = buffer.values();
+        assert!(response_with_id(&values, 10).get("error").is_none());
+        assert!(
+            values[start..].iter().any(|value| {
+                value.pointer("/params/update/sessionUpdate") == Some(&json!("current_mode_update"))
+                    && value.pointer("/params/update/currentModeId") == Some(&json!("plan"))
+            }),
+            "set_mode must emit a current_mode_update naming the new mode"
+        );
+        assert_eq!(
+            service.state.session_runtime(&session_id).mode.as_deref(),
+            Some("plan")
+        );
+
+        let model = "anthropic/claude-3.7-sonnet";
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    11,
+                    "session/set_model",
+                    json!({ "sessionId": session_id, "model": model }),
+                ),
+                writer.clone(),
+            )
+            .expect("set_model");
+        let values = buffer.values();
+        assert!(response_with_id(&values, 11).get("error").is_none());
+        let model_update = values[start..]
+            .iter()
+            .find(|value| {
+                value.pointer("/params/update/sessionUpdate")
+                    == Some(&json!("config_option_update"))
+            })
+            .expect("config_option_update");
+        assert!(
+            model_update.to_string().contains(model),
+            "config update must name the new model: {model_update}"
+        );
+        let db = Database::open(&service.state.db_path).expect("db");
+        assert_eq!(
+            db.sessions()
+                .require(&session_id)
+                .expect("session")
+                .model
+                .as_deref(),
+            Some(model),
+            "set_model must persist to the durable store so later prompts use it"
+        );
+
+        let start = buffer.values().len();
+        service
+            .handle_value(
+                request(
+                    12,
+                    "session/set_config_option",
+                    json!({ "sessionId": session_id, "configId": "mode", "value": "explore" }),
+                ),
+                writer.clone(),
+            )
+            .expect("set_config_option");
+        let values = buffer.values();
+        assert!(response_with_id(&values, 12).get("error").is_none());
+        assert!(values[start..].iter().any(|value| {
+            value.pointer("/params/update/sessionUpdate") == Some(&json!("current_mode_update"))
+                && value.pointer("/params/update/currentModeId") == Some(&json!("explore"))
+        }));
+        assert_eq!(
+            service.state.session_runtime(&session_id).mode.as_deref(),
+            Some("explore")
+        );
+
+        service
+            .handle_value(
+                request(
+                    13,
+                    "session/set_mode",
+                    json!({ "sessionId": session_id, "modeId": "bogus" }),
+                ),
+                writer.clone(),
+            )
+            .expect("invalid set_mode");
+        let values = buffer.values();
+        assert_eq!(response_with_id(&values, 13)["error"]["code"], -32602);
+    }
+
+    // VAL-GAP-ACP-003 (mode alters the next prompt)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn set_mode_plan_denies_write_in_subsequent_prompt() {
+        let dir = temp_dir("planmode");
+        let target = dir.join("should-not-exist.txt");
+        let provider = ToolCallingProvider::new(
+            vec![(
+                "call-write",
+                "write",
+                json!({ "path": target.to_string_lossy(), "content": "blocked" }),
+            )],
+            "done",
+        );
+        let (service, buffer) = service_with_provider(Arc::new(provider));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+        service
+            .handle_value(
+                request(
+                    10,
+                    "session/set_mode",
+                    json!({ "sessionId": session_id, "modeId": "plan" }),
+                ),
+                writer.clone(),
+            )
+            .expect("set_mode");
+
+        send_prompt(&service, &writer, 11, &session_id, "please write the file");
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(11)))
+        })
+        .await;
+        assert!(response_with_id(&values, 11).get("result").is_some());
+        assert!(
+            !target.exists(),
+            "plan mode is a read-only hard deny; the write must have no disk side effect"
+        );
+        assert!(
+            values.iter().any(|value| {
+                value.pointer("/params/update/sessionUpdate") == Some(&json!("tool_call_update"))
+                    && value.pointer("/params/update/status") == Some(&json!("failed"))
+            }),
+            "a denied tool call must surface a failed tool_call_update"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // VAL-GAP-ACP-004
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_update_includes_tool_call_plan_diff_commands_and_mode() {
+        let dir = temp_dir("updates");
+        let write_target = dir.join("plan-output.txt");
+        let provider = ToolCallingProvider::new(
+            vec![
+                (
+                    "call-todo",
+                    "todo",
+                    json!({ "todos": [{ "content": "investigate", "status": "in_progress" }] }),
+                ),
+                (
+                    "call-write",
+                    "write",
+                    json!({ "path": write_target.to_string_lossy(), "content": "result" }),
+                ),
+            ],
+            "done",
+        );
+        let (service, buffer) = service_with_provider(Arc::new(provider));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize_with_caps(
+            &service,
+            &writer,
+            json!({ "fs": { "writeTextFile": true } }),
+        );
+        let session_id = new_session(&service, &writer);
+        send_prompt(&service, &writer, 11, &session_id, "plan then write");
+
+        answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "fs/write_text_file",
+            0,
+            json!({}),
+        )
+        .await;
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(11)))
+        })
+        .await;
+        assert!(response_with_id(&values, 11).get("result").is_some());
+
+        let kinds = session_update_kinds(&values);
+        for expected in [
+            "tool_call",
+            "tool_call_update",
+            "plan",
+            "available_commands_update",
+            "current_mode_update",
+        ] {
+            assert!(
+                kinds.iter().any(|kind| kind == expected),
+                "missing `{expected}` session/update variant; saw {kinds:?}"
+            );
+        }
+        assert!(
+            values.iter().any(|value| {
+                value.pointer("/params/update/sessionUpdate") == Some(&json!("tool_call"))
+                    && value.pointer("/params/update/toolCallId").is_some()
+            }),
+            "tool_call updates must carry a toolCallId"
+        );
+        let has_diff = values.iter().any(|value| {
+            value
+                .pointer("/params/update/content")
+                .and_then(Value::as_array)
+                .is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|block| block.get("type") == Some(&json!("diff")))
+                })
+        });
+        assert!(
+            has_diff,
+            "tool_call_update must include a file diff content block"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // VAL-GAP-ACP-005
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn client_filesystem_callbacks_are_used_when_configured() {
+        let dir = temp_dir("clientfs");
+        let read_target = dir.join("client-read.txt");
+        let write_target = dir.join("client-write.txt");
+        let read_path = read_target.to_string_lossy().to_string();
+        let write_path = write_target.to_string_lossy().to_string();
+        let provider = ToolCallingProvider::new(
+            vec![
+                ("call-read", "read", json!({ "path": read_path })),
+                (
+                    "call-write",
+                    "write",
+                    json!({ "path": write_path, "content": "ROUTED-TO-CLIENT" }),
+                ),
+            ],
+            "done",
+        );
+        let (service, buffer) = service_with_provider(Arc::new(provider));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize_with_caps(
+            &service,
+            &writer,
+            json!({ "fs": { "readTextFile": true, "writeTextFile": true } }),
+        );
+        let session_id = new_session(&service, &writer);
+        send_prompt(&service, &writer, 11, &session_id, "read then write");
+
+        let read_req = answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "fs/read_text_file",
+            0,
+            json!({ "content": "FROM-CLIENT" }),
+        )
+        .await;
+        let write_req = answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "fs/write_text_file",
+            0,
+            json!({}),
+        )
+        .await;
+
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(11)))
+        })
+        .await;
+        assert!(response_with_id(&values, 11).get("result").is_some());
+
+        assert_eq!(
+            read_req.pointer("/params/path").and_then(Value::as_str),
+            Some(read_target.to_string_lossy().as_ref()),
+            "client read callback must carry the resolved path"
+        );
+        assert_eq!(
+            write_req.pointer("/params/path").and_then(Value::as_str),
+            Some(write_target.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            write_req.pointer("/params/content"),
+            Some(&json!("ROUTED-TO-CLIENT"))
+        );
+        assert!(
+            !write_target.exists(),
+            "write must route to the client, leaving the local scratch disk unchanged"
+        );
+        assert!(
+            !read_target.exists(),
+            "read must route to the client, not touch the local scratch disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // VAL-GAP-ACP-006
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn client_terminal_callbacks_execute_and_stream_output() {
+        let provider = ToolCallingProvider::new(
+            vec![("call-bash", "bash", json!({ "command": "echo hello-acp" }))],
+            "done",
+        );
+        let (service, buffer) = service_with_provider(Arc::new(provider));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize_with_caps(&service, &writer, json!({ "terminal": true }));
+        let session_id = new_session(&service, &writer);
+        send_prompt(&service, &writer, 11, &session_id, "run echo");
+
+        let create_req = answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "terminal/create",
+            0,
+            json!({ "terminalId": "term-1" }),
+        )
+        .await;
+        answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "terminal/wait_for_exit",
+            0,
+            json!({ "exitCode": 0 }),
+        )
+        .await;
+        answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "terminal/output",
+            0,
+            json!({ "output": "hello-acp\n", "truncated": false }),
+        )
+        .await;
+        let release_req =
+            answer_client_request(&service, &writer, &buffer, "terminal/release", 0, json!({}))
+                .await;
+
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(11)))
+        })
+        .await;
+        assert!(response_with_id(&values, 11).get("result").is_some());
+        assert_eq!(
+            create_req.pointer("/params/args"),
+            Some(&json!(["-c", "echo hello-acp"])),
+            "terminal/create must pass the command through the client shell"
+        );
+        assert_eq!(
+            release_req
+                .pointer("/params/terminalId")
+                .and_then(Value::as_str),
+            Some("term-1"),
+            "the terminal must be released so no orphaned command remains"
+        );
+        assert!(
+            values.iter().any(|value| {
+                value.pointer("/params/update/sessionUpdate") == Some(&json!("tool_call_update"))
+                    && value.pointer("/params/update/status") == Some(&json!("completed"))
+            }),
+            "a cleanly-exited terminal command must surface a completed tool_call_update"
+        );
+    }
+
+    // VAL-GAP-ACP-007
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn permission_request_round_trips_through_client() {
+        let (service, buffer) = service_with_provider(Arc::new(FakeProvider::new(&[])));
+        let writer = JsonRpcWriter::new(buffer.clone());
+
+        let allow_dir = temp_dir("perm-allow");
+        let mut allow_rules = permissions::permissive_default_rules();
+        allow_rules.push(permissions::Rule::new(
+            "write",
+            "*",
+            permissions::Action::Ask,
+        ));
+        let allow_engine = PermissionEngine::new(permissions::Ruleset::new(allow_rules))
+            .with_responder(Arc::new(AcpPermissionResponder::new(
+                ClientConnection::new(
+                    service.state.clone(),
+                    Arc::new(writer.clone()),
+                    "ses_perm_allow".to_owned(),
+                ),
+            )));
+        let allow_ctx = ToolContext::new(allow_dir.clone())
+            .with_permissions(Arc::new(allow_engine))
+            .with_session("ses_perm_allow");
+        let allow_args =
+            serde_json::to_string(&json!({ "path": "allowed.txt", "content": "ok" })).unwrap();
+        let allow_handle = tokio::spawn(async move {
+            ToolRegistry::builtin()
+                .execute("write", &allow_args, &allow_ctx)
+                .await
+        });
+        let request_value = answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "session/request_permission",
+            0,
+            json!({ "outcome": { "outcome": "selected", "optionId": "allow-once" } }),
+        )
+        .await;
+        let allow_output = allow_handle.await.expect("join allow");
+        assert!(!allow_output.is_error, "{}", allow_output.model_content());
+        assert!(
+            allow_dir.join("allowed.txt").exists(),
+            "an allowed write must produce its file"
+        );
+        assert_eq!(
+            request_value
+                .pointer("/params/toolCall/rawInput/tool")
+                .and_then(Value::as_str),
+            Some("write"),
+            "permission request must name the gated action"
+        );
+        assert!(
+            request_value
+                .pointer("/params/toolCall/locations/0/path")
+                .and_then(Value::as_str)
+                .is_some(),
+            "permission request must include the target path"
+        );
+
+        let before_deny = buffer.values().len();
+        let deny_dir = temp_dir("perm-deny");
+        let mut deny_rules = permissions::permissive_default_rules();
+        deny_rules.push(permissions::Rule::new(
+            "write",
+            "*",
+            permissions::Action::Ask,
+        ));
+        let deny_engine = PermissionEngine::new(permissions::Ruleset::new(deny_rules))
+            .with_responder(Arc::new(AcpPermissionResponder::new(
+                ClientConnection::new(
+                    service.state.clone(),
+                    Arc::new(writer.clone()),
+                    "ses_perm_deny".to_owned(),
+                ),
+            )));
+        let deny_ctx = ToolContext::new(deny_dir.clone())
+            .with_permissions(Arc::new(deny_engine))
+            .with_session("ses_perm_deny");
+        let deny_args =
+            serde_json::to_string(&json!({ "path": "denied.txt", "content": "no" })).unwrap();
+        let deny_handle = tokio::spawn(async move {
+            ToolRegistry::builtin()
+                .execute("write", &deny_args, &deny_ctx)
+                .await
+        });
+        let feedback = "do not modify that file";
+        answer_client_request(
+            &service,
+            &writer,
+            &buffer,
+            "session/request_permission",
+            before_deny,
+            json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "reject-once",
+                    "_meta": { "feedback": feedback }
+                }
+            }),
+        )
+        .await;
+        let deny_output = deny_handle.await.expect("join deny");
+        assert!(
+            deny_output.is_error,
+            "a rejected write must report an error"
+        );
+        assert!(
+            deny_output.model_content().contains(feedback),
+            "denied write must carry the client feedback: {}",
+            deny_output.model_content()
+        );
+        assert!(
+            !deny_dir.join("denied.txt").exists(),
+            "a denied write must have no disk side effect"
+        );
+
+        let _ = std::fs::remove_dir_all(&allow_dir);
+        let _ = std::fs::remove_dir_all(&deny_dir);
     }
 }

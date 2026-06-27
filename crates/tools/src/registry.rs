@@ -127,6 +127,19 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
+    /// Replace any already-registered tool sharing `tool`'s name with `tool`, appending it when no
+    /// tool by that name exists.
+    ///
+    /// [`get`](Self::get) resolves the first tool matching a name, so a surface that materializes a
+    /// capability-backed variant (for example an ACP client filesystem `read`/`write`) must
+    /// override the built-in rather than merely register alongside it, or the built-in would keep
+    /// winning dispatch.
+    pub fn override_tool(&mut self, tool: Box<dyn Tool>) {
+        let name = tool.name().to_owned();
+        self.tools.retain(|existing| existing.name() != name);
+        self.tools.push(tool);
+    }
+
     /// The number of registered tools.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -356,5 +369,52 @@ mod tests {
         let output = registry.execute("read", "{not json", &ctx).await;
         assert!(output.is_error);
         assert!(output.model_content().contains("invalid arguments"));
+    }
+
+    #[tokio::test]
+    async fn override_tool_replaces_the_builtin_and_wins_dispatch() {
+        struct StubRead;
+        impl Tool for StubRead {
+            fn name(&self) -> &str {
+                "read"
+            }
+            fn description(&self) -> &str {
+                "stub read"
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            fn execute<'a>(
+                &'a self,
+                _arguments: serde_json::Value,
+                _ctx: &'a ToolContext,
+            ) -> futures_util::future::BoxFuture<'a, ToolOutput> {
+                Box::pin(async { ToolOutput::text("OVERRIDDEN-READ") })
+            }
+        }
+
+        let mut registry = ToolRegistry::builtin();
+        let before = registry.len();
+        registry.override_tool(Box::new(StubRead));
+
+        assert_eq!(
+            registry.len(),
+            before,
+            "override must replace, not grow the registry"
+        );
+        assert_eq!(
+            registry
+                .definitions()
+                .iter()
+                .filter(|def| def.name == "read")
+                .count(),
+            1,
+            "exactly one `read` tool may be advertised after override"
+        );
+
+        let ctx = ToolContext::new(std::env::temp_dir());
+        let output = registry.execute("read", "{}", &ctx).await;
+        assert!(!output.is_error);
+        assert_eq!(output.model_content(), "OVERRIDDEN-READ");
     }
 }
