@@ -137,6 +137,15 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/share/{share_id}", "get", 200);
     assert_method(paths, "/project/discovery", "get", 200);
     assert_method(paths, "/experimental/workspace/adapter", "get", 200);
+    assert_method(paths, "/config", "get", 200);
+    assert_method(paths, "/config", "patch", 200);
+    assert_method(paths, "/config/providers", "get", 200);
+    assert_method(paths, "/provider", "get", 200);
+    assert_method(paths, "/auth", "get", 200);
+    assert_method(paths, "/auth/callback", "get", 200);
+    assert_method(paths, "/auth/{provider}", "put", 200);
+    assert_method(paths, "/auth/{provider}", "delete", 200);
+    assert_method(paths, "/auth/{provider}/authorize", "post", 200);
     assert_eq!(
         document["components"]["securitySchemes"]["bearerAuth"]["scheme"], "bearer",
         "OpenAPI should document the Authorization bearer scheme"
@@ -222,6 +231,13 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/share/{share_id}"
                     | "/project/discovery"
                     | "/experimental/workspace/adapter"
+                    | "/config"
+                    | "/config/providers"
+                    | "/provider"
+                    | "/auth"
+                    | "/auth/callback"
+                    | "/auth/{provider}"
+                    | "/auth/{provider}/authorize"
                     | "/openapi.json"
             ),
             "OpenAPI document should not advertise phantom path {path:?}"

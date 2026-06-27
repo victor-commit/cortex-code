@@ -730,6 +730,135 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         }
                     }
                 }
+            },
+            "/config": {
+                "get": {
+                    "operationId": "getConfig",
+                    "summary": "Report the effective, secret-redacted configuration.",
+                    "responses": {
+                        "200": {
+                            "description": "Redacted effective configuration table.",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "type": "object", "additionalProperties": true }
+                                }
+                            }
+                        }
+                    }
+                },
+                "patch": {
+                    "operationId": "patchConfig",
+                    "summary": "Patch the safe top-level config fields and persist them to the project file.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ConfigPatchRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Updated redacted effective configuration table.",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "type": "object", "additionalProperties": true }
+                                }
+                            }
+                        },
+                        "400": json_response("Unknown field or invalid value.", "ErrorResponse")
+                    }
+                }
+            },
+            "/config/providers": {
+                "get": {
+                    "operationId": "listConfigProviders",
+                    "summary": "List providers and models, matching the cortex models catalog.",
+                    "responses": {
+                        "200": json_response("Provider and model catalog.", "ProvidersCatalog")
+                    }
+                }
+            },
+            "/provider": {
+                "get": {
+                    "operationId": "listProviders",
+                    "summary": "List providers with their resolved authenticated state.",
+                    "responses": {
+                        "200": json_response("Providers with authenticated state.", "ProviderStateList")
+                    }
+                }
+            },
+            "/auth": {
+                "get": {
+                    "operationId": "listAuth",
+                    "summary": "List provider auth methods and currently authenticated providers.",
+                    "responses": {
+                        "200": json_response("Auth method and authenticated-provider listing.", "AuthListResponse")
+                    }
+                }
+            },
+            "/auth/callback": {
+                "get": {
+                    "operationId": "oauthCallback",
+                    "summary": "Complete an OAuth flow: validate state, exchange the code, store a token.",
+                    "parameters": [
+                        { "name": "code", "in": "query", "required": false, "schema": { "type": "string" } },
+                        { "name": "state", "in": "query", "required": false, "schema": { "type": "string" } },
+                        { "name": "error", "in": "query", "required": false, "schema": { "type": "string" } }
+                    ],
+                    "responses": {
+                        "200": json_response("Credential stored; provider authenticated.", "AuthStateResponse"),
+                        "400": json_response("Missing/expired state or missing code.", "ErrorResponse"),
+                        "502": json_response("Token exchange failed upstream.", "ErrorResponse")
+                    }
+                }
+            },
+            "/auth/{provider}": {
+                "put": {
+                    "operationId": "setAuth",
+                    "summary": "Store an API-key or pre-obtained OAuth token for a provider.",
+                    "parameters": [provider_id_parameter()],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/SetAuthRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Provider authenticated state.", "AuthStateResponse"),
+                        "400": json_response("Missing or invalid credential.", "ErrorResponse")
+                    }
+                },
+                "delete": {
+                    "operationId": "removeAuth",
+                    "summary": "Remove a stored credential (logout).",
+                    "parameters": [provider_id_parameter()],
+                    "responses": {
+                        "200": json_response("Provider authenticated state.", "AuthStateResponse"),
+                        "400": json_response("Invalid provider.", "ErrorResponse")
+                    }
+                }
+            },
+            "/auth/{provider}/authorize": {
+                "post": {
+                    "operationId": "oauthAuthorize",
+                    "summary": "Begin the OAuth authorization-code flow and return the authorize URL and state.",
+                    "parameters": [provider_id_parameter()],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/AuthorizeRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": json_response("Authorization URL and CSRF state challenge.", "AuthorizeResponse"),
+                        "400": json_response("Missing required OAuth fields.", "ErrorResponse")
+                    }
+                }
             }
         },
         "components": {
@@ -1178,6 +1307,104 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "status": { "type": "string", "const": "deleted" },
                         "deleted": { "type": "boolean" }
                     }
+                },
+                "ConfigPatchRequest": {
+                    "type": "object",
+                    "description": "Safe top-level config fields a client may patch.",
+                    "properties": {
+                        "model": { "type": "string", "description": "Fully-qualified provider/model id." },
+                        "agent": { "type": "string", "description": "Default agent persona." },
+                        "max_steps": { "type": "integer", "minimum": 1, "description": "Per-turn step budget." }
+                    },
+                    "additionalProperties": false
+                },
+                "ProvidersCatalog": {
+                    "type": "object",
+                    "required": ["default_model", "providers", "provider_config"],
+                    "properties": {
+                        "default_model": { "type": "string" },
+                        "providers": {
+                            "type": "array",
+                            "items": { "type": "object", "required": ["id", "name", "models"] }
+                        },
+                        "provider_config": { "type": "object" }
+                    }
+                },
+                "ProviderStateList": {
+                    "type": "object",
+                    "required": ["default_model", "providers"],
+                    "properties": {
+                        "default_model": { "type": "string" },
+                        "providers": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/ProviderState" }
+                        }
+                    }
+                },
+                "ProviderState": {
+                    "type": "object",
+                    "required": ["id", "name", "authenticated", "source"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "authenticated": { "type": "boolean" },
+                        "source": { "type": "string" }
+                    }
+                },
+                "AuthListResponse": {
+                    "type": "object",
+                    "required": ["authenticated", "methods"],
+                    "properties": {
+                        "authenticated": { "type": "array", "items": { "type": "string" } },
+                        "methods": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["provider", "name", "types", "env", "authenticated"]
+                            }
+                        }
+                    }
+                },
+                "SetAuthRequest": {
+                    "type": "object",
+                    "description": "Store an API key or pre-obtained OAuth token for a provider.",
+                    "properties": {
+                        "type": { "type": "string", "enum": ["api", "oauth"] },
+                        "key": { "type": "string", "description": "API key (api) or token (oauth)." },
+                        "api_key": { "type": "string" },
+                        "access_token": { "type": "string" }
+                    }
+                },
+                "AuthorizeRequest": {
+                    "type": "object",
+                    "required": ["authorize_endpoint", "token_endpoint", "client_id"],
+                    "properties": {
+                        "authorize_endpoint": { "type": "string" },
+                        "token_endpoint": { "type": "string" },
+                        "client_id": { "type": "string" },
+                        "client_secret": { "type": "string" },
+                        "redirect_uri": { "type": "string" },
+                        "scopes": { "type": "array", "items": { "type": "string" } }
+                    }
+                },
+                "AuthorizeResponse": {
+                    "type": "object",
+                    "required": ["provider", "authorize_url", "state", "redirect_uri"],
+                    "properties": {
+                        "provider": { "type": "string" },
+                        "authorize_url": { "type": "string" },
+                        "state": { "type": "string" },
+                        "redirect_uri": { "type": "string" }
+                    }
+                },
+                "AuthStateResponse": {
+                    "type": "object",
+                    "required": ["provider", "authenticated"],
+                    "properties": {
+                        "provider": { "type": "string" },
+                        "authenticated": { "type": "boolean" },
+                        "method": { "type": ["string", "null"] }
+                    }
                 }
             }
         }
@@ -1227,6 +1454,12 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/share/{share_id}", &["get"]),
     ("/project/discovery", &["get"]),
     ("/experimental/workspace/adapter", &["get"]),
+    ("/config", &["get", "patch"]),
+    ("/config/providers", &["get"]),
+    ("/provider", &["get"]),
+    ("/auth", &["get"]),
+    ("/auth/{provider}", &["put", "delete"]),
+    ("/auth/{provider}/authorize", &["post"]),
 ];
 
 fn add_auth_documentation(document: &mut serde_json::Value) {
@@ -1313,6 +1546,16 @@ fn share_id_parameter() -> serde_json::Value {
         "required": true,
         "schema": { "type": "string" },
         "description": "Ephemeral local share id."
+    })
+}
+
+fn provider_id_parameter() -> serde_json::Value {
+    serde_json::json!({
+        "name": "provider",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Provider id (e.g. openrouter)."
     })
 }
 

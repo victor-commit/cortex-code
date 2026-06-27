@@ -26,7 +26,7 @@ use axum::{
         Html, IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
 };
 use db::{Database, DbError, Message, Session, UsageTotals};
 use engine::{
@@ -47,6 +47,8 @@ use thiserror::Error;
 use tokio::{net::TcpListener, sync::broadcast, sync::watch};
 use tools::{ToolContext, ToolRegistry};
 
+mod auth_ext;
+mod config_ext;
 #[allow(dead_code)]
 #[path = "../../cli/src/custom_agents.rs"]
 mod custom_agents;
@@ -91,6 +93,7 @@ pub struct ServerState {
     prompt_buffers: PromptBuffers,
     local_shares: LocalShares,
     permissions: PendingPermissions,
+    pending_auth: auth_ext::PendingAuth,
 }
 
 impl ServerState {
@@ -111,6 +114,7 @@ impl ServerState {
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
             permissions: PendingPermissions::default(),
+            pending_auth: auth_ext::PendingAuth::default(),
         }
     }
 
@@ -131,6 +135,7 @@ impl ServerState {
             prompt_buffers: PromptBuffers::default(),
             local_shares: LocalShares::default(),
             permissions: PendingPermissions::default(),
+            pending_auth: auth_ext::PendingAuth::default(),
         }
     }
 
@@ -710,6 +715,35 @@ pub fn app_with_state(state: ServerState) -> Router {
             "/experimental/workspace/adapter",
             get(list_workspace_adapter_discovery).options(preflight),
         )
+        .route(
+            "/config",
+            get(config_ext::get_config)
+                .patch(config_ext::patch_config)
+                .options(preflight),
+        )
+        .route(
+            "/config/providers",
+            get(config_ext::list_config_providers).options(preflight),
+        )
+        .route(
+            "/provider",
+            get(config_ext::list_providers).options(preflight),
+        )
+        .route("/auth", get(auth_ext::list_auth).options(preflight))
+        .route(
+            "/auth/callback",
+            get(auth_ext::oauth_callback).options(preflight),
+        )
+        .route(
+            "/auth/{provider}",
+            put(auth_ext::set_auth)
+                .delete(auth_ext::remove_auth)
+                .options(preflight),
+        )
+        .route(
+            "/auth/{provider}/authorize",
+            post(auth_ext::oauth_authorize).options(preflight),
+        )
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth, auth_and_cors))
 }
@@ -849,7 +883,7 @@ fn add_cors_headers(headers: &mut HeaderMap, origin: HeaderValue, preflight: boo
 }
 
 fn is_public_path(path: &str) -> bool {
-    matches!(path, "/health" | "/openapi.json")
+    matches!(path, "/health" | "/openapi.json" | "/auth/callback")
 }
 
 fn bearer_token_from_header(header_value: &str) -> Option<&str> {

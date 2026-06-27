@@ -25,6 +25,7 @@ protocol = { workspace = true }
 providers = { workspace = true }
 redaction = { workspace = true }
 audit = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 settings = { workspace = true }
@@ -32,6 +33,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tools = { workspace = true }
 toml = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

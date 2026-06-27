@@ -2807,6 +2807,7 @@ dependencies = [
  "protocol",
  "providers",
  "redaction",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "settings",
@@ -2815,6 +2816,7 @@ dependencies = [
  "toml",
  "tools",
  "tower",
+ "url",
 ]
 
 [[package]]
