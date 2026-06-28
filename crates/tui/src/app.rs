@@ -3854,9 +3854,29 @@ impl App {
             DiffViewerFocus::Files => None,
             DiffViewerFocus::Hunks => Some(selected_hunk),
         };
+        // Record the revert as a fresh checkpoint turn so it is undoable and so the net-change
+        // surfaces that read the shadow store (`cortex snapshot diff`, the server
+        // `/session/{id}/diff` route) stay consistent with disk after the revert: the store keeps
+        // the original turn's pre-image and this revert turn's post-image, so the reported net diff
+        // collapses to only the hunks that remain. The pre-image MUST be captured before the revert
+        // write; a no-op or failed revert finalizes nothing (the recorder is simply dropped). When
+        // no store is attached the revert stays a plain on-disk write, exactly as before.
+        let recorder = self.checkpoints.as_ref().and_then(|store| {
+            let absolute = resolve_diff_path(&diff.path).ok()?;
+            let label = self
+                .session_id
+                .clone()
+                .unwrap_or_else(|| DIFF_REVERT_TURN_LABEL.to_owned());
+            let recorder = store.begin_turn(label);
+            recorder.record_pre_image(&absolute);
+            Some(recorder)
+        });
         match apply_diff_revert(&diff, target) {
             Ok(changed) => {
                 if changed {
+                    if let Some(recorder) = &recorder {
+                        let _ = recorder.finalize();
+                    }
                     let scope = match target {
                         Some(index) => format!("hunk {} in {}", index + 1, diff.path),
                         None => format!("file {}", diff.path),
@@ -6244,6 +6264,12 @@ fn env_non_empty(key: &str) -> Option<String> {
         .ok()
         .filter(|value| !value.trim().is_empty())
 }
+
+/// Checkpoint turn label used for a `/diff` viewer revert when no durable session id is available
+/// (a not-yet-persisted session), so the revert is still recorded as an undoable, net-diff-visible
+/// turn. A persisted session reverts under its own session id so the server's session-scoped diff
+/// route reflects it.
+const DIFF_REVERT_TURN_LABEL: &str = "tui-diff-revert";
 
 fn resolve_diff_path(path: &str) -> Result<PathBuf, String> {
     let rel = PathBuf::from(path);
@@ -9768,6 +9794,103 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    // VAL-GAP-CROSS-012: a TUI `/diff` viewer hunk revert is reflected CONSISTENTLY by the on-disk
+    // bytes AND by the shadow-store net-change surfaces the server `/session/{id}/diff` route and
+    // `cortex snapshot diff` read — only the selected hunk is reverted, the unrelated hunk survives
+    // everywhere, and the recorded net diff collapses to exactly the remaining change. This locks
+    // the cross-flow seam: when a checkpoint store is attached, the revert records a fresh undoable
+    // turn (under the session id) so disk and the store's session/snapshot diff never disagree.
+    #[test]
+    fn hunk_revert_is_consistent_across_disk_and_checkpoint_diff_surfaces() {
+        let before = "line 1\nalpha\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nomega\nline 12\n";
+        let after = "line 1\nALPHA\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nOMEGA\nline 12\n";
+        let expected_after_revert = "line 1\nALPHA\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nomega\nline 12\n";
+
+        let cwd = std::env::current_dir().expect("cwd");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            DIFF_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let rel = format!("target/cortex-tui-revert-xflow-{unique}.txt");
+        let absolute = cwd.join(&rel);
+        std::fs::create_dir_all(absolute.parent().expect("parent")).expect("create diff dir");
+        let shadow = std::env::temp_dir().join(format!("cortex-tui-revert-shadow-{unique}"));
+        let store = ShadowStore::open(&cwd, &shadow).expect("open shadow store");
+        let session = format!("ses_xflow_{unique}");
+
+        // The "tool that creates multiple hunks": record the original turn (baseline -> two hunks)
+        // exactly as the real TUI turn dispatcher does, so the store holds the pre-image.
+        std::fs::write(&absolute, before).expect("seed baseline");
+        let recorder = store.begin_turn(session.clone());
+        recorder.record_pre_image(&absolute);
+        std::fs::write(&absolute, after).expect("apply two hunks");
+        recorder
+            .finalize()
+            .expect("finalize original turn")
+            .expect("original turn recorded a snapshot");
+
+        let mut a = app();
+        a.set_checkpoint_store(Some(store.clone()));
+        a.session_id = Some(session.clone());
+        let diff = crate::diff::compute_file_diff(&rel, Some(before), Some(after)).expect("a diff");
+        assert_eq!(diff.hunks.len(), 2, "fixture should produce two hunks");
+        a.transcript.push(Entry::Diff(diff));
+        dispatch(&mut a, "diff");
+        assert!(a.diff_viewer_open());
+        a.on_key(key(KeyCode::Tab)); // file tree -> hunks
+        a.on_key(key(KeyCode::Down)); // first hunk -> second (OMEGA) hunk
+        a.on_key(key(KeyCode::Char('r'))); // revert only the selected hunk
+
+        // Disk: only the selected (OMEGA) hunk reverted; the unrelated (ALPHA) hunk survives.
+        let disk = std::fs::read_to_string(&absolute).expect("read reverted file");
+        assert_eq!(
+            disk, expected_after_revert,
+            "disk reflects only the remaining hunk"
+        );
+
+        // Server `/session/{id}/diff` surface (session-scoped net change) agrees: the net diff is
+        // the single remaining hunk, with the reverted hunk's text absent.
+        let session_diffs = store
+            .session_file_diffs(&session)
+            .expect("session file diffs");
+        assert_eq!(session_diffs.len(), 1, "one file changed net");
+        assert_eq!(session_diffs[0].path, rel);
+        assert_eq!(session_diffs[0].status, "modified");
+        let session_body = &session_diffs[0].diff;
+        assert!(
+            session_body.contains("ALPHA") && session_body.contains("alpha"),
+            "the remaining hunk is present in the session diff: {session_body}"
+        );
+        assert!(
+            !session_body.contains("OMEGA"),
+            "the reverted hunk must be absent from the session diff: {session_body}"
+        );
+
+        // `cortex snapshot diff` surface (global net change, full unified body) agrees byte-for-byte
+        // with the session-scoped diff and reports exactly one added + one removed line.
+        let changes = store.snapshot_diff(None, true).expect("snapshot diff");
+        assert_eq!(changes.len(), 1, "one file changed net");
+        assert_eq!(changes[0].additions, 1, "exactly one remaining addition");
+        assert_eq!(changes[0].deletions, 1, "exactly one remaining deletion");
+        let full = changes[0].diff.as_deref().unwrap_or_default();
+        assert!(
+            full.contains("ALPHA") && !full.contains("OMEGA"),
+            "the global snapshot diff reflects only the remaining hunk: {full}"
+        );
+
+        // The viewer's own recomputed diff also shows the single remaining hunk (UI consistency).
+        let viewer = a.diff_viewer().expect("viewer remains open");
+        assert_eq!(
+            viewer.selected_file().expect("selected file").hunks.len(),
+            1,
+            "one hunk remains in the viewer after the targeted revert"
+        );
+
+        let _ = std::fs::remove_file(&absolute);
+        let _ = std::fs::remove_dir_all(&shadow);
     }
 
     #[test]
