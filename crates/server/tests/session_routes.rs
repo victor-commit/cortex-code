@@ -2037,6 +2037,94 @@ async fn share_route_serves_conversation_over_loopback_and_unshare_revokes() {
 }
 
 #[tokio::test]
+async fn share_route_serves_importable_json_when_accept_is_json() {
+    let scratch = Scratch::new("server-share-json");
+    let app = server::app_with_provider(scratch.db_path(), Arc::new(EchoProvider::default()));
+    let session = create_session(&app).await;
+    let nonce = "nonce-share-json-456";
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"text":"please echo {nonce}"}}"#)))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/share", session.id))
+                .header(header::HOST, "127.0.0.1:3201")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("share response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let share_path = body["url"]
+        .as_str()
+        .expect("share url")
+        .strip_prefix("http://127.0.0.1:3201")
+        .expect("loopback URL prefix")
+        .to_owned();
+
+    // The browser/HTML default is unchanged; only an explicit JSON Accept yields the artifact.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(share_path.clone())
+                .header(header::ACCEPT, "application/json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("shared json response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_json_content_type(&response);
+    let artifact: serde_json::Value = json_body(response).await;
+    assert_eq!(artifact["version"], 1);
+    assert_eq!(artifact["session"]["id"], session.id);
+    let messages = artifact["messages"].as_array().expect("messages array");
+    assert!(
+        messages.iter().any(|message| {
+            message["role"] == "assistant"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains(nonce))
+        }),
+        "share artifact should carry the assistant transcript: {artifact:?}"
+    );
+
+    // Without the JSON Accept header the same share path still renders the HTML page.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(share_path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("shared html response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = text_body(response).await;
+    assert!(
+        html.contains(nonce),
+        "default share view should remain HTML carrying the transcript: {html}"
+    );
+}
+
+#[tokio::test]
 async fn share_rejects_non_loopback_host_reference() {
     let scratch = Scratch::new("server-share-host");
     let app = server::app_with_db_path(scratch.db_path());

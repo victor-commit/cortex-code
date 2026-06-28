@@ -2023,7 +2023,8 @@ async fn unshare_session(
 async fn get_share(
     State(state): State<ServerState>,
     AxumPath(share_id): AxumPath<String>,
-) -> Result<Html<String>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let session_id = state
         .local_shares
         .session_for_share(&share_id)?
@@ -2037,7 +2038,68 @@ async fn get_share(
         .messages()
         .list_for_session(&session_id)
         .map_err(ApiError::from_db)?;
-    Ok(Html(render_share_page(&session, &messages)))
+    if wants_share_json(&headers) {
+        return Ok(Json(share_artifact(&session, &messages)).into_response());
+    }
+    Ok(Html(render_share_page(&session, &messages)).into_response())
+}
+
+/// Whether the client prefers the importable JSON artifact over the rendered HTML share page.
+///
+/// A share link opened in a browser sends `Accept: text/html` and gets the HTML view; the
+/// `cortex import <url>` client sends `Accept: application/json` and gets the artifact that
+/// re-imports into a local database.
+fn wants_share_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.to_ascii_lowercase().contains("application/json"))
+}
+
+/// The importable share artifact, wire-compatible with a `cortex export` document so the headless
+/// `cortex import` reader accepts it unchanged. Secret-shaped values are redacted at the boundary.
+#[derive(serde::Serialize)]
+struct ShareArtifact {
+    version: u32,
+    session: ShareArtifactSession,
+    messages: Vec<ShareArtifactMessage>,
+}
+
+#[derive(serde::Serialize)]
+struct ShareArtifactSession {
+    id: String,
+    title: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ShareArtifactMessage {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<RichMessagePart>,
+}
+
+/// Version stamp the headless `cortex export`/`import` artifact contract expects.
+const SHARE_ARTIFACT_VERSION: u32 = 1;
+
+fn share_artifact(session: &Session, messages: &[Message]) -> ShareArtifact {
+    ShareArtifact {
+        version: SHARE_ARTIFACT_VERSION,
+        session: ShareArtifactSession {
+            id: session.id.clone(),
+            title: session.title.as_deref().map(redaction::redact),
+            model: session.model.as_deref().map(redaction::redact),
+        },
+        messages: messages
+            .iter()
+            .map(|message| ShareArtifactMessage {
+                role: redaction::redact(&message.role),
+                content: redaction::redact(&message.content),
+                parts: message.parts.clone(),
+            })
+            .collect(),
+    }
 }
 
 fn open_database(state: &ServerState) -> Result<Database, ApiError> {

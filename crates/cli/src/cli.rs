@@ -144,6 +144,40 @@ pub enum Command {
     /// Inspect formatter availability and config state.
     #[command(alias = "format")]
     Formatter(FormatterArgs),
+
+    /// Attach to a running or most-recent session and stream its messages until you detach.
+    ///
+    /// Attach is a read-only observer: it prints the session's existing messages and then follows
+    /// new ones as they are persisted by a concurrent `cortex run` (or a `cortex serve` turn) on
+    /// the same database. Detaching — Ctrl-C, the end of `--timeout`, or `--once` — never aborts
+    /// the underlying turn, which keeps running in its own process. With `--server <URL>` the
+    /// existing transcript is fetched from a loopback `cortex serve` first; the live tail still
+    /// reads the shared database so it works whether the turn runs headless or through the server.
+    Attach(AttachArgs),
+
+    /// Report this build's upgrade status (self-update is described, never silently performed).
+    ///
+    /// A from-source mono-binary build is upgraded by its installer (cargo/git/package manager),
+    /// so `cortex upgrade` reports the current version and the unsupported-self-update status
+    /// rather than mutating the installed binary. It changes no files. Use `--help` for the
+    /// documented safeguards.
+    Upgrade(UpgradeArgs),
+
+    /// Preview or remove Cortex's own data and configuration artifacts (never unrelated files).
+    ///
+    /// By default this is a dry run that only LISTS the Cortex-owned paths (the data directory
+    /// holding the SQLite database, auth/MCP credential stores, and the `cortex` config
+    /// directory). Pass `--yes` to actually delete them. Resolution honors `CORTEX_DB_PATH`,
+    /// `CORTEX_DATA_DIR`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `HOME`, so an install prefix can
+    /// be uninstalled in isolation. Paths outside the Cortex-owned directories are never touched.
+    Uninstall(UninstallArgs),
+
+    /// Read-only diagnostics: inspect the database, effective config, LSP, audit log, and runtime.
+    ///
+    /// Every `debug` subcommand is read-only and redaction-safe by default: it never mutates the
+    /// database or writes secrets in cleartext. `--format json` emits a single strict JSON
+    /// document for scripting.
+    Debug(DebugArgs),
 }
 
 #[derive(Debug, Args)]
@@ -166,6 +200,114 @@ pub enum FormatterCommand {
 
 #[derive(Debug, Args)]
 pub struct FormatterStatusArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AttachArgs {
+    /// Session id to attach to. When omitted, the most recently updated session is used.
+    #[arg(value_name = "SESSION_ID")]
+    pub session: Option<String>,
+
+    /// Print the session's current messages and exit without following new ones.
+    #[arg(long, default_value_t = false)]
+    pub once: bool,
+
+    /// Stop following after this many seconds. `0` (the default) follows until you interrupt
+    /// with Ctrl-C; detaching never aborts the underlying turn.
+    #[arg(long, value_name = "SECS", default_value_t = 0)]
+    pub timeout: u64,
+
+    /// Poll interval, in milliseconds, for detecting newly persisted messages while following.
+    #[arg(long = "poll-ms", value_name = "MS", default_value_t = 250)]
+    pub poll_ms: u64,
+
+    /// Fetch the existing transcript from a loopback `cortex serve` origin before tailing. The
+    /// live tail still reads the shared database. Honors the `CORTEX_NO_NET` kill-switch.
+    #[arg(long, value_name = "URL")]
+    pub server: Option<String>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UpgradeArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Actually delete the Cortex-owned artifacts. Without this flag the command is a dry run
+    /// that only lists what it would remove and changes nothing.
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugArgs {
+    #[command(subcommand)]
+    pub command: DebugCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DebugCommand {
+    /// Inspect the SQLite database read-only: path, schema version, row counts, and an optional
+    /// integrity check. Never mutates the database.
+    Db(DebugDbArgs),
+
+    /// Dump the effective merged configuration with secrets redacted (same as `cortex config`).
+    Config(DebugConfigArgs),
+
+    /// Report configured language-server availability (same as `cortex lsp status`).
+    Lsp(DebugLspArgs),
+
+    /// Print recent durable audit-log records with secrets redacted.
+    Audit(DebugAuditArgs),
+
+    /// Report runtime status: version, resolved paths, build features, and the network kill-switch.
+    Info(DebugInfoArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DebugDbArgs {
+    /// Also run SQLite's read-only `PRAGMA integrity_check` and include its result.
+    #[arg(long, default_value_t = false)]
+    pub integrity: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugConfigArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugLspArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugAuditArgs {
+    /// Maximum number of most-recent records to print (0 prints all available records).
+    #[arg(long, value_name = "N", default_value_t = 50)]
+    pub limit: usize,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugInfoArgs {
     #[command(flatten)]
     pub format: FormatArgs,
 }
@@ -581,7 +723,9 @@ pub struct ExportArgs {
 
 #[derive(Debug, Args)]
 pub struct ImportArgs {
-    /// Path to a JSON artifact produced by `cortex export` (use `-` for stdin).
+    /// A JSON artifact to import. Accepts a local file path, `-` for stdin, or an `http(s)://`
+    /// URL to a shared session (for example a `cortex serve` share link). A URL is fetched over
+    /// the network behind the `CORTEX_NO_NET` kill-switch and never has its query string logged.
     #[arg(value_name = "ARTIFACT")]
     pub artifact: String,
 }

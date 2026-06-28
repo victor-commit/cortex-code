@@ -179,6 +179,29 @@ impl Database {
         })
     }
 
+    /// Open an existing database read-only, for diagnostics that must not mutate it.
+    ///
+    /// Unlike [`open`](Self::open) this neither creates the file nor runs migrations nor switches
+    /// the journal mode, so it issues no writes and leaves the on-disk database (and its checksum)
+    /// untouched. It is the backing open for `cortex debug db`.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if the database does not exist or cannot be opened read-only.
+    pub fn open_read_only(path: impl AsRef<Path>) -> DbResult<Self> {
+        let path = path.as_ref();
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags)
+            .map_err(|err| DbError::from_open(path, err))?;
+        conn.busy_timeout(BUSY_TIMEOUT)
+            .map_err(|err| DbError::from_open(path, err))?;
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
     /// The filesystem path this database was opened from.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -206,6 +229,27 @@ impl Database {
             .conn
             .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
         Ok(result)
+    }
+
+    /// Read-only row counts for the core tables, for diagnostics (`cortex debug db`).
+    ///
+    /// Issues only `SELECT count(*)` queries and never writes, so it does not change the database
+    /// (its file checksum is unaffected on an already-migrated database).
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if a count query cannot be evaluated.
+    pub fn table_counts(&self) -> DbResult<Vec<(String, i64)>> {
+        const TABLES: &[&str] = &["sessions", "messages", "message_parts", "todos", "usage"];
+        let mut counts = Vec::with_capacity(TABLES.len());
+        for table in TABLES {
+            let count: i64 =
+                self.conn
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+            counts.push(((*table).to_owned(), count));
+        }
+        Ok(counts)
     }
 
     /// The sessions repository.
@@ -307,5 +351,27 @@ mod tests {
 
         drop(blocker);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn table_counts_report_core_tables_and_are_read_only() {
+        let db = Database::open_in_memory().expect("memory db");
+        let session = db.sessions().create(None).expect("create session");
+        db.messages()
+            .create(&session.id, "user", "hi")
+            .expect("create message");
+
+        let counts = db.table_counts().expect("counts");
+        let map: std::collections::HashMap<&str, i64> =
+            counts.iter().map(|(name, n)| (name.as_str(), *n)).collect();
+        assert_eq!(map.get("sessions"), Some(&1));
+        assert_eq!(map.get("messages"), Some(&1));
+        assert!(map.contains_key("message_parts"));
+        assert!(map.contains_key("todos"));
+        assert!(map.contains_key("usage"));
+
+        // A second call returns identical counts: counting does not mutate the tables.
+        let again = db.table_counts().expect("counts again");
+        assert_eq!(counts, again);
     }
 }

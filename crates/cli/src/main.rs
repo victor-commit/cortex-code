@@ -1,5 +1,6 @@
 mod acp_cmd;
 mod agent_cmd;
+mod attach;
 mod auth_cmd;
 mod checkpoint;
 mod cli;
@@ -7,11 +8,13 @@ mod completion_cmd;
 mod config;
 mod custom_agents;
 mod custom_modes;
+mod debug_cmd;
 mod export_import;
 mod feature_gate;
 mod format_bridge;
 mod formatter_cmd;
 mod generate_cmd;
+mod lifecycle;
 mod lsp_bridge;
 mod lsp_cmd;
 mod lsp_config;
@@ -107,6 +110,10 @@ fn main() -> ExitCode {
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
         Some(Command::Formatter(args)) => formatter_cmd::run(args).into(),
         Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone(), pure_plugins).into(),
+        Some(Command::Attach(args)) => attach::run(args).into(),
+        Some(Command::Upgrade(args)) => lifecycle::run_upgrade(args).into(),
+        Some(Command::Uninstall(args)) => lifecycle::run_uninstall(args).into(),
+        Some(Command::Debug(args)) => debug_cmd::run(args).into(),
     }
 }
 
@@ -133,6 +140,9 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Lsp(_)) => Surface::Lsp,
         Some(Command::Formatter(_)) => Surface::Config,
         Some(Command::Serve(_)) => Surface::Serve,
+        Some(Command::Attach(_)) => Surface::Session,
+        Some(Command::Upgrade(_)) | Some(Command::Uninstall(_)) => Surface::Config,
+        Some(Command::Debug(_)) => Surface::Config,
     }
 }
 

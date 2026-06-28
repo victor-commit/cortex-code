@@ -70,7 +70,7 @@ pub fn run_export(args: ExportArgs) -> Exit {
 }
 
 pub fn run_import(args: ImportArgs) -> Exit {
-    let artifact_source = match read_artifact_source(&args.artifact) {
+    let artifact_source = match read_import_source(&args.artifact) {
         Ok(source) => source,
         Err(exit) => return exit,
     };
@@ -143,6 +143,95 @@ fn read_artifact_source(path: &str) -> Result<String, Exit> {
     fs::read_to_string(path).map_err(|err| read_error(path, err))
 }
 
+/// Resolve the import artifact from a local file, stdin (`-`), or an `http(s)://` URL.
+///
+/// A URL is fetched over the network behind the `CORTEX_NO_NET` outbound guard (consulted before
+/// any socket opens); the network feature gate must be compiled in. Diagnostics about a URL never
+/// echo its query string or userinfo, so a share token embedded in the link is not logged.
+fn read_import_source(artifact: &str) -> Result<String, Exit> {
+    match parse_http_url(artifact) {
+        Some(url) => fetch_url_artifact(&url),
+        None => read_artifact_source(artifact),
+    }
+}
+
+/// Parse an `http`/`https` URL, returning `None` for any non-URL argument (a local path or `-`).
+fn parse_http_url(artifact: &str) -> Option<url::Url> {
+    let url = url::Url::parse(artifact).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
+}
+
+/// A loggable rendering of a URL that omits its query string, fragment, and userinfo, so a share
+/// token carried in the link never reaches stderr.
+fn safe_url_display(url: &url::Url) -> String {
+    let mut sanitized = url.clone();
+    sanitized.set_query(None);
+    sanitized.set_fragment(None);
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
+    sanitized.to_string()
+}
+
+/// Fetch a remote share artifact, fail-closed under `CORTEX_NO_NET`.
+///
+/// The outbound guard is consulted FIRST — before the network feature gate constructs a runtime or
+/// opens any socket — so the kill-switch refuses with a `net-disabled` diagnostic and zero
+/// connection attempts. The request asks for `application/json` so a `cortex serve` share link
+/// returns the importable artifact rather than its HTML view.
+fn fetch_url_artifact(url: &url::Url) -> Result<String, Exit> {
+    if let Err(diag) = redaction::guard_outbound("share import fetch") {
+        eprintln!("cortex import: {diag}");
+        return Err(diag.exit());
+    }
+    if !crate::feature_gate::network_enabled() {
+        return Err(crate::feature_gate::network_unavailable("import"));
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("cortex import: failed to start the async runtime: {err}");
+            return Err(Exit::Failure);
+        }
+    };
+
+    match runtime.block_on(fetch_share_body(url)) {
+        Ok(body) => Ok(body),
+        Err(detail) => {
+            eprintln!(
+                "cortex import: failed to fetch share {}: {detail}",
+                safe_url_display(url)
+            );
+            Err(Exit::Failure)
+        }
+    }
+}
+
+/// Perform the real HTTP GET for a share artifact. Errors strip the URL (`without_url`) so a share
+/// token in the link is not surfaced in the returned detail.
+async fn fetch_share_body(url: &url::Url) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|err| format!("cannot build HTTP client: {}", err.without_url()))?;
+    let response = client
+        .get(url.clone())
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("request failed: {}", err.without_url()))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("share endpoint returned HTTP {}", status.as_u16()));
+    }
+    response
+        .text()
+        .await
+        .map_err(|err| format!("cannot read share body: {}", err.without_url()))
+}
+
 fn parse_artifact(source: &str) -> Result<SessionArtifact, String> {
     serde_json::from_str(source).map_err(|err| format!("invalid or unparseable artifact: {}", err))
 }
@@ -211,4 +300,48 @@ fn emit_text(body: &str) -> Exit {
 fn db_error(command: &str, err: &DbError) -> Exit {
     eprintln!("cortex {command}: {err}");
     Exit::Failure
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_http_and_https_urls_but_not_paths() {
+        assert!(parse_http_url("http://127.0.0.1:3200/share/shr_1").is_some());
+        assert!(parse_http_url("https://example.test/share/abc").is_some());
+        assert!(parse_http_url("./local.json").is_none());
+        assert!(parse_http_url("-").is_none());
+        assert!(parse_http_url("/tmp/artifact.json").is_none());
+        // A non-http scheme is treated as a local path, not a fetchable URL.
+        assert!(parse_http_url("file:///etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_url_display_strips_query_fragment_and_userinfo() {
+        // Userinfo is attached via setters so no credential-shaped URL literal lives in source.
+        let mut url = url::Url::parse("https://example.test/share/shr_9?token=abc123#frag")
+            .expect("parse url");
+        url.set_username("user").expect("set username");
+        url.set_password(Some("secret-token"))
+            .expect("set password");
+        let display = safe_url_display(&url);
+        assert!(
+            display.contains("/share/shr_9"),
+            "path is preserved: {display}"
+        );
+        assert!(
+            !display.contains("abc123"),
+            "query token must not leak: {display}"
+        );
+        assert!(
+            !display.contains("secret-token"),
+            "userinfo must not leak: {display}"
+        );
+        assert!(!display.contains('#'), "fragment must not leak: {display}");
+        assert!(
+            !display.contains('?'),
+            "query separator must not leak: {display}"
+        );
+    }
 }
