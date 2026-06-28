@@ -2302,9 +2302,12 @@ async fn run_message_turn(
         turn,
         &dispatcher,
         active_turn.abort_receiver(),
-        state.event_bus.clone(),
-        session_id.clone(),
-        user_message.id.clone(),
+        TurnEventContext {
+            bus: state.event_bus.clone(),
+            session_id: session_id.clone(),
+            message_id: user_message.id.clone(),
+            cwd: state.cwd.clone(),
+        },
     )
     .await;
     dispatcher.shutdown().await;
@@ -2624,16 +2627,17 @@ async fn run_cancellable_turn(
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
     mut abort_rx: watch::Receiver<bool>,
-    bus: Arc<EventBus>,
-    session_id: String,
-    message_id: String,
+    ctx: TurnEventContext,
 ) -> Option<TurnRunResult> {
     let runner = SessionRunner::default();
     let events: Arc<Mutex<Vec<RunnerEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_for_sink = events.clone();
+    // Correlate each tool call's path/question arguments (keyed by call id) so the matching tool
+    // RESULT can emit the subsystem family (`file.edited`, `question.*`) with the right detail.
+    let mut pending_tool_calls: HashMap<String, RunnerEvent> = HashMap::new();
     tokio::select! {
         outcome = runner.run_with_tools(provider, turn, dispatcher, move |event| {
-            publish_runner_event(&bus, &session_id, &message_id, &event);
+            publish_runner_event(&ctx, &mut pending_tool_calls, &event);
             if let Ok(mut captured) = events_for_sink.lock() {
                 captured.push(event.clone());
             }
@@ -2654,7 +2658,29 @@ struct TurnRunResult {
     runner_events: Vec<RunnerEvent>,
 }
 
-fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, event: &RunnerEvent) {
+/// The shared context for publishing a turn's runner events to the bus: the event bus plus the
+/// session/turn ids and workspace cwd used to build subsystem event payloads.
+struct TurnEventContext {
+    bus: Arc<EventBus>,
+    session_id: String,
+    message_id: String,
+    cwd: PathBuf,
+}
+
+fn publish_runner_event(
+    ctx: &TurnEventContext,
+    pending_tool_calls: &mut HashMap<String, RunnerEvent>,
+    event: &RunnerEvent,
+) {
+    let TurnEventContext {
+        bus,
+        session_id,
+        message_id,
+        cwd,
+    } = ctx;
+    let session_id = session_id.as_str();
+    let message_id = message_id.as_str();
+    let cwd = cwd.as_path();
     match event {
         RunnerEvent::TextDelta { text } => bus.publish(&Event::assistant_text_delta(
             session_id.to_owned(),
@@ -2670,22 +2696,47 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             id,
             name,
             arguments,
-        } => bus.publish(&Event::tool_call_for_turn(
-            session_id.to_owned(),
-            message_id.to_owned(),
-            id.clone(),
-            name.clone(),
-            arguments.clone(),
-        )),
+        } => {
+            bus.publish(&Event::tool_call_for_turn(
+                session_id.to_owned(),
+                message_id.to_owned(),
+                id.clone(),
+                name.clone(),
+                arguments.clone(),
+            ));
+            // A `question` tool call drives a real user prompt; surface it on the live
+            // `question.asked` family (distinct from the permission engine's `permission.asked`).
+            if name == "question"
+                && let Some(asked) = question_asked_event(session_id, id, arguments)
+            {
+                bus.publish(&asked);
+            }
+            pending_tool_calls.insert(id.clone(), event.clone());
+        }
         RunnerEvent::ToolResult {
-            id, name, is_error, ..
-        } => bus.publish(&Event::tool_result_for_turn(
-            session_id.to_owned(),
-            message_id.to_owned(),
-            id.clone(),
-            name.clone(),
-            *is_error,
-        )),
+            id,
+            name,
+            is_error,
+            parts,
+        } => {
+            bus.publish(&Event::tool_result_for_turn(
+                session_id.to_owned(),
+                message_id.to_owned(),
+                id.clone(),
+                name.clone(),
+                *is_error,
+            ));
+            let call = pending_tool_calls.remove(id);
+            publish_tool_subsystem_events(
+                bus,
+                session_id,
+                cwd,
+                name,
+                *is_error,
+                call.as_ref(),
+                parts,
+            );
+        }
         RunnerEvent::Usage(usage) => bus.publish(&Event::turn_usage(
             session_id.to_owned(),
             message_id.to_owned(),
@@ -2724,6 +2775,131 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             classification.clone(),
         )),
     }
+}
+
+/// Emit the subsystem event family for a completed tool call from a real turn action: `file.edited`
+/// for a successful `write`/`edit`/`apply_patch`, and `question.replied`/`question.rejected` for a
+/// `question` tool result. `call` is the correlated [`RunnerEvent::ToolCall`] (carrying the
+/// arguments) when available. These are the live-emission counterparts of the otherwise
+/// forward-compat-only families, fired from the actual subsystem rather than a `/event` POST.
+fn publish_tool_subsystem_events(
+    bus: &EventBus,
+    session_id: &str,
+    cwd: &Path,
+    name: &str,
+    is_error: bool,
+    call: Option<&RunnerEvent>,
+    parts: &[protocol::ToolResultPart],
+) {
+    let arguments = call.and_then(|event| match event {
+        RunnerEvent::ToolCall { arguments, .. } => {
+            serde_json::from_str::<serde_json::Value>(arguments).ok()
+        }
+        _ => None,
+    });
+    match name {
+        "write" | "edit" | "apply_patch" if !is_error => {
+            for path in edited_paths(name, cwd, arguments.as_ref()) {
+                bus.publish(&Event::file_edited(
+                    Some(session_id.to_owned()),
+                    path,
+                    Some(name.to_owned()),
+                ));
+            }
+        }
+        "question" => {
+            let id = call
+                .and_then(|event| match event {
+                    RunnerEvent::ToolCall { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            if is_error {
+                bus.publish(&Event::question_rejected(
+                    Some(session_id.to_owned()),
+                    id,
+                    Some(tool_result_text(parts)),
+                ));
+            } else {
+                bus.publish(&Event::question_replied(
+                    Some(session_id.to_owned()),
+                    id,
+                    tool_result_text(parts),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The absolute path(s) a successful file-mutating tool touched, derived from its call arguments.
+fn edited_paths(name: &str, cwd: &Path, arguments: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(arguments) = arguments else {
+        return Vec::new();
+    };
+    if name == "apply_patch" {
+        let patch = ["patch", "patchText", "patch_text", "input"]
+            .iter()
+            .find_map(|key| arguments.get(*key).and_then(serde_json::Value::as_str));
+        return patch
+            .map(|patch| {
+                tools::patch_file_diffs(patch, cwd)
+                    .into_iter()
+                    .map(|diff| diff.path.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    arguments
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .map(|path| {
+            let candidate = Path::new(path);
+            let resolved = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                cwd.join(candidate)
+            };
+            vec![resolved.to_string_lossy().into_owned()]
+        })
+        .unwrap_or_default()
+}
+
+/// Build the `question.asked` event from a `question` tool call's arguments, using the first
+/// question prompt and its options. Returns `None` when the arguments carry no usable prompt.
+fn question_asked_event(session_id: &str, id: &str, arguments: &str) -> Option<Event> {
+    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let first = value
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|questions| questions.first())?;
+    let prompt = first.get("prompt").and_then(serde_json::Value::as_str)?;
+    let options = first
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Event::question_asked(
+        Some(session_id.to_owned()),
+        id.to_owned(),
+        prompt.to_owned(),
+        options,
+    ))
+}
+
+/// Concatenate the text parts of a tool result into a single string.
+fn tool_result_text(parts: &[protocol::ToolResultPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| part.as_text())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn finish_reason_name(reason: &llm::FinishReason) -> String {

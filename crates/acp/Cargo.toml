@@ -17,6 +17,7 @@ events = { workspace = true }
 futures-util = { workspace = true }
 llm = { workspace = true }
 permissions = { workspace = true }
+plugins = { workspace = true }
 policy = { workspace = true }
 protocol = { workspace = true }
 providers = { workspace = true }
@@ -29,3 +30,4 @@ tools = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
+toml = { workspace = true }

@@ -1022,6 +1022,37 @@ impl Event {
         })
     }
 
+    /// Construct a `message.removed` event.
+    #[must_use]
+    pub fn message_removed(session_id: impl Into<String>, message_id: impl Into<String>) -> Self {
+        Event::MessageRemoved(MessageRemoved {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+        })
+    }
+
+    /// Construct a `message.part.removed` event.
+    #[must_use]
+    pub fn message_part_removed(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        part_id: impl Into<String>,
+    ) -> Self {
+        Event::MessagePartRemoved(MessagePartRemoved {
+            session_id: session_id.into(),
+            message_id: message_id.into(),
+            part_id: part_id.into(),
+        })
+    }
+
+    /// Construct a `session.updated` event (a session's metadata changed).
+    #[must_use]
+    pub fn session_updated(session_id: impl Into<String>) -> Self {
+        Event::SessionUpdated(SessionRef {
+            session_id: session_id.into(),
+        })
+    }
+
     /// Construct a `session.status` event.
     #[must_use]
     pub fn session_status(session_id: impl Into<String>, status: impl Into<String>) -> Self {
@@ -1188,6 +1219,50 @@ impl Event {
             session_id,
             path: path.into(),
             edit_kind,
+        })
+    }
+
+    /// Construct a `question.asked` event.
+    #[must_use]
+    pub fn question_asked(
+        session_id: Option<String>,
+        id: impl Into<String>,
+        question: impl Into<String>,
+        options: Vec<String>,
+    ) -> Self {
+        Event::QuestionAsked(QuestionAsked {
+            session_id,
+            id: id.into(),
+            question: question.into(),
+            options,
+        })
+    }
+
+    /// Construct a `question.replied` event.
+    #[must_use]
+    pub fn question_replied(
+        session_id: Option<String>,
+        id: impl Into<String>,
+        answer: impl Into<String>,
+    ) -> Self {
+        Event::QuestionReplied(QuestionReplied {
+            session_id,
+            id: id.into(),
+            answer: answer.into(),
+        })
+    }
+
+    /// Construct a `question.rejected` event.
+    #[must_use]
+    pub fn question_rejected(
+        session_id: Option<String>,
+        id: impl Into<String>,
+        reason: Option<String>,
+    ) -> Self {
+        Event::QuestionRejected(QuestionRejected {
+            session_id,
+            id: id.into(),
+            reason,
         })
     }
 

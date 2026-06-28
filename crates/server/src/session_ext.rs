@@ -86,6 +86,7 @@ pub(super) async fn update_session(
         Some(session) => session,
         None => db.sessions().require(&id).map_err(ApiError::from_db)?,
     };
+    state.event_bus.publish(&Event::session_updated(&id));
     Ok(Json(session))
 }
 
@@ -938,6 +939,11 @@ pub(super) async fn delete_message(
         .messages()
         .delete(&message.id)
         .map_err(ApiError::from_db)?;
+    if deleted {
+        state
+            .event_bus
+            .publish(&Event::message_removed(&id, &message.id));
+    }
     Ok(Json(DeleteResponse {
         status: "deleted",
         deleted,
@@ -999,6 +1005,11 @@ pub(super) async fn delete_part(
         .messages()
         .delete_part(&part_id)
         .map_err(ApiError::from_db)?;
+    if deleted {
+        state
+            .event_bus
+            .publish(&Event::message_part_removed(&id, &message_id, &part_id));
+    }
     Ok(Json(DeleteResponse {
         status: "deleted",
         deleted,

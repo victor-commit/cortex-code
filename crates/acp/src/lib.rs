@@ -594,6 +594,7 @@ impl AcpService {
             .and_then(|mode| engine::Agent::from_name(mode).ok())
             .unwrap_or(engine::Agent::Build);
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let plugin_cwd = cwd.clone();
 
         let sink: Arc<dyn OutboundSink> = Arc::new(writer.clone());
         let connection = ClientConnection::new(self.state.clone(), sink, prompt.session_id.clone());
@@ -667,6 +668,23 @@ impl AcpService {
         if let Some(error) = &outcome.error {
             let _ = writer.send_error(id, -32000, error.to_string());
             return;
+        }
+
+        // Let plugins observe/transform compaction summaries before they are persisted, mirroring
+        // the server and headless `run` paths so an ACP-driven compaction stays consistent across
+        // surfaces. Loaded lazily only when the turn actually compacted.
+        if !outcome.compactions.is_empty() {
+            match load_plugin_compaction_hooks(&plugin_cwd) {
+                Ok(hooks) => apply_plugin_compaction_hooks(
+                    &hooks,
+                    &resolved.model_id,
+                    &mut outcome.compactions,
+                ),
+                Err(message) => {
+                    let _ = writer.send_error(id, -32000, message);
+                    return;
+                }
+            }
         }
 
         persist_usage(&db, &prompt.session_id, &outcome);
@@ -1192,7 +1210,7 @@ fn emit_tool_call_update<W: Write>(
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": call_id,
                 "status": "in_progress",
-                "content": [diff],
+                "content": diff,
             }),
         );
     }
@@ -1232,9 +1250,21 @@ fn tool_call_title(name: &str, args: &Value) -> String {
     name.to_owned()
 }
 
-/// Build a `diff` tool-call content block from a mutating tool's arguments so the client can render
-/// the proposed change. `write` carries the full new content; `edit` carries the old/new strings.
-fn tool_diff(name: &str, cwd: &std::path::Path, args: &Value) -> Option<Value> {
+/// Build the `diff` tool-call content block(s) from a mutating tool's arguments so the client can
+/// render the proposed change. `write` carries the full new content; `edit` carries the old/new
+/// strings; `apply_patch` (the GPT/Codex-family file-editing tool) carries one block per file
+/// section in its patch envelope. Returns `None` for a non-mutating tool or unparseable arguments.
+fn tool_diff(name: &str, cwd: &std::path::Path, args: &Value) -> Option<Vec<Value>> {
+    let blocks = match name {
+        "write" | "edit" => path_arg_diff(name, cwd, args).into_iter().collect(),
+        "apply_patch" => apply_patch_diffs(cwd, args),
+        _ => Vec::new(),
+    };
+    (!blocks.is_empty()).then_some(blocks)
+}
+
+/// Build a single `diff` content block for the path-argument tools (`write`/`edit`).
+fn path_arg_diff(name: &str, cwd: &std::path::Path, args: &Value) -> Option<Value> {
     let path = args.get("path").and_then(Value::as_str)?;
     let absolute = if std::path::Path::new(path).is_absolute() {
         PathBuf::from(path)
@@ -1264,6 +1294,35 @@ fn tool_diff(name: &str, cwd: &std::path::Path, args: &Value) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+/// Build a `diff` content block per file section in an `apply_patch` envelope. GPT/Codex-family
+/// models swap `write`/`edit` for `apply_patch`, so without this an ACP client driving such a model
+/// would receive tool_call updates with no file diff block.
+fn apply_patch_diffs(cwd: &std::path::Path, args: &Value) -> Vec<Value> {
+    let Some(patch) = args
+        .get("patch")
+        .or_else(|| args.get("patchText"))
+        .or_else(|| args.get("patch_text"))
+        .or_else(|| args.get("input"))
+        .and_then(Value::as_str)
+    else {
+        return Vec::new();
+    };
+    tools::patch_file_diffs(patch, cwd)
+        .into_iter()
+        .map(|diff| {
+            let mut block = json!({
+                "type": "diff",
+                "path": diff.path.to_string_lossy(),
+                "newText": diff.new_text,
+            });
+            if let Some(old_text) = diff.old_text {
+                block["oldText"] = json!(old_text);
+            }
+            block
+        })
+        .collect()
 }
 
 fn plan_update_from_todos(db_path: &std::path::Path, session_id: &str) -> Option<Value> {
@@ -1460,6 +1519,12 @@ fn apply_estimated_usage_cost(model: &ResolvedModel, outcome: &mut RunOutcome) {
 }
 
 fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
+    // The effective context window can be overridden via `CORTEX_CONTEXT_LIMIT_TOKENS`, mirroring
+    // the server and headless `run` paths so an ACP-driven session compacts consistently across
+    // surfaces. An explicit override drives the budget purely from the requested window.
+    if let Some(context) = context_limit_override() {
+        return CompactionPolicy::for_context_window(context, 0);
+    }
     let (context, output) = match &model.info {
         Some(info) => (
             usize::try_from(info.limit.context).unwrap_or(usize::MAX),
@@ -1468,6 +1533,56 @@ fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
         None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
     };
     CompactionPolicy::for_context_window(context, output)
+}
+
+/// The operational override for the effective context window, read from
+/// `CORTEX_CONTEXT_LIMIT_TOKENS` (matches the server and headless `run` knob).
+fn context_limit_override() -> Option<usize> {
+    parse_context_limit(std::env::var("CORTEX_CONTEXT_LIMIT_TOKENS").ok().as_deref())
+}
+
+/// Parse a context-window override token, accepting only a positive integer (trimmed). Returns
+/// `None` for an absent, blank, zero, or unparseable value so the model-derived window stands.
+fn parse_context_limit(raw: Option<&str>) -> Option<usize> {
+    let parsed: usize = raw?.trim().parse().ok()?;
+    (parsed >= 1).then_some(parsed)
+}
+
+/// Load plugin event hooks for the ACP surface so a compaction transformation matches the server
+/// and headless `run` paths. Mirrors the server turn path (`load_or_disabled`): no configured
+/// plugins yields an empty, no-op hook set without requiring a JS runtime.
+fn load_plugin_compaction_hooks(
+    cwd: &std::path::Path,
+) -> Result<plugins::PluginEventHooks, String> {
+    let config_inputs = settings::ConfigInputs::from_process(BTreeMap::new())
+        .map_err(|err| format!("cannot load configuration context: {err}"))?;
+    let effective =
+        settings::load(config_inputs).map_err(|err| format!("cannot load configuration: {err}"))?;
+    let plugin_config = plugins::PluginConfig::from_toml_value(effective.get("plugin"), cwd)
+        .map_err(|message| format!("invalid plugin configuration: {message}"))?;
+    plugins::PluginEventHooks::load_or_disabled(&plugin_config, false, "acp")
+        .map_err(|err| format!("plugin runtime error: {err}"))
+}
+
+/// Let plugins observe/transform the turn's compaction records, converting through the engine's
+/// hook-value seam so an ACP-driven compaction is transformed identically to the server/headless
+/// paths.
+fn apply_plugin_compaction_hooks(
+    hooks: &plugins::PluginEventHooks,
+    model_id: &str,
+    compactions: &mut [engine::CompactionRecord],
+) {
+    if compactions.is_empty() {
+        return;
+    }
+    let mut values: Vec<Value> = compactions
+        .iter()
+        .map(|compaction| compaction.to_hook_value(model_id))
+        .collect();
+    hooks.apply_compaction_hooks(&mut values);
+    for (compaction, value) in compactions.iter_mut().zip(&values) {
+        compaction.apply_hook_value(value);
+    }
 }
 
 fn validate_model_id(model_id: &str) -> Result<(), String> {
@@ -2834,6 +2949,106 @@ mod tests {
         );
     }
 
+    // gap-hardening-3: the ACP context-limit override mirrors the server/headless parser.
+    #[test]
+    fn parse_context_limit_accepts_only_positive_integers() {
+        assert_eq!(parse_context_limit(Some("4000")), Some(4_000));
+        assert_eq!(parse_context_limit(Some("  16000 ")), Some(16_000));
+        assert_eq!(parse_context_limit(None), None);
+        assert_eq!(parse_context_limit(Some("")), None);
+        assert_eq!(parse_context_limit(Some("0")), None);
+        assert_eq!(parse_context_limit(Some("-5")), None);
+        assert_eq!(parse_context_limit(Some("nope")), None);
+    }
+
+    // gap-hardening-3: tool_diff handles apply_patch so GPT/Codex-family ACP clients get the diff
+    // content block, not only the gemini-path write/edit tools.
+    #[test]
+    fn tool_diff_builds_apply_patch_diff_blocks_for_add_and_update() {
+        let dir = temp_dir("apply-patch-diff");
+
+        // An Add File section: the diff carries the new content and no oldText.
+        let add_patch = "*** Begin Patch\n*** Add File: added.txt\n+first\n+second\n*** End Patch";
+        let blocks = tool_diff("apply_patch", &dir, &json!({ "patch": add_patch }))
+            .expect("apply_patch produces diff blocks");
+        assert_eq!(blocks.len(), 1, "one section -> one diff block: {blocks:?}");
+        let add = &blocks[0];
+        assert_eq!(add["type"], "diff");
+        assert!(
+            add["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("added.txt")),
+            "diff path resolves against cwd: {add:?}"
+        );
+        assert_eq!(add["newText"], "first\nsecond\n");
+        assert!(add.get("oldText").is_none(), "an added file has no oldText");
+
+        // An Update File section: the diff carries both the prior and patched content.
+        std::fs::write(dir.join("app.py"), "value = 1\n").expect("seed file");
+        let update_patch =
+            "*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch";
+        let blocks = tool_diff("apply_patch", &dir, &json!({ "patchText": update_patch }))
+            .expect("apply_patch update produces diff blocks");
+        assert_eq!(blocks.len(), 1);
+        let update = &blocks[0];
+        assert_eq!(update["oldText"], "value = 1\n");
+        assert_eq!(update["newText"], "value = 2\n");
+
+        // A non-mutating tool yields no diff blocks.
+        assert!(tool_diff("read", &dir, &json!({ "path": "app.py" })).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // gap-hardening-3: ACP compaction parity applies plugin compaction hooks like server/headless.
+    #[test]
+    fn apply_plugin_compaction_hooks_transforms_records_through_the_runtime() {
+        if plugins::detect_runtime().is_none() {
+            eprintln!("skipping ACP plugin compaction-hook proof: no Bun, Node, or Deno on PATH");
+            return;
+        }
+        let dir = temp_dir("acp-compaction-plugin");
+        let plugin = dir.join("plugin.mjs");
+        std::fs::write(
+            &plugin,
+            r#"
+export default async function plugin() {
+  return {
+    experimental: {
+      session: {
+        async compacting(record) {
+          return { ...record, summary: `ACP_HOOKED:${record.summary}` };
+        }
+      }
+    }
+  };
+}
+"#,
+        )
+        .expect("write plugin");
+        let config = plugins::PluginConfig::from_toml_value(
+            toml::from_str::<toml::Value>("plugin = [\"./plugin.mjs\"]")
+                .expect("toml")
+                .get("plugin"),
+            &dir,
+        )
+        .expect("plugin config");
+        let hooks = plugins::PluginEventHooks::load(&config, "acp")
+            .expect("plugin loads through the external runtime");
+
+        let mut compactions = vec![engine::CompactionRecord {
+            summary: "kept BLUEBIRD".to_owned(),
+            tail_start_id: "tail-7".to_owned(),
+            continued_request: true,
+            model: None,
+        }];
+        apply_plugin_compaction_hooks(&hooks, "google/gemini-2.5-flash", &mut compactions);
+        assert_eq!(compactions[0].summary, "ACP_HOOKED:kept BLUEBIRD");
+        assert_eq!(compactions[0].tail_start_id, "tail-7");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // VAL-GAP-ACP-001 (provider credential injection)
     #[test]
     fn apply_credential_overrides_injects_only_a_missing_api_key() {
@@ -3235,6 +3450,51 @@ mod tests {
             "tool_call_update must include a file diff content block"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // gap-hardening-3: a GPT/Codex-family ACP client (which uses apply_patch instead of write/edit)
+    // also receives the file diff content block on its tool_call updates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_update_includes_apply_patch_diff_for_gpt_family_tools() {
+        let patch = "*** Begin Patch\n*** Add File: gpt-output.txt\n+result line\n*** End Patch";
+        let provider = ToolCallingProvider::new(
+            vec![("call-apply", "apply_patch", json!({ "patch": patch }))],
+            "done",
+        );
+        let (service, buffer) = service_with_provider(Arc::new(provider));
+        let writer = JsonRpcWriter::new(buffer.clone());
+        initialize(&service, &writer);
+        let session_id = new_session(&service, &writer);
+        send_prompt(&service, &writer, 11, &session_id, "patch the file");
+
+        let values = wait_for(&buffer, |values| {
+            values
+                .iter()
+                .any(|value| value.get("id") == Some(&json!(11)))
+        })
+        .await;
+        assert!(response_with_id(&values, 11).get("result").is_some());
+
+        let diff_block = values.iter().find_map(|value| {
+            value
+                .pointer("/params/update/content")
+                .and_then(Value::as_array)
+                .and_then(|content| {
+                    content
+                        .iter()
+                        .find(|block| block.get("type") == Some(&json!("diff")))
+                })
+        });
+        let diff_block = diff_block
+            .expect("an apply_patch tool call must surface a diff content block for GPT clients");
+        assert!(
+            diff_block
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.ends_with("gpt-output.txt")),
+            "diff block must name the patched file: {diff_block:?}"
+        );
+        assert_eq!(diff_block.get("newText"), Some(&json!("result line\n")));
     }
 
     // VAL-GAP-ACP-005

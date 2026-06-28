@@ -443,6 +443,83 @@ fn string_arg(arguments: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A renderable view of one file section in an `apply_patch` envelope: the resolved path plus its
+/// before/after text, suitable for building a per-file diff block (for example the ACP `diff`
+/// content block). Update/Delete sections recover the before/after text by reading the current
+/// on-disk content; this helper never mutates the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchFileDiff {
+    /// The resolved path the section targets (the destination path for a rename).
+    pub path: PathBuf,
+    /// The file content before the change, when it exists on disk (`None` for an added file).
+    pub old_text: Option<String>,
+    /// The file content after the change (empty for a delete).
+    pub new_text: String,
+}
+
+/// Parse an `apply_patch` envelope and expand each file section into a renderable [`PatchFileDiff`]
+/// resolved against `cwd`. This is a best-effort rendering helper, not the authoritative apply
+/// path: a malformed envelope yields an empty vec, and a section whose current file cannot be read
+/// or whose hunks cannot be located is skipped rather than erroring. The real mutation still flows
+/// through [`run`] with full validation and atomicity.
+#[must_use]
+pub fn patch_file_diffs(patch: &str, cwd: &std::path::Path) -> Vec<PatchFileDiff> {
+    let Ok(hunks) = parse_envelope(patch) else {
+        return Vec::new();
+    };
+    let mut diffs = Vec::new();
+    for hunk in &hunks {
+        match hunk {
+            Hunk::Add { path, contents } => diffs.push(PatchFileDiff {
+                path: resolve_against(cwd, path),
+                old_text: None,
+                new_text: contents.clone(),
+            }),
+            Hunk::Delete { path } => {
+                let resolved = resolve_against(cwd, path);
+                let old_text = fs::read_to_string(&resolved).ok();
+                diffs.push(PatchFileDiff {
+                    path: resolved,
+                    old_text,
+                    new_text: String::new(),
+                });
+            }
+            Hunk::Update {
+                path,
+                move_to,
+                chunks,
+            } => {
+                let resolved = resolve_against(cwd, path);
+                let Ok(current) = fs::read_to_string(&resolved) else {
+                    continue;
+                };
+                let Ok(updated) = apply_chunks(&current, chunks) else {
+                    continue;
+                };
+                let destination = move_to
+                    .as_deref()
+                    .map_or_else(|| resolved.clone(), |dest| resolve_against(cwd, dest));
+                diffs.push(PatchFileDiff {
+                    path: destination,
+                    old_text: Some(current),
+                    new_text: updated,
+                });
+            }
+        }
+    }
+    diffs
+}
+
+/// Resolve an envelope path against `cwd`, leaving an already-absolute path untouched.
+fn resolve_against(cwd: &std::path::Path, path: &str) -> PathBuf {
+    let candidate = std::path::Path::new(path);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        cwd.join(candidate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

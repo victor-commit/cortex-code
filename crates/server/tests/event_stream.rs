@@ -845,6 +845,250 @@ async fn subsystem_event_families_are_observable_and_redacted() {
     );
 }
 
+// gap-hardening-3: wireable SSE families (`file.edited`, `question.*`) now emit from a REAL turn
+// action on the live stream, not only via the `/event` POST passthrough. A successful `write` tool
+// result during a turn fires `file.edited` carrying the written path.
+#[tokio::test]
+async fn live_write_tool_turn_emits_file_edited_from_the_real_action() {
+    let scratch = Scratch::new("server-event-file-edited");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(WriteToolProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_event_bus(bus)
+        .with_cwd(workspace.clone());
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"write a file"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
+    let edited = events
+        .iter()
+        .find(|event| event["kind"] == "file.edited")
+        .unwrap_or_else(|| {
+            panic!("a real write tool result must emit a live file.edited event: {events:?}")
+        });
+    assert_eq!(edited["session_id"], session.id);
+    assert_eq!(edited["edit_kind"], "write");
+    assert!(
+        edited["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("notes.txt")),
+        "file.edited should carry the written path: {edited:?}"
+    );
+    // The file was actually written by the real tool, proving this is a real action, not a POST.
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("notes.txt")).expect("written file"),
+        "live-emission"
+    );
+}
+
+// gap-hardening-3: a real `question` tool call during a turn emits `question.asked` and, once the
+// pending ask is answered, `question.replied` on the live stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_question_tool_turn_emits_question_family_from_the_real_action() {
+    let scratch = Scratch::new("server-event-question-family");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(QuestionAskingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let post_app = app.clone();
+    let session_id = session.id.clone();
+    let turn = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{session_id}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"ask a question"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("question turn response")
+    });
+
+    // Wait for the question tool to block on a pending ask, then answer it.
+    let mut pending_id = None;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/session/{}/permission/pending", session.id))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        if let Some(id) = pending_body["pending"]
+            .as_array()
+            .and_then(|pending| pending.first())
+            .and_then(|ask| ask["id"].as_str())
+        {
+            pending_id = Some(id.to_owned());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pending_id = pending_id.expect("question tool should block on a pending ask");
+
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/permission/reply", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{pending_id}","decision":"allow","feedback":"Choose option B"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("reply response");
+    assert_eq!(reply.status(), StatusCode::OK);
+
+    let response = tokio::time::timeout(Duration::from_secs(5), turn)
+        .await
+        .expect("question turn completed")
+        .expect("question turn join");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = collect_until_kind(&mut stream, "question.replied", Duration::from_secs(5)).await;
+    assert!(
+        events.iter().any(|event| event["kind"] == "question.asked"
+            && event["session_id"] == session.id
+            && event["question"] == "Pick deployment strategy"),
+        "a real question tool call should emit a live question.asked event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "question.replied" && event["session_id"] == session.id),
+        "answering the question should emit a live question.replied event: {events:?}"
+    );
+}
+
+// gap-hardening-3: message/session mutation routes emit their wireable families from the real
+// route action (not only via the `/event` POST): `session.updated` on update, `message.removed`
+// on message delete.
+#[tokio::test]
+async fn live_session_and_message_routes_emit_their_families() {
+    let scratch = Scratch::new("server-event-session-message");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    // Create a user+assistant message pair through a real turn.
+    let turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"hello"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("turn response");
+    assert_eq!(turn.status(), StatusCode::OK);
+
+    let mut stream = subscribe(&app).await;
+
+    // Updating the session emits `session.updated`.
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/session/{}", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"title":"Renamed"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("update response");
+    assert_eq!(update.status(), StatusCode::OK);
+
+    // Deleting a message emits `message.removed`.
+    let messages_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("messages response");
+    assert_eq!(messages_response.status(), StatusCode::OK);
+    let messages_body: serde_json::Value = json_body(messages_response).await;
+    let first_message_id = messages_body["messages"]
+        .as_array()
+        .and_then(|messages| messages.first())
+        .and_then(|message| message["id"].as_str())
+        .expect("a persisted message id")
+        .to_owned();
+    let delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/session/{}/message/{first_message_id}",
+                    session.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("delete response");
+    assert_eq!(delete.status(), StatusCode::OK);
+
+    let events = collect_until_kind(&mut stream, "message.removed", Duration::from_secs(3)).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "session.updated" && event["session_id"] == session.id),
+        "updating a session should emit a live session.updated event: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event["kind"] == "message.removed"
+            && event["session_id"] == session.id
+            && event["message_id"] == first_message_id),
+        "deleting a message should emit a live message.removed event: {events:?}"
+    );
+}
+
 // VAL-GAP-SSE-005: the SSE event taxonomy is spec-discoverable and every family decodes into a
 // distinct typed variant, so a generated SDK client never special-cases server-only names.
 #[tokio::test]
@@ -1304,6 +1548,116 @@ impl Provider for ToolCallingProvider {
                         cache_read_input_tokens: None,
                         reasoning_output_tokens: None,
                         cost: Some(0.000_002),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+/// Emits a single `write` tool call, then a final answer once the tool result is observed.
+#[derive(Debug, Default)]
+struct WriteToolProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for WriteToolProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if call == 0 && !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_write".to_owned(),
+                        name: "write".to_owned(),
+                        arguments: r#"{"path":"notes.txt","content":"live-emission"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "wrote the file".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 4,
+                        output_tokens: 4,
+                        total_tokens: 8,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+/// Emits a single `question` tool call, then echoes the supplied answer once the tool result lands.
+#[derive(Debug, Default)]
+struct QuestionAskingProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for QuestionAskingProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request.messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message.tool_call_id.as_deref() == Some("call_question")
+            });
+            let events = if !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_question".to_owned(),
+                        name: "question".to_owned(),
+                        arguments: serde_json::json!({
+                            "questions": [{
+                                "prompt": "Pick deployment strategy",
+                                "options": ["A", "B"]
+                            }]
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "question answered".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 6,
+                        output_tokens: 4,
+                        total_tokens: 10,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
                     }),
                     LlmEvent::Done {
                         reason: FinishReason::Stop,

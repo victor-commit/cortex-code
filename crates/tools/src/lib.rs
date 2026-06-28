@@ -36,7 +36,7 @@ mod webfetch;
 mod websearch;
 mod write;
 
-pub use apply_patch::ApplyPatchTool;
+pub use apply_patch::{ApplyPatchTool, PatchFileDiff, patch_file_diffs};
 pub use bash::{BackgroundJob, BackgroundJobs, BashTool, JobHandle};
 pub use edit::EditTool;
 pub use glob::GlobTool;
