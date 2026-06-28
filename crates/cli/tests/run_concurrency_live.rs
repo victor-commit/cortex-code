@@ -28,6 +28,10 @@ use std::time::{Duration, Instant};
 /// A generous per-run hang guard: a single real turn completes well within this window.
 const RUN_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Bound for retrying a live-model recall miss (refusal/rephrasing) on the resumed session.
+const RECALL_MAX_ATTEMPTS: u32 = 3;
+const RECALL_RETRY_BASE_BACKOFF_MS: u64 = 200;
+
 /// Resolve the live OpenRouter key, or `None` to skip the test cleanly when it is unset/empty.
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -417,33 +421,11 @@ fn sigkilled_turn_leaves_session_resumable_and_db_uncorrupted() {
     assert_no_orphans(pgid);
 
     // 3) The session is uncorrupted and still resumable: the fact is recalled, exit 0, no stale
-    //    lock error.
-    let recall = run_to_completion(
-        cortex(
-            &key,
-            &home,
-            &db_path,
-            &[
-                "run",
-                "--session",
-                &session,
-                "What exact word did I ask you to remember earlier? Reply with only that word.",
-            ],
-        ),
-        RUN_TIMEOUT,
-    );
-    assert_no_panic(&recall.stderr_str());
-    assert_eq!(
-        recall.status.and_then(|s| s.code()),
-        Some(0),
-        "resuming after a SIGKILL must succeed (no stale-lock error), stderr: {:?}",
-        recall.stderr_str()
-    );
-    let recalled = recall.stdout_str();
-    assert!(
-        recalled.contains(&secret),
-        "the resumed session must recall the pre-kill fact {secret:?}, got: {recalled:?}"
-    );
+    //    lock error. A live model occasionally refuses or rephrases the recall, so the recall is
+    //    retried on the SAME resumed session. The real resumability coverage (exit 0, no panic, no
+    //    stale-lock error, no orphan) is asserted on EVERY attempt; only the model's recall wording
+    //    is tolerated and retried, so the durability/db-integrity coverage is unchanged.
+    let recall = recall_fact_until_remembered(&key, &home, &db_path, &session, &secret);
     assert_no_orphans(recall.pgid);
 
     assert!(
@@ -452,6 +434,99 @@ fn sigkilled_turn_leaves_session_resumable_and_db_uncorrupted() {
     );
 
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Tolerant recall match: compares only the ascii-alphanumeric characters (lowercased) so the
+/// seeded word still matches when the model wraps it in prose/quotes or changes case. A truncated
+/// or omitted word does NOT match (that miss is the retry's job, not the matcher's).
+fn recalls_fact(answer: &str, secret: &str) -> bool {
+    fn squeeze(text: &str) -> String {
+        text.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    }
+    squeeze(answer).contains(&squeeze(secret))
+}
+
+/// Re-ask the resumed session to recall the pre-kill fact, retrying on a live-model recall miss
+/// (refusal/rephrasing). EVERY attempt still proves real resumability: the run must exit 0 with no
+/// panic and no stale-lock error, and a hard failure (non-zero exit/panic) panics immediately
+/// rather than being retried. Only the model's recall wording is tolerated and retried. Returns the
+/// first attempt whose stdout recalls the fact, or panics with every attempt's output.
+fn recall_fact_until_remembered(
+    key: &str,
+    home: &Path,
+    db_path: &Path,
+    session: &str,
+    secret: &str,
+) -> RunResult {
+    let mut failures = Vec::new();
+    for attempt in 1..=RECALL_MAX_ATTEMPTS {
+        let recall = run_to_completion(
+            cortex(
+                key,
+                home,
+                db_path,
+                &[
+                    "run",
+                    "--session",
+                    session,
+                    "What exact word did I ask you to remember earlier? Reply with only that word.",
+                ],
+            ),
+            RUN_TIMEOUT,
+        );
+        assert_no_panic(&recall.stderr_str());
+        assert_eq!(
+            recall.status.and_then(|s| s.code()),
+            Some(0),
+            "resuming after a SIGKILL must succeed (no stale-lock error), stderr: {:?}",
+            recall.stderr_str()
+        );
+        if recalls_fact(&recall.stdout_str(), secret) {
+            return recall;
+        }
+        assert_no_orphans(recall.pgid);
+        failures.push(format!(
+            "attempt {attempt}/{RECALL_MAX_ATTEMPTS}: stdout={:?}",
+            recall.stdout_str()
+        ));
+        if attempt < RECALL_MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(
+                RECALL_RETRY_BASE_BACKOFF_MS * u64::from(attempt),
+            ));
+        }
+    }
+    panic!(
+        "the resumed session must recall the pre-kill fact {secret:?} within {RECALL_MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
+    );
+}
+
+/// Offline regression guard for the tolerant recall matcher: a correctly recalled word must still
+/// match through common live-model reformatting, while a truncated word or a refusal must NOT match
+/// (those misses are the bounded retry's job, not the matcher's).
+#[test]
+fn recalls_fact_tolerates_reformatting_but_not_omission() {
+    let secret = "anchovyx1a2b3c";
+    assert!(recalls_fact(secret, secret), "exact recall matches");
+    assert!(
+        recalls_fact("The word was: anchovyx1a2b3c.", secret),
+        "prose-wrapped recall matches"
+    );
+    assert!(
+        recalls_fact("`ANCHOVYX1A2B3C`", secret),
+        "quoted/case-changed recall matches"
+    );
+    assert!(
+        !recalls_fact("anchovy", secret),
+        "a truncated word must not match"
+    );
+    assert!(
+        !recalls_fact("I don't recall any specific word.", secret),
+        "a refusal must not match"
+    );
 }
 
 // VAL-RUN-012: two runs on the SAME session with distinct nonce prompts run in parallel. Both
