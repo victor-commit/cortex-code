@@ -174,6 +174,16 @@ pub struct FileDiff {
     pub diff: String,
 }
 
+/// The net pre/post images of every file changed across a scope of applied turns.
+pub(crate) struct NetChanges {
+    /// Changed paths in first-touch order (stable output ordering).
+    pub order: Vec<String>,
+    /// path -> earliest pre-image (`None` = absent before the scope touched it).
+    pub pre: BTreeMap<String, Option<FileImage>>,
+    /// path -> latest post-image (`None` = absent after the scope last touched it).
+    pub post: BTreeMap<String, Option<FileImage>>,
+}
+
 /// A handle on the shadow checkpoint store for one workspace.
 #[derive(Clone, Debug)]
 pub struct ShadowStore {
@@ -201,6 +211,9 @@ impl ShadowStore {
             fs::create_dir_all(store.git.git_dir())
                 .map_err(|error| CheckpointError::new(format!("create shadow dir: {error}")))?;
             store.git.run(&["init", "--quiet"])?;
+            // The shadow store keeps blobs reachable through the anchor ref alone; ref logs would
+            // otherwise pin abandoned anchor commits and defeat `prune`'s `git gc`, so disable them.
+            let _ = store.git.run(&["config", "core.logAllRefUpdates", "false"]);
         }
         Ok(store)
     }
@@ -215,6 +228,11 @@ impl ShadowStore {
     #[must_use]
     pub fn git_dir(&self) -> &Path {
         self.git.git_dir()
+    }
+
+    /// The shadow git handle, for crate-internal object-level operations (diff, maintenance).
+    pub(crate) fn git(&self) -> &Git {
+        &self.git
     }
 
     /// Begin recording a turn under `label`. Pre-images are captured through the returned recorder
@@ -247,30 +265,15 @@ impl ShadowStore {
     /// # Errors
     /// Returns a [`CheckpointError`] when the journal or object database cannot be read.
     pub fn session_file_diffs(&self, label: &str) -> Result<Vec<FileDiff>, CheckpointError> {
-        let journal = self.load_journal()?;
-        let mut order: Vec<String> = Vec::new();
-        let mut pre: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
-        let mut post: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
-        for turn in journal.turns.iter().take(journal.applied) {
-            if turn.label != label {
-                continue;
-            }
-            for file in &turn.files {
-                if !pre.contains_key(&file.rel_path) {
-                    pre.insert(file.rel_path.clone(), file.pre.clone());
-                    order.push(file.rel_path.clone());
-                }
-                post.insert(file.rel_path.clone(), file.post.clone());
-            }
-        }
-        if order.is_empty() {
+        let net = self.collect_net_changes(Some(label))?;
+        if net.order.is_empty() {
             return Ok(Vec::new());
         }
         let empty_oid = self.store_blob(b"")?;
-        let mut diffs = Vec::with_capacity(order.len());
-        for path in order {
-            let pre_image = pre.get(&path).cloned().flatten();
-            let post_image = post.get(&path).cloned().flatten();
+        let mut diffs = Vec::with_capacity(net.order.len());
+        for path in net.order {
+            let pre_image = net.pre.get(&path).cloned().flatten();
+            let post_image = net.post.get(&path).cloned().flatten();
             if pre_image.as_ref().map(|image| &image.oid)
                 == post_image.as_ref().map(|image| &image.oid)
             {
@@ -291,6 +294,38 @@ impl ShadowStore {
             });
         }
         Ok(diffs)
+    }
+
+    /// Collect the net pre/post images of every file changed by the applied turns in scope.
+    ///
+    /// When `label` is `Some`, only turns recorded under that label are considered; `None` spans
+    /// every applied turn. For each touched file the EARLIEST pre-image (the bytes before the scope
+    /// first touched it) and the LATEST post-image (the bytes after the scope last touched it) are
+    /// retained, so the result describes the net change across the scope. `order` lists the paths in
+    /// first-touch order for stable output. Only applied turns (ahead of the undo cursor) count.
+    pub(crate) fn collect_net_changes(
+        &self,
+        label: Option<&str>,
+    ) -> Result<NetChanges, CheckpointError> {
+        let journal = self.load_journal()?;
+        let mut order: Vec<String> = Vec::new();
+        let mut pre: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
+        let mut post: BTreeMap<String, Option<FileImage>> = BTreeMap::new();
+        for turn in journal.turns.iter().take(journal.applied) {
+            if let Some(label) = label
+                && turn.label != label
+            {
+                continue;
+            }
+            for file in &turn.files {
+                if !pre.contains_key(&file.rel_path) {
+                    pre.insert(file.rel_path.clone(), file.pre.clone());
+                    order.push(file.rel_path.clone());
+                }
+                post.insert(file.rel_path.clone(), file.post.clone());
+            }
+        }
+        Ok(NetChanges { order, pre, post })
     }
 
     /// Undo the most recently applied turn, restoring every file it changed to its pre-turn bytes
@@ -404,7 +439,7 @@ impl ShadowStore {
     }
 
     /// Whether the current on-disk bytes match the expected snapshot image.
-    fn current_matches_expected(
+    pub(crate) fn current_matches_expected(
         &self,
         current: Option<&(Vec<u8>, bool)>,
         expected: Option<&FileImage>,
@@ -442,7 +477,7 @@ impl ShadowStore {
     }
 
     /// Compute the object id `bytes` would hash to (without writing it).
-    fn hash_bytes(&self, bytes: &[u8]) -> Result<String, CheckpointError> {
+    pub(crate) fn hash_bytes(&self, bytes: &[u8]) -> Result<String, CheckpointError> {
         Ok(
             String::from_utf8_lossy(&self.git.run_stdin(&["hash-object", "--stdin"], bytes)?)
                 .trim()
@@ -451,7 +486,7 @@ impl ShadowStore {
     }
 
     /// Read a blob's bytes back from the shadow object database.
-    fn read_blob(&self, oid: &str) -> Result<Vec<u8>, CheckpointError> {
+    pub(crate) fn read_blob(&self, oid: &str) -> Result<Vec<u8>, CheckpointError> {
         self.git.run(&["cat-file", "blob", oid])
     }
 
@@ -528,7 +563,7 @@ impl ShadowStore {
     }
 
     /// Load the journal, treating an absent file as an empty history.
-    fn load_journal(&self) -> Result<Journal, CheckpointError> {
+    pub(crate) fn load_journal(&self) -> Result<Journal, CheckpointError> {
         let path = self.journal_path();
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -539,7 +574,7 @@ impl ShadowStore {
     }
 
     /// Persist the journal atomically (write to a temp file, then rename over the target).
-    fn save_journal(&self, journal: &Journal) -> Result<(), CheckpointError> {
+    pub(crate) fn save_journal(&self, journal: &Journal) -> Result<(), CheckpointError> {
         let path = self.journal_path();
         let bytes = serde_json::to_vec_pretty(journal)
             .map_err(|error| CheckpointError::new(format!("encode journal: {error}")))?;
@@ -550,7 +585,7 @@ impl ShadowStore {
 
     /// Rebuild the anchor commit so every blob the journal references stays reachable in the shadow
     /// object database (so `cat-file` succeeds across processes and survives a future `git gc`).
-    fn reanchor(&self, journal: &Journal) -> Result<(), CheckpointError> {
+    pub(crate) fn reanchor(&self, journal: &Journal) -> Result<(), CheckpointError> {
         let oids = journal.referenced_oids();
         let index_path = self
             .git
@@ -607,7 +642,7 @@ impl ShadowStore {
 }
 
 /// Write `image` to `absolute` (deleting the file when `image` is `None`), atomically per file.
-fn write_staged_image(
+pub(crate) fn write_staged_image(
     absolute: &Path,
     rel_path: &str,
     image: Option<&(Vec<u8>, bool)>,
@@ -689,7 +724,7 @@ fn maybe_fail_restore_step(_step: usize, _rel_path: &str) -> Result<(), Checkpoi
 }
 
 /// Read a file's bytes and executable bit; `Ok(None)` when the file is absent.
-fn read_file_image(path: &Path) -> Result<Option<(Vec<u8>, bool)>, CheckpointError> {
+pub(crate) fn read_file_image(path: &Path) -> Result<Option<(Vec<u8>, bool)>, CheckpointError> {
     match fs::metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(CheckpointError::new(format!(

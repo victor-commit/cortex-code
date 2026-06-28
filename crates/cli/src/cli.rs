@@ -168,6 +168,18 @@ pub enum Command {
     /// history along a new branch, so the abandoned change is no longer redoable.
     Redo(CheckpointArgs),
 
+    /// Inspect and maintain the shadow-git snapshot store at finer granularity than whole-turn
+    /// undo/redo.
+    ///
+    /// `cortex snapshot diff` reports the net file changes the agent's snapshots captured (a summary
+    /// by default, or the full unified diff with `--full`). `cortex snapshot revert --path <p>`
+    /// rolls back a single file (a "patch"), or one hunk of it with `--hunk <n>`, WITHOUT reverting
+    /// the other files changed in the same turn; the revert is itself recorded as an undoable
+    /// snapshot. `cortex snapshot prune` drops old snapshots and garbage-collects the store while
+    /// keeping the most recent undo turns and the redo branch byte-exact. All paths are resolved
+    /// locally; no network is contacted.
+    Snapshot(SnapshotArgs),
+
     /// Manage and inspect Model Context Protocol (MCP) servers.
     ///
     /// MCP servers are declared in the layered config under `mcp.<name>` (a local stdio server has
@@ -712,6 +724,73 @@ pub struct McpAuthArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckpointArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    #[command(subcommand)]
+    pub command: SnapshotCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SnapshotCommand {
+    /// Show the net file changes captured by the agent's snapshots.
+    ///
+    /// Defaults to a per-file summary (status plus added/removed line counts); pass `--full` for the
+    /// complete `git diff`-style unified diff of every changed file.
+    Diff(SnapshotDiffArgs),
+
+    /// Revert a single file (a patch), or one hunk of it, without reverting the rest of the turn.
+    ///
+    /// Restores the named file to its pre-change bytes and records the revert as a fresh, undoable
+    /// snapshot. A file changed outside the agent since the snapshot is reported as a conflict and
+    /// left untouched rather than clobbered.
+    Revert(SnapshotRevertArgs),
+
+    /// Prune old snapshots and garbage-collect the store, keeping recent undo/redo intact.
+    Prune(SnapshotPruneArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotDiffArgs {
+    /// Restrict the diff to a single session id (default: every applied snapshot).
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+
+    /// Include the full unified diff text for each file (default: a summary with line counts).
+    #[arg(long)]
+    pub full: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotRevertArgs {
+    /// The workspace-relative path of the file to revert.
+    #[arg(long, value_name = "PATH")]
+    pub path: String,
+
+    /// Restrict the revert to a single session id (default: every applied snapshot).
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+
+    /// Revert only the given 0-based hunk of the file instead of the whole file.
+    #[arg(long, value_name = "N")]
+    pub hunk: Option<usize>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotPruneArgs {
+    /// Keep this many of the most recent undo turns; older applied snapshots are pruned.
+    #[arg(long, default_value_t = 10, value_name = "N")]
+    pub keep: usize,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }

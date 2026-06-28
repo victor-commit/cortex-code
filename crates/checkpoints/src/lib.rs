@@ -21,11 +21,13 @@
 mod error;
 mod git;
 mod location;
+mod maintenance;
 mod recorder;
 mod store;
 
 pub use error::CheckpointError;
 pub use location::workspace_key;
+pub use maintenance::{FileChange, PruneOutcome};
 pub use recorder::TurnRecorder;
 pub use store::{
     FileDiff, FileImage, HistorySummary, RecordedTurn, RestoreDirection, RestoreOutcome,

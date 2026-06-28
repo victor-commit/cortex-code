@@ -37,6 +37,7 @@ mod run;
 mod search;
 mod serve_cmd;
 mod session;
+mod snapshot;
 mod stats;
 mod subagent;
 mod todo_store;
@@ -115,6 +116,7 @@ fn main() -> ExitCode {
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
+        Some(Command::Snapshot(args)) => snapshot::run(args).into(),
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
         Some(Command::Formatter(args)) => formatter_cmd::run(args).into(),
@@ -149,6 +151,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Account(_)) => Surface::Auth,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
+        Some(Command::Snapshot(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,
         Some(Command::Lsp(_)) => Surface::Lsp,
         Some(Command::Formatter(_)) => Surface::Config,
