@@ -146,6 +146,16 @@ pub enum Command {
     #[command(alias = "console")]
     Account(AccountArgs),
 
+    /// Manage a project-scoped environment store that feeds the commands the agent runs.
+    ///
+    /// Values live in a per-project store OUTSIDE the project tree (owner-only on Unix), never in
+    /// the agent's own process environment. `set`/`get`/`remove` manage individual values and `all`
+    /// lists them with secret-looking values redacted. A stored value is merged into the
+    /// environment of commands the agent runs (the `bash` tool and the server `shell` route), so
+    /// setting a key makes later runs see it and removing it makes them no longer see it.
+    #[command(alias = "environment")]
+    Env(EnvArgs),
+
     /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
     ///
     /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
@@ -622,6 +632,69 @@ pub enum AccountCommand {
 
 #[derive(Debug, Args)]
 pub struct AccountActionArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvArgs {
+    #[command(subcommand)]
+    pub command: Option<EnvCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnvCommand {
+    /// Print one scoped environment value by key.
+    Get(EnvGetArgs),
+
+    /// List every scoped environment value (secret-looking values are redacted).
+    #[command(alias = "list")]
+    All(EnvListArgs),
+
+    /// Set (or overwrite) one scoped environment value.
+    Set(EnvSetArgs),
+
+    /// Remove one scoped environment value.
+    #[command(alias = "unset")]
+    Remove(EnvRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EnvGetArgs {
+    /// The variable name to read.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvSetArgs {
+    /// The variable name to set.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    /// The value to store. When omitted, the value is read from stdin.
+    #[arg(value_name = "VALUE")]
+    pub value: Option<String>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvRemoveArgs {
+    /// The variable name to remove.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
     #[command(flatten)]
     pub format: FormatArgs,
 }

@@ -11,6 +11,7 @@ mod config;
 mod custom_agents;
 mod custom_modes;
 mod debug_cmd;
+mod env_cmd;
 mod export_import;
 mod feature_gate;
 mod format_bridge;
@@ -113,6 +114,7 @@ fn main() -> ExitCode {
         Some(Command::Project(args)) => project_cmd::run(args).into(),
         Some(Command::Worktree(args)) => worktree_cmd::run(args, bus.clone()).into(),
         Some(Command::Account(args)) => account_cmd::run(args).into(),
+        Some(Command::Env(args)) => env_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
@@ -149,6 +151,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Project(_)) => Surface::Session,
         Some(Command::Worktree(_)) => Surface::Session,
         Some(Command::Account(_)) => Surface::Auth,
+        Some(Command::Env(_)) => Surface::Config,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Snapshot(_)) => Surface::Checkpoint,

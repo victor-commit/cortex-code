@@ -186,7 +186,11 @@ pub fn resolve_project(db: &Database, cwd: &Path) -> Result<Project, DbError> {
     if let Some(project) = db.projects().find_by_directory(&canonical)? {
         return Ok(project);
     }
-    let id = format!("prj-{}", checkpoints::workspace_key(cwd));
+    let id = format!(
+        "{}_{}",
+        db::prefix::PROJECT,
+        checkpoints::workspace_key(cwd)
+    );
     let name = Path::new(&canonical)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());

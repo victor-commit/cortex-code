@@ -11,7 +11,7 @@ use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
-use crate::id::random_id;
+use crate::id::{prefix, random_id};
 
 /// A persisted account: provider/plugin auth metadata, never a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ impl<'a> AccountRepo<'a> {
         let label = label.map(redaction::redact);
         let auth_method = auth_method.map(redaction::redact);
         let source = source.map(redaction::redact);
-        let id = random_id(self.conn, "acc")?;
+        let id = random_id(self.conn, prefix::ACCOUNT)?;
         self.conn.execute(
             "INSERT INTO accounts (id, provider, label, auth_method, source, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))

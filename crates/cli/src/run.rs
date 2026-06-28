@@ -227,6 +227,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Err(exit) => return exit,
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // Report image normalization (downscale/bounds) before the network guard or any provider work,
+    // so the size/dimension change a multimodal turn will apply is observable even when the turn
+    // later fails closed (no network/credential). This only reads local files; it opens no socket.
+    emit_image_normalization_diagnostics(&extract_message_content_parts(&prompt_message_parts(
+        &prompt, &cwd,
+    )));
     // Link this run's session to the project that owns the working directory, so the session keeps
     // its project identity across restarts. Best-effort: a project-link failure must not abort an
     // otherwise-valid run.
@@ -659,8 +665,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     // Attach the real formatter + LSP diagnostics hook so write/edit/apply_patch first canonicalize
     // the on-disk file and then report diagnostics from the matching language server.
     let dispatcher = dispatcher.with_hooks(mutation_hooks);
-    // Attach environment variables supplied by plugin `shell.env` hooks to bash children.
-    let dispatcher = dispatcher.with_shell_env(plugin_state.shell_env());
+    // Attach environment variables: the project-scoped environment store first, then plugin
+    // `shell.env` hooks (which take precedence). A value set via `cortex env set` thus reaches the
+    // commands the agent runs (the bash tool), and `cortex env remove` makes it no longer appear.
+    let mut shell_env = crate::env_cmd::scoped_shell_env(&cwd);
+    shell_env.extend(plugin_state.shell_env());
+    let dispatcher = dispatcher.with_shell_env(shell_env);
     // Attach the same real LSP manager to the read-only `lsp` navigation tool, so hover,
     // definition, references, and symbols use the live server and share its lifecycle.
     let dispatcher = dispatcher.with_lsp_service(lsp_hooks.clone());
@@ -1151,6 +1161,52 @@ fn media_type_for_path(path: &Path) -> Option<&'static str> {
         "svg" => Some("image/svg+xml"),
         "pdf" => Some("application/pdf"),
         _ => None,
+    }
+}
+
+/// Emit a stderr diagnostic for every image attachment describing how it is normalized before
+/// provider upload: oversized raster images are downscaled to within the upload bound, in-bound
+/// images pass through, and an undecodable payload over the byte cap is reported as rejected. This
+/// mirrors the normalization the provider seam applies so the size/dimension change is observable.
+fn emit_image_normalization_diagnostics(parts: &[MessageContentPart]) {
+    for part in parts {
+        let (media_type, path) = match part {
+            MessageContentPart::Image { media_type, path } => (media_type.as_str(), path.as_str()),
+            _ => continue,
+        };
+        if !llm::is_normalizable_image(media_type) {
+            continue;
+        }
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path);
+        match llm::normalize_image_bytes(&bytes, media_type) {
+            Ok((_, report)) if report.resized => eprintln!(
+                "cortex run: image {name}: normalized {}x{} -> {}x{} ({}, {} -> {} bytes)",
+                report.original_width,
+                report.original_height,
+                report.width,
+                report.height,
+                report.media_type,
+                report.original_bytes,
+                report.bytes,
+            ),
+            Ok((_, report)) => eprintln!(
+                "cortex run: image {name}: {}x{} within upload bounds ({}, {} bytes)",
+                report.width, report.height, report.media_type, report.bytes,
+            ),
+            Err(err) if bytes.len() > llm::MAX_IMAGE_BYTES => eprintln!(
+                "cortex run: image {name}: rejected before upload ({} bytes, cap {}): {err}",
+                bytes.len(),
+                llm::MAX_IMAGE_BYTES,
+            ),
+            Err(_) => {}
+        }
     }
 }
 

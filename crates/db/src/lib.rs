@@ -34,6 +34,7 @@ use rusqlite::Connection;
 
 pub use account::{Account, AccountRepo};
 pub use error::{DbError, DbResult};
+pub use id::prefix;
 pub use message::{Message, MessageRepo};
 pub use migrations::{MIGRATIONS_TABLE, latest_version};
 pub use path::{DB_FILE_NAME, DbPathInputs, ENV_DATA_DIR, ENV_DB_PATH, default_location_hint};

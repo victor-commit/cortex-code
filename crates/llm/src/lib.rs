@@ -30,6 +30,10 @@ pub use anthropic::{ANTHROPIC_API_BASE, AnthropicConfig, AnthropicMessages};
 pub use error::LlmError;
 pub use event::{FinishReason, LlmEvent, ToolCall, ToolResult, Usage};
 pub use gemini::{GEMINI_API_BASE, GeminiConfig, GeminiProvider};
+pub use media::{
+    ImageNormalization, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, is_normalizable_image,
+    normalize_image_bytes,
+};
 pub use openai::FrameStream;
 pub use openai::{
     OPENROUTER_BASE_URL, OpenAiCompatible, OpenAiConfig, OpenAiResponses, OpenAiResponsesConfig,

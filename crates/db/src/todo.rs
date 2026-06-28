@@ -11,7 +11,7 @@ use protocol::{TodoItem, TodoPriority, TodoStatus};
 use rusqlite::{Connection, Row, params};
 
 use crate::error::{DbError, DbResult};
-use crate::id::random_id;
+use crate::id::{prefix, random_id};
 
 /// Read/write access to the `todos` table over a borrowed connection.
 pub struct TodoRepo<'a> {
@@ -54,7 +54,7 @@ impl<'a> TodoRepo<'a> {
             )?;
 
             for (position, item) in items.iter().enumerate() {
-                let id = random_id(self.conn, "tod")?;
+                let id = random_id(self.conn, prefix::TODO)?;
                 let content = redaction::redact(&item.content);
                 self.conn.execute(
                     "INSERT INTO todos (id, session_id, position, content, status, priority, created_at)

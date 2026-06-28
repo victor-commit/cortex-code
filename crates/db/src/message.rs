@@ -7,7 +7,7 @@ use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
-use crate::id::random_id;
+use crate::id::{prefix, random_id};
 
 /// A persisted message belonging to a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,7 +90,7 @@ impl<'a> MessageRepo<'a> {
         }
 
         let content = redaction::redact(content);
-        let id = random_id(self.conn, "msg")?;
+        let id = random_id(self.conn, prefix::MESSAGE)?;
         let mut message = self.conn.query_row(
             "INSERT INTO messages (id, session_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4, datetime('now'))

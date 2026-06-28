@@ -4,7 +4,7 @@ use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
-use crate::id::random_id;
+use crate::id::{prefix, random_id};
 
 /// A persisted session: a top-level conversation that messages hang off of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ impl<'a> SessionRepo<'a> {
     /// lands in the database file; non-secret titles are stored verbatim.
     pub fn create(&self, title: Option<&str>) -> DbResult<Session> {
         let title = title.map(redaction::redact);
-        let id = random_id(self.conn, "ses")?;
+        let id = random_id(self.conn, prefix::SESSION)?;
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, created_at, updated_at)
              VALUES (?1, ?2, datetime('now'), datetime('now'))
@@ -214,7 +214,7 @@ impl<'a> SessionRepo<'a> {
     /// [`create`](Self::create).
     pub fn create_child(&self, parent_id: &str, title: Option<&str>) -> DbResult<Session> {
         let title = title.map(redaction::redact);
-        let id = random_id(self.conn, "ses")?;
+        let id = random_id(self.conn, prefix::SESSION)?;
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, parent_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))

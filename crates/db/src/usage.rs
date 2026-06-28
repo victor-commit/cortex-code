@@ -9,7 +9,7 @@ use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
-use crate::id::random_id;
+use crate::id::{prefix, random_id};
 
 /// A persisted per-turn usage record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,7 +93,7 @@ impl<'a> UsageRepo<'a> {
             });
         }
 
-        let id = random_id(self.conn, "usg")?;
+        let id = random_id(self.conn, prefix::USAGE)?;
         let record = self.conn.query_row(
             "INSERT INTO usage \
                (id, session_id, input_tokens, output_tokens, total_tokens, cost, created_at)

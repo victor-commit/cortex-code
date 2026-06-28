@@ -34,6 +34,7 @@
 
 mod discovery;
 mod env;
+pub mod env_store;
 mod merge;
 mod schema;
 mod subst;
@@ -47,6 +48,7 @@ use toml::Value;
 use toml::value::Table;
 
 pub use env::env_var_name;
+pub use env_store::{EnvStoreInputs, ScopedEnv};
 
 /// The built-in default model used when no layer overrides it.
 pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";

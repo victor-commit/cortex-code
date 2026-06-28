@@ -1952,7 +1952,8 @@ pub(crate) async fn run_session_bash(
         .with_todo_store(Arc::new(ServerTodoStore {
             db_path: state.db_path.clone(),
         }))
-        .with_audit(audit_sink);
+        .with_audit(audit_sink)
+        .with_shell_env(scoped_shell_env(&state.cwd));
     if let Some(permission_engine) = turn_permissions.engine() {
         context = context.with_permissions(permission_engine);
     }
@@ -1969,6 +1970,17 @@ pub(crate) async fn run_session_bash(
         output.is_error,
     ));
     Ok(output)
+}
+
+/// Load the project-scoped environment store for `cwd` as owned `(OsString, OsString)` pairs, ready
+/// to merge into a tool/command child environment. Keyed by the canonical workspace key (the same
+/// key the CLI uses), so a value set with `cortex env set` reaches the server `shell`/`command`
+/// routes and `cortex env remove` makes it no longer appear.
+fn scoped_shell_env(cwd: &std::path::Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    settings::env_store::load_for(&checkpoints::workspace_key(cwd))
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect()
 }
 
 async fn abort_session(

@@ -63,3 +63,4 @@ checkpoints = { workspace = true }
 tower = { workspace = true }
 crossterm = { workspace = true }
 httpdate = { workspace = true }
+image = { workspace = true }

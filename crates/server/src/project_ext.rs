@@ -38,7 +38,11 @@ fn current_project(cwd: &Path, db_path: &Path) -> Project {
     let worktree = git_toplevel(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let vcs = git_toplevel(cwd).is_some().then_some("git");
     Project {
-        id: checkpoints::workspace_key(cwd),
+        id: format!(
+            "{}_{}",
+            db::prefix::PROJECT,
+            checkpoints::workspace_key(cwd)
+        ),
         directory: redaction::redact(&cwd.to_string_lossy()),
         directories: project_directories(cwd, db_path),
         worktree: redaction::redact(&worktree.to_string_lossy()),
