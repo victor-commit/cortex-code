@@ -53,6 +53,9 @@ pub enum OAuthError {
     /// The token endpoint response could not be parsed.
     #[error("invalid token response: {0}")]
     TokenResponse(String),
+    /// The OS CSPRNG was unavailable, so a secure CSRF `state` could not be generated.
+    #[error("cannot generate a secure OAuth state: {0}")]
+    RandomSource(String),
 }
 
 /// The resolved OAuth endpoints and client identity for a remote server.
@@ -136,7 +139,7 @@ pub async fn begin(
         .map_err(|err| OAuthError::Callback(err.to_string()))?
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
-    let state = random_token();
+    let state = random_token()?;
 
     let mut authorize = url::Url::parse(&config.authorize_endpoint)
         .map_err(|_| OAuthError::InvalidUrl(config.authorize_endpoint.clone()))?;
@@ -414,19 +417,14 @@ async fn respond(stream: &mut TcpStream, status: u16, message: &str) {
 }
 
 /// A random hex token (128 bits) read from the OS CSPRNG, used for the CSRF state.
-fn random_token() -> String {
+///
+/// This FAILS CLOSED: if the OS CSPRNG is unavailable there is no time-based fallback (a
+/// `SystemTime`-nanos value would be predictable, making the single-use state guessable), so the
+/// caller refuses the authorize request instead of issuing a weak challenge.
+fn random_token() -> Result<String, OAuthError> {
     let mut bytes = [0u8; 16];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read as _;
-        let _ = file.read_exact(&mut bytes);
-    } else {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        bytes[..16].copy_from_slice(&nanos.to_le_bytes());
-    }
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|err| OAuthError::RandomSource(err.to_string()))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]
@@ -441,8 +439,8 @@ mod tests {
 
     #[test]
     fn random_tokens_are_unique_and_hex() {
-        let a = random_token();
-        let b = random_token();
+        let a = random_token().expect("CSPRNG available");
+        let b = random_token().expect("CSPRNG available");
         assert_ne!(a, b);
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));

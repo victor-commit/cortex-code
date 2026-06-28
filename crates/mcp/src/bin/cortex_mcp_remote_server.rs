@@ -161,17 +161,17 @@ impl State {
         self.streams.lock().await.push(tx);
     }
 
-    fn issue_tokens(&self) -> (String, String, Value) {
+    fn issue_tokens(&self) -> std::io::Result<(String, String, Value)> {
         let n = self.token_seq.fetch_add(1, Ordering::SeqCst);
-        let access = format!("cortex-access-{}-{}", n, rand_hex());
-        let refresh = format!("cortex-refresh-{}-{}", n, rand_hex());
+        let access = format!("cortex-access-{}-{}", n, rand_hex()?);
+        let refresh = format!("cortex-refresh-{}-{}", n, rand_hex()?);
         let body = json!({
             "access_token": access,
             "refresh_token": refresh,
             "token_type": "Bearer",
             "expires_in": self.expires_in,
         });
-        (access, refresh, body)
+        Ok((access, refresh, body))
     }
 }
 
@@ -597,7 +597,7 @@ async fn handle_authorize(
         return write_text(stream, 400, "missing client_id").await;
     }
 
-    let code = format!("code-{}", rand_hex());
+    let code = format!("code-{}", rand_hex()?);
     state.valid_codes.lock().await.insert(code.clone());
     state.log("authorize: issued code and redirecting to loopback callback");
 
@@ -630,7 +630,7 @@ async fn handle_token(stream: &mut TcpStream, state: &State, body: &[u8]) -> std
             if !state.valid_codes.lock().await.remove(code) {
                 return write_json(stream, 400, &json!({"error":"invalid_grant"})).await;
             }
-            let (access, refresh, body) = state.issue_tokens();
+            let (access, refresh, body) = state.issue_tokens()?;
             state.issued_access.lock().await.insert(access);
             state.issued_refresh.lock().await.insert(refresh);
             state.log("token: authorization_code grant -> issued tokens");
@@ -644,7 +644,7 @@ async fn handle_token(stream: &mut TcpStream, state: &State, body: &[u8]) -> std
             if !state.issued_refresh.lock().await.contains(refresh) {
                 return write_json(stream, 400, &json!({"error":"invalid_grant"})).await;
             }
-            let (access, new_refresh, body) = state.issue_tokens();
+            let (access, new_refresh, body) = state.issue_tokens()?;
             state.issued_access.lock().await.insert(access);
             state.issued_refresh.lock().await.insert(new_refresh);
             state.log("token: refresh_token grant -> issued fresh access token");
@@ -780,17 +780,8 @@ fn urlencode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
-fn rand_hex() -> String {
+fn rand_hex() -> std::io::Result<String> {
     let mut bytes = [0u8; 8];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read as _;
-        let _ = file.read_exact(&mut bytes);
-    } else {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        bytes.copy_from_slice(&(nanos as u64).to_le_bytes());
-    }
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|err| std::io::Error::other(err.to_string()))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }

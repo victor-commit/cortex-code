@@ -23,6 +23,7 @@ eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 url = { workspace = true }
+getrandom = { workspace = true }
 
 [[bin]]
 name = "cortex-mcp-echo-server"
