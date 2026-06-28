@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     name = "cortex",
     version,
     about = "Cortex Code — terminal coding agent (TUI, headless run, local server)",
+    long_version = env!("CARGO_PKG_VERSION"),
     long_about = "Cortex Code is a single-binary terminal coding agent.\n\n\
         Run with no arguments to launch the interactive TUI. Use `cortex run` for\n\
         scriptable headless turns, or `cortex serve` to expose the local HTTP/SSE server.",
