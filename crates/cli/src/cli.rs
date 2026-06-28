@@ -116,6 +116,16 @@ pub enum Command {
     #[command(alias = "providers")]
     Provider(ProviderArgs),
 
+    /// Inspect and manage the multi-directory project model.
+    ///
+    /// A project groups one or more directories under one stable id, so sessions, search, and
+    /// config can span every directory of a single logical project instead of keying identity to a
+    /// single working-directory hash. `cortex project current` reports (creating on first use) the
+    /// project for the working directory; `cortex project add <dir>` widens it to a second
+    /// directory; `cortex project list` shows every project with its directories. All paths are
+    /// resolved locally; no network is contacted.
+    Project(ProjectArgs),
+
     /// Control-plane account/console login (intentionally unavailable in this build).
     ///
     /// Cortex Code is a local terminal mono-binary with no hosted control plane, so there is no
@@ -760,6 +770,50 @@ pub enum SessionCommand {
 
     /// Append a message to a session (content from an argument or stdin).
     Message(SessionMessageArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: Option<ProjectCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// Show (creating on first use) the project for the working directory and its directories.
+    Current(ProjectActionArgs),
+
+    /// List every known project with its directories.
+    List(ProjectActionArgs),
+
+    /// Add a directory to the working directory's project (widening it to multiple directories).
+    Add(ProjectDirectoryArgs),
+
+    /// Remove a (non-primary) directory from the working directory's project.
+    Remove(ProjectDirectoryArgs),
+
+    /// List the directories registered to the working directory's project.
+    Directories(ProjectActionArgs),
+
+    /// List the sessions that belong to the working directory's project.
+    Sessions(ProjectActionArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectActionArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectDirectoryArgs {
+    /// The directory to add to (or remove from) the project. Resolved relative to the working
+    /// directory; it must exist.
+    #[arg(value_name = "DIR")]
+    pub directory: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

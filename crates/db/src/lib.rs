@@ -16,11 +16,13 @@
 //! Failures (an unwritable path, a non-SQLite junk file) surface as a typed [`DbError`] rather
 //! than a panic, so the caller can emit a clear diagnostic and a non-zero exit.
 
+mod account;
 mod error;
 mod id;
 mod message;
 mod migrations;
 mod path;
+mod project;
 mod session;
 mod todo;
 mod usage;
@@ -30,10 +32,12 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
+pub use account::{Account, AccountRepo};
 pub use error::{DbError, DbResult};
 pub use message::{Message, MessageRepo};
 pub use migrations::{MIGRATIONS_TABLE, latest_version};
 pub use path::{DB_FILE_NAME, DbPathInputs, ENV_DATA_DIR, ENV_DB_PATH, default_location_hint};
+pub use project::{Project, ProjectRepo};
 pub use session::{Session, SessionRepo};
 pub use todo::TodoRepo;
 pub use usage::{UsageRecord, UsageRepo, UsageTotals};
@@ -274,6 +278,18 @@ impl Database {
     #[must_use]
     pub fn todos(&self) -> TodoRepo<'_> {
         TodoRepo::new(&self.conn)
+    }
+
+    /// The projects repository.
+    #[must_use]
+    pub fn projects(&self) -> ProjectRepo<'_> {
+        ProjectRepo::new(&self.conn)
+    }
+
+    /// The accounts repository.
+    #[must_use]
+    pub fn accounts(&self) -> AccountRepo<'_> {
+        AccountRepo::new(&self.conn)
     }
 }
 

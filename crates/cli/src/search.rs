@@ -5,7 +5,7 @@
 //! database already exists, it also scans persisted messages for the query and appends those hits.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use db::{Database, DbPathInputs};
@@ -30,44 +30,79 @@ pub fn run(args: SearchArgs) -> Exit {
             return Exit::Failure;
         }
     };
+    let roots = search_roots(&cwd);
 
     match args.format.format {
-        OutputFormat::Text => match run_text_search(&cwd, &args.query) {
+        OutputFormat::Text => match run_text_search(&roots, &args.query) {
             Ok(body) => emit_text(&body),
             Err(err) => fail(err),
         },
-        OutputFormat::Json | OutputFormat::Jsonl => match run_json_search(&cwd, &args.query) {
+        OutputFormat::Json | OutputFormat::Jsonl => match run_json_search(&roots, &args.query) {
             Ok(matches) => emit_json(&SearchDocument { matches }),
             Err(err) => fail(err),
         },
     }
 }
 
-fn run_text_search(cwd: &Path, query: &str) -> Result<String, SearchError> {
-    let output = rg_output(cwd, query, false)?;
-    let mut body = match output.status.code() {
-        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
-        Some(1) => Ok(String::new()),
-        _ if is_no_files_searched(&output.stderr) => Ok(String::new()),
-        _ => Err(SearchError::RipgrepFailed(stderr_or_default(
-            &output.stderr,
-            "ripgrep failed",
-        ))),
-    }?;
+/// The directory roots a search covers.
+///
+/// By default this is just the working directory, preserving cwd-scoped behavior. When the working
+/// directory is registered to a project that spans multiple directories (in an existing database),
+/// the search widens to every directory of that project, so one logical project is searchable as a
+/// unit regardless of which of its directories you launched from.
+fn search_roots(cwd: &Path) -> Vec<PathBuf> {
+    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if let Some(db) = open_existing_database()
+        && let Ok(Some(project)) = db
+            .projects()
+            .find_by_directory(&canonical.to_string_lossy())
+    {
+        let directories: Vec<PathBuf> = project
+            .directories
+            .iter()
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .collect();
+        if directories.len() > 1 {
+            return directories;
+        }
+    }
+    vec![cwd.to_path_buf()]
+}
+
+fn run_text_search(roots: &[PathBuf], query: &str) -> Result<String, SearchError> {
+    let mut body = String::new();
+    for root in roots {
+        let output = rg_output(root, query, false)?;
+        let chunk = match output.status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+            Some(1) => Ok(String::new()),
+            _ if is_no_files_searched(&output.stderr) => Ok(String::new()),
+            _ => Err(SearchError::RipgrepFailed(stderr_or_default(
+                &output.stderr,
+                "ripgrep failed",
+            ))),
+        }?;
+        body.push_str(&chunk);
+    }
     append_session_text_matches(query, &mut body)?;
     Ok(body)
 }
 
-fn run_json_search(cwd: &Path, query: &str) -> Result<Vec<SearchMatch>, SearchError> {
-    let output = rg_output(cwd, query, true)?;
-    let mut matches = match output.status.code() {
-        Some(0) | Some(1) => Ok(parse_ripgrep_json(&output.stdout)?),
-        _ if is_no_files_searched(&output.stderr) => Ok(Vec::new()),
-        _ => Err(SearchError::RipgrepFailed(stderr_or_default(
-            &output.stderr,
-            "ripgrep failed",
-        ))),
-    }?;
+fn run_json_search(roots: &[PathBuf], query: &str) -> Result<Vec<SearchMatch>, SearchError> {
+    let mut matches = Vec::new();
+    for root in roots {
+        let output = rg_output(root, query, true)?;
+        let chunk = match output.status.code() {
+            Some(0) | Some(1) => Ok(parse_ripgrep_json(&output.stdout)?),
+            _ if is_no_files_searched(&output.stderr) => Ok(Vec::new()),
+            _ => Err(SearchError::RipgrepFailed(stderr_or_default(
+                &output.stderr,
+                "ripgrep failed",
+            ))),
+        }?;
+        matches.extend(chunk);
+    }
     matches.extend(session_json_matches(query)?);
     Ok(matches)
 }

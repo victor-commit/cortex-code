@@ -48,6 +48,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         sql: include_str!("migrations/0007_session_parent_revert.sql"),
     },
+    Migration {
+        version: 8,
+        sql: include_str!("migrations/0008_projects_accounts.sql"),
+    },
 ];
 
 /// The highest migration version known to this build.

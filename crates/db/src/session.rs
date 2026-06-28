@@ -258,4 +258,52 @@ impl<'a> SessionRepo<'a> {
         }
         self.require(id)
     }
+
+    /// Link (or unlink) a session to a project, so the session retains its project identity across
+    /// restarts. Passing `None` clears the link. A project id is not secret, so it is stored
+    /// verbatim. Errors with [`DbError::NotFound`] when no session has the given id.
+    pub fn set_project(&self, id: &str, project_id: Option<&str>) -> DbResult<()> {
+        let affected = self.conn.execute(
+            "UPDATE sessions SET project_id = ?2 WHERE id = ?1",
+            params![id, project_id],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound {
+                kind: "session",
+                id: id.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The project a session is linked to, or `None` when it is unlinked.
+    ///
+    /// Errors with [`DbError::NotFound`] when no session has the given id, so a caller can
+    /// distinguish "session absent" from "session present but unlinked".
+    pub fn project_id(&self, id: &str) -> DbResult<Option<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT project_id FROM sessions WHERE id = ?1")?;
+        let mut rows = statement.query_map(params![id], |row| row.get::<_, Option<String>>(0))?;
+        match rows.next() {
+            Some(row) => Ok(row?),
+            None => Err(DbError::NotFound {
+                kind: "session",
+                id: id.to_owned(),
+            }),
+        }
+    }
+
+    /// The ids of the sessions linked to a project, newest-first.
+    pub fn ids_for_project(&self, project_id: &str) -> DbResult<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM sessions WHERE project_id = ?1 ORDER BY created_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
 }

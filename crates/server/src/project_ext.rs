@@ -15,38 +15,65 @@ use super::{ApiError, ServerState};
 use crate::file_ext::{resolve_in_workspace, run_git_shared};
 
 /// A project: a workspace directory and the stable per-workspace key Cortex derives for it.
+///
+/// `directories` reflects the durable multi-directory project model: when the workspace directory is
+/// registered to a project that spans several directories, every directory is listed (so one
+/// logical project is visible as a unit); otherwise it is just the active directory.
 #[derive(Debug, Serialize)]
 pub(super) struct Project {
     id: String,
     directory: String,
+    directories: Vec<String>,
     worktree: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     vcs: Option<&'static str>,
 }
 
-fn current_project(cwd: &Path) -> Project {
+fn current_project(cwd: &Path, db_path: &Path) -> Project {
     let worktree = git_toplevel(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let vcs = git_toplevel(cwd).is_some().then_some("git");
     Project {
         id: checkpoints::workspace_key(cwd),
         directory: redaction::redact(&cwd.to_string_lossy()),
+        directories: project_directories(cwd, db_path),
         worktree: redaction::redact(&worktree.to_string_lossy()),
         vcs,
     }
+}
+
+/// The directories of the project that owns `cwd`, from the durable project model, redacted at the
+/// boundary. Falls back to just the active directory when no multi-directory project is registered.
+fn project_directories(cwd: &Path, db_path: &Path) -> Vec<String> {
+    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if let Ok(db) = db::Database::open(db_path)
+        && let Ok(Some(project)) = db
+            .projects()
+            .find_by_directory(&canonical.to_string_lossy())
+    {
+        let directories: Vec<String> = project
+            .directories
+            .iter()
+            .map(|directory| redaction::redact(directory))
+            .collect();
+        if !directories.is_empty() {
+            return directories;
+        }
+    }
+    vec![redaction::redact(&cwd.to_string_lossy())]
 }
 
 /// `GET /project` — list the projects known to this server (the active workspace project).
 pub(super) async fn list_projects(
     State(state): State<ServerState>,
 ) -> Result<Json<Vec<Project>>, ApiError> {
-    Ok(Json(vec![current_project(&state.cwd)]))
+    Ok(Json(vec![current_project(&state.cwd, state.db_path())]))
 }
 
 /// `GET /project/current` — the active workspace project.
 pub(super) async fn current_project_route(
     State(state): State<ServerState>,
 ) -> Result<Json<Project>, ApiError> {
-    let project = current_project(&state.cwd);
+    let project = current_project(&state.cwd, state.db_path());
     state
         .event_bus
         .publish(&events::Event::ProjectUpdated(events::ProjectUpdated {

@@ -227,6 +227,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Err(exit) => return exit,
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // Link this run's session to the project that owns the working directory, so the session keeps
+    // its project identity across restarts. Best-effort: a project-link failure must not abort an
+    // otherwise-valid run.
+    if let Ok(project) = crate::project_cmd::resolve_project(&db, &cwd) {
+        let _ = db.sessions().set_project(&session_id, Some(&project.id));
+    }
     let audit_sink = Arc::new(
         audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
             .with_surface_and_source("run", "headless"),

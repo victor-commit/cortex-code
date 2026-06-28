@@ -49,11 +49,25 @@ fn open_database() -> Result<Database, Exit> {
 
 fn new(db: &Database, args: SessionNewArgs) -> Exit {
     match db.sessions().create(args.title.as_deref()) {
-        Ok(session) => match args.format.format {
-            OutputFormat::Json | OutputFormat::Jsonl => emit_json(&session),
-            OutputFormat::Text => emit_text(&format!("{}\n", session.id)),
-        },
+        Ok(session) => {
+            link_session_to_project(db, &session.id);
+            match args.format.format {
+                OutputFormat::Json | OutputFormat::Jsonl => emit_json(&session),
+                OutputFormat::Text => emit_text(&format!("{}\n", session.id)),
+            }
+        }
         Err(err) => db_error(&err),
+    }
+}
+
+/// Link a freshly created session to the project that owns the working directory, so it retains
+/// project identity across restarts. Best-effort: a link failure must not fail session creation.
+fn link_session_to_project(db: &Database, session_id: &str) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if let Ok(project) = crate::project_cmd::resolve_project(db, &cwd) {
+        let _ = db.sessions().set_project(session_id, Some(&project.id));
     }
 }
 

@@ -14,6 +14,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use settings::ConfigInputs;
 
+use crate::account_store::{forget_account, list_accounts, record_account};
+
 use crate::cli::{
     AuthArgs, AuthCommand, AuthListArgs, AuthLoginArgs, AuthLogoutArgs, OutputFormat,
 };
@@ -120,6 +122,12 @@ fn login(args: AuthLoginArgs, plugin_state: &PluginState) -> Exit {
     let method_id = selected_method
         .as_ref()
         .map(|method| method.method_id.as_str());
+    let label = selected_method
+        .as_ref()
+        .map(|method| method.provider_name.as_str());
+    // Mirror the credential in a durable account record (metadata only; the 0600 store holds the
+    // secret). Best-effort: a database hiccup must not fail an otherwise-successful login.
+    record_account(&provider, label, method_id, &source);
     let document = AuthMutationDocument {
         provider: &provider,
         stored: true,
@@ -170,12 +178,23 @@ fn list(args: AuthListArgs, plugin_state: &PluginState) -> Exit {
         })
         .collect::<Vec<_>>();
 
+    let accounts = list_accounts();
+
     match args.format.format {
         OutputFormat::Text => {
             let mut out = String::new();
             for provider in &providers {
                 out.push_str(&provider.id);
                 out.push('\n');
+            }
+            if !accounts.is_empty() {
+                out.push('\n');
+                out.push_str("accounts:\n");
+                for account in &accounts {
+                    let source = account.source.as_deref().unwrap_or("-");
+                    let method = account.method.as_deref().unwrap_or("-");
+                    out.push_str(&format!("{} [{method}:{source}]\n", account.provider));
+                }
             }
             if !methods.is_empty() {
                 out.push('\n');
@@ -190,9 +209,11 @@ fn list(args: AuthListArgs, plugin_state: &PluginState) -> Exit {
             }
             emit_text(&out)
         }
-        OutputFormat::Json | OutputFormat::Jsonl => {
-            emit_json(&AuthListDocument { providers, methods })
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => emit_json(&AuthListDocument {
+            providers,
+            accounts,
+            methods,
+        }),
     }
 }
 
@@ -213,6 +234,8 @@ fn logout(args: AuthLogoutArgs) -> Exit {
         },
         None => false,
     };
+    // Mirror credential removal in the durable account records (best-effort).
+    forget_account(&provider);
 
     let (message, source) = if removed {
         ("credential removed", "file")
@@ -1037,6 +1060,7 @@ struct AuthMethodListDocument {
 #[derive(Serialize)]
 struct AuthListDocument {
     providers: Vec<StoredProviderDocument>,
+    accounts: Vec<crate::account_store::AccountDocument>,
     methods: Vec<AuthMethodListDocument>,
 }
 
