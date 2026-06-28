@@ -32,7 +32,11 @@ pub(crate) struct SubagentCatalog {
 
 impl SubagentCatalog {
     /// Build the task runner for this catalogue.
-    pub fn runner(&self, config: CliTaskRunnerConfig) -> Arc<dyn TaskRunner> {
+    ///
+    /// Returns the concrete runner so the surface can both attach it to a dispatcher (where it
+    /// coerces to `Arc<dyn TaskRunner>`) and later [`drain`](CliTaskRunner::drain_background) any
+    /// background subagent tasks before the process exits.
+    pub fn runner(&self, config: CliTaskRunnerConfig) -> Arc<CliTaskRunner> {
         Arc::new(CliTaskRunner {
             config,
             agents: self.agents.clone(),
@@ -117,7 +121,7 @@ impl ProviderAuditConfig {
     }
 }
 
-struct CliTaskRunner {
+pub(crate) struct CliTaskRunner {
     config: CliTaskRunnerConfig,
     agents: BTreeMap<String, ActiveAgent>,
     background_tasks: Arc<Mutex<BTreeMap<String, BackgroundTaskEntry>>>,
@@ -154,6 +158,47 @@ impl CliTaskRunner {
         }
 
         self.run_foreground(request).await
+    }
+
+    /// Drive every still-running background subagent child turn to completion before the parent
+    /// process exits.
+    ///
+    /// A background `task` is a `tokio::spawn`ed child turn on the parent's current-thread runtime:
+    /// once the parent turn's `block_on` returns, that child is no longer polled and would be
+    /// aborted when the runtime is dropped, losing its persisted assistant answer. Awaiting the
+    /// outstanding join handles here (analogous to reaping background `bash` jobs at shutdown)
+    /// guarantees the child transcript is durably written, so the task remains rejoinable by id and
+    /// visible in subagent surfaces after a restart, with no orphaned work left behind. The child
+    /// turn is itself bounded (MAX_STEPS + transport idle timeouts), so this drain terminates.
+    pub(crate) async fn drain_background(&self) {
+        let handles: Vec<(String, tokio::task::JoinHandle<ToolOutput>)> = {
+            let mut map = self.background_tasks.lock().expect("background lock");
+            map.iter_mut()
+                .filter_map(|(id, entry)| match &mut entry.state {
+                    BackgroundTaskState::Running(handle) => {
+                        handle.take().map(|handle| (id.clone(), handle))
+                    }
+                    BackgroundTaskState::Finished(_) => None,
+                })
+                .collect()
+        };
+
+        for (task_id, handle) in handles {
+            let output = match handle.await {
+                Ok(output) => output,
+                Err(err) => ToolOutput::error(format!(
+                    "task: background subagent task {task_id} failed to join: {err}"
+                )),
+            };
+            if let Some(entry) = self
+                .background_tasks
+                .lock()
+                .expect("background lock")
+                .get_mut(&task_id)
+            {
+                entry.state = BackgroundTaskState::Finished(output);
+            }
+        }
     }
 
     async fn run_background(&self, request: TaskRequest) -> ToolOutput {
@@ -1213,6 +1258,112 @@ mod tests {
         assert!(
             rejoined.model_content().contains("background child done"),
             "completed rejoin should include the child answer: {}",
+            rejoined.model_content()
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_background_persists_child_transcript_for_restart_rejoin() {
+        // A background `task` child turn is a spawned future on the parent's current-thread runtime;
+        // it only makes progress while the runtime drives it. The parent shutdown drain must run it
+        // to completion so the transcript persists durably and a SEPARATE process (fresh runner +
+        // fresh DB handle, no in-memory background map) can still rejoin it by id after a restart.
+        let (dir, inputs) = scratch("drain-restart");
+        let db_path = dir.join("cortex.db");
+        let db = Database::open(&db_path).expect("db");
+        db.sessions()
+            .ensure("parent-session", None)
+            .expect("parent");
+
+        let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta {
+                text: "drained child answer".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ]]));
+        let config = CliTaskRunnerConfig {
+            provider,
+            provider_audit: None,
+            plugin_state: PluginState::disabled(),
+            audit: Arc::new(audit::AuditSink::new(
+                dir.join("audit.jsonl"),
+                "parent-session",
+            )),
+            db_path: db_path.clone(),
+            cwd: dir.clone(),
+            parent_session_id: "parent-session".to_owned(),
+            parent_cap: None,
+            parent_model_id: "google/gemini-2.5-flash".to_owned(),
+            formatter_config: format::FormatterConfig::default(),
+            lsp_config: lsp::LspConfigSet::defaults(),
+            config_inputs: inputs,
+            project_memory: None,
+            bus: Arc::new(EventBus::new()),
+        };
+        let runner = catalog.runner(config.clone());
+
+        let started = runner
+            .run_task(TaskRequest {
+                agent: Some("explore".to_owned()),
+                prompt: Some("durable background work".to_owned()),
+                description: Some("restart test".to_owned()),
+                task_id: None,
+                command: None,
+                background: true,
+            })
+            .await;
+        assert!(!started.is_error, "got: {}", started.model_content());
+        assert!(
+            started.model_content().contains("state: running"),
+            "background launch should return running state: {}",
+            started.model_content()
+        );
+        let task_id = parse_task_id(&started.model_content());
+
+        // Parent process shutdown: drive the in-flight background child to completion.
+        runner.drain_background().await;
+
+        // Restart: a brand-new DB handle must already see the full child transcript.
+        let messages = Database::open(&db_path)
+            .expect("db reopen")
+            .messages()
+            .list_for_session(&task_id)
+            .expect("messages");
+        assert!(
+            messages.iter().any(|message| message.role == "user"
+                && message.content.contains("durable background work")),
+            "child user prompt must persist across restart: {messages:#?}"
+        );
+        assert!(
+            messages.iter().any(|message| message.role == "assistant"
+                && message.content.contains("drained child answer")),
+            "child assistant answer must persist across restart: {messages:#?}"
+        );
+
+        // A fresh runner with an empty in-memory map (a new process) rejoins purely from the DB.
+        let fresh = catalog.runner(config);
+        let rejoined = fresh
+            .run_task(TaskRequest {
+                agent: None,
+                prompt: None,
+                description: None,
+                task_id: Some(task_id.clone()),
+                command: None,
+                background: false,
+            })
+            .await;
+        assert!(!rejoined.is_error, "got: {}", rejoined.model_content());
+        assert!(
+            rejoined.model_content().contains("state: completed"),
+            "post-restart rejoin should return completion: {}",
+            rejoined.model_content()
+        );
+        assert!(
+            rejoined.model_content().contains("drained child answer"),
+            "post-restart rejoin should include the child answer: {}",
             rejoined.model_content()
         );
     }

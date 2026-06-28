@@ -11217,6 +11217,70 @@ mod tests {
         assert_eq!(done, 1);
     }
 
+    // VAL-GAP-CROSS-008 (TUI leg): a durable background subagent task persisted by the headless flow
+    // (child session titled `subagent:<agent> parent:<parent>` with a completed transcript) is shown
+    // in the TUI subagent UI after a restart — it surfaces purely from the on-disk session store the
+    // TUI shares with `cortex run`, so loading the parent session reveals the child as `done` with
+    // its result and parent linkage, no live in-process handle required.
+    #[test]
+    fn tui_subagent_ui_shows_persisted_background_task_after_restart() {
+        let path = session_store_path("subagent-restart");
+        let parent_id = "ses_parent_cross008";
+        let child_id;
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent session");
+            // Mirror exactly what the headless background `task` flow persists: a child session whose
+            // title carries subagent/parent linkage, a durable user prompt, and a completed answer.
+            let child = db
+                .sessions()
+                .create(Some(&format!(
+                    "durable background work (subagent:explore parent:{parent_id})"
+                )))
+                .expect("child session");
+            child_id = child.id.clone();
+            db.messages()
+                .create(&child.id, "user", "do CHILD_WORK n123")
+                .expect("child user message");
+            db.messages()
+                .create(&child.id, "assistant", "CHILD_ANSWER n123")
+                .expect("child assistant message");
+        }
+
+        // A fresh TUI app (the "restart") that only knows the shared session store path.
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(parent_id);
+
+        let statuses = a.subagent_statuses();
+        let row = statuses
+            .iter()
+            .find(|(id, ..)| id == &child_id)
+            .unwrap_or_else(|| panic!("subagent UI must list the persisted child: {statuses:?}"));
+        assert_eq!(row.2, "done", "the completed background task shows as done");
+        assert!(
+            row.1.contains("subagent:explore") && row.1.contains(&format!("parent:{parent_id}")),
+            "the subagent row shows the parent linkage: {}",
+            row.1
+        );
+        assert!(
+            row.3.contains("CHILD_ANSWER n123"),
+            "the subagent row surfaces the durable result detail: {}",
+            row.3
+        );
+
+        let sidebar = a.sidebar_subagent_rows();
+        assert!(
+            sidebar.iter().any(|line| line.contains("explore")),
+            "the subagents sidebar panel renders the persisted child: {sidebar:?}"
+        );
+
+        let (total, running, done) = a.subagent_footer_summary();
+        assert_eq!((total, running, done), (1, 0, 1));
+    }
+
     // VAL-CROSS-006 (TUI half): selecting a model for the session via `/models` persists it with the
     // session row, so a headless resume reads it back. Driven through the dialog-confirm path.
     #[test]

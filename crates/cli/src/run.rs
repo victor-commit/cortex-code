@@ -688,26 +688,30 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         Some(manager) => dispatcher.with_mcp(manager.clone()),
         None => dispatcher,
     };
-    let dispatcher = if task_catalog.targets.is_empty() {
-        dispatcher
-    } else {
-        let task_runner = task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
-            provider: provider_base.clone(),
-            provider_audit: provider_audit.clone(),
-            plugin_state: plugin_state.clone(),
-            audit: audit_sink.clone(),
-            db_path: db_path.clone(),
-            cwd: cwd.clone(),
-            parent_session_id: session_id.clone(),
-            parent_cap: parent_permission_cap,
-            parent_model_id: model_id.clone(),
-            formatter_config: run_config.formatter_config.clone(),
-            lsp_config: run_config.lsp_config.clone(),
-            config_inputs: subagent_config_inputs,
-            project_memory: project_memory_block.clone(),
-            bus: bus.clone(),
-        });
-        dispatcher.with_task_runner(task_catalog.targets.clone(), task_runner)
+    let task_runner: Option<std::sync::Arc<crate::subagent::CliTaskRunner>> =
+        if task_catalog.targets.is_empty() {
+            None
+        } else {
+            Some(task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
+                provider: provider_base.clone(),
+                provider_audit: provider_audit.clone(),
+                plugin_state: plugin_state.clone(),
+                audit: audit_sink.clone(),
+                db_path: db_path.clone(),
+                cwd: cwd.clone(),
+                parent_session_id: session_id.clone(),
+                parent_cap: parent_permission_cap,
+                parent_model_id: model_id.clone(),
+                formatter_config: run_config.formatter_config.clone(),
+                lsp_config: run_config.lsp_config.clone(),
+                config_inputs: subagent_config_inputs,
+                project_memory: project_memory_block.clone(),
+                bus: bus.clone(),
+            }))
+        };
+    let dispatcher = match &task_runner {
+        Some(runner) => dispatcher.with_task_runner(task_catalog.targets.clone(), runner.clone()),
+        None => dispatcher,
     };
     let shaped_dispatcher =
         plugin_state.tool_definition_dispatcher(&dispatcher, session_id.clone());
@@ -776,6 +780,12 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 .await
             }
         };
+        // Drive any in-flight background `task` subagent child turns to completion before the
+        // process exits, so their transcripts persist durably and remain rejoinable by id after a
+        // restart (a current-thread runtime stops polling spawned tasks once this block returns).
+        if let Some(runner) = task_runner.as_ref() {
+            runner.drain_background().await;
+        }
         // Reap any background `bash` jobs spawned this turn by exact PID, so no orphan process
         // outlives the run.
         dispatcher.background_jobs().shutdown().await;
