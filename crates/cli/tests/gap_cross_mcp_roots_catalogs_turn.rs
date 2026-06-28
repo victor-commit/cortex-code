@@ -60,15 +60,17 @@ struct Sandbox {
     project: PathBuf,
     db_path: PathBuf,
     log: PathBuf,
+    proc_tag: String,
 }
 
 impl Sandbox {
     fn new(tag: &str, echo: &Path, enable_roots: bool) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "cortex-gap-cross-mcp-{tag}-{}-{}",
+        let unique = format!(
+            "{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let root = std::env::temp_dir().join(format!("cortex-gap-cross-mcp-{tag}-{unique}"));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let project = root.join("project");
@@ -82,13 +84,17 @@ impl Sandbox {
         } else {
             ""
         };
+        // A unique argv token so a global process scan can identify THIS sandbox's stdio fixture
+        // without matching sibling tests' identically-named echo-server binaries. The fixture
+        // ignores extra argv, so the token only affects how the process appears in `ps`.
+        let proc_tag = format!("cortex-mcp-proc-{unique}");
         std::fs::write(
             project.join("cortex.toml"),
             format!(
                 r#"
 [mcp.demo]
 type = "local"
-command = ["{}"]
+command = ["{}", "{proc_tag}"]
 [mcp.demo.environment]
 CORTEX_MCP_ECHO_LOG = "{}"
 CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS = "1"
@@ -106,6 +112,7 @@ CORTEX_MCP_ECHO_RESOURCE_CONTENT = "{ROOTS_MARKER}"
             project,
             db_path,
             log,
+            proc_tag,
         }
     }
 }
@@ -548,22 +555,33 @@ fn gap_cross_010_live_turn_resolves_resource_through_roots() {
          stdout:\n{stdout}"
     );
 
-    // No orphaned stdio MCP child should survive the run.
-    let leaked = Command::new("ps")
-        .args(["-eo", "stat,args"])
-        .output()
-        .map(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|line| line.contains("cortex-mcp-echo-server"))
-                .any(|line| {
-                    !line
-                        .split_whitespace()
-                        .next()
-                        .is_some_and(|stat| stat.starts_with('Z'))
-                })
-        })
-        .unwrap_or(false);
+    // No orphaned stdio MCP child should survive the run. Scope the scan to this sandbox's unique
+    // argv tag so concurrent sibling tests' fixtures are never misattributed, and poll briefly
+    // because the OS may take a moment to reap the killed child.
+    let proc_tag = sandbox.proc_tag.clone();
+    let mut leaked = true;
+    for _ in 0..30 {
+        let alive = Command::new("ps")
+            .args(["-eo", "stat,args"])
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|line| line.contains(proc_tag.as_str()))
+                    .any(|line| {
+                        !line
+                            .split_whitespace()
+                            .next()
+                            .is_some_and(|stat| stat.starts_with('Z'))
+                    })
+            })
+            .unwrap_or(false);
+        if !alive {
+            leaked = false;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert!(!leaked, "cortex run must reap the stdio MCP fixture by PID");
 }
 

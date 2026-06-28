@@ -1684,9 +1684,18 @@ mod tests {
     impl SharedBuffer {
         fn values(&self) -> Vec<Value> {
             let bytes = self.bytes.lock().expect("buffer mutex").clone();
-            String::from_utf8(bytes)
+            // Writers emit each JSON-RPC frame as payload bytes followed by a
+            // trailing newline, so only bytes up to the last newline are a
+            // fully-written frame. Ignore any trailing fragment to avoid
+            // observing a concurrent writer mid-frame.
+            let end = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            String::from_utf8(bytes[..end].to_vec())
                 .expect("utf8")
                 .lines()
+                .filter(|line| !line.is_empty())
                 .map(|line| serde_json::from_str(line).expect("json line"))
                 .collect()
         }
