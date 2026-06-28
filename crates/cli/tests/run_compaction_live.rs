@@ -17,6 +17,12 @@
 //! - VAL-LLM-026: with a fixed `--session`, ~10+ successive prompts each adding sizable text keep
 //!   answering; the final follow-up returns a valid assistant answer (exit 0) without a
 //!   context-length crash, demonstrating automatic compaction of accumulated history.
+//! - VAL-GAP-ENGINE-005: after long-history compaction, a fact seeded in an older turn remains
+//!   answerable, and the session export carries a MODEL-AUTHORED summary/compaction part plus a
+//!   tail boundary (not the generic mechanical omission note).
+//! - VAL-GAP-ENGINE-006: when compaction fires during a user request, the JSONL stream shows the
+//!   compaction (auto-continue) marker before the answer stream, and the final answer addresses the
+//!   ORIGINAL task (echoes the nonce) without the user resubmitting it.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -368,17 +374,34 @@ fn compaction_summary_preserves_seeded_facts_and_persists_metadata() {
         "export must include persisted compaction summary metadata"
     );
     let (first_message, first) = &compaction_messages[0];
+    let summary_text = first["summary"]
+        .as_str()
+        .expect("compaction summary must be a string");
     assert!(
-        first["summary"]
-            .as_str()
-            .is_some_and(|text| !text.trim().is_empty()),
+        !summary_text.trim().is_empty(),
         "compaction metadata summary should be non-empty: {first}"
     );
+    // The summary must be a MODEL-AUTHORED summary, not the generic mechanical omission note that
+    // the budget-only fallback (`compaction::compact_to_budget`) inserts. The fallback never
+    // produces a CompactionRecord, so a persisted compaction part with a summary that is NOT the
+    // generic note proves the model-authored summarization path ran (VAL-GAP-ENGINE-005).
+    let lower_summary = summary_text.to_ascii_lowercase();
+    for generic_marker in [
+        "earlier message(s) were omitted to fit the model's context window",
+        "omitted by context compaction to fit the model's context window",
+        "continue from the most recent messages below",
+    ] {
+        assert!(
+            !lower_summary.contains(generic_marker),
+            "compaction summary must be model-authored, not the generic omission note \
+             (matched {generic_marker:?}): {summary_text}"
+        );
+    }
     assert!(
         first["tail_start_id"]
             .as_str()
             .is_some_and(|id| id.starts_with("tail_")),
-        "compaction metadata should include a tail_start_id: {first}"
+        "compaction metadata should include a tail boundary (tail_start_id): {first}"
     );
     assert_eq!(
         first["continued_request"].as_bool(),
@@ -487,6 +510,19 @@ fn jsonl_shows_compaction_then_auto_continued_answer() {
         first_text_index.is_some(),
         "jsonl stream should include text deltas for the auto-continued request"
     );
+    let compaction_marker = events[compaction_index.expect("compaction marker")]["text"]
+        .as_str()
+        .expect("compaction marker text");
+    // The auto-continue marker must declare the original request is being continued (not dropped or
+    // replaced by the summary request), and carry the preserved-tail boundary (VAL-GAP-ENGINE-006).
+    assert!(
+        compaction_marker.contains("continued_request=true"),
+        "compaction marker should declare the request is auto-continued; got: {compaction_marker}"
+    );
+    assert!(
+        compaction_marker.contains("tail_start_id=tail_"),
+        "compaction marker should carry the preserved-tail boundary; got: {compaction_marker}"
+    );
     assert!(
         compaction_index.expect("compaction marker") < first_text_index.expect("first text"),
         "compaction marker should arrive before the continued answer stream"
@@ -496,6 +532,8 @@ fn jsonl_shows_compaction_then_auto_continued_answer() {
         .filter(|event| event["type"] == "text_delta")
         .map(|event| event["text"].as_str().unwrap_or_default().to_owned())
         .collect();
+    // The final answer must address the ORIGINAL task (echo the nonce), proving the request was
+    // auto-continued after compaction rather than the run only servicing the internal summary call.
     assert!(
         answer_text.contains(&nonce),
         "continued request should be answered without resubmission; got: {answer_text}"
