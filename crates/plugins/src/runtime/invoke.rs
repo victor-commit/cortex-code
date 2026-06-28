@@ -1540,11 +1540,133 @@ impl PluginEventHooks {
         }
     }
 
+    /// Run the experimental compaction hooks over each compaction record JSON in plugin order,
+    /// transforming the record in place: `experimental.session.compacting` first (summary and
+    /// metadata rewrites), then `experimental.compaction.autocontinue` (continuation control).
+    ///
+    /// Each value is the documented compaction shape
+    /// (`{ summary, tail_start_id, continued_request, model }`); use
+    /// [`engine::CompactionRecord::to_hook_value`] / `apply_hook_value` (the engine owns the record
+    /// type) to convert before/after. A plugin without a given hook is skipped, and a hook error is
+    /// reported on stderr without aborting the turn. Every real invocation is recorded to the
+    /// attached audit sink. This is the shared seam the server turn path uses so a server-driven
+    /// compaction is transformed identically to the headless `run` path.
+    pub fn apply_compaction_hooks(&self, records: &mut [JsonValue]) {
+        if self.loaded.is_empty() {
+            return;
+        }
+        for value in records.iter_mut() {
+            for loaded in &self.loaded {
+                if !loaded
+                    .report
+                    .hooks
+                    .iter()
+                    .any(|hook| hook == "experimental.session.compacting")
+                {
+                    continue;
+                }
+                match self
+                    .host
+                    .invoke_session_compacting(&loaded.spec, value.clone())
+                {
+                    Ok(output) => {
+                        if let Some(next) = output.output {
+                            *value = merge_compaction_value(value.clone(), next);
+                        }
+                        self.record_compaction_hook(
+                            "experimental.session.compacting",
+                            value,
+                            loaded,
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("cortex plugin experimental.session.compacting: {err}")
+                    }
+                }
+            }
+
+            for loaded in &self.loaded {
+                if !loaded
+                    .report
+                    .hooks
+                    .iter()
+                    .any(|hook| hook == "experimental.compaction.autocontinue")
+                {
+                    continue;
+                }
+                match self
+                    .host
+                    .invoke_compaction_autocontinue(&loaded.spec, value.clone())
+                {
+                    Ok(output) => {
+                        if let Some(next) = output.output {
+                            *value = merge_compaction_value(value.clone(), next);
+                        }
+                        self.record_compaction_hook(
+                            "experimental.compaction.autocontinue",
+                            value,
+                            loaded,
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("cortex plugin experimental.compaction.autocontinue: {err}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record a `transform_compaction` audit entry for one compaction-hook invocation, tagged with
+    /// the record's tail boundary so a validator can correlate it with the persisted compaction.
+    fn record_compaction_hook(&self, hook: &str, value: &JsonValue, loaded: &LoadedPlugin) {
+        if let Some(audit) = &self.audit {
+            let tail = value.get("tail_start_id").and_then(JsonValue::as_str);
+            audit.record_plugin_hook(
+                loaded.spec.raw_spec(),
+                hook,
+                "transform_compaction",
+                "success",
+                tail,
+            );
+        }
+    }
+
     /// Record a typed `plugin_hook` audit entry for one real hook invocation when an audit sink is
     /// attached. The sink supplies the surface/source attribution.
     fn record_hook(&self, hook: &str, outcome: &str, detail: Option<&str>, loaded: &LoadedPlugin) {
         if let Some(audit) = &self.audit {
             audit.record_plugin_hook(loaded.spec.raw_spec(), hook, hook, outcome, detail);
+        }
+    }
+}
+
+/// Merge one plugin compaction-hook output into the current compaction value. A string output sets
+/// the summary, a bool sets `continued_request`, and an object is shallow-merged over the current
+/// fields; a null is ignored. This is shared by the headless bridge and the server turn path so a
+/// plugin transform is folded identically across surfaces.
+#[must_use]
+pub fn merge_compaction_value(current: JsonValue, next: JsonValue) -> JsonValue {
+    match next {
+        JsonValue::String(summary) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("summary".to_owned(), JsonValue::String(summary));
+            JsonValue::Object(merged)
+        }
+        JsonValue::Bool(value) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("continued_request".to_owned(), JsonValue::Bool(value));
+            JsonValue::Object(merged)
+        }
+        JsonValue::Object(map) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.extend(map);
+            JsonValue::Object(merged)
+        }
+        JsonValue::Null => current,
+        other => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            merged.insert("summary".to_owned(), JsonValue::String(other.to_string()));
+            JsonValue::Object(merged)
         }
     }
 }

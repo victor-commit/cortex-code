@@ -17,7 +17,7 @@ use permissions::{Action, Decision, DecisionOverride, PermissionRequest, Rule};
 use plugins::{
     LoadedPlugin, PluginAuthMethodRegistration, PluginAuthRegistration, PluginConfigRule,
     PluginModelRegistration, PluginProviderRegistration, PluginRuntimeError, PluginSpec,
-    PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost,
+    PluginToolRegistration, PluginWorkspaceRegistration, RuntimeHost, merge_compaction_value,
 };
 use providers::{CredentialInputs, resolve_credential};
 use serde::Serialize;
@@ -374,7 +374,7 @@ impl PluginState {
     /// Let plugins observe/transform compaction summaries and continuation markers in-place.
     pub(crate) fn apply_compaction_hooks(&self, model_id: &str, records: &mut [CompactionRecord]) {
         for record in records {
-            let mut value = compaction_record_to_json(record, model_id);
+            let mut value = record.to_hook_value(model_id);
             for loaded in &self.loaded {
                 if !plugin_has_hook(loaded, "experimental.session.compacting") {
                     continue;
@@ -429,9 +429,7 @@ impl PluginState {
                 }
             }
 
-            if let Some(next) = compaction_record_from_value(record, &value) {
-                *record = next;
-            }
+            record.apply_hook_value(&value);
         }
     }
 
@@ -1663,79 +1661,6 @@ fn small_model_from_value(value: &JsonValue) -> Option<String> {
             .and_then(JsonValue::as_str)
             .map(str::to_owned)
     })
-}
-
-fn compaction_record_to_json(record: &CompactionRecord, model_id: &str) -> JsonValue {
-    serde_json::json!({
-        "summary": record.summary,
-        "tail_start_id": record.tail_start_id,
-        "continued_request": record.continued_request,
-        "model": record.model.as_deref().unwrap_or(model_id),
-    })
-}
-
-fn compaction_record_from_value(
-    current: &CompactionRecord,
-    value: &JsonValue,
-) -> Option<CompactionRecord> {
-    let map = value.as_object()?;
-    let summary = map
-        .get("summary")
-        .or_else(|| map.get("content"))
-        .or_else(|| map.get("text"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or(&current.summary)
-        .to_owned();
-    let tail_start_id = map
-        .get("tail_start_id")
-        .or_else(|| map.get("tailStartId"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or(&current.tail_start_id)
-        .to_owned();
-    let continued_request = map
-        .get("continued_request")
-        .or_else(|| map.get("autocontinue"))
-        .or_else(|| map.get("continue"))
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(current.continued_request);
-    let model = map
-        .get("model")
-        .or_else(|| map.get("small_model"))
-        .and_then(JsonValue::as_str)
-        .map(str::to_owned)
-        .or_else(|| current.model.clone());
-    Some(CompactionRecord {
-        summary,
-        tail_start_id,
-        continued_request,
-        model,
-    })
-}
-
-fn merge_compaction_value(current: JsonValue, next: JsonValue) -> JsonValue {
-    match next {
-        JsonValue::String(summary) => {
-            let mut merged = current.as_object().cloned().unwrap_or_default();
-            merged.insert("summary".to_owned(), JsonValue::String(summary));
-            JsonValue::Object(merged)
-        }
-        JsonValue::Bool(value) => {
-            let mut merged = current.as_object().cloned().unwrap_or_default();
-            merged.insert("continued_request".to_owned(), JsonValue::Bool(value));
-            JsonValue::Object(merged)
-        }
-        JsonValue::Object(map) => {
-            let mut merged = current.as_object().cloned().unwrap_or_default();
-            merged.extend(map);
-            JsonValue::Object(merged)
-        }
-        JsonValue::Null => current,
-        other => {
-            let mut merged = current.as_object().cloned().unwrap_or_default();
-            merged.insert("summary".to_owned(), JsonValue::String(other.to_string()));
-            JsonValue::Object(merged)
-        }
-    }
 }
 
 fn system_output_to_string(value: JsonValue) -> String {

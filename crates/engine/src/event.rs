@@ -28,6 +28,62 @@ pub struct CompactionRecord {
     pub model: Option<String>,
 }
 
+impl CompactionRecord {
+    /// The JSON shape handed to plugin compaction hooks (`experimental.session.compacting` and
+    /// `experimental.compaction.autocontinue`). `model_id` is the turn's active model, used as the
+    /// fallback when no explicit summarization model was selected. This is the single seam every
+    /// surface (headless `run`, server turn) converts through so a plugin-transformed compaction is
+    /// identical across surfaces.
+    #[must_use]
+    pub fn to_hook_value(&self, model_id: &str) -> JsonValue {
+        serde_json::json!({
+            "summary": self.summary,
+            "tail_start_id": self.tail_start_id,
+            "continued_request": self.continued_request,
+            "model": self.model.as_deref().unwrap_or(model_id),
+        })
+    }
+
+    /// Fold a (possibly plugin-transformed) hook value back into this record. Recognized aliases
+    /// mirror the documented hook output keys; unknown or non-object values leave the field intact,
+    /// so a no-op hook never corrupts the compaction metadata.
+    pub fn apply_hook_value(&mut self, value: &JsonValue) {
+        let Some(map) = value.as_object() else {
+            return;
+        };
+        if let Some(summary) = map
+            .get("summary")
+            .or_else(|| map.get("content"))
+            .or_else(|| map.get("text"))
+            .and_then(JsonValue::as_str)
+        {
+            self.summary = summary.to_owned();
+        }
+        if let Some(tail_start_id) = map
+            .get("tail_start_id")
+            .or_else(|| map.get("tailStartId"))
+            .and_then(JsonValue::as_str)
+        {
+            self.tail_start_id = tail_start_id.to_owned();
+        }
+        if let Some(continued_request) = map
+            .get("continued_request")
+            .or_else(|| map.get("autocontinue"))
+            .or_else(|| map.get("continue"))
+            .and_then(JsonValue::as_bool)
+        {
+            self.continued_request = continued_request;
+        }
+        if let Some(model) = map
+            .get("model")
+            .or_else(|| map.get("small_model"))
+            .and_then(JsonValue::as_str)
+        {
+            self.model = Some(model.to_owned());
+        }
+    }
+}
+
 /// One normalized event emitted by the runner for a turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -367,5 +423,55 @@ mod tests {
             cost: None,
         };
         assert_eq!(accumulate_usage(None, next.clone()), next);
+    }
+
+    #[test]
+    fn compaction_record_round_trips_through_the_hook_value() {
+        let record = CompactionRecord {
+            summary: "kept BLUEBIRD".to_owned(),
+            tail_start_id: "tail-7".to_owned(),
+            continued_request: true,
+            model: None,
+        };
+        let value = record.to_hook_value("google/gemini-2.5-flash");
+        assert_eq!(value["summary"], "kept BLUEBIRD");
+        assert_eq!(value["tail_start_id"], "tail-7");
+        assert_eq!(value["continued_request"], true);
+        // No explicit summarization model falls back to the active turn model.
+        assert_eq!(value["model"], "google/gemini-2.5-flash");
+
+        // Applying the unchanged value back is a faithful round trip, except the active model is now
+        // recorded (mirroring the headless persistence path).
+        let mut applied = record.clone();
+        applied.apply_hook_value(&value);
+        assert_eq!(applied.summary, "kept BLUEBIRD");
+        assert_eq!(applied.tail_start_id, "tail-7");
+        assert!(applied.continued_request);
+        assert_eq!(applied.model.as_deref(), Some("google/gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn apply_hook_value_folds_plugin_transformations_and_aliases() {
+        let mut record = CompactionRecord {
+            summary: "original".to_owned(),
+            tail_start_id: "tail-1".to_owned(),
+            continued_request: false,
+            model: Some("m".to_owned()),
+        };
+        // A plugin rewrites the summary and flips continuation; aliases are accepted.
+        record.apply_hook_value(&serde_json::json!({
+            "summary": "HOOKED:original",
+            "autocontinue": true,
+            "small_model": "plugin/small",
+        }));
+        assert_eq!(record.summary, "HOOKED:original");
+        assert!(record.continued_request);
+        assert_eq!(record.tail_start_id, "tail-1");
+        assert_eq!(record.model.as_deref(), Some("plugin/small"));
+
+        // A non-object value is ignored, leaving the record intact.
+        let before = record.clone();
+        record.apply_hook_value(&serde_json::json!("not-an-object"));
+        assert_eq!(record, before);
     }
 }

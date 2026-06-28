@@ -20,5 +20,5 @@ pub use runtime::{
     PluginProviderRegistration, PluginRuntimeError, PluginSkillRegistration,
     PluginThemeRegistration, PluginToolExecution, PluginToolRegistration,
     PluginWorkspaceAdapterEntry, PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection,
-    detect_runtime, detect_runtime_in_path,
+    detect_runtime, detect_runtime_in_path, merge_compaction_value,
 };

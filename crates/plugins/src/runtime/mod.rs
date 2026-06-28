@@ -10,4 +10,5 @@ pub use invoke::{
     PluginModelRegistration, PluginProviderCompletion, PluginProviderRegistration,
     PluginRuntimeError, PluginSkillRegistration, PluginThemeRegistration, PluginToolExecution,
     PluginToolRegistration, PluginWorkspaceAdapterEntry, PluginWorkspaceRegistration, RuntimeHost,
+    merge_compaction_value,
 };

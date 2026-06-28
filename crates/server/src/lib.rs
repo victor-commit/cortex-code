@@ -2334,6 +2334,21 @@ async fn run_message_turn(
         return Err(ApiError::from_run_error(error));
     }
 
+    // Let plugins observe/transform compaction summaries and continuation markers before they are
+    // persisted, streamed, or echoed, mirroring the headless `run` path through the shared engine
+    // record <-> hook-value seam so a server-driven compaction is identical across surfaces.
+    if !outcome.compactions.is_empty() {
+        let mut values: Vec<serde_json::Value> = outcome
+            .compactions
+            .iter()
+            .map(|compaction| compaction.to_hook_value(&resolved.model_id))
+            .collect();
+        plugin_hooks.apply_compaction_hooks(&mut values);
+        for (compaction, value) in outcome.compactions.iter_mut().zip(&values) {
+            compaction.apply_hook_value(value);
+        }
+    }
+
     persist_usage(&db, &session_id, &outcome);
     let mut lifecycle = PartLifecycleTracker::new(&user_message.id, &resolved.model_id);
     for event in &runner_events {
@@ -2770,6 +2785,13 @@ fn apply_estimated_usage_cost(model: &ResolvedModel, outcome: &mut RunOutcome) {
 }
 
 fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
+    // The effective context window can be overridden via `CORTEX_CONTEXT_LIMIT_TOKENS` (an
+    // operational tuning/testing knob), mirroring the headless `run` path so a long server session
+    // compacts deterministically. An explicit override drives the budget purely from the requested
+    // window; otherwise the model's catalogue window (or the engine default) stands.
+    if let Some(context) = context_limit_override() {
+        return CompactionPolicy::for_context_window(context, 0);
+    }
     let (context, output) = match &model.info {
         Some(info) => (
             usize::try_from(info.limit.context).unwrap_or(usize::MAX),
@@ -2778,6 +2800,14 @@ fn compaction_policy(model: &ResolvedModel) -> CompactionPolicy {
         None => (engine::DEFAULT_CONTEXT_LIMIT_TOKENS, 0),
     };
     CompactionPolicy::for_context_window(context, output)
+}
+
+/// Parse the `CORTEX_CONTEXT_LIMIT_TOKENS` override, accepting only a positive integer (trimmed) so
+/// an absent, blank, zero, or unparseable value leaves the model-derived window in place.
+fn context_limit_override() -> Option<usize> {
+    let raw = std::env::var("CORTEX_CONTEXT_LIMIT_TOKENS").ok()?;
+    let parsed: usize = raw.trim().parse().ok()?;
+    (parsed >= 1).then_some(parsed)
 }
 
 fn config_api_error(err: settings::ConfigError) -> ApiError {
