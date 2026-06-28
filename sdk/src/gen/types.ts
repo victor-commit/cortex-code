@@ -9,6 +9,11 @@ export interface SymbolPosition { line: number; character: number; }
 export interface AgentEntry { name: string; description: string; mode: string; source: "builtin" | "custom" | "plugin"; }
 export interface CommandEntry { name: string; description: string; source: "config" | "plugin"; }
 export interface SkillEntry { name: string; description: string; source: "config" | "plugin"; }
+export interface McpCatalog { servers: McpServerEntry[]; resources: McpResourceEntry[]; prompts: McpPromptEntry[]; }
+export interface McpServerEntry { name: string; status: "connected" | "disabled" | "needs_auth" | "failed"; pid?: number; error?: string; }
+export interface McpResourceEntry { id: string; server: string; uri: string; name: string; description?: string; mime_type?: string; }
+export interface McpPromptEntry { id: string; server: string; name: string; description?: string; arguments: McpPromptArgumentEntry[]; }
+export interface McpPromptArgumentEntry { name: string; required: boolean; description?: string; }
 export interface ModelCatalog { default_model: string; models: { [key: string]: unknown; }[]; }
 export interface LspStatusRow { language: string; program: string; state: "disabled" | "installing" | "running" | "available" | "unavailable" | "crashed"; pid?: number; install?: string; }
 export interface FormatterStatusRow { name: string; formatter: string; state: "enabled" | "disabled" | "missing" | "missing_config_marker"; source: "default" | "config"; command?: string[]; env_keys?: string[]; extensions?: string[]; marker_required: boolean; marker_found?: boolean; }
@@ -192,6 +197,7 @@ export type OperationId =
   | "listCommands"
   | "listConfigProviders"
   | "listFiles"
+  | "listMcp"
   | "listModels"
   | "listPendingPermissions"
   | "listProjects"

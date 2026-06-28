@@ -3518,7 +3518,12 @@ impl App {
     /// otherwise the view falls back to the configured names so `/mcp` remains useful before connect.
     fn mcp_rows(&self) -> Vec<String> {
         if let Some(manager) = &self.mcp_manager {
-            return mcp_status_rows(manager.statuses(), manager.tools());
+            return mcp_status_rows(
+                manager.statuses(),
+                manager.tools(),
+                manager.resources(),
+                manager.prompts(),
+            );
         }
         configured_mcp_servers()
     }
@@ -6419,9 +6424,17 @@ fn configured_mcp_servers() -> Vec<String> {
         .collect()
 }
 
-/// Render live MCP manager state into `/mcp` rows, using the live tool catalogue rather than the
-/// initial status snapshot so `mcp.tools.changed` additions/removals become visible immediately.
-fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> Vec<String> {
+/// Render live MCP manager state into `/mcp` rows, using the live catalogue rather than the
+/// initial status snapshot so `mcp.tools.changed`/`mcp.resources.changed`/`mcp.prompts.changed`
+/// updates become visible immediately. Each row surfaces the server's tools, resources (by URI),
+/// and prompts (by name) so the TUI catalog matches the CLI `cortex mcp list` and the server
+/// `/mcp` route.
+fn mcp_status_rows(
+    statuses: &[mcp::ServerStatus],
+    tools: Vec<mcp::McpTool>,
+    resources: Vec<mcp::McpResource>,
+    prompts: Vec<mcp::McpPrompt>,
+) -> Vec<String> {
     statuses
         .iter()
         .map(|status| {
@@ -6435,6 +6448,26 @@ fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> 
             } else {
                 format!("tools: {}", tool_ids.join(", "))
             };
+            let resource_uris = resources
+                .iter()
+                .filter(|resource| resource.server == status.name)
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>();
+            let resources_suffix = if resource_uris.is_empty() {
+                String::new()
+            } else {
+                format!("  —  resources: {}", resource_uris.join(", "))
+            };
+            let prompt_names = prompts
+                .iter()
+                .filter(|prompt| prompt.server == status.name)
+                .map(|prompt| prompt.name.as_str())
+                .collect::<Vec<_>>();
+            let prompts_suffix = if prompt_names.is_empty() {
+                String::new()
+            } else {
+                format!("  —  prompts: {}", prompt_names.join(", "))
+            };
             let detail = status
                 .error
                 .as_deref()
@@ -6442,7 +6475,7 @@ fn mcp_status_rows(statuses: &[mcp::ServerStatus], tools: Vec<mcp::McpTool>) -> 
                 .map(|error| format!("  —  {error}"))
                 .unwrap_or_default();
             format!(
-                "{}  —  {}  —  {suffix}{detail}",
+                "{}  —  {}  —  {suffix}{resources_suffix}{prompts_suffix}{detail}",
                 status.name,
                 status.state.as_str()
             )
@@ -9511,6 +9544,8 @@ mod tests {
                 description: None,
                 input_schema: serde_json::json!({"type":"object"}),
             }],
+            Vec::new(),
+            Vec::new(),
         );
 
         assert_eq!(rows.len(), 1);
@@ -9520,10 +9555,58 @@ mod tests {
             rows
         );
 
-        let rows = mcp_status_rows(&statuses, Vec::new());
+        let rows = mcp_status_rows(&statuses, Vec::new(), Vec::new(), Vec::new());
         assert!(
             rows[0].contains("tools: (none)") && !rows[0].contains("api_extra"),
             "removed tools disappear from the rendered row: {:?}",
+            rows
+        );
+    }
+
+    #[test]
+    fn mcp_status_rows_surface_live_resources_and_prompts() {
+        // VAL-GAP-CROSS-010: the TUI `/mcp` view lists MCP resources (by URI) and prompts (by
+        // name) so the TUI catalog matches the CLI `cortex mcp list` and the server `/mcp` route.
+        let statuses = vec![mcp::ServerStatus {
+            name: "demo".to_owned(),
+            state: mcp::ConnectionState::Connected,
+            pid: Some(4321),
+            error: None,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }];
+        let rows = mcp_status_rows(
+            &statuses,
+            Vec::new(),
+            vec![mcp::McpResource {
+                id: "demo_resource_notes___demo".to_owned(),
+                server: "demo".to_owned(),
+                uri: "notes://demo".to_owned(),
+                name: "demo-notes".to_owned(),
+                title: None,
+                description: Some("Demo resource".to_owned()),
+                mime_type: Some("text/plain".to_owned()),
+            }],
+            vec![mcp::McpPrompt {
+                id: "demo_prompt_greet".to_owned(),
+                server: "demo".to_owned(),
+                name: "greet".to_owned(),
+                title: None,
+                description: Some("Greet a caller".to_owned()),
+                arguments: Vec::new(),
+            }],
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].contains("resources: notes://demo"),
+            "resource uri is visible in the MCP row: {:?}",
+            rows
+        );
+        assert!(
+            rows[0].contains("prompts: greet"),
+            "prompt name is visible in the MCP row: {:?}",
             rows
         );
     }

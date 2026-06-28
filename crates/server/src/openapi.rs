@@ -981,6 +981,15 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/mcp": {
+                "get": {
+                    "operationId": "listMcp",
+                    "summary": "List configured MCP servers with their resources and prompts (mirrors `cortex mcp list`).",
+                    "responses": {
+                        "200": json_response("MCP servers, resources, and prompts.", "McpCatalog")
+                    }
+                }
+            },
             "/lsp": {
                 "get": {
                     "operationId": "lspStatus",
@@ -1389,6 +1398,57 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "name": { "type": "string" },
                         "description": { "type": "string" },
                         "source": { "type": "string", "enum": ["config", "plugin"] }
+                    }
+                },
+                "McpCatalog": {
+                    "type": "object",
+                    "required": ["servers", "resources", "prompts"],
+                    "properties": {
+                        "servers": { "type": "array", "items": { "$ref": "#/components/schemas/McpServerEntry" } },
+                        "resources": { "type": "array", "items": { "$ref": "#/components/schemas/McpResourceEntry" } },
+                        "prompts": { "type": "array", "items": { "$ref": "#/components/schemas/McpPromptEntry" } }
+                    }
+                },
+                "McpServerEntry": {
+                    "type": "object",
+                    "required": ["name", "status"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "status": { "type": "string", "enum": ["connected", "disabled", "needs_auth", "failed"] },
+                        "pid": { "type": "integer", "minimum": 0 },
+                        "error": { "type": "string" }
+                    }
+                },
+                "McpResourceEntry": {
+                    "type": "object",
+                    "required": ["id", "server", "uri", "name"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "server": { "type": "string" },
+                        "uri": { "type": "string" },
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "mime_type": { "type": "string" }
+                    }
+                },
+                "McpPromptEntry": {
+                    "type": "object",
+                    "required": ["id", "server", "name", "arguments"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "server": { "type": "string" },
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "arguments": { "type": "array", "items": { "$ref": "#/components/schemas/McpPromptArgumentEntry" } }
+                    }
+                },
+                "McpPromptArgumentEntry": {
+                    "type": "object",
+                    "required": ["name", "required"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "required": { "type": "boolean" },
+                        "description": { "type": "string" }
                     }
                 },
                 "ModelCatalog": {

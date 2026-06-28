@@ -3014,6 +3014,7 @@ dependencies = [
  "futures-util",
  "llm",
  "lsp",
+ "mcp",
  "memory",
  "permissions",
  "plugins",

@@ -20,6 +20,7 @@ format = { workspace = true }
 futures-util = { workspace = true }
 llm = { workspace = true }
 lsp = { workspace = true }
+mcp = { workspace = true }
 memory = { workspace = true }
 permissions = { workspace = true }
 plugins = { workspace = true }

@@ -156,6 +156,7 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/model", "get", 200);
     assert_method(paths, "/command", "get", 200);
     assert_method(paths, "/skill", "get", 200);
+    assert_method(paths, "/mcp", "get", 200);
     assert_method(paths, "/lsp", "get", 200);
     assert_method(paths, "/formatter", "get", 200);
     assert_method(paths, "/vcs/diff", "get", 200);
@@ -288,6 +289,7 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
                     | "/model"
                     | "/command"
                     | "/skill"
+                    | "/mcp"
                     | "/lsp"
                     | "/formatter"
                     | "/vcs/diff"

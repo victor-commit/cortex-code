@@ -48,6 +48,7 @@ export const OPERATIONS: Record<OperationId, OperationMeta> = {
   listCommands: { method: "get", path: "/command", pathParams: [], successStatus: 200 },
   listConfigProviders: { method: "get", path: "/config/providers", pathParams: [], successStatus: 200 },
   listFiles: { method: "get", path: "/file", pathParams: [], successStatus: 200 },
+  listMcp: { method: "get", path: "/mcp", pathParams: [], successStatus: 200 },
   listModels: { method: "get", path: "/model", pathParams: [], successStatus: 200 },
   listPendingPermissions: { method: "get", path: "/permission/pending", pathParams: [], successStatus: 200 },
   listProjects: { method: "get", path: "/project", pathParams: [], successStatus: 200 },

@@ -61,6 +61,7 @@ mod find_ext;
 #[path = "../../cli/src/lsp_config.rs"]
 mod lsp_config;
 mod lsp_format_vcs_ext;
+mod mcp_ext;
 mod openapi;
 mod project_ext;
 mod pty_ext;
@@ -781,6 +782,7 @@ pub fn app_with_state(state: ServerState) -> Router {
             get(catalog_ext::list_commands).options(preflight),
         )
         .route("/skill", get(catalog_ext::list_skills).options(preflight))
+        .route("/mcp", get(mcp_ext::list_mcp).options(preflight))
         .route(
             "/lsp",
             get(lsp_format_vcs_ext::lsp_status).options(preflight),
