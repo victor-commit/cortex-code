@@ -61,23 +61,30 @@ fn create(cwd: &Path, args: WorktreeCreateArgs, bus: &EventBus) -> Exit {
     if args.force {
         git_args.push("--force".to_owned());
     }
-    if let Some(branch) = args
+    let branch = args
         .branch
         .as_deref()
         .map(str::trim)
-        .filter(|b| !b.is_empty())
-    {
-        git_args.push(if args.new_branch { "-b" } else { "-B" }.to_owned());
-        git_args.push(branch.to_owned());
-    }
-    git_args.push(target_display.clone());
-    if let Some(reference) = args
+        .filter(|b| !b.is_empty());
+    let reference = args
         .reference
         .as_deref()
         .map(str::trim)
-        .filter(|r| !r.is_empty())
-    {
-        git_args.push(reference.to_owned());
+        .filter(|r| !r.is_empty());
+    let commitish = if args.new_branch {
+        if let Some(branch) = branch {
+            git_args.push("-b".to_owned());
+            git_args.push(branch.to_owned());
+        }
+        reference
+    } else {
+        // No `-b`/`-B`: an existing branch is the commit-ish checked out after the path, so the
+        // worktree attaches to it as-is. `-B` would reset that branch to HEAD, silently moving it.
+        branch.or(reference)
+    };
+    git_args.push(target_display.clone());
+    if let Some(commitish) = commitish {
+        git_args.push(commitish.to_owned());
     }
 
     match run_git_mut(cwd, &git_args) {
@@ -357,6 +364,20 @@ mod tests {
         );
     }
 
+    fn rev_parse(cwd: &Path, rev: &str) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(cwd)
+            .output()
+            .expect("run git rev-parse");
+        assert!(
+            output.status.success(),
+            "git rev-parse {rev} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
     fn scratch_repo(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "cortex-worktree-cmd-{label}-{}-{:?}",
@@ -466,6 +487,46 @@ mod tests {
             collector.kinds().contains(&"worktree.failed".to_owned()),
             "worktree.failed emitted on git failure: {:?}",
             collector.kinds()
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn create_attaches_existing_branch_without_resetting_it() {
+        let repo = scratch_repo("existing-branch");
+        // A branch pinned at the first commit, then HEAD advances past it.
+        let original = rev_parse(&repo, "HEAD");
+        git(&repo, &["branch", "existing"]);
+        std::fs::write(repo.join("f.txt"), "y\n").expect("write");
+        git(&repo, &["commit", "-aqm", "second"]);
+        let head = rev_parse(&repo, "HEAD");
+        assert_ne!(original, head, "HEAD must advance past the existing branch");
+
+        let bus = EventBus::new();
+        let args = WorktreeCreateArgs {
+            path: "wt-existing".to_owned(),
+            branch: Some("existing".to_owned()),
+            new_branch: false,
+            reference: None,
+            force: false,
+            format: crate::cli::FormatArgs {
+                format: OutputFormat::Json,
+            },
+        };
+        assert_eq!(create(&repo, args, &bus), Exit::Success);
+
+        // Attaching the worktree must check the existing branch out as-is, never reset it to HEAD.
+        assert_eq!(
+            rev_parse(&repo, "existing"),
+            original,
+            "attaching a worktree to an existing branch must not move it to HEAD"
+        );
+        assert!(
+            worktree_entries(&repo)
+                .iter()
+                .any(|view| view.path.contains("wt-existing")),
+            "the existing-branch worktree should be listed"
         );
 
         let _ = std::fs::remove_dir_all(&repo);

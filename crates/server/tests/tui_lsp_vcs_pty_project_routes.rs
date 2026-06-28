@@ -663,6 +663,53 @@ async fn worktree_create_and_remove_emit_events_and_match_git() {
     );
 }
 
+// VAL-GAP-DATA-004: attaching a worktree to an existing branch (new_branch=false) checks it out
+// as-is and must never reset that branch to HEAD.
+#[tokio::test]
+async fn worktree_create_existing_branch_does_not_reset_it() {
+    let scratch = Scratch::new("server-worktree-existing");
+    let workspace = scratch.workspace();
+    init_repo(&workspace);
+    std::fs::write(workspace.join("f.txt"), "x\n").expect("write");
+    git(&workspace, &["add", "."]);
+    git(&workspace, &["commit", "-m", "init"]);
+    // A branch pinned at the first commit, then HEAD advances past it.
+    let original = rev_parse(&workspace, "HEAD");
+    git(&workspace, &["branch", "existing"]);
+    std::fs::write(workspace.join("f.txt"), "y\n").expect("write");
+    git(&workspace, &["commit", "-am", "second"]);
+    let head = rev_parse(&workspace, "HEAD");
+    assert_ne!(original, head, "HEAD must advance past the existing branch");
+
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new()),
+    );
+
+    let create = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"wt-existing","branch":"existing","new_branch":false}"#),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::CREATED);
+
+    // The existing branch must still point at its original commit, not be reset to HEAD.
+    assert_eq!(
+        rev_parse(&workspace, "existing"),
+        original,
+        "attaching a worktree to an existing branch must not move it to HEAD"
+    );
+    assert!(
+        git_worktree_paths(&workspace)
+            .iter()
+            .any(|p| p.contains("wt-existing")),
+        "the existing-branch worktree should be listed by git"
+    );
+}
+
 // VAL-GAP-DATA-004: a failed git worktree operation surfaces a clean 422 and a worktree.failed
 // event rather than leaking host state or panicking.
 #[tokio::test]
@@ -905,6 +952,20 @@ fn git(workspace: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn rev_parse(workspace: &Path, rev: &str) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(workspace)
+        .output()
+        .expect("run git rev-parse");
+    assert!(
+        output.status.success(),
+        "git rev-parse {rev} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 /// The single-character process state from `/proc/<pid>/stat` (e.g. 'R', 'S', 'Z'), or `None` when

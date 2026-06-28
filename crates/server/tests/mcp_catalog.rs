@@ -34,13 +34,14 @@ async fn mcp_route_lists_resources_and_prompts_and_announces_them_on_the_event_b
             r#"
 [mcp.demo]
 type = "local"
-command = ["{}"]
+command = ["{}", "{}"]
 [mcp.demo.environment]
 CORTEX_MCP_ECHO_LOG = "{}"
 CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS = "1"
 CORTEX_MCP_ECHO_ENABLE_NOARGS_PROMPT = "1"
 "#,
             toml_escape(&echo),
+            scratch.proc_tag,
             toml_escape(&log),
         ),
     )
@@ -129,11 +130,14 @@ CORTEX_MCP_ECHO_ENABLE_NOARGS_PROMPT = "1"
         "mcp.prompts.changed should announce the demo prompt: {prompt_event_names:?}"
     );
 
-    // No orphaned stdio child should survive the ephemeral connect. The OS may take a moment to
-    // reap the killed child, so poll briefly and ignore already-defunct (zombie) entries.
+    // No orphaned stdio child should survive the ephemeral connect. Scope the scan to this
+    // sandbox's unique argv token so concurrent sibling tests' identically-named echo-server
+    // fixtures are never misattributed, and poll briefly because the OS may take a moment to reap
+    // the killed child (ignoring already-defunct zombie entries).
+    let proc_tag = scratch.proc_tag.clone();
     let mut leaked = true;
     for _ in 0..30 {
-        if !live_echo_server_running() {
+        if !live_echo_server_running(&proc_tag) {
             leaked = false;
             break;
         }
@@ -145,8 +149,8 @@ CORTEX_MCP_ECHO_ENABLE_NOARGS_PROMPT = "1"
     );
 }
 
-/// Whether a live (non-zombie) `cortex-mcp-echo-server` process is currently running.
-fn live_echo_server_running() -> bool {
+/// Whether a live (non-zombie) echo-server process tagged with `proc_tag` is currently running.
+fn live_echo_server_running(proc_tag: &str) -> bool {
     let Ok(output) = std::process::Command::new("ps")
         .args(["-eo", "stat,args"])
         .output()
@@ -155,7 +159,7 @@ fn live_echo_server_running() -> bool {
     };
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|line| line.contains("cortex-mcp-echo-server"))
+        .filter(|line| line.contains(proc_tag))
         .any(|line| {
             // The first whitespace-separated field is the process state; `Z` marks an
             // already-reaped zombie that no longer holds resources.
@@ -188,6 +192,7 @@ where
 
 struct Scratch {
     dir: PathBuf,
+    proc_tag: String,
 }
 
 impl Scratch {
@@ -195,7 +200,11 @@ impl Scratch {
         let id = SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("cortex-{label}-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create scratch dir");
-        Self { dir }
+        // A unique argv token so a global process scan can identify THIS sandbox's stdio fixture
+        // without matching sibling tests' identically-named echo-server binaries. The fixture
+        // ignores extra argv, so the token only affects how the process appears in `ps`.
+        let proc_tag = format!("cortex-mcp-proc-{}-{id}", std::process::id());
+        Self { dir, proc_tag }
     }
 
     fn db_path(&self) -> PathBuf {

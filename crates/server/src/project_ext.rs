@@ -226,23 +226,30 @@ pub(super) async fn create_worktree(
     if payload.force {
         args.push("--force".to_owned());
     }
-    if let Some(branch) = payload
+    let branch = payload
         .branch
         .as_deref()
         .map(str::trim)
-        .filter(|b| !b.is_empty())
-    {
-        args.push(if payload.new_branch { "-b" } else { "-B" }.to_owned());
-        args.push(branch.to_owned());
-    }
-    args.push(target_display.clone());
-    if let Some(reference) = payload
+        .filter(|b| !b.is_empty());
+    let reference = payload
         .reference
         .as_deref()
         .map(str::trim)
-        .filter(|r| !r.is_empty())
-    {
-        args.push(reference.to_owned());
+        .filter(|r| !r.is_empty());
+    let commitish = if payload.new_branch {
+        if let Some(branch) = branch {
+            args.push("-b".to_owned());
+            args.push(branch.to_owned());
+        }
+        reference
+    } else {
+        // No `-b`/`-B`: an existing branch is the commit-ish checked out after the path, so the
+        // worktree attaches to it as-is. `-B` would reset that branch to HEAD, silently moving it.
+        branch.or(reference)
+    };
+    args.push(target_display.clone());
+    if let Some(commitish) = commitish {
+        args.push(commitish.to_owned());
     }
 
     match run_git_mut(&state.cwd, &args) {
