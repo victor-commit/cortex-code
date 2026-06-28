@@ -1230,4 +1230,160 @@ Always include SENTINEL-MARKER.
             "custom agent prompts should be injected into TUI system context: {system}"
         );
     }
+
+    // VAL-GAP-CROSS-007 (TUI leg): an agent-asked `question` is answerable in the TUI surface. A full
+    // turn runs through the real `TurnDispatcher` (interactive questions enabled) + the engine built
+    // by `build_permission_engine` (whose `UiResponder` forwards the ask to the UI thread). The stand-
+    // in UI thread answers the surfaced question ask with feedback, the answer is re-injected as the
+    // tool result, and the model's final assistant text reflects that answer — proving the answer
+    // resumes the turn and shapes the final output, exactly as the server/permission-reply leg does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn question_tool_in_tui_turn_resumes_with_answer_and_shapes_final_output() {
+        use std::sync::atomic::AtomicUsize;
+
+        use futures_util::future::BoxFuture;
+        use llm::{
+            FinishReason, LlmError, LlmEvent, LlmRequest, LlmStream, Provider, Role, ToolCall,
+            Usage,
+        };
+
+        const ANSWER: &str = "Use option B";
+
+        // A scripted provider: first call asks the `question` tool; the follow-up (which now carries
+        // the question tool result) emits final text that echoes the user's answer back, so the final
+        // assistant content is answer-specific.
+        #[derive(Default)]
+        struct ScriptedQuestionProvider {
+            calls: AtomicUsize,
+        }
+
+        impl Provider for ScriptedQuestionProvider {
+            fn stream<'a>(
+                &'a self,
+                request: LlmRequest,
+            ) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    let answer = request
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| {
+                            message.role == Role::Tool
+                                && message.tool_call_id.as_deref() == Some("call_question")
+                        })
+                        .map(|message| message.content.clone());
+                    let events = match answer {
+                        None => vec![
+                            LlmEvent::ToolCall(ToolCall {
+                                id: "call_question".to_owned(),
+                                name: "question".to_owned(),
+                                arguments: serde_json::json!({
+                                    "questions": [{
+                                        "prompt": "Pick deployment strategy",
+                                        "options": ["A", "B"]
+                                    }]
+                                })
+                                .to_string(),
+                            }),
+                            LlmEvent::Done {
+                                reason: FinishReason::ToolCalls,
+                            },
+                        ],
+                        Some(answer) => vec![
+                            LlmEvent::TextDelta {
+                                text: format!("Final plan reflects your answer -> {answer}"),
+                            },
+                            LlmEvent::Usage(Usage {
+                                input_tokens: 9,
+                                output_tokens: 6,
+                                total_tokens: 15,
+                                cache_creation_input_tokens: None,
+                                cache_read_input_tokens: None,
+                                reasoning_output_tokens: None,
+                                cost: Some(0.000_001),
+                            }),
+                            LlmEvent::Done {
+                                reason: FinishReason::Stop,
+                            },
+                        ],
+                    };
+                    Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+                })
+            }
+        }
+
+        let scratch = Scratch::new("question-resume");
+
+        // The UI thread stands in for the terminal: it drains the turn channel, answers the surfaced
+        // question ask with feedback, and counts how many question asks it answered.
+        let (tx, rx) = mpsc::channel::<TurnMessage>();
+        let ui = thread::spawn(move || {
+            let mut answered = 0_usize;
+            while let Ok(message) = rx.recv() {
+                if let TurnMessage::Permission(ask) = message {
+                    if ask.tool == "question" {
+                        answered += 1;
+                        ask.answer(
+                            permissions::ScopedDecision::once(permissions::Decision::Allow)
+                                .with_feedback(ANSWER),
+                        );
+                    } else {
+                        ask.answer(permissions::ScopedDecision::once(
+                            permissions::Decision::Allow,
+                        ));
+                    }
+                }
+            }
+            answered
+        });
+
+        let (engine, _saved, _loaded) = build_permission_engine(
+            tx.clone(),
+            &scratch.project,
+            &custom_agents::ActiveAgent::Builtin(Agent::Build),
+        );
+        let dispatcher = TurnDispatcher::new(
+            scratch.project.clone(),
+            "google/gemini-2.5-flash",
+            "ses-question".to_owned(),
+            tx,
+        )
+        .with_permissions(engine);
+
+        let provider = ScriptedQuestionProvider::default();
+        let turn = Turn::new(
+            "google/gemini-2.5-flash",
+            String::new(),
+            "Decide the deployment strategy",
+        );
+        let outcome = SessionRunner::default()
+            .run_with_tools(&provider, turn, &dispatcher, |_event| {})
+            .await;
+
+        assert!(
+            outcome.is_success(),
+            "the question turn should complete without error: {:?}",
+            outcome.error
+        );
+        assert!(
+            outcome.answer().contains(ANSWER),
+            "the answer supplied through the TUI question dialog must shape the final assistant \
+             output, got: {:?}",
+            outcome.answer()
+        );
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "the turn should make two provider round trips: ask then resume after the answer"
+        );
+
+        // Closing the dispatcher (and its engine's UiResponder sender) ends the UI thread.
+        drop(dispatcher);
+        let answered = ui.join().expect("ui thread joins");
+        assert_eq!(
+            answered, 1,
+            "exactly one question ask should have been surfaced to and answered by the UI"
+        );
+    }
 }
