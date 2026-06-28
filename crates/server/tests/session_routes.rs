@@ -658,6 +658,119 @@ action = "deny"
     );
 }
 
+// VAL-GAP-CROSS-005 (server half): a saved "always allow" for the write mutator is honored for an
+// inside-workspace write, yet the external-directory hard deny still refuses an outside-workspace
+// write through the same server file surface, leaving the outside file unmutated.
+#[tokio::test]
+async fn external_directory_deny_survives_saved_write_allow_across_server_file_surface() {
+    let scratch = Scratch::new("server-external-dir-saved-allow");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    // Ask before every write (so the saved allow is the load-bearing decision for an inside write)
+    // and hard-deny every external-directory access (so the saved write allow cannot stretch across
+    // the workspace boundary).
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "write"
+pattern = "*"
+action = "ask"
+
+[[permission]]
+tool = "external_directory"
+pattern = "*"
+action = "deny"
+"#,
+    )
+    .expect("write project config");
+
+    // The outside dir lives under the workspace target tree, NOT the system temp dir the
+    // external-directory gate allowlists, so it is a genuine out-of-workspace path.
+    let outside_root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "server-external-outside-{}-{}",
+        std::process::id(),
+        SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&outside_root).expect("outside dir");
+    let outside_file = outside_root.join("outside.txt");
+    std::fs::write(&outside_file, "OUTSIDE-KEEP\n").expect("seed outside file");
+
+    // Seed a previously saved "always allow" for the write mutator in the shared per-workspace
+    // store the server turn loads.
+    let workspace_key = checkpoints::workspace_key(&workspace);
+    let store_path = permissions::store::store_path_with(
+        &permissions::store::StoreInputs::from_process(),
+        &workspace_key,
+    )
+    .expect("permission store path");
+    permissions::store::write(
+        &store_path,
+        &[permissions::SavedDecision::new(
+            "write",
+            "**",
+            permissions::Decision::Allow,
+        )],
+    )
+    .expect("seed saved write allow");
+
+    let provider = Arc::new(ExternalDirectoryWriteProvider::new(
+        "inside.txt".to_owned(),
+        outside_file.to_string_lossy().to_string(),
+    ));
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider).with_cwd(workspace.clone());
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    // Inside write follows the saved allow (no prompt) and mutates the workspace file.
+    let inside = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"please write the inside file"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("inside message response");
+    assert_eq!(inside.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("inside.txt"))
+            .expect("inside file written through saved allow")
+            .trim(),
+        "INSIDE-OK",
+        "the saved write allow permits the inside-workspace mutation"
+    );
+
+    // Outside write is refused by the external-directory hard deny despite the saved write allow.
+    let outside = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"please write the outside file"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("outside message response");
+    assert_eq!(outside.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_to_string(&outside_file)
+            .expect("outside file still present")
+            .trim(),
+        "OUTSIDE-KEEP",
+        "a saved write allow must never let the server mutate a file outside the workspace"
+    );
+
+    let _ = std::fs::remove_file(&store_path);
+    let _ = std::fs::remove_dir_all(&outside_root);
+}
+
 #[tokio::test]
 async fn message_route_provider_policy_deny_returns_forbidden() {
     let scratch = Scratch::new("server-message-provider-policy-deny");
@@ -3526,6 +3639,82 @@ impl Provider for EchoProvider {
                     reason: FinishReason::Stop,
                 },
             ];
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+/// Emits a single `write` tool call per turn, targeting the inside path by default and the outside
+/// path when the user prompt mentions "outside", then a final text answer once the tool result is
+/// present. Drives VAL-GAP-CROSS-005's server file surface deterministically.
+#[derive(Debug)]
+struct ExternalDirectoryWriteProvider {
+    inside_path: String,
+    outside_path: String,
+    calls: AtomicUsize,
+}
+
+impl ExternalDirectoryWriteProvider {
+    fn new(inside_path: String, outside_path: String) -> Self {
+        Self {
+            inside_path,
+            outside_path,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Provider for ExternalDirectoryWriteProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if has_tool_result {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "write attempt finished".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 11,
+                        output_tokens: 4,
+                        total_tokens: 15,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            } else {
+                let prompt = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == Role::User)
+                    .map(|message| message.content.as_str())
+                    .unwrap_or_default();
+                let (path, content) = if prompt.contains("outside") {
+                    (self.outside_path.as_str(), "OUTSIDE-CHANGED\n")
+                } else {
+                    (self.inside_path.as_str(), "INSIDE-OK\n")
+                };
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_write".to_owned(),
+                        name: "write".to_owned(),
+                        arguments: serde_json::json!({ "path": path, "content": content })
+                            .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            };
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })
     }

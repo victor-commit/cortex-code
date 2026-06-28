@@ -787,6 +787,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    static COUNTER_OUTSIDE: AtomicU32 = AtomicU32::new(0);
+
     struct Scratch {
         root: PathBuf,
         project: PathBuf,
@@ -1059,6 +1061,149 @@ mod tests {
             "saved allow should execute without surfacing an ask"
         );
         let _ = fs::remove_file(store_path);
+    }
+
+    // VAL-GAP-CROSS-005 (TUI half): the TUI's permission engine honors a saved "always allow" for
+    // the write mutator on an inside-workspace write (no prompt), yet the same engine — driving the
+    // shared tool layer the TUI dispatches through — still raises a SEPARATE external-directory ask
+    // for an outside-workspace write (the saved write allow never covers it). Denying that ask
+    // refuses the outside write and leaves the outside file unmutated.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_write_allow_cannot_cross_the_external_directory_boundary_in_tui() {
+        use std::sync::Mutex;
+
+        let scratch = Scratch::new("external-dir-saved-allow");
+
+        // The outside dir lives under the crate target tree, NOT the system temp dir the
+        // external-directory gate allowlists, so it is a genuine out-of-workspace path.
+        let outside_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!(
+                "cross-ext-tui-outside-{}-{}",
+                std::process::id(),
+                COUNTER_OUTSIDE.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir_all(&outside_root).expect("create outside dir");
+        let outside_file = outside_root.join("outside.txt");
+        fs::write(&outside_file, "OUTSIDE-KEEP\n").expect("seed outside file");
+        assert!(
+            !outside_file.starts_with(std::env::temp_dir()),
+            "the outside file must live outside the system temp dir so the gate applies: {outside_file:?}"
+        );
+
+        // Seed a previously saved "always allow" for the write mutator in the shared per-workspace
+        // store the TUI engine loads.
+        let workspace_key = checkpoints::workspace_key(&scratch.project);
+        let store_path = permissions::store::store_path_with(
+            &permissions::store::StoreInputs::from_process(),
+            &workspace_key,
+        )
+        .expect("permission store path");
+        permissions::store::write(
+            &store_path,
+            &[permissions::SavedDecision::new(
+                "write",
+                "**",
+                permissions::Decision::Allow,
+            )],
+        )
+        .expect("seed saved write allow");
+
+        // A stand-in for the TUI thread: deny the external-directory boundary ask and record it,
+        // while allowing any incidental gating (e.g. the post-write formatter) so it does not
+        // interfere. The saved write allow must short-circuit the inside write so no boundary ask is
+        // ever raised for it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let boundary_asks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let boundary_asks_ui = boundary_asks.clone();
+        let ui = std::thread::spawn(move || {
+            while let Ok(message) = rx.recv() {
+                if let TurnMessage::Permission(ask) = message {
+                    if ask.tool == "external_directory" {
+                        boundary_asks_ui
+                            .lock()
+                            .expect("boundary asks lock")
+                            .push(ask.subject.clone());
+                        ask.answer(permissions::ScopedDecision::once(
+                            permissions::Decision::Deny,
+                        ));
+                    } else {
+                        ask.answer(permissions::ScopedDecision::once(
+                            permissions::Decision::Allow,
+                        ));
+                    }
+                }
+            }
+        });
+
+        let (engine, _saved, _loaded) = build_permission_engine(
+            tx,
+            &scratch.project,
+            &custom_agents::ActiveAgent::Builtin(Agent::Build),
+        );
+
+        // Drive the real write tool through the shared tool layer with the TUI's engine attached,
+        // exactly as the TUI's turn dispatcher does.
+        let ctx = tools::ToolContext::new(scratch.project.clone()).with_permissions(engine);
+        let registry = tools::ToolRegistry::builtin();
+
+        let inside_args =
+            serde_json::json!({ "path": "inside.txt", "content": "INSIDE-OK\n" }).to_string();
+        let inside = registry.execute("write", &inside_args, &ctx).await;
+        assert!(
+            !inside.is_error,
+            "saved write allow should permit the inside write without a prompt: {inside:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(scratch.project.join("inside.txt"))
+                .expect("inside file written")
+                .trim(),
+            "INSIDE-OK",
+            "the saved write allow permits the inside-workspace mutation"
+        );
+        assert!(
+            boundary_asks.lock().expect("boundary asks lock").is_empty(),
+            "the saved write allow must be honored with no external-directory prompt for the inside write"
+        );
+
+        let outside_args = serde_json::json!({
+            "path": outside_file.to_string_lossy(),
+            "content": "OUTSIDE-CHANGED\n"
+        })
+        .to_string();
+        let outside = registry.execute("write", &outside_args, &ctx).await;
+        assert!(
+            outside.is_error,
+            "the external-directory ask, denied, must refuse the outside write: {outside:?}"
+        );
+        assert!(
+            outside
+                .model_content()
+                .to_lowercase()
+                .contains("permission denied"),
+            "denied outside write should explain the permission block: {outside:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&outside_file)
+                .expect("outside file still present")
+                .trim(),
+            "OUTSIDE-KEEP",
+            "a saved write allow must never let the TUI mutate a file outside the workspace"
+        );
+
+        // The outside write raised a SEPARATE external-directory boundary ask: the saved write
+        // allow never covered it (otherwise no ask would have been forwarded).
+        let asks = boundary_asks.lock().expect("boundary asks lock").clone();
+        assert_eq!(
+            asks.len(),
+            1,
+            "exactly one external-directory boundary ask should have been raised: {asks:?}"
+        );
+
+        drop(ctx);
+        let _ = ui.join();
+        let _ = fs::remove_file(store_path);
+        let _ = fs::remove_dir_all(outside_root);
     }
 
     #[test]

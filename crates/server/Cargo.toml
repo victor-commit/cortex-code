@@ -43,3 +43,5 @@ url = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
+permissions = { workspace = true }
+checkpoints = { workspace = true }
