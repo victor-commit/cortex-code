@@ -8995,6 +8995,122 @@ mod tests {
         );
     }
 
+    // VAL-GAP-CROSS-001 (TUI input half): attaching an image and completing a turn persists a typed
+    // File media part (image/png, source "tui_attachment") alongside the answer and usage to the
+    // shared store, so the exchange survives a process restart with the media metadata intact and no
+    // binary bytes or pasted secrets leaking into the persisted record. The CLI/server export half is
+    // locked in crates/cli/tests/gap_cross_multimodal_tui_provider_persistence.rs; the live
+    // end-to-end flow is proven black-box with tuistory.
+    #[test]
+    fn tui_attachment_turn_persists_typed_media_usage_and_answer_across_restart() {
+        let path = session_store_path("multimodal-cross");
+        let png = temp_attachment(
+            "png",
+            &[
+                0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D',
+                b'R', 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0x08, 0x02, 0, 0, 0, 0x90, 0x77, 0x53, 0xde, 0,
+                0, 0, 0x0a, b'I', b'D', b'A', b'T', 0x08, 0xd7, 0x63, 0xf8, 0x0f, 0x00, 0x01, 0x05,
+                0x01, 0x02, 0x60, 0x5d, 0xe9, 0x2f, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42,
+                0x60, 0x82,
+            ],
+        );
+        let secret = fake_secret();
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.composer_attachments().len(),
+            1,
+            "image staged in composer"
+        );
+
+        a.set_input_value(&format!(
+            "Describe this swatch. Ignore this token: {secret}"
+        ));
+        a.on_key(key(KeyCode::Enter));
+        let prompt = a.take_pending_prompt().expect("queued multimodal prompt");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn(prompt, rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "The swatch is solid red.".to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::Usage(usage(
+            2666,
+            1,
+            Some(0.0008),
+        ))))
+        .unwrap();
+        tx.send(TurnMessage::Finished).unwrap();
+        a.poll_turn();
+
+        let id = a.session_id.clone().expect("session created");
+
+        // Reopen the shared store as a fresh process would on restart.
+        let db = db::Database::open(&path).expect("reopen store");
+        let messages = db.messages().list_for_session(&id).expect("messages");
+        assert_eq!(messages.len(), 2, "user + assistant persisted");
+
+        let user = &messages[0];
+        assert_eq!(user.role, "user");
+        let file_part = user
+            .parts
+            .iter()
+            .find_map(|part| match &part.body {
+                protocol::MessagePartBody::File {
+                    path,
+                    media_type,
+                    source,
+                } => Some((path.clone(), media_type.clone(), source.clone())),
+                _ => None,
+            })
+            .expect("persisted typed file media part");
+        assert!(
+            file_part.0.ends_with(".png"),
+            "media part path references the attachment: {}",
+            file_part.0
+        );
+        assert_eq!(file_part.1.as_deref(), Some("image/png"));
+        assert_eq!(
+            file_part.2.as_deref(),
+            Some("tui_attachment"),
+            "the part records its TUI-attachment provenance"
+        );
+
+        let assistant = &messages[1];
+        assert_eq!(assistant.role, "assistant");
+        assert!(
+            assistant.content.contains("solid red"),
+            "the answer is persisted: {}",
+            assistant.content
+        );
+
+        // The secret pasted into the prompt is scrubbed from the persisted record (content + parts),
+        // and no base64/binary image bytes leak into the persisted text channel.
+        let serialized = serde_json::to_string(&messages).expect("serialize messages");
+        assert!(
+            !serialized.contains(&secret),
+            "the pasted secret must be redacted from the persisted record"
+        );
+        assert!(
+            serialized.contains(redaction::PLACEHOLDER),
+            "the canonical redaction placeholder marks the scrubbed secret"
+        );
+        assert!(
+            !serialized.contains("base64,"),
+            "no base64 image payload leaks into the persisted text channel"
+        );
+
+        let totals = db.usage().session_totals(&id).expect("usage totals");
+        assert_eq!(totals.input_tokens, 2666);
+        assert_eq!(totals.output_tokens, 1);
+        assert_eq!(totals.total_tokens, 2667);
+        assert_eq!(totals.cost, Some(0.0008));
+    }
+
     /// Run a complete throwaway turn so the app accumulates transcript + history state.
     fn run_turn(a: &mut App, prompt: &str, answer: &str) {
         let (tx, rx) = std::sync::mpsc::channel();
