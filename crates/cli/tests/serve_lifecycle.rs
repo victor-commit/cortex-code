@@ -365,6 +365,72 @@ fn serve_catalog_discovery_fails_soft_offline_in_node_workspace() {
 }
 
 #[test]
+fn serve_summarize_and_compact_audit_the_no_net_refusal() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-no-net-audit");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace dir");
+    let data_dir = scratch.dir.join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = scratch.db_path();
+    let audit_log = scratch.dir.join("audit.jsonl");
+    let port = free_port();
+    let mut server =
+        ServerProcess::start_no_net_with_audit(port, &workspace, &db_path, &data_dir, &audit_log);
+
+    let created = request_json(port, "POST", "/session", Some("{}"));
+    assert_eq!(created.status, 201);
+    let session: serde_json::Value =
+        serde_json::from_str(&created.body).expect("created session JSON");
+    let id = session["id"].as_str().expect("session id").to_owned();
+
+    // Both auxiliary turns must be refused by the kill-switch (503) before any socket is opened,
+    // exactly like a normal prompt turn.
+    let summarize = request_json(
+        port,
+        "POST",
+        &format!("/session/{id}/summarize"),
+        Some("{}"),
+    );
+    assert_eq!(
+        summarize.status, 503,
+        "summarize must fail closed under CORTEX_NO_NET: {}",
+        summarize.body
+    );
+    let compact = request_json(port, "POST", &format!("/session/{id}/compact"), Some("{}"));
+    assert_eq!(
+        compact.status, 503,
+        "compact must fail closed under CORTEX_NO_NET: {}",
+        compact.body
+    );
+
+    server.stop();
+    wait_for_port_released(port);
+
+    // Each refusal left an auditable blocked-network attempt (a `network_call` record attributed to
+    // the llm actor with the net-disabled outcome), so an auxiliary turn is not a hole in the
+    // no-net audit trail.
+    let raw = std::fs::read_to_string(&audit_log).expect("read audit log");
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("audit JSONL record"))
+        .collect();
+    let blocked = records
+        .iter()
+        .filter(|record| {
+            record["type"] == "network_call"
+                && record["actor"] == "llm"
+                && record["outcome"] == "net-disabled"
+        })
+        .count();
+    assert!(
+        blocked >= 2,
+        "summarize and compact should each audit a no-net refusal, got {blocked} in: {records:?}"
+    );
+}
+
+#[test]
 fn serve_lsp_status_stays_prompt_under_tight_sequential_loop() {
     let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
     let scratch = Scratch::new("serve-lsp-loop");
@@ -482,6 +548,46 @@ impl ServerProcess {
             .env_remove("RUST_LOG")
             .env_remove("CORTEX_VERBOSE")
             .env("CORTEX_NO_NET", "1")
+            .env("CORTEX_DB_PATH", db_path)
+            .env("CORTEX_DATA_DIR", data_dir);
+        let mut child = command.spawn().expect("spawn cortex serve");
+        let _ = wait_for_health(port, &mut child);
+        Self {
+            child,
+            port,
+            stopped: false,
+            _scratch: None,
+        }
+    }
+
+    /// Start `cortex serve` rooted at `workspace` under `CORTEX_NO_NET=1` with the audit JSONL
+    /// pointed at `audit_log`. Used to prove auxiliary turns (/summarize, /compact) fail closed and
+    /// leave an auditable blocked-network record when the kill-switch is engaged.
+    fn start_no_net_with_audit(
+        port: u16,
+        workspace: &Path,
+        db_path: &Path,
+        data_dir: &Path,
+        audit_log: &Path,
+    ) -> Self {
+        let port_arg = port.to_string();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+        command.args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            port_arg.as_str(),
+        ]);
+        command.current_dir(workspace);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command
+            .env_remove("RUST_LOG")
+            .env_remove("CORTEX_VERBOSE")
+            .env("CORTEX_NO_NET", "1")
+            .env("CORTEX_AUDIT_LOG", audit_log)
             .env("CORTEX_DB_PATH", db_path)
             .env("CORTEX_DATA_DIR", data_dir);
         let mut child = command.spawn().expect("spawn cortex serve");

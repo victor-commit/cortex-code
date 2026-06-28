@@ -296,3 +296,50 @@ fn history_is_durable_across_reopen() {
     reopened.undo().unwrap();
     assert_eq!(fx.read("x.txt"), "H0");
 }
+
+// The workspace-global undo/redo stack is shared, so a session-scoped caller must be able to see
+// WHOSE turn the next undo/redo would touch. `peek_undo_label`/`peek_redo_label` report the label
+// (session id) of the turn `undo`/`redo` would act on, tracking the applied cursor as it moves.
+#[test]
+fn peek_labels_track_the_undo_redo_cursor() {
+    let fx = fixture("peek-labels");
+    let store = fx.open();
+    fx.write("a.txt", "v0");
+    fx.write("b.txt", "v0");
+    let a = fx.path("a.txt");
+    let b = fx.path("b.txt");
+
+    // Two interleaved sessions each record a turn labeled with their session id.
+    turn(&store, "session-a", &[a.as_path()], || {
+        fs::write(&a, "v1").unwrap();
+    });
+    turn(&store, "session-b", &[b.as_path()], || {
+        fs::write(&b, "v1").unwrap();
+    });
+
+    // B's turn is on top of the stack: it is what the next undo would pop, and nothing is redoable.
+    assert_eq!(
+        store.peek_undo_label().unwrap().as_deref(),
+        Some("session-b")
+    );
+    assert_eq!(store.peek_redo_label().unwrap(), None);
+
+    // After undoing B's turn, A's turn is on top and B's turn becomes the next redo.
+    store.undo().unwrap();
+    assert_eq!(
+        store.peek_undo_label().unwrap().as_deref(),
+        Some("session-a")
+    );
+    assert_eq!(
+        store.peek_redo_label().unwrap().as_deref(),
+        Some("session-b")
+    );
+
+    // Undo A's turn too: nothing left to undo, A's turn is the next redo.
+    store.undo().unwrap();
+    assert_eq!(store.peek_undo_label().unwrap(), None);
+    assert_eq!(
+        store.peek_redo_label().unwrap().as_deref(),
+        Some("session-a")
+    );
+}

@@ -255,6 +255,37 @@ impl ShadowStore {
         })
     }
 
+    /// The label of the turn a subsequent [`Self::undo`] would restore (the most recently applied
+    /// turn), or `None` when there is nothing to undo.
+    ///
+    /// The undo/redo stack is workspace-global, so a session-scoped caller uses this to refuse an
+    /// undo that would pop a turn belonging to a different session (label) rather than its own.
+    ///
+    /// # Errors
+    /// Returns a [`CheckpointError`] when the journal cannot be read.
+    pub fn peek_undo_label(&self) -> Result<Option<String>, CheckpointError> {
+        let journal = self.load_journal()?;
+        Ok(journal
+            .applied
+            .checked_sub(1)
+            .and_then(|index| journal.turns.get(index))
+            .map(|turn| turn.label.clone()))
+    }
+
+    /// The label of the turn a subsequent [`Self::redo`] would re-apply (the next undone turn), or
+    /// `None` when there is nothing to redo. The session-scoped counterpart to
+    /// [`Self::peek_undo_label`].
+    ///
+    /// # Errors
+    /// Returns a [`CheckpointError`] when the journal cannot be read.
+    pub fn peek_redo_label(&self) -> Result<Option<String>, CheckpointError> {
+        let journal = self.load_journal()?;
+        Ok(journal
+            .turns
+            .get(journal.applied)
+            .map(|turn| turn.label.clone()))
+    }
+
     /// Compute the net file diffs produced by every applied turn recorded under `label`.
     ///
     /// For each file the session touched, the earliest pre-image and the latest post-image are

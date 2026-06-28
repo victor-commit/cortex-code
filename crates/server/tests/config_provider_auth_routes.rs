@@ -377,6 +377,63 @@ async fn oauth_authorize_requires_endpoints() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+// The OAuth CSRF `state` is drawn from the OS CSPRNG, not a predictable time-based source: each
+// issued state is 128 bits of lowercase hex, every byte is random (the old time-nanos fallback left
+// the high 8 bytes zero), and states never repeat. A predictable single-use state would let an
+// attacker forge the callback, so this fails closed rather than degrade to a guessable value.
+#[tokio::test]
+async fn oauth_authorize_state_uses_the_csprng_not_a_time_fallback() {
+    let scratch = Scratch::new("server-auth-oauth-entropy");
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(scratch.workspace())
+            .with_config_env(vec![(
+                "CORTEX_AUTH_FILE".to_owned(),
+                scratch.auth_path().to_string_lossy().into_owned(),
+            )]),
+    );
+    let authorize_body = serde_json::json!({
+        "authorize_endpoint": "https://auth.example.test/authorize",
+        "token_endpoint": "https://auth.example.test/token",
+        "client_id": "cortex-fixture-client",
+        "redirect_uri": "http://127.0.0.1:3200/auth/callback",
+        "scopes": ["profile"],
+    })
+    .to_string();
+
+    let mut states = std::collections::HashSet::new();
+    let mut high_halves = std::collections::HashSet::new();
+    let mut any_high_byte_nonzero = false;
+    for _ in 0..32 {
+        let response = send(&app, "POST", "/auth/acme/authorize", Some(&authorize_body)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = json_body(response).await;
+        let state = body["state"].as_str().expect("state").to_owned();
+        assert_eq!(state.len(), 32, "128-bit state is 32 hex chars: {state}");
+        assert!(
+            state
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "state is lowercase hex: {state}"
+        );
+        // Bytes 8..16 (hex 16..32) were always zero in the time-nanos fallback; the CSPRNG fills
+        // them with random data.
+        if state[16..].chars().any(|ch| ch != '0') {
+            any_high_byte_nonzero = true;
+        }
+        high_halves.insert(state[16..].to_owned());
+        assert!(states.insert(state), "each issued state is unique");
+    }
+    assert!(
+        any_high_byte_nonzero,
+        "the high bytes of the state must be random, not a zero-padded timestamp"
+    );
+    assert!(
+        high_halves.len() > 1,
+        "the high half of the state must vary across issuances (CSPRNG, not a fixed/zero suffix)"
+    );
+}
+
 // ---- helpers ----
 
 fn is_qualified(model: &str) -> bool {

@@ -426,6 +426,63 @@ async fn pty_create_rejects_unknown_command() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+// A PTY child that exits on its own (and is never DELETEd) must be reaped by the reader thread on
+// EOF, not left as a zombie for the server lifetime. We start a short-lived child, wait for the
+// reader to mark it not-running (which happens only after it has called `child.wait()`), then assert
+// its PID is no longer a zombie. Without the EOF reap it would linger in state 'Z' until DELETE.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pty_natural_exit_reaps_child_without_delete() {
+    let scratch = Scratch::new("server-pty-reap");
+    let app = isolated_app(&scratch, &scratch.workspace());
+
+    let create =
+        serde_json::json!({ "command": "printf", "args": ["pty-exit-marker"] }).to_string();
+    let summary: serde_json::Value =
+        json_body(send(&app, "POST", "/pty", Some(&create)).await).await;
+    let id = summary["id"].as_str().expect("pty id").to_owned();
+    let pid = u32::try_from(summary["pid"].as_u64().expect("pty pid")).expect("pid fits u32");
+
+    let mut exited = false;
+    for _ in 0..200 {
+        let got: serde_json::Value =
+            json_body(send(&app, "GET", &format!("/pty/{id}"), None).await).await;
+        if got["running"] == serde_json::json!(false) {
+            exited = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        exited,
+        "the short-lived pty child should exit and be marked not-running"
+    );
+
+    let mut reaped = false;
+    for _ in 0..100 {
+        match proc_state(pid) {
+            None => {
+                reaped = true;
+                break;
+            }
+            Some(state) if state != 'Z' => {
+                reaped = true;
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    assert!(
+        reaped,
+        "PID {pid} stayed a zombie; the reader thread must reap naturally-exited children on EOF"
+    );
+
+    // The session is still listable (no DELETE was issued) and reports not-running.
+    let got: serde_json::Value =
+        json_body(send(&app, "GET", &format!("/pty/{id}"), None).await).await;
+    assert_eq!(got["running"], serde_json::json!(false));
+}
+
 // ---- project / workspace / worktree / path routes (VAL-GAP-SERVER-016) ----
 
 #[tokio::test]
@@ -848,6 +905,19 @@ fn git(workspace: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// The single-character process state from `/proc/<pid>/stat` (e.g. 'R', 'S', 'Z'), or `None` when
+/// the process no longer exists (reaped). The `comm` field can contain spaces and parentheses, so
+/// the state is parsed from after the final ')'.
+#[cfg(target_os = "linux")]
+fn proc_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm
+        .split_whitespace()
+        .next()
+        .and_then(|field| field.chars().next())
 }
 
 async fn send(

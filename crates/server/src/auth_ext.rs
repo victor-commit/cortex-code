@@ -175,7 +175,7 @@ pub(super) async fn oauth_authorize(
         None => callback_uri_from_host(&headers)?,
     };
 
-    let challenge = random_token();
+    let challenge = random_token()?;
     let authorize_url = build_authorize_url(
         &authorize_endpoint,
         &client_id,
@@ -438,20 +438,20 @@ fn store_error(err: std::io::Error) -> ApiError {
     )
 }
 
-/// A random hex token (128 bits) from the OS CSPRNG, used for the OAuth CSRF state.
-fn random_token() -> String {
+/// A random hex token (128 bits) from the OS CSPRNG, used for the OAuth CSRF `state`.
+///
+/// This FAILS CLOSED: if the OS CSPRNG is unavailable there is no time-based fallback (a
+/// `SystemTime`-nanos value would be predictable, making the single-use state guessable), so the
+/// caller refuses the authorize request instead of issuing a weak challenge.
+fn random_token() -> Result<String, ApiError> {
     let mut bytes = [0u8; 16];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read as _;
-        let _ = file.read_exact(&mut bytes);
-    } else {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default();
-        bytes.copy_from_slice(&nanos.to_le_bytes()[..16]);
-    }
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot generate a secure OAuth state: {err}"),
+        )
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[derive(Debug, Deserialize)]

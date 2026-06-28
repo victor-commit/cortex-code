@@ -16,17 +16,17 @@ use axum::{
     http::StatusCode,
 };
 use db::{Message, Session};
-use engine::{SessionRunner, Turn, estimate_messages_tokens};
+use engine::{CompactionRecord, SessionRunner, Turn, estimate_messages_tokens};
 use events::Event;
 use protocol::{MessagePart, MessagePartBody};
 use serde::{Deserialize, Serialize};
 
 use super::{
     ApiError, CommandRequest, MessageRequest, ServerState, apply_estimated_usage_cost,
-    compaction_policy, config_api_error, load_history, non_empty, open_checkpoint_store,
-    open_database, persist_usage, provider_config_api_error, render_system_context,
-    require_session, resolve_turn_agent, resolve_turn_provider, run_message_turn, run_session_bash,
-    select_turn_model,
+    audit_sink_for, compaction_policy, config_api_error, load_history, non_empty,
+    open_checkpoint_store, open_database, persist_usage, plugin_config_error, plugin_runtime_error,
+    provider_config_api_error, render_system_context, require_session, resolve_turn_agent,
+    resolve_turn_provider, run_message_turn, run_session_bash, select_turn_model, wait_for_abort,
 };
 
 static ASYNC_OPERATION_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -243,6 +243,13 @@ pub(super) async fn list_children(
 }
 
 /// `GET /session/{id}/diff` — report the net file changes produced by this session's turns.
+///
+/// This returns the FULL per-file diff. The CLI/library additionally expose a snapshot diff
+/// "summary vs full" split, but the server intentionally serves only the full diff here: the full
+/// diff is a superset (a client computes its own summary), and VAL-GAP-DATA-005 is satisfied via the
+/// CLI surface. Adding a `?summary=true` variant would be a wire/OpenAPI/SDK change for no new
+/// information, so the summary split stays CLI-only by design. If that ever changes, update OpenAPI,
+/// the `sdk/openapi.json` snapshot, and regenerate the SDK together.
 pub(super) async fn session_diff(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
@@ -358,6 +365,13 @@ pub(super) struct SummaryResponse {
 
 /// Run a tool-free auxiliary LLM turn over the session history with `instruction`, persist the
 /// result as an assistant message (optionally marked as a compaction part), and return it.
+///
+/// Auxiliary provider turns are admitted through the shared [`engine::TurnQueue`]
+/// (`state.active_turns`) exactly like a user prompt: they serialize against any other turn for the
+/// session, are abortable via `POST /session/{id}/abort`, appear `busy` in `/status` and `/wait`,
+/// and emit the no-net audit record under `CORTEX_NO_NET`. The compaction variant additionally runs
+/// plugin compaction hooks and publishes the `session.compacted` SSE event, mirroring the
+/// auto-compaction path in `run_message_turn`.
 async fn run_auxiliary_summary(
     state: &ServerState,
     session_id: &str,
@@ -384,13 +398,61 @@ async fn run_auxiliary_summary(
     .map_err(ApiError::bad_request)?;
     let provider_config = providers::ProviderConfigSet::from_table(effective_config.table())
         .map_err(provider_config_api_error)?;
+    let audit_sink = audit_sink_for(state, session_id);
 
+    // The kill-switch wins before credential resolution or queue admission, and the refusal is
+    // audited as a blocked network attempt — identical to `run_message_turn` — so an auxiliary
+    // turn is not a hole in the no-net audit trail.
     if let Err(diagnostic) = redaction::guard_outbound(super::OUTBOUND_OPERATION) {
+        let resolved_for_guard = provider_config
+            .resolve_model(providers::Catalogue::embedded(), Some(&selected_model))
+            .map_err(provider_config_api_error)?;
+        let endpoint = provider_config
+            .resolve_stream_endpoint(
+                &resolved_for_guard.provider_id,
+                &resolved_for_guard.model_id,
+            )
+            .unwrap_or_else(|_| {
+                format!(
+                    "{}/chat/completions",
+                    providers::openrouter_base_url().trim_end_matches('/')
+                )
+            });
+        let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
+        audit_sink.record_network_call(
+            "llm",
+            Some(&resolved_for_guard.provider_id),
+            Some(&selected_model),
+            "POST",
+            &host,
+            &endpoint,
+            None,
+            diagnostic.kind(),
+        );
         return Err(ApiError::diagnostic(
             StatusCode::SERVICE_UNAVAILABLE,
             diagnostic,
         ));
     }
+
+    // Only the compaction path loads plugins, so it can run the same compaction hooks as the
+    // auto-compaction path; a plain summary never pays the plugin-runtime cost.
+    let plugin_hooks = if as_compaction {
+        let plugin_config =
+            plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
+                .map_err(plugin_config_error)?;
+        Some(
+            plugins::PluginEventHooks::load_or_disabled(
+                &plugin_config,
+                state.config.pure_plugins(),
+                "serve",
+            )
+            .map_err(plugin_runtime_error)?
+            .with_audit(audit_sink.clone()),
+        )
+    } else {
+        None
+    };
 
     let resolved = resolve_turn_provider(
         &state.provider,
@@ -414,17 +476,51 @@ async fn run_auxiliary_summary(
         turn = turn.with_extra_params(resolved.request_params.clone());
     }
 
+    // Admit the turn through the shared queue: it serializes with any other turn for this session,
+    // is reflected as busy in `/status`/`/wait`, and is cancellable via the lease's abort signal.
+    let lease = state
+        .active_turns
+        .acquire(session_id.to_owned())
+        .await
+        .map_err(|message| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let mut abort_rx = lease.abort_receiver();
+
     let runner = SessionRunner::default();
-    let mut outcome = runner
-        .run(resolved.provider.as_ref(), turn, |_event| {})
-        .await;
+    let mut outcome = tokio::select! {
+        outcome = runner.run(resolved.provider.as_ref(), turn, |_event| {}) => outcome,
+        () = wait_for_abort(&mut abort_rx) => {
+            return Err(ApiError {
+                status: StatusCode::CONFLICT,
+                message: "auxiliary turn aborted".to_owned(),
+                kind: Some("aborted".to_owned()),
+            });
+        }
+    };
     apply_estimated_usage_cost(&resolved.model, &mut outcome);
     if let Some(error) = &outcome.error {
         return Err(ApiError::from_run_error(error));
     }
     persist_usage(&db, session_id, &outcome);
 
-    let summary = outcome.answer().to_owned();
+    let mut summary = outcome.answer().to_owned();
+    let mut tail_start_id = last_message_id;
+    if let Some(plugin_hooks) = &plugin_hooks {
+        // Let plugins observe/transform the compaction summary and tail boundary before they are
+        // persisted, streamed, or echoed — the same engine record <-> hook-value seam the message
+        // turn path uses — so an explicit `/compact` is transformed identically to auto-compaction.
+        let mut record = CompactionRecord {
+            summary: summary.clone(),
+            tail_start_id: tail_start_id.clone(),
+            continued_request: false,
+            model: Some(resolved.model_id.clone()),
+        };
+        let mut values = vec![record.to_hook_value(&resolved.model_id)];
+        plugin_hooks.apply_compaction_hooks(&mut values);
+        record.apply_hook_value(&values[0]);
+        summary = record.summary;
+        tail_start_id = record.tail_start_id;
+    }
+
     let mut parts = Vec::new();
     if as_compaction {
         parts.push(MessagePart {
@@ -432,7 +528,7 @@ async fn run_auxiliary_summary(
             created_at: None,
             body: MessagePartBody::Compaction {
                 summary: summary.clone(),
-                tail_start_id: last_message_id,
+                tail_start_id: tail_start_id.clone(),
                 continued_request: false,
             },
         });
@@ -447,6 +543,14 @@ async fn run_auxiliary_summary(
         message.id.clone(),
         message.parts.clone(),
     ));
+    if as_compaction {
+        state.event_bus.publish(&Event::session_compacted(
+            session_id.to_owned(),
+            message.id.clone(),
+            tail_start_id,
+            Some(resolved.model_id.clone()),
+        ));
+    }
 
     Ok(SummaryResponse {
         status: if as_compaction {
@@ -628,6 +732,28 @@ pub(super) async fn revert_session(
         }));
     };
 
+    // The checkpoint undo/redo stack is workspace-global, so refuse a revert that would pop a turn
+    // recorded by a different session. With interleaved multi-session editing the most-recent
+    // applied turn may belong to another session; reverting it here would silently undo that
+    // session's work. Turns are labeled with their session id, so the top label must match.
+    let top_label = store.peek_undo_label().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot inspect revert history: {err}"),
+        )
+    })?;
+    if let Some(label) = top_label.as_deref()
+        && label != id
+    {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            message: "revert refused: the most recently applied change belongs to a different \
+                session"
+                .to_owned(),
+            kind: Some("conflict".to_owned()),
+        });
+    }
+
     let outcome = store.undo().map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -700,6 +826,25 @@ pub(super) async fn unrevert_session(
             conflicts: Vec::new(),
         }));
     };
+
+    // Mirror the revert guard: redo re-applies the next undone turn off the workspace-global stack,
+    // so refuse when that turn was recorded by a different session.
+    let top_label = store.peek_redo_label().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot inspect unrevert history: {err}"),
+        )
+    })?;
+    if let Some(label) = top_label.as_deref()
+        && label != id
+    {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            message: "unrevert refused: the next reapplyable change belongs to a different session"
+                .to_owned(),
+            kind: Some("conflict".to_owned()),
+        });
+    }
 
     let outcome = store.redo().map_err(|err| {
         ApiError::new(

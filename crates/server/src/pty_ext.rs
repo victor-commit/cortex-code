@@ -47,7 +47,7 @@ struct PtySession {
     command: String,
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     output: Arc<Mutex<Vec<u8>>>,
     exited: Arc<AtomicBool>,
 }
@@ -78,9 +78,11 @@ impl PtyRegistry {
     /// Kill and reap every live PTY child by its exact handle. Used on server shutdown.
     pub(super) fn shutdown(&self) {
         if let Ok(mut sessions) = self.inner.lock() {
-            for (_, mut session) in sessions.drain() {
-                let _ = session.child.kill();
-                let _ = session.child.wait();
+            for (_, session) in sessions.drain() {
+                if let Ok(mut child) = session.child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
     }
@@ -194,7 +196,11 @@ pub(super) async fn create_pty(
 
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
     let exited = Arc::new(AtomicBool::new(false));
-    spawn_reader(reader, output.clone(), exited.clone());
+    // Share the child handle between the reader thread (which reaps it on EOF) and the close/
+    // shutdown paths (which kill+reap it by its exact handle), so a naturally-exited child is reaped
+    // promptly instead of lingering as a zombie until DELETE/shutdown.
+    let child = Arc::new(Mutex::new(child));
+    spawn_reader(reader, output.clone(), exited.clone(), child.clone());
 
     let id = format!(
         "pty-{}-{}",
@@ -227,6 +233,7 @@ fn spawn_reader(
     mut reader: Box<dyn Read + Send>,
     output: Arc<Mutex<Vec<u8>>>,
     exited: Arc<AtomicBool>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
 ) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -243,6 +250,13 @@ fn spawn_reader(
                 }
                 Err(_) => break,
             }
+        }
+        // The master read reached EOF because the child closed the pty slave (it has exited), so
+        // reap it here instead of leaving a zombie until DELETE/shutdown. `wait()` returns promptly
+        // since the process is already gone; close/shutdown reap idempotently through the same
+        // shared handle.
+        if let Ok(mut child) = child.lock() {
+            let _ = child.wait();
         }
         exited.store(true, Ordering::Relaxed);
     });
@@ -368,13 +382,18 @@ pub(super) async fn close_pty(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<PtyCloseResponse>, ApiError> {
-    let mut session = {
+    let session = {
         let mut sessions = state.ptys.lock()?;
         sessions.remove(&id).ok_or_else(|| pty_not_found(&id))?
     };
     let pid = session.pid;
-    let _ = session.child.kill();
-    let exited = session.child.wait().is_ok();
+    let exited = match session.child.lock() {
+        Ok(mut child) => {
+            let _ = child.kill();
+            child.wait().is_ok()
+        }
+        Err(_) => session.exited.load(Ordering::Relaxed),
+    };
     state
         .event_bus
         .publish(&events::Event::PtyDeleted(events::PtyRef {

@@ -18,6 +18,7 @@ errors = { workspace = true }
 events = { workspace = true }
 format = { workspace = true }
 futures-util = { workspace = true }
+getrandom = { workspace = true }
 llm = { workspace = true }
 lsp = { workspace = true }
 mcp = { workspace = true }

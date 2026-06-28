@@ -3012,6 +3012,7 @@ dependencies = [
  "events",
  "format",
  "futures-util",
+ "getrandom 0.3.4",
  "llm",
  "lsp",
  "mcp",
