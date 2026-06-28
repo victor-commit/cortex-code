@@ -109,6 +109,7 @@ pub struct ServerState {
     pending_auth: auth_ext::PendingAuth,
     ptys: pty_ext::PtyRegistry,
     tui_control: tui_control::TuiControl,
+    lsp_status_cache: lsp_format_vcs_ext::LspStatusCache,
 }
 
 impl ServerState {
@@ -132,6 +133,7 @@ impl ServerState {
             pending_auth: auth_ext::PendingAuth::default(),
             ptys: pty_ext::PtyRegistry::default(),
             tui_control: tui_control::TuiControl::default(),
+            lsp_status_cache: lsp_format_vcs_ext::LspStatusCache::default(),
         }
     }
 
@@ -155,6 +157,7 @@ impl ServerState {
             pending_auth: auth_ext::PendingAuth::default(),
             ptys: pty_ext::PtyRegistry::default(),
             tui_control: tui_control::TuiControl::default(),
+            lsp_status_cache: lsp_format_vcs_ext::LspStatusCache::default(),
         }
     }
 
@@ -2452,6 +2455,12 @@ fn load_workspace_adapter_discovery(
 /// This is the shared seam behind workspace-adapter and catalog discovery so plugin-registered
 /// providers, models, agents, commands, and skills surface from a single, consistent load rather
 /// than each route rolling its own plugin bootstrap.
+///
+/// Loading is LENIENT: a plugin that cannot be resolved or loaded (e.g. an offline package under
+/// `CORTEX_NO_NET`, a missing local file, or no JavaScript runtime on `PATH`) is skipped, with a
+/// `cortex serve:` warning, and the resolvable subset is returned. This keeps the read-only
+/// catalog/discovery GET routes available (`200` with the resolvable subset) instead of failing
+/// the whole route with a `500` when one configured plugin is unreachable.
 pub(crate) fn load_plugin_hooks(
     state: &ServerState,
 ) -> Result<plugins::PluginEventHooks, ApiError> {
@@ -2466,13 +2475,19 @@ pub(crate) fn load_plugin_hooks(
         serde_json::Value::Object(object) => serde_json::Value::Object(object),
         _ => serde_json::json!({}),
     };
-    plugins::PluginEventHooks::load_or_disabled_with_config(
+    let (hooks, skipped) = plugins::PluginEventHooks::load_lenient_with_config(
         &plugin_config,
         state.config.pure_plugins(),
         "serve",
         resolved_config,
-    )
-    .map_err(plugin_runtime_error)
+    );
+    for skip in &skipped {
+        eprintln!(
+            "cortex serve: skipping plugin `{}` for discovery: {}",
+            skip.spec, skip.reason
+        );
+    }
+    Ok(hooks)
 }
 
 struct ResolvedTurnProvider {

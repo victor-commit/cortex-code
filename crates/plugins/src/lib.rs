@@ -10,15 +10,17 @@ mod distribution;
 mod runtime;
 
 pub use config::{PluginConfig, PluginSpec};
-pub use distribution::{LockedPlugin, locked_plugins, lockfile_relative_path, remove_locked_plugin};
+pub use distribution::{
+    LockedPlugin, locked_plugins, lockfile_relative_path, remove_locked_plugin,
+};
 pub use runtime::{
     JsRuntime, LoadedPlugin, PluginAgentRegistration, PluginAuthAuthorizeResult,
     PluginAuthCallbackResult, PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt,
     PluginAuthPromptOption, PluginAuthRegistration, PluginCatalogRegistration,
     PluginCommandRegistration, PluginConfigRule, PluginEventHooks, PluginHookOutput,
-    PluginHookReport, PluginLoadReport, PluginModelRegistration, PluginProviderCompletion,
-    PluginProviderRegistration, PluginRuntimeError, PluginSkillRegistration,
-    PluginThemeRegistration, PluginToolExecution, PluginToolRegistration,
+    PluginHookReport, PluginLoadReport, PluginLoadSkip, PluginModelRegistration,
+    PluginProviderCompletion, PluginProviderRegistration, PluginRuntimeError,
+    PluginSkillRegistration, PluginThemeRegistration, PluginToolExecution, PluginToolRegistration,
     PluginWorkspaceAdapterEntry, PluginWorkspaceRegistration, RuntimeHost, RuntimeSelection,
     detect_runtime, detect_runtime_in_path, merge_compaction_value,
 };

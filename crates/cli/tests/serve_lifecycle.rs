@@ -286,6 +286,122 @@ fn serve_busy_port_exits_nonzero_with_clear_diagnostic() {
     wait_for_port_released(port);
 }
 
+#[test]
+fn serve_catalog_discovery_fails_soft_offline_in_node_workspace() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-offline-catalog");
+
+    // A workspace that looks like a real node package: package.json + node_modules. This is the
+    // shape that surfaced the original HTTP 500 (e.g. running `cortex serve` from the sdk/ dir).
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace dir");
+    std::fs::write(
+        workspace.join("package.json"),
+        r#"{"name":"offline-catalog-fixture","version":"1.0.0","private":true,"dependencies":{"left-pad":"^1.3.0"}}"#,
+    )
+    .expect("write package.json");
+    let node_module = workspace.join("node_modules").join("left-pad");
+    std::fs::create_dir_all(&node_module).expect("create node_modules entry");
+    std::fs::write(
+        node_module.join("package.json"),
+        r#"{"name":"left-pad","version":"1.3.0","main":"index.js"}"#,
+    )
+    .expect("write node_modules package.json");
+    std::fs::write(node_module.join("index.js"), "module.exports = () => {};\n")
+        .expect("write node_modules index.js");
+    // A project config declaring an unresolvable package plugin. Under CORTEX_NO_NET this cannot be
+    // fetched/installed, so plugin/workspace-adapter discovery used to fail hard and 500 the
+    // catalog routes; with the fail-soft fix the plugin is skipped and discovery returns 200.
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        "plugin = [\"@cortex-regression/offline-missing-pkg\"]\n",
+    )
+    .expect("write cortex.toml");
+
+    let data_dir = scratch.dir.join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = scratch.db_path();
+
+    let port = free_port();
+    let mut server =
+        ServerProcess::start_offline_in_workspace(port, &workspace, &db_path, &data_dir);
+
+    // Every catalog/discovery GET endpoint that resolves plugins must be 200 (not 500), even
+    // offline in a node workspace with an unresolvable plugin.
+    let discovery_routes = [
+        "/agent",
+        "/model",
+        "/config/providers",
+        "/provider",
+        "/skill",
+        "/command",
+        "/project/discovery",
+        "/experimental/workspace/adapter",
+    ];
+    for route in discovery_routes {
+        let response = request_json(port, "GET", route, None);
+        assert_eq!(
+            response.status, 200,
+            "offline catalog/discovery route {route} should fail soft with 200, got {} body: {}",
+            response.status, response.body
+        );
+    }
+
+    // The resolvable subset must still be present: built-in agents are returned despite the
+    // unresolvable plugin being skipped.
+    let agents = request_json(port, "GET", "/agent", None);
+    let agents_json: serde_json::Value =
+        serde_json::from_str(&agents.body).expect("agent catalog JSON");
+    let agent_array = agents_json.as_array().expect("agent catalog array");
+    assert!(
+        agent_array
+            .iter()
+            .any(|agent| agent["name"] == "build" && agent["source"] == "builtin"),
+        "built-in agents should still surface from offline discovery: {agent_array:?}"
+    );
+
+    server.stop();
+    wait_for_port_released(port);
+}
+
+#[test]
+fn serve_lsp_status_stays_prompt_under_tight_sequential_loop() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-lsp-loop");
+    let db_path = scratch.db_path();
+    let port = free_port();
+    let mut server = ServerProcess::start_with_db_path(port, &db_path);
+
+    // Warm the cache once with a tolerant read timeout (the first probe is heavy).
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(20))
+        .expect("warm /lsp request");
+    assert_eq!(
+        warm.status, 200,
+        "first /lsp probe should be 200: {}",
+        warm.body
+    );
+
+    // A tight sequential loop must stay prompt and never surface a transport error: each cached
+    // call comfortably completes within the standard 2s client read timeout.
+    let loop_start = Instant::now();
+    for iteration in 0..12 {
+        let response = request_json(port, "GET", "/lsp", None);
+        assert_eq!(
+            response.status, 200,
+            "cached /lsp call {iteration} should be 200, got {} body: {}",
+            response.status, response.body
+        );
+    }
+    let elapsed = loop_start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "12 cached /lsp calls should be prompt, took {elapsed:?}"
+    );
+
+    server.stop();
+    wait_for_port_released(port);
+}
+
 struct ServerProcess {
     child: Child,
     port: u16,
@@ -336,6 +452,45 @@ impl ServerProcess {
             port,
             stopped: false,
             _scratch: scratch,
+        }
+    }
+
+    /// Start `cortex serve` rooted at `workspace` under `CORTEX_NO_NET=1`, with isolated db/data
+    /// dirs. Used by the offline catalog/discovery regression test: discovery routes must fail soft
+    /// (200 with the resolvable subset) even when the workspace declares an unresolvable plugin and
+    /// the network kill-switch is engaged.
+    fn start_offline_in_workspace(
+        port: u16,
+        workspace: &Path,
+        db_path: &Path,
+        data_dir: &Path,
+    ) -> Self {
+        let port_arg = port.to_string();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+        command.args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            port_arg.as_str(),
+        ]);
+        command.current_dir(workspace);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command
+            .env_remove("RUST_LOG")
+            .env_remove("CORTEX_VERBOSE")
+            .env("CORTEX_NO_NET", "1")
+            .env("CORTEX_DB_PATH", db_path)
+            .env("CORTEX_DATA_DIR", data_dir);
+        let mut child = command.spawn().expect("spawn cortex serve");
+        let _ = wait_for_health(port, &mut child);
+        Self {
+            child,
+            port,
+            stopped: false,
+            _scratch: None,
         }
     }
 
@@ -451,9 +606,30 @@ fn request_http_with_headers(
     body: Option<&str>,
     headers: &[(&str, &str)],
 ) -> std::io::Result<HttpResponse> {
+    request_http_with_headers_and_timeout(port, method, path, body, headers, Duration::from_secs(2))
+}
+
+fn request_http_with_timeout(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    read_timeout: Duration,
+) -> std::io::Result<HttpResponse> {
+    request_http_with_headers_and_timeout(port, method, path, body, &[], read_timeout)
+}
+
+fn request_http_with_headers_and_timeout(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+    read_timeout: Duration,
+) -> std::io::Result<HttpResponse> {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let body = body.unwrap_or("");
     let mut request =

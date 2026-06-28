@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -18,7 +21,7 @@ use super::{ApiError, ServerState, config_api_error};
 use crate::file_ext::run_git_shared;
 
 /// One configured language server's status row, matching `cortex lsp status --format json`.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct LspStatusRow {
     language: String,
     program: String,
@@ -29,16 +32,153 @@ pub(super) struct LspStatusRow {
     install: Option<String>,
 }
 
+/// Short TTL for the cached `GET /lsp` status.
+///
+/// The real probe is heavy and variable-latency: for every configured language server it scans the
+/// process table for a running instance and checks installability, which spawns subprocesses and
+/// can take several seconds in aggregate. Caching the computed rows for this window gives a fast
+/// path for tight sequential status polls without changing semantics — language-server status
+/// changes slowly relative to this window, so a freshly cached row is still correct.
+const LSP_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Process-shared cache for the `GET /lsp` status rows, cloned cheaply with [`ServerState`].
+///
+/// The cache implements stale-while-revalidate: a fresh entry is returned immediately, an expired
+/// entry is still returned immediately while a single background task refreshes it, and only the
+/// very first request (with no entry at all) pays the full probe latency. This bounds `GET /lsp`
+/// to a prompt response under tight sequential polling and keeps the heavy probe off the request
+/// path after the first call.
+#[derive(Clone, Default)]
+pub(crate) struct LspStatusCache {
+    inner: Arc<Mutex<Option<LspStatusCacheEntry>>>,
+    refreshing: Arc<AtomicBool>,
+}
+
+struct LspStatusCacheEntry {
+    computed_at: Instant,
+    rows: Vec<LspStatusRow>,
+}
+
+impl LspStatusCache {
+    /// Return the cached rows when they are still within the TTL, otherwise `None`.
+    fn get_fresh(&self) -> Option<Vec<LspStatusRow>> {
+        let guard = self.inner.lock().ok()?;
+        let entry = guard.as_ref()?;
+        (entry.computed_at.elapsed() < LSP_STATUS_CACHE_TTL).then(|| entry.rows.clone())
+    }
+
+    /// Return the cached rows regardless of age, for the stale-while-revalidate fast path.
+    fn get_any(&self) -> Option<Vec<LspStatusRow>> {
+        let guard = self.inner.lock().ok()?;
+        guard.as_ref().map(|entry| entry.rows.clone())
+    }
+
+    /// Store freshly computed rows, stamping them with the current instant.
+    fn store(&self, rows: Vec<LspStatusRow>) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some(LspStatusCacheEntry {
+                computed_at: Instant::now(),
+                rows,
+            });
+        }
+    }
+
+    /// Claim the single background-refresh slot, returning `true` for exactly one caller until the
+    /// matching [`Self::end_refresh`] releases it. Prevents a stampede of concurrent probes.
+    fn begin_refresh(&self) -> bool {
+        self.refreshing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Release the background-refresh slot claimed by [`Self::begin_refresh`].
+    fn end_refresh(&self) {
+        self.refreshing.store(false, Ordering::Release);
+    }
+}
+
 /// `GET /lsp` — report the configured language servers and whether each is disabled, available,
 /// installing, running, unavailable, or crashed. Mirrors `cortex lsp status` and never launches a
 /// server.
+///
+/// The underlying probe is heavy (~seconds), so the result is cached with a short TTL and computed
+/// off the async runtime via `spawn_blocking`. A fresh cache hit returns immediately; an expired
+/// entry is served immediately while a single background task refreshes it; only the very first
+/// request pays the full probe latency. This bounds the route to a prompt response under tight
+/// sequential polling while preserving the reported status semantics.
 pub(super) async fn lsp_status(
     State(state): State<ServerState>,
 ) -> Result<Json<Vec<LspStatusRow>>, ApiError> {
-    let inputs = state.config.inputs(&state.cwd, BTreeMap::new());
+    if let Some(rows) = state.lsp_status_cache.get_fresh() {
+        return Ok(Json(rows));
+    }
+    // Stale-but-present: serve the previous rows immediately and refresh behind the request so the
+    // heavy probe never blocks the request path more than once.
+    if let Some(stale) = state.lsp_status_cache.get_any() {
+        spawn_lsp_refresh(state.clone());
+        return Ok(Json(stale));
+    }
+
+    // Cold start: compute synchronously (off the async runtime), publish, and cache.
+    let rows = compute_lsp_rows_off_runtime(&state).await?;
+    publish_running_servers(&state, &rows);
+    state.lsp_status_cache.store(rows.clone());
+    Ok(Json(rows))
+}
+
+/// Spawn a single background task to recompute and cache the LSP status, if one is not already
+/// running. Used by the stale-while-revalidate fast path.
+fn spawn_lsp_refresh(state: ServerState) {
+    if !state.lsp_status_cache.begin_refresh() {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Ok(rows) = compute_lsp_rows_off_runtime(&state).await {
+            publish_running_servers(&state, &rows);
+            state.lsp_status_cache.store(rows);
+        }
+        state.lsp_status_cache.end_refresh();
+    });
+}
+
+/// Run the heavy LSP status probe off the async runtime so it never stalls request handling.
+async fn compute_lsp_rows_off_runtime(state: &ServerState) -> Result<Vec<LspStatusRow>, ApiError> {
+    let cwd = state.cwd.clone();
+    let inputs = state.config.inputs(&cwd, BTreeMap::new());
+    tokio::task::spawn_blocking(move || compute_lsp_rows(inputs, &cwd))
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("lsp status probe did not complete: {err}"),
+            )
+        })?
+}
+
+/// Publish an `lsp.updated` event for every running server row.
+fn publish_running_servers(state: &ServerState, rows: &[LspStatusRow]) {
+    for row in rows {
+        if row.state == "running" {
+            state
+                .event_bus
+                .publish(&events::Event::LspUpdated(events::LspUpdated {
+                    server: Some(row.language.clone()),
+                    path: None,
+                    diagnostic_count: None,
+                }));
+        }
+    }
+}
+
+/// Compute the configured language-server status rows. This is the heavy, blocking probe; callers
+/// run it off the async runtime and cache the result.
+fn compute_lsp_rows(
+    inputs: settings::ConfigInputs,
+    cwd: &Path,
+) -> Result<Vec<LspStatusRow>, ApiError> {
     let effective = settings::load(inputs).map_err(config_api_error)?;
     let config = crate::lsp_config::from_effective(&effective).map_err(config_api_error)?;
-    let mut manager = lsp::FeedbackManager::new(state.cwd.clone(), config);
+    let mut manager = lsp::FeedbackManager::new(cwd.to_path_buf(), config);
     let rows: Vec<LspStatusRow> = manager
         .statuses()
         .into_iter()
@@ -56,18 +196,7 @@ pub(super) async fn lsp_status(
             }
         })
         .collect();
-    for row in &rows {
-        if row.state == "running" {
-            state
-                .event_bus
-                .publish(&events::Event::LspUpdated(events::LspUpdated {
-                    server: Some(row.language.clone()),
-                    path: None,
-                    diagnostic_count: None,
-                }));
-        }
-    }
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 /// One formatter status row, matching `cortex formatter status --format json`.

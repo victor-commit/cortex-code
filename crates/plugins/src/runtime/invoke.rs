@@ -33,6 +33,20 @@ pub struct RuntimeHost {
     sessions: Arc<Mutex<HashMap<PathBuf, Arc<RuntimeSession>>>>,
 }
 
+/// One configured plugin that lenient discovery loading skipped instead of loading.
+///
+/// Read-only discovery/catalog surfaces use lenient loading so a single unresolvable plugin
+/// (for example an offline package under `CORTEX_NO_NET`, a missing local file, or no JavaScript
+/// runtime on `PATH`) does not fail the whole discovery; the skipped specs are surfaced here for
+/// diagnostics/logging rather than swallowed silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginLoadSkip {
+    /// The configured plugin spec as it appeared in config.
+    pub spec: String,
+    /// The (redacted) reason the plugin could not be loaded.
+    pub reason: String,
+}
+
 impl std::fmt::Debug for RuntimeHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let sessions = self.sessions.lock().map(|active| active.len()).unwrap_or(0);
@@ -341,6 +355,81 @@ impl RuntimeHost {
             loaded_plugins.push(loaded);
         }
         Ok(loaded_plugins)
+    }
+
+    /// Load configured plugins for `surface` like [`Self::load_plugins_for_surface_with_config`],
+    /// but never fail: a plugin that cannot be resolved or loaded is skipped (with its reason
+    /// recorded) and the resolvable subset is returned.
+    ///
+    /// This backs read-only discovery/catalog surfaces (the server catalog routes) so that an
+    /// unresolvable plugin (e.g. an offline package under `CORTEX_NO_NET`, a missing local file,
+    /// or no runtime on `PATH`) yields the resolvable subset instead of erroring the whole route.
+    pub fn load_plugins_for_surface_with_config_lenient(
+        &self,
+        config: &PluginConfig,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> (Vec<LoadedPlugin>, Vec<PluginLoadSkip>) {
+        if config.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let surface = non_empty_surface(surface);
+        let selected = config
+            .entries()
+            .iter()
+            .filter(|plugin| plugin.supports_surface(&surface))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let Some(runtime) = self.detect_runtime() else {
+            let reason = redaction::redact(&PluginRuntimeError::NoRuntime.to_string());
+            let skipped = selected
+                .iter()
+                .map(|plugin| PluginLoadSkip {
+                    spec: plugin.raw_spec().to_owned(),
+                    reason: reason.clone(),
+                })
+                .collect();
+            return (Vec::new(), skipped);
+        };
+        let mut chained_config = match resolved_config {
+            JsonValue::Object(_) => resolved_config,
+            _ => JsonValue::Object(Default::default()),
+        };
+        let mut loaded_plugins = Vec::with_capacity(selected.len());
+        let mut skipped = Vec::new();
+        for plugin in selected {
+            let resolved = match self.resolve_plugin(&plugin, &runtime) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    skipped.push(PluginLoadSkip {
+                        spec: plugin.raw_spec().to_owned(),
+                        reason: redaction::redact(&err.to_string()),
+                    });
+                    continue;
+                }
+            };
+            match self.load_plugin(&resolved, &runtime, &surface, chained_config.clone()) {
+                Ok(loaded) => {
+                    if let Some(next_config) = loaded.report.config.clone()
+                        && next_config.is_object()
+                    {
+                        chained_config = next_config;
+                    }
+                    loaded_plugins.push(loaded);
+                }
+                Err(err) => {
+                    skipped.push(PluginLoadSkip {
+                        spec: resolved.raw_spec().to_owned(),
+                        reason: redaction::redact(&err.to_string()),
+                    });
+                }
+            }
+        }
+        (loaded_plugins, skipped)
     }
 
     /// Invoke a loaded plugin's `event` hook with a real event payload.
@@ -1341,6 +1430,36 @@ impl PluginEventHooks {
         } else {
             Self::load_with_config(config, surface, resolved_config)
         }
+    }
+
+    /// Load configured plugins leniently for read-only discovery: pure mode yields a disabled
+    /// state, and plugins that cannot be resolved or loaded are skipped (with their reasons)
+    /// rather than failing the load. The resolvable subset is always returned, so a single
+    /// unresolvable plugin (e.g. an offline package under `CORTEX_NO_NET`) never breaks discovery.
+    #[must_use]
+    pub fn load_lenient_with_config(
+        config: &PluginConfig,
+        pure: bool,
+        surface: &str,
+        resolved_config: JsonValue,
+    ) -> (Self, Vec<PluginLoadSkip>) {
+        if pure {
+            return (Self::disabled(surface), Vec::new());
+        }
+        let host = RuntimeHost::new();
+        let surface = non_empty_surface(surface);
+        let (loaded, skipped) =
+            host.load_plugins_for_surface_with_config_lenient(config, &surface, resolved_config);
+        (
+            Self {
+                loaded,
+                host,
+                surface: Arc::from(surface),
+                disposed: Arc::new(AtomicBool::new(false)),
+                audit: None,
+            },
+            skipped,
+        )
     }
 
     /// Whether this state contains no loaded plugins.

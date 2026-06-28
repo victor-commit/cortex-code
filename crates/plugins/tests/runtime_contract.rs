@@ -335,3 +335,49 @@ export default function plugin() {
         "load throw is attributed as a plugin load failure"
     );
 }
+
+#[test]
+fn lenient_loading_skips_unresolvable_plugins_and_keeps_the_resolvable_subset() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let project = scratch("lenient");
+    let good = project.join("good.mjs");
+    write_plugin(
+        &good,
+        r#"
+export default function plugin() {
+  return {};
+}
+"#,
+    );
+    // One resolvable local plugin and one missing local file. Strict loading would fail closed on
+    // the missing file; lenient loading must skip it and still load the resolvable plugin.
+    let config = config_from(&project, r#"plugin = ["./good.mjs", "./missing.mjs"]"#);
+
+    let (loaded, skipped) = RuntimeHost::new()
+        .with_timeout(Duration::from_secs(15))
+        .load_plugins_for_surface_with_config_lenient(
+            &config,
+            "serve",
+            Value::Object(Default::default()),
+        );
+
+    assert_eq!(
+        loaded.len(),
+        1,
+        "the resolvable plugin should still load: {loaded:?}"
+    );
+    assert_eq!(loaded[0].spec.raw_spec(), "./good.mjs");
+    assert_eq!(skipped.len(), 1, "the missing plugin should be skipped");
+    assert_eq!(skipped[0].spec, "./missing.mjs");
+    assert!(
+        skipped[0]
+            .reason
+            .to_ascii_lowercase()
+            .contains("does not exist"),
+        "skip reason should explain the missing file: {}",
+        skipped[0].reason
+    );
+}

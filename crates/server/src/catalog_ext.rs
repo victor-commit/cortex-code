@@ -19,6 +19,9 @@ use super::{ApiError, ServerState, config_ext, custom_agents, load_plugin_hooks}
 pub(super) struct AgentEntry {
     name: String,
     description: String,
+    /// Availability axis (`primary`/`subagent`/`all`), intentionally different from the CLI
+    /// `cortex agent --format json` `mode` (which encodes `built-in` provenance). The per-surface
+    /// difference is deliberate and documented in `library/server.md` (VAL-GAP-SERVER-011).
     mode: &'static str,
     source: &'static str,
 }

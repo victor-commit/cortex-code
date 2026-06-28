@@ -183,6 +183,33 @@ async fn lsp_status_lists_configured_servers() {
 }
 
 #[tokio::test]
+async fn lsp_status_is_cached_and_consistent_across_repeated_calls() {
+    let scratch = Scratch::new("server-lsp-status-cache");
+    let app = isolated_app(&scratch, &scratch.workspace());
+
+    // First call computes and caches the heavy probe.
+    let first = send(&app, "GET", "/lsp", None).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_rows: serde_json::Value = json_body(first).await;
+
+    // Repeated tight calls within the cache TTL must stay 200 and return the same rows: the cached
+    // fast path preserves the reported status semantics.
+    for iteration in 0..5 {
+        let response = send(&app, "GET", "/lsp", None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "cached /lsp call {iteration} should be 200"
+        );
+        let rows: serde_json::Value = json_body(response).await;
+        assert_eq!(
+            rows, first_rows,
+            "cached /lsp call {iteration} should match the first response"
+        );
+    }
+}
+
+#[tokio::test]
 async fn formatter_status_lists_formatters() {
     let scratch = Scratch::new("server-formatter-status");
     let app = isolated_app(&scratch, &scratch.workspace());
