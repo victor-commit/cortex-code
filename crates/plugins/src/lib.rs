@@ -10,6 +10,7 @@ mod distribution;
 mod runtime;
 
 pub use config::{PluginConfig, PluginSpec};
+pub use distribution::{LockedPlugin, locked_plugins, lockfile_relative_path, remove_locked_plugin};
 pub use runtime::{
     JsRuntime, LoadedPlugin, PluginAgentRegistration, PluginAuthAuthorizeResult,
     PluginAuthCallbackResult, PluginAuthMethodRegistration, PluginAuthMethodType, PluginAuthPrompt,

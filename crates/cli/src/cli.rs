@@ -107,6 +107,25 @@ pub enum Command {
     #[command(alias = "plug")]
     Plugin(PluginArgs),
 
+    /// Inspect provider health/models and start authentication for a selected provider.
+    ///
+    /// This is the provider-centric view over the model catalogue and the local credential store:
+    /// `cortex provider list` reports each configured provider (enabled state, stored-auth status,
+    /// and its models), and `cortex provider auth <id>` runs the same credential flow as
+    /// `cortex auth login`. The plain listing is fully offline.
+    #[command(alias = "providers")]
+    Provider(ProviderArgs),
+
+    /// Control-plane account/console login (intentionally unavailable in this build).
+    ///
+    /// Cortex Code is a local terminal mono-binary with no hosted control plane, so there is no
+    /// account or console to sign in to. These subcommands exist so the surface is explicit (no
+    /// unknown-command confusion): `login`/`logout` report a clear out-of-scope diagnostic and
+    /// exit non-zero, while `status` prints the unsupported status. Provider API keys are managed
+    /// with `cortex auth` / `cortex provider auth` instead.
+    #[command(alias = "console")]
+    Account(AccountArgs),
+
     /// Outbound-network diagnostics that honor the `CORTEX_NO_NET` kill-switch.
     ///
     /// These are the network-touching command paths: with `CORTEX_NO_NET=1` set they fail closed
@@ -469,6 +488,43 @@ pub struct PluginArgs {
 pub enum PluginCommand {
     /// Install one package plugin and record it in project config.
     Install(PluginInstallArgs),
+    /// List the plugins configured in project `cortex.toml`, with their lockfile pin status.
+    List(PluginListArgs),
+    /// Re-resolve an installed package plugin and refresh its lockfile pin.
+    Update(PluginUpdateArgs),
+    /// Remove a plugin from project config and drop its lockfile entry.
+    #[command(visible_alias = "uninstall")]
+    Remove(PluginRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct PluginUpdateArgs {
+    /// Package spec to re-resolve (must already be installed in project config).
+    #[arg(value_name = "SPEC")]
+    pub spec: String,
+
+    /// Optional plugin surface type (`tui` loads only in the TUI surface).
+    #[arg(long = "type", value_enum, value_name = "TYPE")]
+    pub plugin_type: Option<PluginSurfaceType>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct PluginRemoveArgs {
+    /// Plugin spec to remove from project config (and drop from the lockfile).
+    #[arg(value_name = "SPEC")]
+    pub spec: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]
@@ -490,6 +546,52 @@ pub struct PluginInstallArgs {
 pub enum PluginSurfaceType {
     Run,
     Tui,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderArgs {
+    #[command(subcommand)]
+    pub command: ProviderCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// List providers with their health (enabled, stored-auth) and models.
+    List(ProviderListArgs),
+    /// Start authentication for one provider (same flow as `cortex auth login`).
+    Auth(AuthLoginArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderListArgs {
+    /// Filter the listing to a single provider id (case-insensitive exact match).
+    #[arg(long = "id", value_name = "PROVIDER")]
+    pub id: Option<String>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AccountArgs {
+    #[command(subcommand)]
+    pub command: Option<AccountCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AccountCommand {
+    /// Attempt a control-plane account/console login (reports out-of-scope and exits non-zero).
+    Login(AccountActionArgs),
+    /// Attempt a control-plane account/console logout (reports out-of-scope and exits non-zero).
+    Logout(AccountActionArgs),
+    /// Report the account/console control-plane support status (unsupported).
+    Status(AccountActionArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AccountActionArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

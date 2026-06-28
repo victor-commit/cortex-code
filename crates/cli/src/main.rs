@@ -1,3 +1,4 @@
+mod account_cmd;
 mod acp_cmd;
 mod agent_cmd;
 mod attach;
@@ -28,6 +29,7 @@ mod permission;
 mod permission_store;
 mod plugin_bridge;
 mod plugin_cmd;
+mod provider_cmd;
 mod replay;
 mod run;
 mod search;
@@ -103,6 +105,8 @@ fn main() -> ExitCode {
         Some(Command::Models(args)) => models_cmd::run(args, pure_plugins).into(),
         Some(Command::Generate(args)) => generate_cmd::run(args).into(),
         Some(Command::Plugin(args)) => plugin_cmd::run(args).into(),
+        Some(Command::Provider(args)) => provider_cmd::run(args, pure_plugins).into(),
+        Some(Command::Account(args)) => account_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
         Some(Command::Redo(args)) => checkpoint::run(args, true).into(),
@@ -134,6 +138,8 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Auth(_)) => Surface::Auth,
         Some(Command::Models(_)) => Surface::Models,
         Some(Command::Plugin(_)) => Surface::Config,
+        Some(Command::Provider(_)) => Surface::Models,
+        Some(Command::Account(_)) => Surface::Auth,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,
         Some(Command::Mcp(_)) => Surface::Mcp,

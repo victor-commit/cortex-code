@@ -52,6 +52,26 @@ impl PackageLockfile {
         Ok(lockfile)
     }
 
+    /// Project the lockfile into the public, redaction-safe summary used by `cortex plugin list`.
+    pub(crate) fn locked_plugins(&self) -> Vec<LockedPlugin> {
+        self.plugins
+            .iter()
+            .map(|entry| LockedPlugin {
+                spec: entry.spec.clone(),
+                package_name: entry.package_name.clone(),
+                version: entry.version.clone(),
+                integrity: entry.integrity.clone(),
+            })
+            .collect()
+    }
+
+    /// Remove the lock entry for `spec`, returning whether an entry was present.
+    pub(crate) fn remove(&mut self, spec: &str) -> bool {
+        let before = self.plugins.len();
+        self.plugins.retain(|entry| entry.spec != spec);
+        self.plugins.len() != before
+    }
+
     pub(crate) fn entry(&self, cwd: &Path, spec: &str) -> Option<PackageLockEntry> {
         self.plugins
             .iter()
@@ -181,6 +201,48 @@ impl std::fmt::Display for PackageLockError {
 }
 
 impl std::error::Error for PackageLockError {}
+
+/// A redaction-safe summary of one pinned package plugin from the project lockfile.
+///
+/// This is the public projection consumed by `cortex plugin list`; it carries only the
+/// reproducibility metadata (spec, resolved package name, pinned version, integrity digest) and
+/// never any module bytes or secret-bearing values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LockedPlugin {
+    pub spec: String,
+    pub package_name: String,
+    pub version: String,
+    pub integrity: String,
+}
+
+/// List the package plugins pinned in the project lockfile under `cwd`.
+///
+/// Returns an empty list when no lockfile exists. The result is sorted by spec (the lockfile keeps
+/// its entries sorted), so the listing is deterministic.
+pub fn locked_plugins(cwd: &Path) -> Result<Vec<LockedPlugin>, String> {
+    let lockfile = PackageLockfile::load(cwd).map_err(|err| err.to_string())?;
+    Ok(lockfile.locked_plugins())
+}
+
+/// Remove the lock entry for `spec` from the project lockfile under `cwd`.
+///
+/// Returns `Ok(true)` when an entry was present and removed (the lockfile is rewritten), `Ok(false)`
+/// when no matching entry existed (the lockfile is left untouched, and never created).
+pub fn remove_locked_plugin(cwd: &Path, spec: &str) -> Result<bool, String> {
+    let mut lockfile = PackageLockfile::load(cwd).map_err(|err| err.to_string())?;
+    if !lockfile.remove(spec) {
+        return Ok(false);
+    }
+    lockfile.save(cwd).map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+/// The project-relative path of the plugin lockfile (for diagnostics), for example
+/// `.cortex/plugin-lock.json`.
+#[must_use]
+pub fn lockfile_relative_path() -> String {
+    LOCKFILE_RELATIVE_PATH.join("/")
+}
 
 pub(crate) fn lockfile_path(cwd: &Path) -> PathBuf {
     LOCKFILE_RELATIVE_PATH

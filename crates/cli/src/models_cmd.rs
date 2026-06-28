@@ -20,42 +20,71 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
         return crate::feature_gate::network_unavailable("models --refresh");
     }
 
+    let listing = match collect_providers(pure_plugins, args.refresh, "models") {
+        Ok(listing) => listing,
+        Err(exit) => return exit,
+    };
+    emit(
+        args.format.format,
+        &listing.providers,
+        &listing.default_model,
+        &listing.provider_report,
+    )
+}
+
+/// The provider catalogue projected for `cortex models` / `cortex provider list`.
+///
+/// Carries the per-provider docs (after provider-config enable/disable and policy-deny filtering),
+/// the resolved default model id, and the redacted provider-config report.
+pub(crate) struct ProviderListing {
+    pub(crate) providers: Vec<ProviderDoc>,
+    pub(crate) default_model: String,
+    pub(crate) provider_report: providers::ProviderConfigReport,
+}
+
+/// Build the provider listing shared by `cortex models` and `cortex provider list`.
+///
+/// `refresh` triggers a real models.dev fetch (the caller is responsible for the network feature
+/// gate); when false the catalogue is read entirely offline. `command` is the subcommand label used
+/// in diagnostics so errors read as `cortex <command>: ...`.
+pub(crate) fn collect_providers(
+    pure_plugins: bool,
+    refresh: bool,
+    command: &str,
+) -> Result<ProviderListing, Exit> {
     let state = match PluginState::from_process_config(pure_plugins) {
         Ok(state) => state,
         Err(err) => {
-            eprintln!("cortex models: {err}");
-            return Exit::Config;
+            eprintln!("cortex {command}: {err}");
+            return Err(Exit::Config);
         }
     };
 
     let config_inputs = match ConfigInputs::from_process(BTreeMap::new()) {
         Ok(inputs) => inputs,
         Err(err) => {
-            eprintln!("cortex models: cannot determine configuration context: {err}");
-            return Exit::Failure;
+            eprintln!("cortex {command}: cannot determine configuration context: {err}");
+            return Err(Exit::Failure);
         }
     };
     let effective = match settings::load(config_inputs.clone()) {
         Ok(effective) => effective,
         Err(err) => {
-            eprintln!("cortex models: {err}");
-            return Exit::Config;
+            eprintln!("cortex {command}: {err}");
+            return Err(Exit::Config);
         }
     };
     let provider_config = match providers::ProviderConfigSet::from_table(effective.table()) {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("cortex models: {err}");
-            return Exit::Config;
+            eprintln!("cortex {command}: {err}");
+            return Err(Exit::Config);
         }
     };
     let provider_report = provider_config.redacted_report();
 
-    let (builtin_catalogue, builtin_source) = if args.refresh {
-        match refresh_builtin_catalogue() {
-            Ok(catalogue) => catalogue,
-            Err(exit) => return exit,
-        }
+    let (builtin_catalogue, builtin_source) = if refresh {
+        refresh_builtin_catalogue()?
     } else {
         offline_builtin_catalogue()
     };
@@ -64,8 +93,8 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
         match provider_config.resolve_model(&merged_catalogue, Some(effective.model())) {
             Ok(resolved) => resolved.model_id,
             Err(err) => {
-                eprintln!("cortex models: {err}");
-                return Exit::Config;
+                eprintln!("cortex {command}: {err}");
+                return Err(Exit::Config);
             }
         };
 
@@ -88,20 +117,20 @@ pub fn run(args: ModelsArgs, pure_plugins: bool) -> Exit {
     let providers = match filter_denied_providers(&config_inputs, &providers) {
         Ok(providers) => providers,
         Err(err) => {
-            eprintln!("cortex models: {err}");
-            return if err.is_config() {
+            eprintln!("cortex {command}: {err}");
+            return Err(if err.is_config() {
                 Exit::Config
             } else {
                 Exit::Failure
-            };
+            });
         }
     };
-    emit(
-        args.format.format,
-        &providers,
-        &default_model,
-        &provider_report,
-    )
+
+    Ok(ProviderListing {
+        providers,
+        default_model,
+        provider_report,
+    })
 }
 
 /// The offline builtin catalogue: the cache written by a prior `--refresh` when present and
