@@ -2706,10 +2706,11 @@ fn publish_runner_event(
             ));
             // A `question` tool call drives a real user prompt; surface it on the live
             // `question.asked` family (distinct from the permission engine's `permission.asked`).
-            if name == "question"
-                && let Some(asked) = question_asked_event(session_id, id, arguments)
-            {
-                bus.publish(&asked);
+            // A single call may carry several prompts, so emit one event per question.
+            if name == "question" {
+                for asked in question_asked_events(session_id, id, arguments) {
+                    bus.publish(&asked);
+                }
             }
             pending_tool_calls.insert(id.clone(), event.clone());
         }
@@ -2833,6 +2834,11 @@ fn publish_tool_subsystem_events(
 }
 
 /// The absolute path(s) a successful file-mutating tool touched, derived from its call arguments.
+///
+/// For `apply_patch` the paths come from the parsed envelope hunks via [`tools::patch_edited_paths`],
+/// NOT from re-applying the patch against the on-disk file: this runs after the tool RESULT, when the
+/// file is already mutated, so re-locating an `Update` hunk's chunks would fail and silently drop the
+/// path (the common "edit an existing file" case).
 fn edited_paths(name: &str, cwd: &Path, arguments: Option<&serde_json::Value>) -> Vec<String> {
     let Some(arguments) = arguments else {
         return Vec::new();
@@ -2843,9 +2849,9 @@ fn edited_paths(name: &str, cwd: &Path, arguments: Option<&serde_json::Value>) -
             .find_map(|key| arguments.get(*key).and_then(serde_json::Value::as_str));
         return patch
             .map(|patch| {
-                tools::patch_file_diffs(patch, cwd)
+                tools::patch_edited_paths(patch, cwd)
                     .into_iter()
-                    .map(|diff| diff.path.to_string_lossy().into_owned())
+                    .map(|path| path.to_string_lossy().into_owned())
                     .collect()
             })
             .unwrap_or_default();
@@ -2865,32 +2871,39 @@ fn edited_paths(name: &str, cwd: &Path, arguments: Option<&serde_json::Value>) -
         .unwrap_or_default()
 }
 
-/// Build the `question.asked` event from a `question` tool call's arguments, using the first
-/// question prompt and its options. Returns `None` when the arguments carry no usable prompt.
-fn question_asked_event(session_id: &str, id: &str, arguments: &str) -> Option<Event> {
-    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
-    let first = value
-        .get("questions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|questions| questions.first())?;
-    let prompt = first.get("prompt").and_then(serde_json::Value::as_str)?;
-    let options = first
-        .get("options")
-        .and_then(serde_json::Value::as_array)
-        .map(|options| {
-            options
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
+/// Build the `question.asked` events from a `question` tool call's arguments, one per question
+/// prompt (a single tool call may carry several questions). Returns an empty vec when the arguments
+/// carry no usable prompt.
+fn question_asked_events(session_id: &str, id: &str, arguments: &str) -> Vec<Event> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return Vec::new();
+    };
+    let Some(questions) = value.get("questions").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    questions
+        .iter()
+        .filter_map(|question| {
+            let prompt = question.get("prompt").and_then(serde_json::Value::as_str)?;
+            let options = question
+                .get("options")
+                .and_then(serde_json::Value::as_array)
+                .map(|options| {
+                    options
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(Event::question_asked(
+                Some(session_id.to_owned()),
+                id.to_owned(),
+                prompt.to_owned(),
+                options,
+            ))
         })
-        .unwrap_or_default();
-    Some(Event::question_asked(
-        Some(session_id.to_owned()),
-        id.to_owned(),
-        prompt.to_owned(),
-        options,
-    ))
+        .collect()
 }
 
 /// Concatenate the text parts of a tool result into a single string.

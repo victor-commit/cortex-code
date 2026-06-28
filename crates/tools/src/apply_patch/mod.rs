@@ -510,6 +510,30 @@ pub fn patch_file_diffs(patch: &str, cwd: &std::path::Path) -> Vec<PatchFileDiff
     diffs
 }
 
+/// The resolved destination path(s) an `apply_patch` envelope will touch, derived purely from the
+/// parsed hunks WITHOUT reading or re-applying against the on-disk file. Unlike [`patch_file_diffs`],
+/// this stays correct when called AFTER the patch has already been applied (for example to derive
+/// `file.edited` paths from a completed tool result): an `Update` hunk's path comes straight from
+/// the section header (or its `*** Move to:` destination for a rename), never from re-locating the
+/// now-mutated chunks, so the common "edit an existing file" case is never dropped. A malformed
+/// envelope yields an empty vec.
+#[must_use]
+pub fn patch_edited_paths(patch: &str, cwd: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(hunks) = parse_envelope(patch) else {
+        return Vec::new();
+    };
+    hunks
+        .into_iter()
+        .map(|hunk| match hunk {
+            Hunk::Add { path, .. } | Hunk::Delete { path } => resolve_against(cwd, &path),
+            Hunk::Update { path, move_to, .. } => move_to.map_or_else(
+                || resolve_against(cwd, &path),
+                |dest| resolve_against(cwd, &dest),
+            ),
+        })
+        .collect()
+}
+
 /// Resolve an envelope path against `cwd`, leaving an already-absolute path untouched.
 fn resolve_against(cwd: &std::path::Path, path: &str) -> PathBuf {
     let candidate = std::path::Path::new(path);
@@ -1000,5 +1024,66 @@ mod tests {
             snapshot_of("delete.txt"),
             Some(Some("remove me\n".to_owned()))
         );
+    }
+
+    #[test]
+    fn patch_edited_paths_resolves_every_hunk_kind_against_cwd() {
+        let dir = temp_dir("edited-paths");
+        let patch = "*** Begin Patch\n\
+*** Add File: added.txt\n\
++created\n\
+*** Update File: changed.txt\n\
+@@\n\
+-old\n\
++new\n\
+*** Delete File: gone.txt\n\
+*** End Patch";
+        let paths = patch_edited_paths(patch, &dir);
+        assert_eq!(
+            paths,
+            vec![
+                dir.join("added.txt"),
+                dir.join("changed.txt"),
+                dir.join("gone.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn patch_edited_paths_uses_move_destination_for_renames() {
+        let dir = temp_dir("edited-paths-move");
+        let patch = "*** Begin Patch\n\
+*** Update File: old_name.txt\n\
+*** Move to: new_name.txt\n\
+@@\n\
+-old\n\
++new\n\
+*** End Patch";
+        let paths = patch_edited_paths(patch, &dir);
+        assert_eq!(paths, vec![dir.join("new_name.txt")]);
+    }
+
+    #[test]
+    fn patch_edited_paths_survives_a_post_apply_call_where_patch_file_diffs_drops_the_update() {
+        // This is the exact trap the server `file.edited` derivation hit: after an Update is applied
+        // on disk, `patch_file_diffs` re-reads the now-mutated file, fails to re-locate the old
+        // lines, and silently drops the path. `patch_edited_paths` derives the path from the parsed
+        // envelope and is unaffected.
+        let dir = temp_dir("edited-paths-post-apply");
+        let ctx = ctx_for(&dir);
+        fs::write(dir.join("notes.txt"), "alpha\n").unwrap();
+        ctx.record_read(dir.join("notes.txt"));
+        let patch = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-alpha\n+beta\n*** End Patch";
+        let output = apply(&ctx, patch);
+        assert!(!output.is_error, "{}", output.model_content());
+        assert_eq!(fs::read_to_string(dir.join("notes.txt")).unwrap(), "beta\n");
+
+        // Post-apply, the legacy re-application helper drops the Update path entirely.
+        assert!(
+            patch_file_diffs(patch, &dir).is_empty(),
+            "patch_file_diffs re-applies post-mutation and should drop the Update path"
+        );
+        // The pre-apply path derivation still returns the correct edited path.
+        assert_eq!(patch_edited_paths(patch, &dir), vec![dir.join("notes.txt")]);
     }
 }

@@ -903,6 +903,72 @@ async fn live_write_tool_turn_emits_file_edited_from_the_real_action() {
     );
 }
 
+// gap-hardening-4: an `apply_patch` *Update* (editing an existing file) must also emit a live
+// `file.edited` carrying the edited path. The path is derived from the parsed envelope hunks
+// (pre-apply), NOT by re-applying the patch against the already-mutated file, so the common
+// "edit existing file" case is no longer silently dropped.
+#[tokio::test]
+async fn live_apply_patch_update_turn_emits_file_edited_from_the_real_action() {
+    let scratch = Scratch::new("server-event-apply-patch-update");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    // The file already exists; an Update hunk edits it in place.
+    std::fs::write(workspace.join("notes.txt"), "alpha\n").expect("seed file");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(ApplyPatchUpdateProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_event_bus(bus)
+        .with_cwd(workspace.clone());
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                // A GPT-family model materializes the `apply_patch` tool in place of write/edit.
+                .body(Body::from(
+                    r#"{"text":"edit the file","model":"openai/gpt-4o"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = collect_until_kind(
+        &mut stream,
+        "session.next.step.finished",
+        Duration::from_secs(5),
+    )
+    .await;
+    let edited = events
+        .iter()
+        .find(|event| event["kind"] == "file.edited")
+        .unwrap_or_else(|| {
+            panic!(
+                "an apply_patch Update tool result must emit a live file.edited event: {events:?}"
+            )
+        });
+    assert_eq!(edited["session_id"], session.id);
+    assert_eq!(edited["edit_kind"], "apply_patch");
+    assert!(
+        edited["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("notes.txt")),
+        "file.edited should carry the edited path: {edited:?}"
+    );
+    // The Update was actually applied on disk, proving this is a real action, not a POST.
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("notes.txt")).expect("edited file"),
+        "beta\n"
+    );
+}
+
 // gap-hardening-3: a real `question` tool call during a turn emits `question.asked` and, once the
 // pending ask is answered, `question.replied` on the live stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -992,6 +1058,95 @@ async fn live_question_tool_turn_emits_question_family_from_the_real_action() {
             .iter()
             .any(|event| event["kind"] == "question.replied" && event["session_id"] == session.id),
         "answering the question should emit a live question.replied event: {events:?}"
+    );
+}
+
+// gap-hardening-4: a `question` tool call carrying SEVERAL prompts must surface EVERY prompt on the
+// live `question.asked` family, not just the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_multi_question_tool_turn_emits_a_question_asked_per_prompt() {
+    let scratch = Scratch::new("server-event-multi-question");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(MultiQuestionAskingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let post_app = app.clone();
+    let session_id = session.id.clone();
+    let turn = tokio::spawn(async move {
+        post_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{session_id}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"ask questions"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("question turn response")
+    });
+
+    // The whole multi-question call blocks on a single pending ask; answer it to let the turn finish.
+    let mut pending_id = None;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/session/{}/permission/pending", session.id))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        if let Some(id) = pending_body["pending"]
+            .as_array()
+            .and_then(|pending| pending.first())
+            .and_then(|ask| ask["id"].as_str())
+        {
+            pending_id = Some(id.to_owned());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pending_id = pending_id.expect("question tool should block on a pending ask");
+
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/permission/reply", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{pending_id}","decision":"allow","feedback":"A then us"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("reply response");
+    assert_eq!(reply.status(), StatusCode::OK);
+
+    let response = tokio::time::timeout(Duration::from_secs(5), turn)
+        .await
+        .expect("question turn completed")
+        .expect("question turn join");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = collect_until_kind(&mut stream, "question.replied", Duration::from_secs(5)).await;
+    let asked: Vec<&str> = events
+        .iter()
+        .filter(|event| event["kind"] == "question.asked" && event["session_id"] == session.id)
+        .filter_map(|event| event["question"].as_str())
+        .collect();
+    assert!(
+        asked.contains(&"Pick deployment strategy") && asked.contains(&"Pick region"),
+        "every prompt of a multi-question call should emit a live question.asked event: {events:?}"
     );
 }
 
@@ -1086,6 +1241,95 @@ async fn live_session_and_message_routes_emit_their_families() {
             && event["session_id"] == session.id
             && event["message_id"] == first_message_id),
         "deleting a message should emit a live message.removed event: {events:?}"
+    );
+}
+
+// gap-hardening-4: deleting a single rich message part emits a live `message.part.removed` event on
+// the SSE stream (the route's wireable family, fired from the real DELETE action).
+#[tokio::test]
+async fn live_delete_part_route_emits_message_part_removed() {
+    let scratch = Scratch::new("server-event-part-removed");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    // Run a real turn so a persisted message with rich parts exists.
+    let turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"hello"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("turn response");
+    assert_eq!(turn.status(), StatusCode::OK);
+
+    // Locate a persisted message that carries at least one part.
+    let messages_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/session/{}/message", session.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("messages response");
+    assert_eq!(messages_response.status(), StatusCode::OK);
+    let messages_body: serde_json::Value = json_body(messages_response).await;
+    let mut target = None;
+    for message in messages_body["messages"]
+        .as_array()
+        .expect("messages array")
+    {
+        let message_id = message["id"].as_str().expect("message id");
+        if let Some(part_id) = message["parts"]
+            .as_array()
+            .and_then(|parts| parts.first())
+            .and_then(|part| part["id"].as_str())
+        {
+            target = Some((message_id.to_owned(), part_id.to_owned()));
+            break;
+        }
+    }
+    let (message_id, part_id) = target.expect("a persisted message with a part");
+
+    let mut stream = subscribe(&app).await;
+
+    let delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/session/{}/message/{message_id}/part/{part_id}",
+                    session.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("delete part response");
+    assert_eq!(delete.status(), StatusCode::OK);
+    let delete_body: serde_json::Value = json_body(delete).await;
+    assert_eq!(delete_body["deleted"], true);
+
+    let events =
+        collect_until_kind(&mut stream, "message.part.removed", Duration::from_secs(3)).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "message.part.removed"
+                && event["session_id"] == session.id
+                && event["message_id"] == message_id
+                && event["part_id"] == part_id),
+        "deleting a message part should emit a live message.part.removed event: {events:?}"
     );
 }
 
@@ -1649,6 +1893,140 @@ impl Provider for QuestionAskingProvider {
                 vec![
                     LlmEvent::TextDelta {
                         text: "question answered".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 6,
+                        output_tokens: 4,
+                        total_tokens: 10,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+/// Emits a `read` then an `apply_patch` tool call that UPDATES an existing file (the common "edit
+/// an existing file" case), then a final answer once the tool results land. The read satisfies the
+/// read-before-update guard. Exercises the GPT-family `apply_patch` path (no `write`/`edit`).
+#[derive(Debug, Default)]
+struct ApplyPatchUpdateProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for ApplyPatchUpdateProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let saw_read = request.messages.iter().any(|message| {
+                message.role == Role::Tool && message.tool_call_id.as_deref() == Some("call_read")
+            });
+            let saw_patch = request.messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message.tool_call_id.as_deref() == Some("call_apply_patch")
+            });
+            let events = if !saw_read {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_read".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: serde_json::json!({ "path": "notes.txt" }).to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else if !saw_patch {
+                let patch = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-alpha\n+beta\n*** End Patch\n";
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_apply_patch".to_owned(),
+                        name: "apply_patch".to_owned(),
+                        arguments: serde_json::json!({ "patch": patch }).to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "patched the file".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 4,
+                        output_tokens: 4,
+                        total_tokens: 8,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+/// Emits a single `question` tool call carrying MULTIPLE prompts, then echoes the answer once the
+/// tool result lands.
+#[derive(Debug, Default)]
+struct MultiQuestionAskingProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for MultiQuestionAskingProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request.messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message.tool_call_id.as_deref() == Some("call_question")
+            });
+            let events = if !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_question".to_owned(),
+                        name: "question".to_owned(),
+                        arguments: serde_json::json!({
+                            "questions": [
+                                {
+                                    "prompt": "Pick deployment strategy",
+                                    "options": ["A", "B"]
+                                },
+                                {
+                                    "prompt": "Pick region",
+                                    "options": ["us", "eu"]
+                                }
+                            ]
+                        })
+                        .to_string(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "questions answered".to_owned(),
                     },
                     LlmEvent::Usage(Usage {
                         input_tokens: 6,
