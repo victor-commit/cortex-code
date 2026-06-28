@@ -45,18 +45,33 @@ const LSP_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
 ///
 /// The cache implements stale-while-revalidate: a fresh entry is returned immediately, an expired
 /// entry is still returned immediately while a single background task refreshes it, and only the
-/// very first request (with no entry at all) pays the full probe latency. This bounds `GET /lsp`
-/// to a prompt response under tight sequential polling and keeps the heavy probe off the request
-/// path after the first call.
+/// very first request (with no entry at all) pays the full probe latency. Concurrent first-ever
+/// callers are single-flighted through `coldstart`, so a burst of cold probes collapses into one
+/// compute whose result the rest await. This bounds `GET /lsp` to a prompt response under tight
+/// sequential polling and keeps the heavy probe off the request path after the first call.
 #[derive(Clone, Default)]
 pub(crate) struct LspStatusCache {
     inner: Arc<Mutex<Option<LspStatusCacheEntry>>>,
     refreshing: Arc<AtomicBool>,
+    coldstart: Arc<tokio::sync::Mutex<()>>,
 }
 
 struct LspStatusCacheEntry {
     computed_at: Instant,
     rows: Vec<LspStatusRow>,
+}
+
+/// RAII release for the single background-refresh slot. Dropping the guard clears the `refreshing`
+/// flag, so a panic or early return in the spawned refresh task can never permanently latch the
+/// slot and block all future revalidation.
+struct RefreshGuard {
+    refreshing: Arc<AtomicBool>,
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.refreshing.store(false, Ordering::Release);
+    }
 }
 
 impl LspStatusCache {
@@ -83,17 +98,40 @@ impl LspStatusCache {
         }
     }
 
-    /// Claim the single background-refresh slot, returning `true` for exactly one caller until the
-    /// matching [`Self::end_refresh`] releases it. Prevents a stampede of concurrent probes.
-    fn begin_refresh(&self) -> bool {
+    /// Claim the single background-refresh slot, returning an RAII [`RefreshGuard`] for exactly one
+    /// caller until the guard is dropped, or `None` when a refresh is already in flight. Because the
+    /// guard releases the slot on drop (including on panic or early return), the slot can always
+    /// recover and never stays latched. Prevents a stampede of concurrent probes.
+    fn begin_refresh(&self) -> Option<RefreshGuard> {
         self.refreshing
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+            .then(|| RefreshGuard {
+                refreshing: Arc::clone(&self.refreshing),
+            })
     }
 
-    /// Release the background-refresh slot claimed by [`Self::begin_refresh`].
-    fn end_refresh(&self) {
-        self.refreshing.store(false, Ordering::Release);
+    /// Cold-start single-flight: when the cache holds no entry at all, serialize concurrent
+    /// first-ever callers so only the first runs the heavy `compute`; the rest await it and return
+    /// the rows it cached. Returns the rows plus whether THIS caller performed the fresh compute, so
+    /// the caller can emit `lsp.updated` only for a genuine fresh compute and never for a stampeded
+    /// awaiter.
+    async fn cold_start_single_flight<F, Fut>(
+        &self,
+        compute: F,
+    ) -> Result<(Vec<LspStatusRow>, bool), ApiError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<LspStatusRow>, ApiError>>,
+    {
+        let _gate = self.coldstart.lock().await;
+        // A sibling cold-start caller may have populated the cache while we waited on the gate.
+        if let Some(rows) = self.get_any() {
+            return Ok((rows, false));
+        }
+        let rows = compute().await?;
+        self.store(rows.clone());
+        Ok((rows, true))
     }
 }
 
@@ -104,7 +142,8 @@ impl LspStatusCache {
 /// The underlying probe is heavy (~seconds), so the result is cached with a short TTL and computed
 /// off the async runtime via `spawn_blocking`. A fresh cache hit returns immediately; an expired
 /// entry is served immediately while a single background task refreshes it; only the very first
-/// request pays the full probe latency. This bounds the route to a prompt response under tight
+/// request pays the full probe latency, and concurrent first-ever callers are single-flighted so a
+/// burst triggers exactly one compute. This bounds the route to a prompt response under tight
 /// sequential polling while preserving the reported status semantics.
 pub(super) async fn lsp_status(
     State(state): State<ServerState>,
@@ -119,25 +158,33 @@ pub(super) async fn lsp_status(
         return Ok(Json(stale));
     }
 
-    // Cold start: compute synchronously (off the async runtime), publish, and cache.
-    let rows = compute_lsp_rows_off_runtime(&state).await?;
-    publish_running_servers(&state, &rows);
-    state.lsp_status_cache.store(rows.clone());
+    // Cold start: single-flight so a burst of concurrent first-ever callers triggers exactly one
+    // probe (off the async runtime); the rest await its result instead of each paying the full
+    // ~seconds compute. `lsp.updated` is published only for the genuine fresh compute.
+    let (rows, fresh) = state
+        .lsp_status_cache
+        .cold_start_single_flight(|| compute_lsp_rows_off_runtime(&state))
+        .await?;
+    if fresh {
+        publish_running_servers(&state, &rows);
+    }
     Ok(Json(rows))
 }
 
 /// Spawn a single background task to recompute and cache the LSP status, if one is not already
 /// running. Used by the stale-while-revalidate fast path.
 fn spawn_lsp_refresh(state: ServerState) {
-    if !state.lsp_status_cache.begin_refresh() {
+    let Some(guard) = state.lsp_status_cache.begin_refresh() else {
         return;
-    }
+    };
     tokio::spawn(async move {
+        // Hold the slot for the whole refresh; dropping the guard on completion, early return, or
+        // panic releases it so future revalidation can always recover.
+        let _guard = guard;
         if let Ok(rows) = compute_lsp_rows_off_runtime(&state).await {
             publish_running_servers(&state, &rows);
             state.lsp_status_cache.store(rows);
         }
-        state.lsp_status_cache.end_refresh();
     });
 }
 
@@ -466,4 +513,112 @@ fn git_apply(cwd: &Path, args: &[&str], diff: &str) -> Result<(), ApiError> {
             format!("patch did not apply cleanly: {}", redaction::redact(detail))
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    fn sample_rows() -> Vec<LspStatusRow> {
+        vec![LspStatusRow {
+            language: "rust".to_owned(),
+            program: "rust-analyzer".to_owned(),
+            state: "available".to_owned(),
+            pid: None,
+            install: None,
+        }]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cold_start_single_flight_computes_once_for_concurrent_callers() {
+        let cache = LspStatusCache::default();
+        let computes = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let computes = Arc::clone(&computes);
+            handles.push(tokio::spawn(async move {
+                cache
+                    .cold_start_single_flight(|| async {
+                        computes.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok(sample_rows())
+                    })
+                    .await
+                    .map(|(_, fresh)| fresh)
+                    .expect("cold start single-flight")
+            }));
+        }
+        let mut fresh_count = 0;
+        for handle in handles {
+            if handle.await.expect("join cold-start task") {
+                fresh_count += 1;
+            }
+        }
+        assert_eq!(
+            computes.load(Ordering::SeqCst),
+            1,
+            "concurrent cold-start callers must trigger exactly one underlying compute"
+        );
+        assert_eq!(
+            fresh_count, 1,
+            "exactly one caller performs the fresh compute; the rest await its result"
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_start_single_flight_returns_cached_entry_without_computing() {
+        let cache = LspStatusCache::default();
+        cache.store(sample_rows());
+        let computed = AtomicUsize::new(0);
+        let (rows, fresh) = cache
+            .cold_start_single_flight(|| async {
+                computed.fetch_add(1, Ordering::SeqCst);
+                Ok(sample_rows())
+            })
+            .await
+            .expect("cold start single-flight");
+        assert!(!fresh, "a populated cache must not report a fresh compute");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            computed.load(Ordering::SeqCst),
+            0,
+            "an already-populated cache must not run the compute closure"
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_refresh_is_exclusive_and_releases_on_drop() {
+        let cache = LspStatusCache::default();
+        let guard = cache.begin_refresh().expect("first refresh slot");
+        assert!(
+            cache.begin_refresh().is_none(),
+            "a second concurrent refresh must be denied the slot"
+        );
+        drop(guard);
+        assert!(
+            cache.begin_refresh().is_some(),
+            "dropping the guard must release the refresh slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_slot_recovers_when_holding_task_panics() {
+        let cache = LspStatusCache::default();
+        let guard = cache.begin_refresh().expect("refresh slot");
+        let handle = tokio::spawn(async move {
+            let _guard = guard;
+            panic!("refresh task panicked before releasing the slot");
+        });
+        assert!(
+            handle.await.is_err(),
+            "the spawned refresh task should have panicked"
+        );
+        assert!(
+            cache.begin_refresh().is_some(),
+            "the refresh slot must be released even when the holding task panics"
+        );
+    }
 }

@@ -468,6 +468,110 @@ fn serve_lsp_status_stays_prompt_under_tight_sequential_loop() {
     wait_for_port_released(port);
 }
 
+#[test]
+fn serve_lsp_status_concurrent_cold_start_is_single_flight() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-lsp-coldstart");
+    let db_path = scratch.db_path();
+    let port = free_port();
+    let mut server = ServerProcess::start_with_db_path(port, &db_path);
+
+    // Fire a burst of concurrent first-ever /lsp requests at the cold cache. With single-flight the
+    // first caller runs the one heavy probe and the rest await its result, so every caller observes
+    // the same rows and the burst collapses into roughly one probe window. Without single-flight a
+    // broken serialize-then-recompute path would run the probe per caller and blow past the bound
+    // (or trip each request's read timeout).
+    let burst = 8;
+    let loop_start = Instant::now();
+    let mut handles = Vec::new();
+    for _ in 0..burst {
+        handles.push(thread::spawn(move || {
+            request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
+                .map(|response| (response.status, response.body))
+        }));
+    }
+    let mut results = Vec::new();
+    for handle in handles {
+        results.push(handle.join().expect("join concurrent /lsp thread"));
+    }
+    let elapsed = loop_start.elapsed();
+
+    let (first_status, first_body) = results[0]
+        .as_ref()
+        .expect("first concurrent /lsp result")
+        .clone();
+    assert_eq!(
+        first_status, 200,
+        "cold /lsp should be 200, got {first_status} body: {first_body}"
+    );
+    for (index, result) in results.iter().enumerate() {
+        let (status, body) = result
+            .as_ref()
+            .unwrap_or_else(|err| panic!("concurrent cold /lsp request {index} failed: {err}"));
+        assert_eq!(
+            *status, 200,
+            "concurrent cold /lsp request {index} should be 200, got {status}"
+        );
+        assert_eq!(
+            *body, first_body,
+            "all concurrent cold callers must observe the single-flight result (request {index})"
+        );
+    }
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "concurrent cold-start should collapse into one probe window, took {elapsed:?}"
+    );
+
+    server.stop();
+    wait_for_port_released(port);
+}
+
+#[test]
+fn serve_lsp_status_revalidation_recovers_across_stale_windows() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-lsp-revalidate");
+    let db_path = scratch.db_path();
+    let port = free_port();
+    let mut server = ServerProcess::start_with_db_path(port, &db_path);
+
+    // Warm the cache once with a tolerant read timeout (the first probe is heavy).
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(20))
+        .expect("warm /lsp request");
+    assert_eq!(
+        warm.status, 200,
+        "first /lsp probe should be 200: {}",
+        warm.body
+    );
+
+    // Across several TTL windows the stale-while-revalidate refresh must keep recovering: each
+    // window lets the 5s TTL lapse, then a request serves the stale rows immediately and spawns a
+    // background refresh. The background refresh holds the single refresh slot via an RAII guard
+    // that releases it on completion (or on panic/early-exit), so the slot is never latched; every
+    // window staying a prompt 200 proves revalidation keeps proceeding and the stale path is never
+    // serialized behind the heavy probe. (The panic-recovery path itself is proven deterministically
+    // by the server-crate unit test `refresh_slot_recovers_when_holding_task_panics`.)
+    for window in 0..3 {
+        thread::sleep(Duration::from_secs(6));
+        let stale = request_json(port, "GET", "/lsp", None);
+        assert_eq!(
+            stale.status, 200,
+            "stale-window {window} /lsp should be a prompt 200, got {} body: {}",
+            stale.status, stale.body
+        );
+        // Let the background refresh make progress, then the next read must still be a prompt 200.
+        thread::sleep(Duration::from_millis(500));
+        let revalidated = request_json(port, "GET", "/lsp", None);
+        assert_eq!(
+            revalidated.status, 200,
+            "post-refresh window {window} /lsp should be a prompt 200, got {} body: {}",
+            revalidated.status, revalidated.body
+        );
+    }
+
+    server.stop();
+    wait_for_port_released(port);
+}
+
 struct ServerProcess {
     child: Child,
     port: u16,
