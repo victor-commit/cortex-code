@@ -23,12 +23,17 @@ use serde_json::Value;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(90);
 const SERVE_TIMEOUT: Duration = Duration::from_secs(20);
+// A live LLM turn over HTTP can take far longer than a control-plane request, so the socket read
+// must outlast a real model turn rather than the ~2s that suffices for /health and /session.
+const SERVE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const NONCE_MAX_ATTEMPTS: u32 = 3;
 const NONCE_RETRY_BASE_BACKOFF_MS: u64 = 200;
 const SERVE_PORT_START: u16 = 3200;
 const SERVE_PORT_END: u16 = 3239;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static NEXT_SERVE_PORT: AtomicU16 = AtomicU16::new(SERVE_PORT_START);
+// Acquired poison-tolerantly at every call site so a single panicking live test cannot cascade a
+// PoisonError into the other live tests sharing this lock.
 static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn live_key() -> Option<String> {
@@ -138,16 +143,40 @@ fn strace_usable() -> bool {
     }
 }
 
-fn assert_round_trips_fresh_nonce_with_retries(home: &Path, key: &str, label: &str) -> String {
+/// Formatting-tolerant nonce match: compares only the ascii-alphanumeric characters (lowercased) so
+/// a correctly echoed nonce still matches when the model wraps it in code fences/quotes, swaps the
+/// hyphens for spaces, or changes case. Outright truncation/omission is handled by the retry below.
+fn echoes_nonce(answer: &str, nonce: &str) -> bool {
+    fn squeeze(text: &str) -> String {
+        text.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    }
+    squeeze(answer).contains(&squeeze(nonce))
+}
+
+/// Round-trip a fresh nonce through `cortex run`, retrying on a live-model wording miss (a slipped
+/// character or a generic "agent-less mode" greeting). Each attempt uses its own fresh nonce and is
+/// matched with the formatting-tolerant `echoes_nonce`, so a single live slip no longer fails the
+/// test while a genuinely missing answer still does after the bounded retries.
+fn assert_round_trips_fresh_nonce_with_retries(
+    home: &Path,
+    key: &str,
+    cwd: &Path,
+    label: &str,
+) -> String {
     let mut failures = Vec::new();
     for attempt in 1..=NONCE_MAX_ATTEMPTS {
         let nonce = format!("{label}-{}", uuid_like());
         let prompt = format!("Reply with exactly this token and nothing else: {nonce}");
-        let out = run_with_timeout(cortex_command(home, key, &["run", &prompt]), RUN_TIMEOUT);
+        let mut command = cortex_command(home, key, &["run", &prompt]);
+        command.current_dir(cwd);
+        let out = run_with_timeout(command, RUN_TIMEOUT);
         let status = out.status.code();
         let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
         let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
-        if status == Some(0) && stdout.contains(&nonce) {
+        if status == Some(0) && echoes_nonce(&stdout, &nonce) {
             return nonce;
         }
 
@@ -173,11 +202,11 @@ fn default_run_is_live_by_default_with_fresh_nonces() {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
-    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = scratch_dir("run-default-live");
-    let nonce1 = assert_round_trips_fresh_nonce_with_retries(&home, &key, "first");
-    let nonce2 = assert_round_trips_fresh_nonce_with_retries(&home, &key, "second");
+    let nonce1 = assert_round_trips_fresh_nonce_with_retries(&home, &key, &home, "first");
+    let nonce2 = assert_round_trips_fresh_nonce_with_retries(&home, &key, &home, "second");
     assert_ne!(nonce1, nonce2, "fresh nonces must differ");
 }
 
@@ -191,7 +220,7 @@ fn default_run_opens_outbound_connection() {
         eprintln!("skipping strace no-mock test: strace unavailable or ptrace restricted");
         return;
     }
-    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = scratch_dir("run-connect-trace");
     let trace_path = home.join("connect.trace");
@@ -238,7 +267,7 @@ fn default_path_does_not_read_cassette_or_fixture_files() {
         eprintln!("skipping strace no-mock test: strace unavailable or ptrace restricted");
         return;
     }
-    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = scratch_dir("run-no-mock-open-trace");
     let clean_cwd = home.join("clean");
@@ -285,23 +314,13 @@ fn live_run_works_in_fresh_clean_cwd_with_only_key() {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
-    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = scratch_dir("run-clean-cwd");
     let clean_cwd = home.join("fresh");
     std::fs::create_dir_all(&clean_cwd).expect("create clean cwd");
 
-    let nonce = uuid_like();
-    let prompt = format!("Reply with exactly this token and nothing else: {nonce}");
-    let mut command = cortex_command(&home, &key, &["run", &prompt]);
-    command.current_dir(&clean_cwd);
-    let out = run_with_timeout(command, RUN_TIMEOUT);
-    assert_eq!(out.status.code(), Some(0), "clean-cwd run should succeed");
-    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
-    assert!(
-        stdout.contains(&nonce),
-        "clean-cwd live run should return nonce {nonce:?}, got: {stdout:?}"
-    );
+    assert_round_trips_fresh_nonce_with_retries(&home, &key, &clean_cwd, "clean-cwd");
 }
 
 #[test]
@@ -310,39 +329,71 @@ fn serve_surface_is_live_by_default_and_stops_by_listener_pid() {
         eprintln!("skipping no-mock live test: OPENROUTER_API_KEY not set");
         return;
     };
-    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = scratch_dir("serve-live-default");
     let port = free_port();
     let mut server = ServerProcess::start(&home, &key, port);
     let _health = wait_for_health(port, &mut server.child);
 
-    let created = request_json(port, "POST", "/session", Some("{}"));
-    assert_eq!(created.status, 201, "session create should succeed");
-    let session: Value = serde_json::from_str(&created.body).expect("session json");
-    let session_id = session["id"]
-        .as_str()
-        .expect("session id string")
-        .to_owned();
-
-    let nonce = uuid_like();
-    let body = format!(r#"{{"text":"Reply with exactly this token and nothing else: {nonce}"}}"#);
-    let turn = request_json(
-        port,
-        "POST",
-        &format!("/session/{session_id}/message"),
-        Some(&body),
-    );
-    assert_eq!(turn.status, 200, "message turn should succeed");
-    let doc: Value = serde_json::from_str(&turn.body).expect("message response json");
-    let content = doc["content"].as_str().unwrap_or_default();
-    assert!(
-        content.contains(&nonce),
-        "serve live default response should include nonce {nonce:?}, got: {content:?}"
-    );
+    serve_round_trips_fresh_nonce_with_retries(port, "serve");
 
     let listener_pid = single_listener_pid(port).expect("listener pid");
     server.stop_by_listener_pid(listener_pid);
     wait_for_port_released(port);
+}
+
+/// Round-trip a fresh nonce through a live `cortex serve` message turn, retrying on a live-model
+/// wording miss. Each attempt creates its own fresh session so a retried turn never piggybacks on a
+/// prior session's transcript, and the answer is matched with the formatting-tolerant `echoes_nonce`
+/// so a single live slip no longer fails the test while a genuinely missing answer still does.
+fn serve_round_trips_fresh_nonce_with_retries(port: u16, label: &str) -> (String, String) {
+    let mut failures = Vec::new();
+    for attempt in 1..=NONCE_MAX_ATTEMPTS {
+        let created = request_json(port, "POST", "/session", Some("{}"));
+        assert_eq!(created.status, 201, "session create should succeed");
+        let session: Value = serde_json::from_str(&created.body).expect("session json");
+        let session_id = session["id"]
+            .as_str()
+            .expect("session id string")
+            .to_owned();
+
+        let nonce = format!("{label}-{}", uuid_like());
+        let body =
+            format!(r#"{{"text":"Reply with exactly this token and nothing else: {nonce}"}}"#);
+        let turn = request_json(
+            port,
+            "POST",
+            &format!("/session/{session_id}/message"),
+            Some(&body),
+        );
+        if turn.status == 200 {
+            let content = serde_json::from_str::<Value>(&turn.body)
+                .ok()
+                .and_then(|doc| doc["content"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            if echoes_nonce(&content, &nonce) {
+                return (session_id, nonce);
+            }
+            failures.push(format!(
+                "attempt {attempt}/{NONCE_MAX_ATTEMPTS}, nonce={nonce:?}, status=200, content={content:?}"
+            ));
+        } else {
+            failures.push(format!(
+                "attempt {attempt}/{NONCE_MAX_ATTEMPTS}, nonce={nonce:?}, status={}, body={:?}",
+                turn.status, turn.body
+            ));
+        }
+        if attempt < NONCE_MAX_ATTEMPTS {
+            thread::sleep(Duration::from_millis(
+                NONCE_RETRY_BASE_BACKOFF_MS * u64::from(attempt),
+            ));
+        }
+    }
+
+    panic!(
+        "serve turn failed to round-trip a fresh nonce after {NONCE_MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
+    );
 }
 
 struct ServerProcess {
@@ -442,7 +493,7 @@ fn request_http(
 ) -> std::io::Result<HttpResponse> {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(SERVE_HTTP_READ_TIMEOUT))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
 
     let body = body.unwrap_or("");
@@ -542,4 +593,33 @@ fn wait_for_port_released(port: u16) {
         thread::sleep(Duration::from_millis(50));
     }
     panic!("port {port} still busy after listener kill");
+}
+
+/// Offline regression guard for the tolerant nonce matcher: a correctly echoed nonce must still
+/// match through common live-model reformatting, while a truncated/different token must NOT match
+/// (those misses are the bounded retry's job, not the matcher's). Runs without a key.
+#[test]
+fn echoes_nonce_tolerates_reformatting_but_not_truncation() {
+    let nonce = "serve-18bd5b0644f5a86d-e69a2";
+    assert!(echoes_nonce(nonce, nonce), "exact echo matches");
+    assert!(
+        echoes_nonce("Sure, here it is: `serve-18bd5b0644f5a86d-e69a2`", nonce),
+        "code-fenced/quoted echo with surrounding prose matches"
+    );
+    assert!(
+        echoes_nonce("serve 18bd5b0644f5a86d e69a2.", nonce),
+        "hyphens reflowed to spaces with trailing punctuation matches"
+    );
+    assert!(
+        echoes_nonce("SERVE-18BD5B0644F5A86D-E69A2", nonce),
+        "case-changed echo matches"
+    );
+    assert!(
+        !echoes_nonce("serve-18bd5b0644f5a86d", nonce),
+        "a truncated nonce must not match (handled by retry)"
+    );
+    assert!(
+        !echoes_nonce("a generic agent-less mode greeting", nonce),
+        "an unrelated greeting must not match"
+    );
 }
