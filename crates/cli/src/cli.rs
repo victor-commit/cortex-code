@@ -126,6 +126,16 @@ pub enum Command {
     /// resolved locally; no network is contacted.
     Project(ProjectArgs),
 
+    /// Create, list, and remove git worktrees, emitting machine events for each operation.
+    ///
+    /// Worktree operations run real `git worktree` commands in the working directory's repository:
+    /// `cortex worktree create <path>` adds a worktree (optionally on a new branch), `cortex
+    /// worktree list` reports the attached worktrees (matching `git worktree list`), and `cortex
+    /// worktree remove <path>` detaches one. Each create/remove broadcasts a typed `worktree.ready`
+    /// / `worktree.removed` / `worktree.failed` event on the bus (observable with `-v`). All paths
+    /// are resolved locally; no network is contacted.
+    Worktree(WorktreeArgs),
+
     /// Control-plane account/console login (intentionally unavailable in this build).
     ///
     /// Cortex Code is a local terminal mono-binary with no hosted control plane, so there is no
@@ -811,6 +821,71 @@ pub struct ProjectDirectoryArgs {
     /// directory; it must exist.
     #[arg(value_name = "DIR")]
     pub directory: String,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct WorktreeArgs {
+    #[command(subcommand)]
+    pub command: Option<WorktreeCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorktreeCommand {
+    /// List the git worktrees attached to the working directory's repository.
+    List(WorktreeListArgs),
+
+    /// Create a new git worktree (optionally on a new branch), emitting a worktree event.
+    Create(WorktreeCreateArgs),
+
+    /// Remove a git worktree, emitting a worktree event.
+    #[command(alias = "rm")]
+    Remove(WorktreeRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct WorktreeListArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct WorktreeCreateArgs {
+    /// Path for the new worktree checkout (resolved relative to the working directory).
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// Check out (and, with `--new-branch`, create) this branch in the new worktree.
+    #[arg(long, value_name = "BRANCH")]
+    pub branch: Option<String>,
+
+    /// Create `--branch` as a new branch instead of checking out an existing one.
+    #[arg(long, default_value_t = false)]
+    pub new_branch: bool,
+
+    /// The commit-ish to base the worktree on (defaults to HEAD).
+    #[arg(long = "ref", value_name = "REF")]
+    pub reference: Option<String>,
+
+    /// Force creation even when the path is non-empty or the branch is already checked out.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct WorktreeRemoveArgs {
+    /// Path of the worktree to remove (resolved relative to the working directory).
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// Force removal even when the worktree has uncommitted changes.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 
     #[command(flatten)]
     pub format: FormatArgs,

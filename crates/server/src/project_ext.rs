@@ -7,8 +7,13 @@
 //! `4xx` rather than leaking host state.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{ApiError, ServerState};
@@ -168,6 +173,189 @@ fn worktree_entries(cwd: &Path) -> Vec<Worktree> {
         worktrees.push(entry);
     }
     worktrees
+}
+
+/// Request body for `POST /worktree`.
+#[derive(Debug, Deserialize)]
+pub(super) struct CreateWorktreeRequest {
+    /// Workspace-relative (or absolute, within the workspace) path for the new worktree checkout.
+    path: String,
+    /// Check out (and optionally create) this branch in the new worktree.
+    #[serde(default)]
+    branch: Option<String>,
+    /// Create `branch` as a new branch rather than checking out an existing one.
+    #[serde(default)]
+    new_branch: bool,
+    /// The commit-ish to base the worktree on (defaults to HEAD).
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
+    /// Force creation even when the path is non-empty or the branch is already checked out.
+    #[serde(default)]
+    force: bool,
+}
+
+/// `POST /worktree` — create a real git worktree and broadcast a `worktree.ready`/`worktree.failed`
+/// event to subscribers (the SSE stream and in-process bus).
+///
+/// The target path is resolved inside the workspace; a path that escapes it is `403`. On a git
+/// failure (non-empty path, branch already checked out, ...) the route emits `worktree.failed` and
+/// returns `422` with git's own scrubbed message so the caller can correct it.
+pub(super) async fn create_worktree(
+    State(state): State<ServerState>,
+    Json(payload): Json<CreateWorktreeRequest>,
+) -> Result<(StatusCode, Json<Worktree>), ApiError> {
+    let requested = payload.path.trim();
+    if requested.is_empty() {
+        return Err(ApiError::bad_request(
+            "worktree path must be a non-empty workspace path",
+        ));
+    }
+    if run_git_shared(&state.cwd, &["rev-parse", "--is-inside-work-tree"]).is_none() {
+        return Err(ApiError::bad_request(
+            "workspace is not a git repository; cannot create a worktree",
+        ));
+    }
+    let target = resolve_in_workspace(&state.cwd, requested)?;
+    let target_display = target.to_string_lossy().into_owned();
+
+    let mut args: Vec<String> = vec!["worktree".to_owned(), "add".to_owned()];
+    if payload.force {
+        args.push("--force".to_owned());
+    }
+    if let Some(branch) = payload
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+    {
+        args.push(if payload.new_branch { "-b" } else { "-B" }.to_owned());
+        args.push(branch.to_owned());
+    }
+    args.push(target_display.clone());
+    if let Some(reference) = payload
+        .reference
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        args.push(reference.to_owned());
+    }
+
+    match run_git_mut(&state.cwd, &args) {
+        Ok(()) => {
+            state
+                .event_bus
+                .publish(&events::Event::worktree_ready(redaction::redact(
+                    &target_display,
+                )));
+            let entry = worktree_entries(&state.cwd)
+                .into_iter()
+                .find(|entry| entry.path == redaction::redact(&target_display))
+                .unwrap_or(Worktree {
+                    path: redaction::redact(&target_display),
+                    head: None,
+                    branch: payload.branch.as_deref().map(redaction::redact),
+                    bare: false,
+                    detached: false,
+                    locked: false,
+                });
+            Ok((StatusCode::CREATED, Json(entry)))
+        }
+        Err(message) => {
+            state.event_bus.publish(&events::Event::worktree_failed(
+                redaction::redact(&target_display),
+                &message,
+            ));
+            Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, message))
+        }
+    }
+}
+
+/// Query for `DELETE /worktree`.
+#[derive(Debug, Deserialize)]
+pub(super) struct RemoveWorktreeQuery {
+    /// Workspace path of the worktree to remove.
+    path: String,
+    /// Force removal even when the worktree has uncommitted changes.
+    #[serde(default)]
+    force: bool,
+}
+
+/// Response for `DELETE /worktree`.
+#[derive(Debug, Serialize)]
+pub(super) struct WorktreeRemoved {
+    status: &'static str,
+    path: String,
+}
+
+/// `DELETE /worktree?path=<rel>` — remove a git worktree and broadcast a `worktree.removed`
+/// (or `worktree.failed`) event. A git failure returns `422` with git's scrubbed message.
+pub(super) async fn remove_worktree(
+    State(state): State<ServerState>,
+    Query(query): Query<RemoveWorktreeQuery>,
+) -> Result<Json<WorktreeRemoved>, ApiError> {
+    let requested = query.path.trim();
+    if requested.is_empty() {
+        return Err(ApiError::bad_request(
+            "worktree path must be a non-empty workspace path",
+        ));
+    }
+    if run_git_shared(&state.cwd, &["rev-parse", "--is-inside-work-tree"]).is_none() {
+        return Err(ApiError::bad_request(
+            "workspace is not a git repository; cannot remove a worktree",
+        ));
+    }
+    let target = resolve_in_workspace(&state.cwd, requested)?;
+    let target_display = target.to_string_lossy().into_owned();
+
+    let mut args: Vec<String> = vec!["worktree".to_owned(), "remove".to_owned()];
+    if query.force {
+        args.push("--force".to_owned());
+    }
+    args.push(target_display.clone());
+
+    match run_git_mut(&state.cwd, &args) {
+        Ok(()) => {
+            state
+                .event_bus
+                .publish(&events::Event::worktree_removed(redaction::redact(
+                    &target_display,
+                )));
+            Ok(Json(WorktreeRemoved {
+                status: "removed",
+                path: redaction::redact(&target_display),
+            }))
+        }
+        Err(message) => {
+            state.event_bus.publish(&events::Event::worktree_failed(
+                redaction::redact(&target_display),
+                &message,
+            ));
+            Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, message))
+        }
+    }
+}
+
+/// Run a mutating `git` command in `cwd`, returning the scrubbed stderr (or a generic message) on
+/// failure. Used only by the worktree create/remove routes, which are the sole project routes that
+/// modify on-disk git state.
+fn run_git_mut(cwd: &Path, args: &[String]) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("could not run git: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    let message = if detail.is_empty() {
+        "git worktree command failed".to_owned()
+    } else {
+        redaction::redact(detail)
+    };
+    Err(message)
 }
 
 /// Query for `GET /path`.

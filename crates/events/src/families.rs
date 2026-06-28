@@ -363,6 +363,13 @@ pub struct WorktreeFailed {
     pub message: String,
 }
 
+/// A worktree was removed (`worktree.removed`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRemoved {
+    /// The removed worktree path.
+    pub path: String,
+}
+
 /// A workspace became ready or failed (`workspace.ready`/`workspace.failed`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceEvent {

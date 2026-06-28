@@ -1058,6 +1058,31 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     "responses": {
                         "200": json_array_response("Git worktrees.", "Worktree")
                     }
+                },
+                "post": {
+                    "operationId": "createWorktree",
+                    "summary": "Create a real git worktree and broadcast a worktree event.",
+                    "requestBody": json_request_body("CreateWorktreeRequest"),
+                    "responses": {
+                        "201": json_response("Created worktree.", "Worktree"),
+                        "400": json_response("Missing path or not a git repository.", "ErrorResponse"),
+                        "403": json_response("Path escapes the workspace.", "ErrorResponse"),
+                        "422": json_response("git worktree add failed.", "ErrorResponse")
+                    }
+                },
+                "delete": {
+                    "operationId": "removeWorktree",
+                    "summary": "Remove a git worktree and broadcast a worktree event.",
+                    "parameters": [
+                        { "name": "path", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Workspace path of the worktree to remove." },
+                        { "name": "force", "in": "query", "required": false, "schema": { "type": "boolean" }, "description": "Force removal even with uncommitted changes." }
+                    ],
+                    "responses": {
+                        "200": json_response("Worktree removed.", "WorktreeRemoved"),
+                        "400": json_response("Missing path or not a git repository.", "ErrorResponse"),
+                        "403": json_response("Path escapes the workspace.", "ErrorResponse"),
+                        "422": json_response("git worktree remove failed.", "ErrorResponse")
+                    }
                 }
             },
             "/path": {
@@ -1469,6 +1494,25 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "bare": { "type": "boolean" },
                         "detached": { "type": "boolean" },
                         "locked": { "type": "boolean" }
+                    }
+                },
+                "CreateWorktreeRequest": {
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                        "path": { "type": "string", "description": "Workspace path for the new worktree checkout." },
+                        "branch": { "type": "string", "description": "Branch to check out (or create) in the new worktree." },
+                        "new_branch": { "type": "boolean", "description": "Create `branch` as a new branch instead of checking out an existing one." },
+                        "ref": { "type": "string", "description": "Commit-ish to base the worktree on (defaults to HEAD)." },
+                        "force": { "type": "boolean", "description": "Force creation even when the path is non-empty or the branch is in use." }
+                    }
+                },
+                "WorktreeRemoved": {
+                    "type": "object",
+                    "required": ["status", "path"],
+                    "properties": {
+                        "status": { "type": "string", "enum": ["removed"] },
+                        "path": { "type": "string" }
                     }
                 },
                 "PathInfoResponse": {
@@ -2244,7 +2288,7 @@ const PROTECTED_OPERATIONS: &[(&str, &[&str])] = &[
     ("/project", &["get"]),
     ("/project/current", &["get"]),
     ("/workspace", &["get"]),
-    ("/worktree", &["get"]),
+    ("/worktree", &["get", "post", "delete"]),
     ("/path", &["get"]),
     ("/pty", &["get", "post"]),
     ("/pty/{id}", &["get", "delete"]),

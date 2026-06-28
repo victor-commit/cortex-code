@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
@@ -481,6 +482,199 @@ async fn worktree_lists_linked_worktrees() {
     );
 }
 
+// VAL-GAP-DATA-004: worktree create/list/remove run real git, match `git worktree list`, and
+// broadcast machine events to subscribers.
+#[tokio::test]
+async fn worktree_create_and_remove_emit_events_and_match_git() {
+    let scratch = Scratch::new("server-worktree-mutate");
+    let workspace = scratch.workspace();
+    init_repo(&workspace);
+    std::fs::write(workspace.join("f.txt"), "x\n").expect("write");
+    git(&workspace, &["add", "."]);
+    git(&workspace, &["commit", "-m", "init"]);
+
+    let bus = Arc::new(events::EventBus::new());
+    let collector = Arc::new(EventCollector::default());
+    bus.subscribe(collector.clone());
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new())
+            .with_event_bus(bus.clone()),
+    );
+
+    // Create a real worktree on a new branch.
+    let create = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"wt-feature","branch":"feature","new_branch":true}"#),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created: serde_json::Value = json_body(create).await;
+    assert!(
+        created["path"]
+            .as_str()
+            .is_some_and(|p| p.contains("wt-feature")),
+        "created worktree path: {created:?}"
+    );
+    assert!(
+        collector.kinds().contains(&"worktree.ready".to_owned()),
+        "worktree.ready broadcast: {:?}",
+        collector.kinds()
+    );
+
+    // Cortex's worktree list matches `git worktree list`.
+    let listed: serde_json::Value = json_body(send(&app, "GET", "/worktree", None).await).await;
+    let listed_paths: Vec<String> = listed
+        .as_array()
+        .expect("worktree array")
+        .iter()
+        .filter_map(|wt| wt["path"].as_str().map(str::to_owned))
+        .collect();
+    let git_paths = git_worktree_paths(&workspace);
+    assert_eq!(
+        listed_paths.len(),
+        git_paths.len(),
+        "cortex and git agree on worktree count: cortex={listed_paths:?} git={git_paths:?}"
+    );
+    assert!(
+        listed_paths.iter().any(|p| p.contains("wt-feature")),
+        "new worktree appears in cortex list: {listed_paths:?}"
+    );
+    assert!(
+        git_paths.iter().any(|p| p.contains("wt-feature")),
+        "new worktree appears in git list: {git_paths:?}"
+    );
+
+    // Remove the worktree.
+    let remove = send(&app, "DELETE", "/worktree?path=wt-feature&force=true", None).await;
+    assert_eq!(remove.status(), StatusCode::OK);
+    let removed: serde_json::Value = json_body(remove).await;
+    assert_eq!(removed["status"], "removed");
+    assert!(
+        collector.kinds().contains(&"worktree.removed".to_owned()),
+        "worktree.removed broadcast: {:?}",
+        collector.kinds()
+    );
+
+    // Gone from both Cortex and git.
+    let after: serde_json::Value = json_body(send(&app, "GET", "/worktree", None).await).await;
+    assert!(
+        !after
+            .as_array()
+            .expect("worktree array")
+            .iter()
+            .any(|wt| wt["path"]
+                .as_str()
+                .is_some_and(|p| p.contains("wt-feature"))),
+        "worktree removed from cortex list: {after:?}"
+    );
+    assert!(
+        !git_worktree_paths(&workspace)
+            .iter()
+            .any(|p| p.contains("wt-feature")),
+        "worktree removed from git"
+    );
+}
+
+// VAL-GAP-DATA-004: a failed git worktree operation surfaces a clean 422 and a worktree.failed
+// event rather than leaking host state or panicking.
+#[tokio::test]
+async fn worktree_create_failure_emits_failed_event() {
+    let scratch = Scratch::new("server-worktree-fail");
+    let workspace = scratch.workspace();
+    init_repo(&workspace);
+    std::fs::write(workspace.join("f.txt"), "x\n").expect("write");
+    git(&workspace, &["add", "."]);
+    git(&workspace, &["commit", "-m", "init"]);
+
+    let bus = Arc::new(events::EventBus::new());
+    let collector = Arc::new(EventCollector::default());
+    bus.subscribe(collector.clone());
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new())
+            .with_event_bus(bus.clone()),
+    );
+
+    // First creation succeeds.
+    let ok = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"wt-dup","branch":"dup","new_branch":true}"#),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::CREATED);
+
+    // Re-creating at the same non-empty path fails with git's own message.
+    let dup = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"wt-dup","branch":"dup2","new_branch":true}"#),
+    )
+    .await;
+    assert_eq!(dup.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        collector.kinds().contains(&"worktree.failed".to_owned()),
+        "worktree.failed broadcast on git failure: {:?}",
+        collector.kinds()
+    );
+
+    // A path that escapes the workspace is refused before touching git.
+    let escape = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"../escape","branch":"x","new_branch":true}"#),
+    )
+    .await;
+    assert_eq!(escape.status(), StatusCode::FORBIDDEN);
+}
+
+// VAL-GAP-DATA-004: worktree mutations do not disturb persisted sessions linked to the workspace.
+#[tokio::test]
+async fn worktree_operations_preserve_existing_sessions() {
+    let scratch = Scratch::new("server-worktree-sessions");
+    let workspace = scratch.workspace();
+    init_repo(&workspace);
+    std::fs::write(workspace.join("f.txt"), "x\n").expect("write");
+    git(&workspace, &["add", "."]);
+    git(&workspace, &["commit", "-m", "init"]);
+
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace.clone())
+            .with_config_env(Vec::new()),
+    );
+
+    let created: serde_json::Value =
+        json_body(send(&app, "POST", "/session", Some("{}")).await).await;
+    let session_id = created["id"].as_str().expect("session id").to_owned();
+
+    // Create and remove a worktree around the live session.
+    let create = send(
+        &app,
+        "POST",
+        "/worktree",
+        Some(r#"{"path":"wt-side","branch":"side","new_branch":true}"#),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let remove = send(&app, "DELETE", "/worktree?path=wt-side&force=true", None).await;
+    assert_eq!(remove.status(), StatusCode::OK);
+
+    // The session is still present and linked to its workspace project.
+    let fetched = send(&app, "GET", &format!("/session/{session_id}"), None).await;
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let fetched: serde_json::Value = json_body(fetched).await;
+    assert_eq!(fetched["id"], session_id);
+}
+
 #[tokio::test]
 async fn path_route_summary_metadata_and_invalid_paths() {
     let scratch = Scratch::new("server-path");
@@ -574,6 +768,42 @@ fn init_repo(workspace: &Path) {
     git(workspace, &["init", "-q"]);
     git(workspace, &["config", "user.name", "Test"]);
     git(workspace, &["config", "user.email", "test@example.invalid"]);
+}
+
+/// A synchronous bus subscriber that records the kind of every delivered event, so a test can
+/// assert worktree events were broadcast without racing the async SSE fan-out.
+#[derive(Default)]
+struct EventCollector {
+    kinds: Mutex<Vec<String>>,
+}
+
+impl EventCollector {
+    fn kinds(&self) -> Vec<String> {
+        self.kinds.lock().expect("collector lock").clone()
+    }
+}
+
+impl events::Subscriber for EventCollector {
+    fn on_event(&self, event: &events::Event) {
+        self.kinds
+            .lock()
+            .expect("collector lock")
+            .push(event.kind().to_owned());
+    }
+}
+
+/// The worktree paths reported by `git worktree list --porcelain` for `workspace`.
+fn git_worktree_paths(workspace: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(workspace)
+        .output()
+        .expect("run git worktree list");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| path.trim().to_owned())
+        .collect()
 }
 
 fn git(workspace: &Path, args: &[&str]) {

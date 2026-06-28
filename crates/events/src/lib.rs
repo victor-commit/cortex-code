@@ -25,5 +25,5 @@ pub use families::{
     SessionErrorEvent, SessionModelSwitched, SessionRef, SessionRetried, SessionStatusEvent,
     StepEvent, StreamBoundary, StreamDelta, TodoUpdated, ToolEnded, ToolStarted, TuiCommandExecute,
     TuiPromptAppend, TuiSessionSelect, TuiToastShow, VcsBranchUpdated, WorkspaceEvent,
-    WorkspaceStatus, WorktreeFailed, WorktreeReady,
+    WorkspaceStatus, WorktreeFailed, WorktreeReady, WorktreeRemoved,
 };

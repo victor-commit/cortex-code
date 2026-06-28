@@ -11,7 +11,7 @@ use crate::families::{
     SessionErrorEvent, SessionModelSwitched, SessionRef, SessionRetried, SessionStatusEvent,
     StepEvent, StreamBoundary, StreamDelta, TodoUpdated, ToolEnded, ToolStarted, TuiCommandExecute,
     TuiPromptAppend, TuiSessionSelect, TuiToastShow, VcsBranchUpdated, WorkspaceEvent,
-    WorkspaceStatus, WorktreeFailed, WorktreeReady,
+    WorkspaceStatus, WorktreeFailed, WorktreeReady, WorktreeRemoved,
 };
 
 /// The surface that produced an event.
@@ -501,6 +501,9 @@ pub enum Event {
     /// A worktree operation failed.
     #[serde(rename = "worktree.failed")]
     WorktreeFailed(WorktreeFailed),
+    /// A worktree was removed.
+    #[serde(rename = "worktree.removed")]
+    WorktreeRemoved(WorktreeRemoved),
     /// A workspace became ready.
     #[serde(rename = "workspace.ready")]
     WorkspaceReady(WorkspaceEvent),
@@ -594,6 +597,7 @@ impl Event {
             Event::InstallationUpdated(_) => "installation.updated",
             Event::WorktreeReady(_) => "worktree.ready",
             Event::WorktreeFailed(_) => "worktree.failed",
+            Event::WorktreeRemoved(_) => "worktree.removed",
             Event::WorkspaceReady(_) => "workspace.ready",
             Event::WorkspaceFailed(_) => "workspace.failed",
             Event::WorkspaceStatus(_) => "workspace.status",
@@ -669,6 +673,7 @@ impl Event {
             "installation.updated",
             "worktree.ready",
             "worktree.failed",
+            "worktree.removed",
             "workspace.ready",
             "workspace.failed",
             "workspace.status",
@@ -1194,6 +1199,27 @@ impl Event {
             todos,
         })
     }
+
+    /// Construct a `worktree.ready` event naming the worktree path.
+    #[must_use]
+    pub fn worktree_ready(path: impl Into<String>) -> Self {
+        Event::WorktreeReady(WorktreeReady { path: path.into() })
+    }
+
+    /// Construct a `worktree.failed` event naming the worktree path and the scrubbed failure detail.
+    #[must_use]
+    pub fn worktree_failed(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Event::WorktreeFailed(WorktreeFailed {
+            path: path.into(),
+            message: message.into(),
+        })
+    }
+
+    /// Construct a `worktree.removed` event naming the removed worktree path.
+    #[must_use]
+    pub fn worktree_removed(path: impl Into<String>) -> Self {
+        Event::WorktreeRemoved(WorktreeRemoved { path: path.into() })
+    }
 }
 
 #[cfg(test)]
@@ -1375,6 +1401,7 @@ mod tests {
             "command.executed",
             "installation.updated",
             "worktree.ready",
+            "worktree.removed",
             "workspace.status",
             "pty.created",
             "tui.toast.show",
@@ -1422,5 +1449,29 @@ mod tests {
                 "round-trips into the typed variant"
             );
         }
+    }
+
+    #[test]
+    fn worktree_family_constructors_serialize_with_named_typed_fields() {
+        let ready = Event::worktree_ready("/tmp/wt-feature");
+        assert_eq!(ready.kind(), "worktree.ready");
+        let value = serde_json::to_value(&ready).expect("serialize");
+        assert_eq!(value["kind"], "worktree.ready");
+        assert_eq!(value["path"], "/tmp/wt-feature");
+
+        let removed = Event::worktree_removed("/tmp/wt-feature");
+        assert_eq!(removed.kind(), "worktree.removed");
+        let value = serde_json::to_value(&removed).expect("serialize");
+        assert_eq!(value["kind"], "worktree.removed");
+        assert_eq!(value["path"], "/tmp/wt-feature");
+        let decoded: Event = serde_json::from_value(value).expect("round-trip decode");
+        assert_eq!(decoded.kind(), "worktree.removed");
+
+        let failed = Event::worktree_failed("/tmp/wt-feature", "fatal: already exists");
+        assert_eq!(failed.kind(), "worktree.failed");
+        let value = serde_json::to_value(&failed).expect("serialize");
+        assert_eq!(value["kind"], "worktree.failed");
+        assert_eq!(value["path"], "/tmp/wt-feature");
+        assert_eq!(value["message"], "fatal: already exists");
     }
 }

@@ -19,6 +19,8 @@ export interface VcsApplyResponse { status: "applied" | "valid"; applied: boolea
 export interface Project { id: string; directory: string; worktree: string; vcs?: "git"; }
 export interface Workspace { id: string; root: string; directory: string; vcs?: "git"; worktrees: number; }
 export interface Worktree { path: string; head?: string; branch?: string; bare: boolean; detached: boolean; locked: boolean; }
+export interface CreateWorktreeRequest { path: string; branch?: string; new_branch?: boolean; ref?: string; force?: boolean; }
+export interface WorktreeRemoved { status: "removed"; path: string; }
 export interface PathInfoResponse { [key: string]: unknown; }
 export interface PtySummary { id: string; pid?: number; cols: number; rows: number; command: string; running: boolean; }
 export interface CreatePtyRequest { command?: string; args?: string[]; cwd?: string; cols?: number; rows?: number; env?: { [key: string]: string; }; }
@@ -81,7 +83,7 @@ export interface SetAuthRequest { type?: "api" | "oauth"; key?: string; api_key?
 export interface AuthorizeRequest { authorize_endpoint: string; token_endpoint: string; client_id: string; client_secret?: string; redirect_uri?: string; scopes?: string[]; }
 export interface AuthorizeResponse { provider: string; authorize_url: string; state: string; redirect_uri: string; }
 export interface AuthStateResponse { provider: string; authenticated: boolean; method?: string | null; }
-export interface Event { kind: "lifecycle" | "permission.asked" | "permission.replied" | "mcp.tools.changed" | "mcp.resources.changed" | "mcp.prompts.changed" | "mcp.log" | "tool.call" | "tool.result" | "turn.started" | "assistant.text_delta" | "assistant.reasoning_delta" | "turn.usage" | "turn.error" | "turn.done" | "message.parts" | "message.updated" | "message.removed" | "message.part.updated" | "message.part.removed" | "session.next.text.start" | "session.next.text.delta" | "session.next.text.end" | "session.next.reasoning.start" | "session.next.reasoning.delta" | "session.next.reasoning.end" | "session.next.tool.started" | "session.next.tool.ended" | "session.next.step.started" | "session.next.step.finished" | "session.next.retried" | "session.next.context.updated" | "session.next.model.switched" | "session.next.agent.switched" | "session.updated" | "session.status" | "session.idle" | "session.error" | "session.diff" | "session.compacted" | "question.asked" | "question.replied" | "question.rejected" | "todo.updated" | "file.edited" | "file.watcher.updated" | "lsp.updated" | "vcs.branch.updated" | "project.updated" | "command.executed" | "installation.updated" | "worktree.ready" | "worktree.failed" | "workspace.ready" | "workspace.failed" | "workspace.status" | "pty.created" | "pty.updated" | "pty.deleted" | "pty.exited" | "tui.prompt.append" | "tui.command.execute" | "tui.toast.show" | "tui.session.select"; }
+export interface Event { kind: "lifecycle" | "permission.asked" | "permission.replied" | "mcp.tools.changed" | "mcp.resources.changed" | "mcp.prompts.changed" | "mcp.log" | "tool.call" | "tool.result" | "turn.started" | "assistant.text_delta" | "assistant.reasoning_delta" | "turn.usage" | "turn.error" | "turn.done" | "message.parts" | "message.updated" | "message.removed" | "message.part.updated" | "message.part.removed" | "session.next.text.start" | "session.next.text.delta" | "session.next.text.end" | "session.next.reasoning.start" | "session.next.reasoning.delta" | "session.next.reasoning.end" | "session.next.tool.started" | "session.next.tool.ended" | "session.next.step.started" | "session.next.step.finished" | "session.next.retried" | "session.next.context.updated" | "session.next.model.switched" | "session.next.agent.switched" | "session.updated" | "session.status" | "session.idle" | "session.error" | "session.diff" | "session.compacted" | "question.asked" | "question.replied" | "question.rejected" | "todo.updated" | "file.edited" | "file.watcher.updated" | "lsp.updated" | "vcs.branch.updated" | "project.updated" | "command.executed" | "installation.updated" | "worktree.ready" | "worktree.failed" | "worktree.removed" | "workspace.ready" | "workspace.failed" | "workspace.status" | "pty.created" | "pty.updated" | "pty.deleted" | "pty.exited" | "tui.prompt.append" | "tui.command.execute" | "tui.toast.show" | "tui.session.select"; }
 
 export type CortexEventKind =
   | "lifecycle"
@@ -137,6 +139,7 @@ export type CortexEventKind =
   | "installation.updated"
   | "worktree.ready"
   | "worktree.failed"
+  | "worktree.removed"
   | "workspace.ready"
   | "workspace.failed"
   | "workspace.status"
@@ -157,6 +160,7 @@ export type OperationId =
   | "compactSession"
   | "createPty"
   | "createSession"
+  | "createWorktree"
   | "currentProject"
   | "currentWorkspace"
   | "deleteMessagePart"
@@ -215,6 +219,7 @@ export type OperationId =
   | "publishSurfaceEvent"
   | "readFile"
   | "removeAuth"
+  | "removeWorktree"
   | "replyPendingPermission"
   | "replySessionPendingPermission"
   | "revertSession"

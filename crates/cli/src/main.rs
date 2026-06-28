@@ -41,6 +41,7 @@ mod stats;
 mod subagent;
 mod todo_store;
 mod tooling;
+mod worktree_cmd;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -109,6 +110,7 @@ fn main() -> ExitCode {
         Some(Command::Plugin(args)) => plugin_cmd::run(args).into(),
         Some(Command::Provider(args)) => provider_cmd::run(args, pure_plugins).into(),
         Some(Command::Project(args)) => project_cmd::run(args).into(),
+        Some(Command::Worktree(args)) => worktree_cmd::run(args, bus.clone()).into(),
         Some(Command::Account(args)) => account_cmd::run(args).into(),
         Some(Command::Net(args)) => net::run(args).into(),
         Some(Command::Undo(args)) => checkpoint::run(args, false).into(),
@@ -143,6 +145,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Plugin(_)) => Surface::Config,
         Some(Command::Provider(_)) => Surface::Models,
         Some(Command::Project(_)) => Surface::Session,
+        Some(Command::Worktree(_)) => Surface::Session,
         Some(Command::Account(_)) => Surface::Auth,
         Some(Command::Net(_)) => Surface::Net,
         Some(Command::Undo(_)) | Some(Command::Redo(_)) => Surface::Checkpoint,

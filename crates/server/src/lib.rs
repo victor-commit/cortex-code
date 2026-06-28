@@ -811,7 +811,10 @@ pub fn app_with_state(state: ServerState) -> Router {
         )
         .route(
             "/worktree",
-            get(project_ext::list_worktrees).options(preflight),
+            get(project_ext::list_worktrees)
+                .post(project_ext::create_worktree)
+                .delete(project_ext::remove_worktree)
+                .options(preflight),
         )
         .route("/path", get(project_ext::path_info).options(preflight))
         .route(

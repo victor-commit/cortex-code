@@ -164,6 +164,8 @@ async fn openapi_route_returns_valid_document_with_implemented_paths() {
     assert_method(paths, "/project/current", "get", 200);
     assert_method(paths, "/workspace", "get", 200);
     assert_method(paths, "/worktree", "get", 200);
+    assert_method(paths, "/worktree", "post", 201);
+    assert_method(paths, "/worktree", "delete", 200);
     assert_method(paths, "/path", "get", 200);
     assert_method(paths, "/pty", "get", 200);
     assert_method(paths, "/pty", "post", 201);

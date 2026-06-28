@@ -1040,6 +1040,7 @@ fn representative_events() -> Vec<Event> {
             path: "/w".to_owned(),
             message: "bad".to_owned(),
         }),
+        Event::worktree_removed("/w"),
         Event::WorkspaceReady(WorkspaceEvent { id: None }),
         Event::WorkspaceFailed(WorkspaceEvent { id: None }),
         Event::WorkspaceStatus(events::WorkspaceStatus {
