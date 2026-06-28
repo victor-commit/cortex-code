@@ -456,8 +456,16 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 &plugin_state,
                 &run_config.provider_config,
                 provider.provider_id(),
+                &audit_sink,
             );
-            (Arc::new(provider.with_auth(auth)), None)
+            (
+                Arc::new(
+                    provider
+                        .with_auth(auth)
+                        .with_audit(Some(audit_sink.clone())),
+                ),
+                None,
+            )
         }
         None => {
             let provider_id = run_config.model.provider_id.clone();
@@ -1589,11 +1597,52 @@ fn resolve_plugin_provider_auth(
     plugin_state: &PluginState,
     provider_config: &providers::ProviderConfigSet,
     provider_id: &str,
+    audit: &audit::AuditSink,
 ) -> Option<serde_json::Value> {
     let inputs = provider_config.credential_inputs(provider_id);
     let credential = providers::resolve_credential(provider_id, &inputs).ok()?;
+    // Register the resolved plugin credential (and any nested secret-bearing fields) with the audit
+    // sink so a plugin that surfaces it through any audited record gets it scrubbed, not logged raw.
+    register_plugin_credential_secrets(audit, credential.expose());
     let parsed = parse_plugin_auth_payload(credential.expose());
     plugin_state.load_auth_for_provider(provider_id, Some(parsed))
+}
+
+/// Register a plugin credential string and its nested secret-bearing values with the audit sink.
+fn register_plugin_credential_secrets(audit: &audit::AuditSink, raw: &str) {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return;
+    }
+    audit.register_secret(raw);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+        register_secret_credential_fields(audit, &value);
+    }
+}
+
+/// Recursively register values held under secret-bearing keys (`key`, `token`, `access`, ...).
+fn register_secret_credential_fields(audit: &audit::AuditSink, value: &serde_json::Value) {
+    const SECRET_KEYS: &[&str] = &[
+        "key", "token", "access", "refresh", "secret", "api_key", "password",
+    ];
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, inner) in map {
+                if SECRET_KEYS.contains(&key.as_str())
+                    && let Some(text) = inner.as_str()
+                {
+                    audit.register_secret(text);
+                }
+                register_secret_credential_fields(audit, inner);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                register_secret_credential_fields(audit, item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_plugin_auth_payload(raw: &str) -> serde_json::Value {

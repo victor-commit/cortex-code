@@ -513,6 +513,7 @@ impl PluginState {
                         provider: provider.clone(),
                         model: registered.clone(),
                         auth: None,
+                        audit: None,
                     })
                 })
             })
@@ -1933,6 +1934,7 @@ pub(crate) struct PluginModelProvider {
     provider: PluginProviderRegistration,
     model: PluginModelRegistration,
     auth: Option<JsonValue>,
+    audit: Option<Arc<audit::AuditSink>>,
 }
 
 impl PluginModelProvider {
@@ -1949,6 +1951,12 @@ impl PluginModelProvider {
     #[must_use]
     pub(crate) fn with_auth(mut self, auth: Option<JsonValue>) -> Self {
         self.auth = auth;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_audit(mut self, audit: Option<Arc<audit::AuditSink>>) -> Self {
+        self.audit = audit;
         self
     }
 }
@@ -1968,10 +1976,26 @@ impl Provider for PluginModelProvider {
             }
             let messages = serde_json::to_value(&request.messages)
                 .map_err(|err| LlmError::decode(err.to_string()))?;
-            let completion = self
-                .host
-                .complete_with_provider(&self.spec, &request.model, messages, self.auth.clone())
-                .map_err(|err| LlmError::upstream(err.to_string()))?;
+            let started = std::time::Instant::now();
+            let result = self.host.complete_with_provider(
+                &self.spec,
+                &request.model,
+                messages,
+                self.auth.clone(),
+            );
+            if let Some(audit) = &self.audit {
+                let auth_present = self.auth.as_ref().is_some_and(|auth| !auth.is_null());
+                let outcome = if result.is_ok() { "success" } else { "error" };
+                audit.record_plugin_provider_request(
+                    self.spec.raw_spec(),
+                    &self.provider.id,
+                    &self.model.id,
+                    auth_present,
+                    started.elapsed().as_millis(),
+                    outcome,
+                );
+            }
+            let completion = result.map_err(|err| LlmError::upstream(err.to_string()))?;
             let stream = futures_util::stream::iter(plugin_provider_events(
                 &completion.raw,
                 &completion.content,

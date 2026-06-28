@@ -311,6 +311,42 @@ impl AuditSink {
         self.write("plugin_hook", fields);
     }
 
+    /// Record a turn served by a plugin-contributed provider/model through the external runtime.
+    ///
+    /// Plugin-backed providers do not flow through the HTTP [`record_provider_request`] path, so
+    /// this is the per-turn provider record proving the plugin model actually executed. The plugin
+    /// credential is never serialized; only its presence is reflected and the `auth` field is the
+    /// canonical redaction placeholder.
+    ///
+    /// [`record_provider_request`]: Self::record_provider_request
+    pub fn record_plugin_provider_request(
+        &self,
+        plugin: &str,
+        provider: &str,
+        model: &str,
+        auth_present: bool,
+        duration_ms: u128,
+        outcome: &str,
+    ) {
+        let mut fields = Map::new();
+        insert_str(&mut fields, "actor", "plugin_provider");
+        insert_str(&mut fields, "kind", "provider_request");
+        insert_str(&mut fields, "hook", "provider");
+        insert_str(&mut fields, "plugin", plugin);
+        insert_str(&mut fields, "provider", provider);
+        insert_str(&mut fields, "model", model);
+        fields.insert("auth_present".to_owned(), Value::Bool(auth_present));
+        if auth_present {
+            insert_str(&mut fields, "auth", redaction::PLACEHOLDER);
+        }
+        fields.insert(
+            "duration_ms".to_owned(),
+            Value::Number(Number::from(u64::try_from(duration_ms).unwrap_or(u64::MAX))),
+        );
+        insert_str(&mut fields, "outcome", outcome);
+        self.write("plugin_provider_request", fields);
+    }
+
     /// Record a plugin `shell.env` result while preserving env field presence and redacting values
     /// whose names or shapes are secret-listed.
     pub fn record_plugin_shell_env(&self, plugin: &str, env: &[(String, String)], outcome: &str) {
