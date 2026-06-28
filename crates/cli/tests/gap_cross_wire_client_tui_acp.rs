@@ -34,6 +34,8 @@ use serde_json::{Value, json};
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
+const NONCE_MAX_ATTEMPTS: u32 = 3;
+const NONCE_RETRY_BASE_BACKOFF_MS: u64 = 200;
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -468,10 +470,11 @@ fn curl_client_attach_and_acp_share_one_session_and_ids() {
     wait_for_health(port);
 
     // (1) Wire-compatible curl client: create + prompt a session over the real server.
-    let session = create_session(port);
-    let nonce = format!("cross004-{}", uuid_like());
-    let prompt = format!("Reply with exactly this token and nothing else: {nonce}");
-    let post = post_turn(port, &session, &prompt);
+    // A live model occasionally truncates/reformats the echoed nonce, so the turn is retried on a
+    // wording miss (each attempt is its own session, keeping the cross-surface id checks below bound
+    // to one clean turn) and matched with a formatting-tolerant normalization. The real
+    // attach/share/session-id wire-compat coverage below is unchanged.
+    let (session, nonce, post) = prompt_until_nonce_echoed(port);
     assert_eq!(post["status"], "completed", "turn completed: {post}");
     let post_message = &post["message"];
     let assistant_id = post_message["id"]
@@ -480,7 +483,7 @@ fn curl_client_attach_and_acp_share_one_session_and_ids() {
         .to_owned();
     let post_answer = post["content"].as_str().expect("POST answer content");
     assert!(
-        post_answer.contains(&nonce),
+        echoes_nonce(post_answer, &nonce),
         "server answer should echo the nonce; got: {post_answer}"
     );
     let post_part_ids = part_id_set(post_message);
@@ -508,7 +511,7 @@ fn curl_client_attach_and_acp_share_one_session_and_ids() {
         .as_str()
         .expect("listing answer content");
     assert!(
-        listing_answer.contains(&nonce),
+        echoes_nonce(listing_answer, &nonce),
         "listing answer should echo the nonce; got: {listing_answer}"
     );
 
@@ -547,7 +550,7 @@ fn curl_client_attach_and_acp_share_one_session_and_ids() {
     assert!(
         attach_assistant["content"]
             .as_str()
-            .is_some_and(|content| content.contains(&nonce)),
+            .is_some_and(|content| echoes_nonce(content, &nonce)),
         "attach reports the same final answer; got: {attach_assistant}"
     );
 
@@ -596,7 +599,7 @@ fn curl_client_attach_and_acp_share_one_session_and_ids() {
         "ACP user chunk carries the original prompt"
     );
     assert!(
-        acp_assistant_text.contains(&nonce),
+        echoes_nonce(acp_assistant_text, &nonce),
         "ACP agent chunk carries the same final answer; got: {acp_assistant_text}"
     );
     let load_result = acp_messages
@@ -618,4 +621,77 @@ fn uuid_like() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// Prompt a fresh session to echo a unique nonce, retrying on a live-model wording miss. Each
+/// attempt uses its own session so the cross-surface id assertions stay bound to a single clean
+/// turn. Returns the session id, the nonce, and the completed `PromptResponse`.
+fn prompt_until_nonce_echoed(port: u16) -> (String, String, Value) {
+    let mut failures = Vec::new();
+    for attempt in 1..=NONCE_MAX_ATTEMPTS {
+        let session = create_session(port);
+        let nonce = format!("cross004-{}", uuid_like());
+        let prompt = format!("Reply with exactly this token and nothing else: {nonce}");
+        let post = post_turn(port, &session, &prompt);
+        let completed = post["status"] == "completed";
+        let answer = post["content"].as_str().unwrap_or_default();
+        if completed && echoes_nonce(answer, &nonce) {
+            return (session, nonce, post);
+        }
+        failures.push(format!(
+            "attempt {attempt}/{NONCE_MAX_ATTEMPTS}, nonce={nonce:?}, status={:?}, answer={answer:?}",
+            post["status"]
+        ));
+        if attempt < NONCE_MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(
+                NONCE_RETRY_BASE_BACKOFF_MS * u64::from(attempt),
+            ));
+        }
+    }
+    panic!(
+        "server turn failed to echo a fresh nonce after {NONCE_MAX_ATTEMPTS} attempts: {}",
+        failures.join(" | ")
+    );
+}
+
+/// Formatting-tolerant nonce match: compares only the ascii-alphanumeric characters (lowercased) so
+/// a correctly echoed nonce still matches when the model wraps it in code fences/quotes, swaps the
+/// hyphens for spaces, or changes case. Outright truncation/omission is handled by the retry above.
+fn echoes_nonce(answer: &str, nonce: &str) -> bool {
+    fn squeeze(text: &str) -> String {
+        text.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    }
+    squeeze(answer).contains(&squeeze(nonce))
+}
+
+/// Offline regression guard for the tolerant nonce matcher: a correctly echoed nonce must still
+/// match through common live-model reformatting, while a truncated/different token must NOT match
+/// (those misses are the retry's job, not the matcher's).
+#[test]
+fn echoes_nonce_tolerates_reformatting_but_not_truncation() {
+    let nonce = "cross004-18bd5b0644f5a86d-e69a2";
+    assert!(echoes_nonce(nonce, nonce), "exact echo matches");
+    assert!(
+        echoes_nonce("Sure, here it is: `cross004-18bd5b0644f5a86d-e69a2`", nonce),
+        "code-fenced/quoted echo with surrounding prose matches"
+    );
+    assert!(
+        echoes_nonce("cross004 18bd5b0644f5a86d e69a2.", nonce),
+        "hyphens reflowed to spaces with trailing punctuation matches"
+    );
+    assert!(
+        echoes_nonce("CROSS004-18BD5B0644F5A86D-E69A2", nonce),
+        "case-changed echo matches"
+    );
+    assert!(
+        !echoes_nonce("cross004-18bd5b0644f5a86d", nonce),
+        "a truncated nonce must not match (handled by retry)"
+    );
+    assert!(
+        !echoes_nonce("totally different answer", nonce),
+        "an unrelated answer must not match"
+    );
 }
