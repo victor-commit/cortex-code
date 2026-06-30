@@ -11,7 +11,7 @@
 // See: NOTICE (Direct-Port Provenance Ledger)
 //! Loading spinner component.
 
-use frame::style::CYAN_PRIMARY;
+use frame::style::ORANGE;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -102,7 +102,7 @@ impl Widget for &LoadingSpinner {
             return;
         }
 
-        let spinner_style = Style::default().fg(CYAN_PRIMARY);
+        let spinner_style = Style::default().fg(ORANGE);
         buf.set_string(area.x, area.y, self.current_frame(), spinner_style);
 
         if let Some(label) = &self.label

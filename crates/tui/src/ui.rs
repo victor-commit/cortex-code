@@ -16,6 +16,7 @@ use tui_components::toast::ToastLevel;
 use crate::app::{
     App, AssistantTurn, Dialog, DialogKind, DiffViewMode, DiffViewerFocus, Entry, UsageSummary,
 };
+use crate::brand;
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
@@ -590,7 +591,7 @@ fn push_notice(
     let body: Vec<String> = wrap(message, width.saturating_sub(2).max(1));
     let mut first = true;
     for wrapped in body {
-        let marker = if first { "▸ " } else { "  " };
+        let marker = row_marker(first);
         first = false;
         lines.push(Line::from(vec![
             Span::styled(marker, style),
@@ -783,32 +784,38 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 fn draw_home(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    let heading_style = Style::default()
-        .fg(theme.primary)
-        .add_modifier(Modifier::BOLD);
     let dim = Style::default()
         .fg(theme.text_dim)
         .add_modifier(Modifier::DIM);
 
     let leader = app.keybinds().leader.display();
-    let body = Text::from(vec![
-        Line::from(Span::styled("Cortex Code", heading_style)),
-        Line::from(""),
-        Line::from("Your terminal coding agent — start a new conversation."),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Type a message and press Enter to begin.",
-            dim,
-        )),
-        Line::from(Span::styled(
-            "Shift+Enter inserts a newline · /exit or Ctrl+C to quit.",
-            dim,
-        )),
-        Line::from(Span::styled(
-            format!("Press {leader} for keybindings (which-key)."),
-            dim,
-        )),
-    ]);
+
+    // The card leads with the `✦ Cortex Code` brand lockup and the brain mascot block-art (both
+    // drawn via theme tokens, so they are mono-orange on the default theme). The mascot rows are a
+    // fixed width, so the centered card keeps the art aligned — hence no `Wrap` here.
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.push(Line::from(""));
+    body.push(brand::wordmark(theme));
+    body.push(Line::from(""));
+    body.extend(brand::mascot_lines(theme));
+    body.push(Line::from(""));
+    body.push(Line::from(Span::styled(
+        "Your terminal coding agent. Start a new conversation.",
+        Style::default().fg(theme.text),
+    )));
+    body.push(Line::from(""));
+    body.push(Line::from(Span::styled(
+        "Type a message and press Enter to begin.",
+        dim,
+    )));
+    body.push(Line::from(Span::styled(
+        "Shift+Enter inserts a newline · /exit or Ctrl+C to quit.",
+        dim,
+    )));
+    body.push(Line::from(Span::styled(
+        format!("Press {leader} for keybindings (which-key)."),
+        dim,
+    )));
 
     let block = Block::default()
         .style(Style::default().bg(theme.surface[0]))
@@ -822,10 +829,9 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColor
                 .add_modifier(Modifier::BOLD),
         );
 
-    let paragraph = Paragraph::new(body)
+    let paragraph = Paragraph::new(Text::from(body))
         .block(block)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
+        .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, area);
 }
@@ -917,6 +923,18 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     frame.set_cursor_position((cx, cy));
 }
 
+/// The two-column leading marker for a list/menu/dialog row: the brand `›` selection marker
+/// ([`glyphs::SELECT_MARKER`]) on a highlighted row (drawn on the inverse selection bar), or two
+/// blanks otherwise (see [`crate::glyphs::SELECT_MARKER`]). The legacy thin disclosure triangle is
+/// never used (it antialiases to a thin mark / tofu).
+fn row_marker(selected: bool) -> String {
+    if selected {
+        format!("{} ", crate::glyphs::SELECT_MARKER)
+    } else {
+        "  ".to_string()
+    }
+}
+
 /// The style for a highlighted picker/list row: a solid inverse pair (an explicit `selection_fg`
 /// drawn on an explicit `selection_bg`), never `Modifier::REVERSED`, so a selection reads as a
 /// solid fill with a contrasting foreground in a snapshot.
@@ -928,7 +946,7 @@ fn selected_row_style(theme: &style::ThemeColors) -> Style {
 }
 
 /// Build the slash-command menu's rows for the current query, or `None` when the menu is closed.
-/// Each row shows `/name  description`; the highlighted row carries a `▸` marker and bold name.
+/// Each row shows `/name  description`; the highlighted row carries a `›` marker and bold name.
 /// A non-empty query that matches nothing yields a single graceful "no matching commands" row.
 fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let theme = style::ThemeColors::from_name(app.theme());
@@ -947,7 +965,7 @@ fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let mut lines = Vec::with_capacity(matches.len());
     for (i, command) in matches.iter().enumerate() {
         let is_selected = i == selected;
-        let marker = if is_selected { "▸ " } else { "  " };
+        let marker = row_marker(is_selected);
         if is_selected {
             let sel = selected_row_style(&theme);
             lines.push(Line::from(vec![
@@ -1019,7 +1037,7 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &styl
 }
 
 /// Build the `@`-file picker's rows for the current query, or `None` when the picker is closed.
-/// Each row shows a file path; the highlighted row carries a `▸` marker and bold text. A query that
+/// Each row shows a file path; the highlighted row carries a `›` marker and bold text. A query that
 /// matches no file yields a single graceful "no matching files" row.
 fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let theme = style::ThemeColors::from_name(app.theme());
@@ -1040,7 +1058,7 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let mut lines = Vec::with_capacity(matches.len());
     for (i, path) in matches.iter().enumerate() {
         let is_selected = i == selected;
-        let marker = if is_selected { "▸ " } else { "  " };
+        let marker = row_marker(is_selected);
         if is_selected {
             let sel = selected_row_style(&theme);
             lines.push(Line::from(vec![
@@ -1310,7 +1328,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     }
 }
 
-/// Build a modal dialog's item rows: each selectable item with a `▸` marker and bold name on the
+/// Build a modal dialog's item rows: each selectable item with a `›` marker and bold name on the
 /// highlighted row, or a single italic empty-state row when the list is empty (e.g. the MCP
 /// "no servers configured" view).
 fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static>> {
@@ -1331,7 +1349,7 @@ fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static
     let mut lines = Vec::with_capacity(dialog.items.len());
     for (i, item) in dialog.items.iter().enumerate() {
         let is_selected = i == selected;
-        let marker = if is_selected { "▸ " } else { "  " };
+        let marker = row_marker(is_selected);
         if is_selected {
             let sel = selected_row_style(theme);
             lines.push(Line::from(vec![
@@ -1416,11 +1434,7 @@ fn draw_diff_file_tree(
             .iter()
             .enumerate()
             .map(|(index, file)| {
-                let marker = if index == viewer.selected_file {
-                    "▸ "
-                } else {
-                    "  "
-                };
+                let marker = row_marker(index == viewer.selected_file);
                 let label = format!(
                     "{} (+{} -{}, {} hunk{})",
                     file.path,
@@ -1789,14 +1803,10 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
     }
 
     // The option row: Allow once · Allow always (remember) · Deny. The highlighted choice carries a
-    // `▸` marker and bold styling, and the options keep their semantic colors (allow = success/green,
+    // `›` marker and bold styling, and the options keep their semantic colors (allow = success/green,
     // deny = error/red) so the choice is unmistakable in a snapshot.
     let option = |label: &str, index: usize, color| {
-        let marked = if selected == index {
-            format!("▸ {label}")
-        } else {
-            format!("  {label}")
-        };
+        let marked = format!("{}{label}", row_marker(selected == index));
         Span::styled(marked, option_style(color, selected == index, theme))
     };
     let is_question = tool == "question";
@@ -1944,7 +1954,7 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(matches.len());
     for (i, command) in matches.iter().enumerate() {
         let is_selected = i == selected;
-        let marker = if is_selected { "▸ " } else { "  " };
+        let marker = row_marker(is_selected);
         let disabled = command.disabled_reason.is_some();
         let mut description = command.description.clone();
         if let Some(reason) = &command.disabled_reason {
@@ -2418,6 +2428,119 @@ mod tests {
             cells.iter().any(|c| c.bg == theme.surface[0]),
             "footer uses themed footer background"
         );
+    }
+
+    #[test]
+    fn home_screen_renders_the_brand_lockup_and_brain_mascot() {
+        // VAL-FOUND-005/006/007: the home/MOTD shows the `✦ Cortex Code` wordmark and the brain
+        // mascot block-art in the brand accent, with no `>_` cliché and zero tofu.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let a = app(); // empty transcript -> home screen
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(screen.contains('✦'), "the brand star renders:\n{screen}");
+        assert!(
+            screen.contains("Cortex Code"),
+            "the wordmark name renders:\n{screen}"
+        );
+        assert!(!screen.contains(">_"), "the `>_` cliché never appears");
+        assert!(
+            screen.contains("██ ▌  ▐ ██"),
+            "the brain mascot block-art renders:\n{screen}"
+        );
+
+        // The `✦` brand star carries the brand primary color (ORANGE on the default theme).
+        let star = buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "✦")
+            .expect("the brand star is on screen");
+        assert_eq!(star.fg, theme.primary, "the brand star is the brand accent");
+
+        // A mascot block cell is the brand accent too (the mascot is mono-orange, not tofu).
+        let block = buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "▐")
+            .expect("a mascot block cell is on screen");
+        assert_eq!(block.fg, theme.primary, "the mascot is the brand accent");
+    }
+
+    #[test]
+    fn no_legacy_thin_triangles_in_the_render_path() {
+        // VAL-FOUND-028 (glyph-safety slice): the thin triangles `▸`/`▾` never appear in the app's
+        // rendered output across the home, transcript menus, dialogs, and the command palette; the
+        // selection/row marker is the brand `›`.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn screen_of(a: &App) -> String {
+            let backend = TestBackend::new(92, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, a)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect()
+        }
+
+        fn assert_no_thin_triangle(label: &str, screen: &str) {
+            assert!(!screen.contains('▸'), "{label} renders a thin `▸`:\n{screen}");
+            assert!(!screen.contains('▾'), "{label} renders a thin `▾`:\n{screen}");
+        }
+
+        // Home screen.
+        assert_no_thin_triangle("home", &screen_of(&app()));
+
+        // A system notice in the transcript + the `/` command menu open (carries a row marker).
+        let mut convo = app();
+        convo
+            .transcript
+            .push(Entry::Notice("/models opens the model picker".to_owned()));
+        convo.input.set_value("/");
+        let convo_screen = screen_of(&convo);
+        assert_no_thin_triangle("slash menu + notice", &convo_screen);
+        assert!(
+            convo_screen.contains('›'),
+            "the brand `›` marker is used instead:\n{convo_screen}"
+        );
+
+        // The model picker dialog.
+        let mut dialog = app();
+        for c in "/models".chars() {
+            dialog.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        dialog.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_no_thin_triangle("model dialog", &screen_of(&dialog));
+
+        // The command palette.
+        let mut palette = app();
+        palette.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_no_thin_triangle("command palette", &screen_of(&palette));
     }
 
     #[test]
@@ -2901,8 +3024,9 @@ mod tests {
         let text = rendered(&lines);
         assert!(text.contains("/models"), "models present:\n{text}");
         assert!(!text.contains("/help"), "help filtered out:\n{text}");
-        // The highlighted row carries the selection marker.
-        assert!(text.contains("▸"), "selection marker shown:\n{text}");
+        // The highlighted row carries the brand `›` selection marker (never the thin triangle).
+        assert!(text.contains("›"), "selection marker shown:\n{text}");
+        assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
     }
 
     #[test]
@@ -2970,7 +3094,8 @@ mod tests {
             .push(Entry::Notice("/models — Open the model picker".to_owned()));
         let text = rendered(&transcript_lines(&a, 80));
         assert!(text.contains("/models"), "notice text shown:\n{text}");
-        assert!(text.contains("▸"), "notice marker shown:\n{text}");
+        assert!(text.contains("›"), "notice marker shown:\n{text}");
+        assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
     }
 
     #[test]
@@ -3152,9 +3277,10 @@ mod tests {
             "second model listed:\n{text}"
         );
         assert!(
-            text.contains("▸"),
+            text.contains("›"),
             "selection marker on the highlight:\n{text}"
         );
+        assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
     }
 
     #[test]
@@ -3224,7 +3350,8 @@ mod tests {
         let text = rendered(&palette_command_lines(&a));
         assert!(text.contains("/help"), "a command entry is listed:\n{text}");
         assert!(text.contains("/models"), "model command listed:\n{text}");
-        assert!(text.contains("▸"), "the highlight marker is drawn:\n{text}");
+        assert!(text.contains("›"), "the highlight marker is drawn:\n{text}");
+        assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
     }
 
     #[test]

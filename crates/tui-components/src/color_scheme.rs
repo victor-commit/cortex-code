@@ -14,10 +14,7 @@
 //! Provides a flexible color configuration that can be customized
 //! or use sensible defaults from frame.
 
-use frame::style::{
-    CYAN_PRIMARY, ERROR, INFO, SUCCESS, SURFACE_0, SURFACE_1, TEXT, TEXT_DIM, TEXT_MUTED, VOID,
-    WARNING,
-};
+use frame::style::{AMBER, CANVAS, DIM, ERR, FAINT, INFO_DOT, OKG, ORANGE, PANEL, PANEL2, TXT};
 use ratatui::style::Color;
 
 /// A flexible color scheme for TUI components.
@@ -52,18 +49,20 @@ pub struct ColorScheme {
 
 impl Default for ColorScheme {
     fn default() -> Self {
+        // The default scheme mirrors the mono-orange brand palette so any revived tui-components
+        // widget renders ORANGE on near-black, not the legacy ocean/cyan tokens.
         Self {
-            accent: CYAN_PRIMARY,
-            text: TEXT,
-            text_dim: TEXT_DIM,
-            text_muted: TEXT_MUTED,
-            surface: SURFACE_0,
-            surface_alt: SURFACE_1,
-            void: VOID,
-            success: SUCCESS,
-            warning: WARNING,
-            error: ERROR,
-            info: INFO,
+            accent: ORANGE,
+            text: TXT,
+            text_dim: DIM,
+            text_muted: FAINT,
+            surface: PANEL,
+            surface_alt: PANEL2,
+            void: CANVAS,
+            success: OKG,
+            warning: AMBER,
+            error: ERR,
+            info: INFO_DOT,
         }
     }
 }
@@ -164,8 +163,8 @@ mod tests {
     #[test]
     fn test_default_scheme() {
         let scheme = ColorScheme::default();
-        assert_eq!(scheme.accent, CYAN_PRIMARY);
-        assert_eq!(scheme.text, TEXT);
+        assert_eq!(scheme.accent, ORANGE);
+        assert_eq!(scheme.text, TXT);
     }
 
     #[test]

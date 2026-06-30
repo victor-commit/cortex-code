@@ -8,6 +8,7 @@
 
 mod app;
 mod attachments;
+mod brand;
 mod checkpoint;
 mod diff;
 mod format_bridge;

@@ -15,7 +15,7 @@
 
 use crate::borders::ROUNDED_BORDER;
 use crate::mascot::MASCOT_MINIMAL_LINES;
-use frame::style::{CYAN_PRIMARY, TEXT, TEXT_DIM};
+use frame::style::{ORANGE, TEXT, TEXT_DIM};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -60,10 +60,10 @@ impl<'a> WelcomeCard<'a> {
             subtitle: None,
             version: None,
             tips: Vec::new(),
-            accent_color: CYAN_PRIMARY,
+            accent_color: ORANGE,
             text_color: TEXT,
             dim_color: TEXT_DIM,
-            border_color: CYAN_PRIMARY,
+            border_color: ORANGE,
         }
     }
 
@@ -358,7 +358,7 @@ impl<'a> InfoCard<'a> {
             items: Vec::new(),
             dim_color: TEXT_DIM,
             text_color: TEXT,
-            border_color: CYAN_PRIMARY,
+            border_color: ORANGE,
         }
     }
 
