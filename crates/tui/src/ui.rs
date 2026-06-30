@@ -850,9 +850,14 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         },
     );
 
-    // Right-aligned FAINT action hint on the input row (reserved out of the text region).
-    let hint = if shell {
+    // Right-aligned FAINT action hint on the input row (reserved out of the text region). The hint
+    // tracks the composer's active state: a shell command or an open `/` palette both submit with
+    // `↵`, an open `@` palette inserts the highlighted file with `⇥`, and the plain chat composer
+    // sends with `↵`.
+    let hint = if shell || app.slash_menu_open() {
         format!("{} run   esc dismiss", crate::glyphs::KEY_ENTER)
+    } else if app.mention_open() {
+        format!("{} insert   esc dismiss", crate::glyphs::KEY_TAB)
     } else {
         format!("{} send", crate::glyphs::KEY_ENTER)
     };
@@ -3672,6 +3677,232 @@ mod tests {
         assert!(
             rendered.contains("Copied message"),
             "a copy acknowledgement is shown:\n{rendered}"
+        );
+    }
+
+    fn render_92x30(a: &App) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, a)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn screen_92x30(a: &App) -> String {
+        render_92x30(a)
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn status_bar_three_zone_geometry_and_tokens() {
+        // VAL-CONV-001/002/003: the bottom status bar shows three independently-positioned zones —
+        // left `? for help` (`?` ORANGE_D + label FAINT), a mathematically-centered autonomy/perm
+        // segment (`auto` AMBER + ` (high)` FAINT + ` · ` GHOST + perm DIM), and the REAL default
+        // model id (never the mockup `opus-4.8`).
+        let a = app(); // status.model = google/gemini-2.5-flash
+        let theme = style::ThemeColors::from_name(a.theme());
+        let w = 92usize;
+        let line = status_bar_line(&a, w);
+        let text = plain(&line);
+
+        assert!(text.contains("? for help"), "left zone help hint:\n{text}");
+        assert!(
+            text.contains("auto (high) · allow all commands"),
+            "center autonomy/permission segment:\n{text}"
+        );
+        assert!(
+            text.contains("google/gemini-2.5-flash"),
+            "right zone shows the real default model id:\n{text}"
+        );
+        assert!(!text.contains("opus-4.8"), "never the mockup model literal:\n{text}");
+
+        // Each zone's segments are distinct style runs; verify the brand tokens per segment.
+        let fg_of = |needle: &str| {
+            line.spans
+                .iter()
+                .find(|s| s.content.as_ref() == needle)
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(fg_of("?"), Some(theme.border), "`?` is ORANGE_D");
+        assert_eq!(fg_of(" for help"), Some(theme.text_muted), "help label is FAINT");
+        assert_eq!(fg_of("auto"), Some(theme.secondary), "`auto` head is AMBER");
+        assert_eq!(fg_of(" (high)"), Some(theme.text_muted), "`(high)` tail is FAINT");
+        assert_eq!(fg_of(" · "), Some(theme.ghost), "separator is GHOST");
+        assert_eq!(
+            fg_of("allow all commands"),
+            Some(theme.text_dim),
+            "permission word is DIM"
+        );
+
+        // The center segment's midpoint sits at the terminal's horizontal center (±1 cell).
+        let center = "auto (high) · allow all commands";
+        let byte_start = text.find(center).expect("center segment present");
+        let char_start = text[..byte_start].chars().count();
+        let midpoint = char_start + center.chars().count() / 2;
+        assert!(
+            (midpoint as isize - (w / 2) as isize).abs() <= 1,
+            "center midpoint {midpoint} is at W/2 {} (±1)",
+            w / 2
+        );
+    }
+
+    #[test]
+    fn status_bar_model_is_flush_right_on_a_full_width_bar() {
+        // VAL-CONV-003/004: the real model id is flush to the right margin (2-col gutter) and the
+        // whole bottom row is painted edge-to-edge with the BAR surface (no bg=None black gap).
+        let mut a = app();
+        a.transcript.push(Entry::User("hi".to_owned())); // a conversation screen, not just home
+        let theme = style::ThemeColors::from_name(a.theme());
+        let buf = render_92x30(&a);
+        let w = buf.area.width as usize;
+        let h = buf.area.height as usize;
+
+        for x in 0..w {
+            assert_eq!(
+                buf.content()[(h - 1) * w + x].bg,
+                theme.surface[0],
+                "status-bar cell at column {x} carries the BAR background"
+            );
+        }
+
+        let row: Vec<char> = (0..w)
+            .flat_map(|x| buf.content()[(h - 1) * w + x].symbol().chars())
+            .collect();
+        assert_eq!(row.len(), w, "one rendered char per status-bar column");
+        let model = "google/gemini-2.5-flash";
+        let model_w = model.chars().count();
+        assert_eq!(row[w - 2], ' ', "right gutter column 1 is blank");
+        assert_eq!(row[w - 1], ' ', "right gutter column 2 is blank");
+        let model_cols: String = row[w - 2 - model_w..w - 2].iter().collect();
+        assert_eq!(model_cols, model, "the model id is flush right");
+    }
+
+    #[test]
+    fn composer_renders_rounded_orange_accent_and_prompt() {
+        // VAL-CONV-005: the composer is a fixed rounded ORANGE_D box above the status bar, with a
+        // `▌` ORANGE accent edge at the left inner column and a `›` ORANGE prompt glyph.
+        let mut a = app();
+        a.transcript.push(Entry::User("hi".to_owned())); // conversation screen
+        let theme = style::ThemeColors::from_name(a.theme());
+        let buf = render_92x30(&a);
+        let w = buf.area.width as usize;
+        let h = buf.area.height as usize;
+
+        // Restrict the search to the composer rows (just above the status bar) so transcript
+        // `›` marks and the MOTD card corners do not interfere.
+        let find = |sym: &str| {
+            ((h - 4)..(h - 1))
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .map(|(x, y)| &buf.content()[y * w + x])
+                .find(|c| c.symbol() == sym)
+        };
+
+        let accent = find("▌").expect("composer accent edge present");
+        assert_eq!(accent.fg, theme.primary, "`▌` accent is ORANGE");
+        let prompt = find("›").expect("composer prompt present");
+        assert_eq!(prompt.fg, theme.primary, "`›` prompt is ORANGE");
+
+        for corner in ["╭", "╮", "╰", "╯"] {
+            let cell = find(corner).unwrap_or_else(|| panic!("composer corner {corner} present"));
+            assert_eq!(cell.fg, theme.border, "composer border {corner} is ORANGE_D");
+        }
+    }
+
+    #[test]
+    fn composer_hint_matches_active_state() {
+        // VAL-CONV-006: the composer's right-aligned hint tracks the active state — `↵ send` in
+        // chat, `↵ run   esc dismiss` with the `/` palette open, `⇥ insert   esc dismiss` with `@`.
+        let mut chat = app();
+        chat.transcript.push(Entry::User("hi".to_owned()));
+        let s = screen_92x30(&chat);
+        assert!(s.contains("↵ send"), "chat composer shows the send hint:\n{s}");
+
+        let mut slash = app();
+        slash.input.set_value("/");
+        assert!(slash.slash_menu_open(), "the `/` palette is open");
+        let s = screen_92x30(&slash);
+        assert!(
+            s.contains("↵ run   esc dismiss"),
+            "the `/` composer shows the run hint:\n{s}"
+        );
+
+        let mut mention = app();
+        mention.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('@'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(mention.mention_open(), "the `@` palette is open");
+        let s = screen_92x30(&mention);
+        assert!(
+            s.contains("⇥ insert   esc dismiss"),
+            "the `@` composer shows the insert hint:\n{s}"
+        );
+    }
+
+    #[test]
+    fn composer_placeholder_switches_home_vs_conversation() {
+        // The composer placeholder is the home prompt on a fresh session and the reply prompt once
+        // a conversation exists (the placeholder switches between home and conversation contexts).
+        let home = app(); // empty transcript -> home
+        let s = screen_92x30(&home);
+        assert!(
+            s.contains(crate::motd::HOME_PLACEHOLDER),
+            "home placeholder on a fresh session:\n{s}"
+        );
+        assert!(!s.contains("reply to cortex"), "no reply placeholder on home:\n{s}");
+
+        let mut convo = app();
+        convo.transcript.push(Entry::User("hi".to_owned()));
+        convo.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "ok".to_owned(),
+        }));
+        let s = screen_92x30(&convo);
+        assert!(
+            s.contains("reply to cortex"),
+            "conversation placeholder after an exchange:\n{s}"
+        );
+        assert!(
+            !s.contains(crate::motd::HOME_PLACEHOLDER),
+            "home placeholder gone once a conversation exists:\n{s}"
+        );
+    }
+
+    #[test]
+    fn composer_and_status_bar_are_fixed_chrome_across_conversation_screens() {
+        // The composer (`▌`/`›`) and the 3-zone status bar render on every Wave 0 screen, not just
+        // home: the typing state (text, no transcript) and a multi-turn conversation both show them.
+        let mut typing = app();
+        typing
+            .input
+            .set_value("the streaming buffer grows unbounded");
+        let s = screen_92x30(&typing);
+        assert!(s.contains("▌"), "composer accent present while typing:\n{s}");
+        assert!(
+            s.contains("? for help") && s.contains("google/gemini-2.5-flash"),
+            "status bar present while typing:\n{s}"
+        );
+
+        let mut convo = app();
+        for i in 0..4 {
+            convo.transcript.push(Entry::User(format!("question {i}")));
+            convo.transcript.push(Entry::Assistant(AssistantTurn {
+                reasoning: String::new(),
+                answer: format!("answer {i}"),
+            }));
+        }
+        let s = screen_92x30(&convo);
+        assert!(
+            s.contains("▌") && s.contains("›"),
+            "composer present in a conversation:\n{s}"
+        );
+        assert!(
+            s.contains("auto (high) · allow all commands") && s.contains("google/gemini-2.5-flash"),
+            "3-zone status bar present in a conversation:\n{s}"
         );
     }
 }
