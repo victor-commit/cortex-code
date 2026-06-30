@@ -168,6 +168,17 @@ impl Highlighter {
         *self.theme.write() = theme;
     }
 
+    /// Returns a highlighter that shares this one's compiled grammars/registry (cheap, no
+    /// re-registration) but carries its own `theme`. Use this to render the same languages under a
+    /// different (chrome-bound) syntax palette without mutating the shared default highlighter.
+    pub fn themed_clone(&self, theme: Theme) -> Self {
+        Self {
+            theme: Arc::new(RwLock::new(theme)),
+            configs: Arc::clone(&self.configs),
+            registry: Arc::clone(&self.registry),
+        }
+    }
+
     /// Gets a clone of the current theme.
     pub fn theme(&self) -> Theme {
         self.theme.read().clone()

@@ -13,9 +13,10 @@
 
 //! Cortex color palette and style helpers used across the ported TUI framework.
 //!
-//! A cohesive ocean-inspired theme with cyan/green accents. All colors are constants. These
-//! constants are the single source of truth for the finalized single theme consumed by both the
-//! markdown renderer (`frame::markdown`) and the ported `tui-components` widgets.
+//! The default `dark` theme is the mono-orange Cortex brand on near-black `#0d0d0d` (see the
+//! BRAND PALETTE constants). The legacy ocean/cyan constants are retained for the ported
+//! `tui-components` widgets and the non-default themes. `ThemeColors` is the palette source of
+//! truth consumed by both the markdown renderer (`frame::markdown`) and the TUI screens.
 
 use std::collections::BTreeMap;
 use std::sync::RwLock;
@@ -110,32 +111,97 @@ pub const BORDER_FOCUS: Color = Color::Rgb(0, 255, 163); // #00FFA3
 pub const BORDER_DIM: Color = Color::Rgb(16, 42, 67); // #102A43
 
 // ============================================================
-// LEGACY ALIASES - Backward compatibility
+// BRAND PALETTE - mono-orange on near-black (#0d0d0d)
 // ============================================================
+//
+// The brand palette is the source of truth for the default `dark` theme and is
+// the token set every screen draws from. ORANGE is the only UI hue; greens,
+// reds and blues are reserved for status dots, diff +/- rows and code syntax.
+// Exact RGB values mirror `library/design-system.md` (the Python layout kit).
 
-/// Alias for CYAN_PRIMARY (legacy: PINK).
-pub const PINK: Color = CYAN_PRIMARY;
+/// Page background — near-black `#0d0d0d`.
+pub const CANVAS: Color = Color::Rgb(13, 13, 13);
 
-/// Alias for TEAL (legacy: PURPLE).
-pub const PURPLE: Color = TEAL;
+/// Primary brand accent: prompts, brand glyphs, selection fill.
+pub const ORANGE: Color = Color::Rgb(232, 146, 86);
 
-/// Alias for SUCCESS (legacy: GREEN).
-pub const GREEN: Color = SUCCESS;
+/// Dim orange: borders and secondary marks.
+pub const ORANGE_D: Color = Color::Rgb(150, 92, 54);
 
-/// Alias for WARNING (legacy: ORANGE).
-pub const ORANGE: Color = WARNING;
+/// Lighter accent: titles, highlights, active marks.
+pub const AMBER: Color = Color::Rgb(242, 183, 120);
 
-/// Alias for INFO (legacy: BLUE).
-pub const BLUE: Color = INFO;
+/// Body text.
+pub const TXT: Color = Color::Rgb(208, 208, 206);
 
-/// Alias for ERROR (legacy: RED).
-pub const RED: Color = ERROR;
+/// Emphasized / selected text.
+pub const BRIGHT: Color = Color::Rgb(242, 242, 240);
 
-/// Alias for HIGHLIGHT (legacy: YELLOW).
-pub const YELLOW: Color = HIGHLIGHT;
+/// Secondary text.
+pub const DIM: Color = Color::Rgb(140, 140, 140);
 
-/// Alias for BORDER_FOCUS (legacy: BORDER_HIGHLIGHT).
-pub const BORDER_HIGHLIGHT: Color = BORDER_FOCUS;
+/// Tertiary text / placeholders / hints.
+pub const FAINT: Color = Color::Rgb(92, 92, 98);
+
+/// Rules, dividers, faded backdrop.
+pub const GHOST: Color = Color::Rgb(60, 60, 66);
+
+/// Panel surface.
+pub const PANEL: Color = Color::Rgb(22, 22, 26);
+
+/// Alternate panel surface.
+pub const PANEL2: Color = Color::Rgb(28, 28, 33);
+
+/// Status-bar / find-bar background.
+pub const BAR: Color = Color::Rgb(20, 20, 24);
+
+/// Warm selected-row background (the inverse-selection fill).
+pub const SELBG: Color = Color::Rgb(44, 35, 26);
+
+/// Very soft warm tint (working band).
+pub const SOFT: Color = Color::Rgb(34, 28, 22);
+
+/// Brand card / panel border.
+pub const BORDER_BRAND: Color = Color::Rgb(92, 66, 46);
+
+/// Saturated success green (reads green at small sizes).
+pub const OKG: Color = Color::Rgb(96, 204, 110);
+
+/// Saturated error red.
+pub const ERR: Color = Color::Rgb(224, 96, 96);
+
+/// Info dot blue (status only, never chrome).
+pub const INFO_DOT: Color = Color::Rgb(96, 170, 224);
+
+/// Diff insert meta `+N` green.
+pub const GREEN: Color = Color::Rgb(130, 196, 130);
+
+/// Diff delete meta `-N` red.
+pub const RED: Color = Color::Rgb(216, 122, 122);
+
+/// Rare info-dot blue.
+pub const BLUE: Color = Color::Rgb(138, 176, 224);
+
+/// Diff insert text.
+pub const ADD_FG: Color = Color::Rgb(124, 196, 124);
+
+/// Diff insert row background.
+pub const ADD_BG: Color = Color::Rgb(18, 38, 22);
+
+/// Diff delete text.
+pub const DEL_FG: Color = Color::Rgb(212, 118, 108);
+
+/// Diff delete row background.
+pub const DEL_BG: Color = Color::Rgb(46, 22, 22);
+
+/// Diff line numbers.
+pub const LNUM: Color = Color::Rgb(110, 110, 118);
+
+/// Fenced code-block background.
+pub const CODEBG: Color = Color::Rgb(24, 24, 28);
+
+/// Inline-code chip background.
+pub const INLBG: Color = Color::Rgb(40, 34, 28);
 
 // ============================================================
 // THEME COLORS STRUCT - For future theme switching
@@ -160,6 +226,14 @@ pub struct ThemeColors {
     pub text_dim: Color,
     /// Muted text color.
     pub text_muted: Color,
+    /// Emphasized / brightest text color.
+    pub text_bright: Color,
+    /// Faded rule / divider / backdrop color.
+    pub ghost: Color,
+    /// Selected-row foreground (explicit inverse pair with `selection_bg`).
+    pub selection_fg: Color,
+    /// Selected-row background (explicit inverse pair with `selection_fg`).
+    pub selection_bg: Color,
     /// Success color.
     pub success: Color,
     /// Warning color.
@@ -175,37 +249,36 @@ pub struct ThemeColors {
 }
 
 impl ThemeColors {
-    /// Ocean/Cyan theme - the default Cortex theme.
-    pub fn ocean_cyan() -> Self {
+    /// Dark theme (default) — the mono-orange Cortex brand on near-black `#0d0d0d`.
+    pub fn dark() -> Self {
         Self {
-            primary: CYAN_PRIMARY,
-            secondary: SKY_BLUE,
-            accent: ELECTRIC_BLUE,
-            background: VOID,
-            surface: [SURFACE_0, SURFACE_1, SURFACE_2, SURFACE_3],
-            text: TEXT,
-            text_dim: TEXT_DIM,
-            text_muted: TEXT_MUTED,
-            success: SUCCESS,
-            warning: WARNING,
-            error: ERROR,
-            info: INFO,
-            border: BORDER,
-            border_focus: BORDER_FOCUS,
+            primary: ORANGE,
+            secondary: AMBER,
+            accent: AMBER,
+            background: CANVAS,
+            surface: [BAR, PANEL, PANEL2, SELBG],
+            text: TXT,
+            text_dim: DIM,
+            text_muted: FAINT,
+            text_bright: BRIGHT,
+            ghost: GHOST,
+            selection_fg: CANVAS,
+            selection_bg: ORANGE,
+            success: OKG,
+            warning: AMBER,
+            error: ERR,
+            info: INFO_DOT,
+            border: ORANGE_D,
+            border_focus: ORANGE,
         }
     }
 
-    /// Dark theme (default) - cyan/green accent on dark background.
-    pub fn dark() -> Self {
-        Self::ocean_cyan()
-    }
-
-    /// Light theme - darker accents on light background.
+    /// Light theme — dark text on a light canvas.
     pub fn light() -> Self {
         Self {
             primary: Color::Rgb(0, 150, 100),
             secondary: Color::Rgb(0, 120, 80),
-            accent: Color::Rgb(0, 100, 70),
+            accent: Color::Rgb(0, 120, 80),
             background: Color::Rgb(255, 255, 255),
             surface: [
                 Color::Rgb(245, 245, 245),
@@ -216,6 +289,10 @@ impl ThemeColors {
             text: Color::Rgb(30, 30, 30),
             text_dim: Color::Rgb(100, 100, 100),
             text_muted: Color::Rgb(150, 150, 150),
+            text_bright: Color::Rgb(10, 10, 10),
+            ghost: Color::Rgb(200, 200, 200),
+            selection_fg: Color::Rgb(255, 255, 255),
+            selection_bg: Color::Rgb(0, 150, 100),
             success: Color::Rgb(0, 150, 0),
             warning: Color::Rgb(200, 150, 0),
             error: Color::Rgb(200, 50, 50),
@@ -225,7 +302,7 @@ impl ThemeColors {
         }
     }
 
-    /// Ocean dark theme - deep blue/cyan aesthetic.
+    /// Ocean theme — cool blues/teals on deep navy.
     pub fn ocean_dark() -> Self {
         Self {
             primary: Color::Rgb(0, 200, 200),
@@ -241,6 +318,10 @@ impl ThemeColors {
             text: Color::Rgb(230, 240, 250),
             text_dim: Color::Rgb(140, 170, 200),
             text_muted: Color::Rgb(80, 110, 140),
+            text_bright: Color::Rgb(240, 248, 255),
+            ghost: Color::Rgb(40, 80, 120),
+            selection_fg: Color::Rgb(10, 25, 47),
+            selection_bg: Color::Rgb(0, 200, 200),
             success: Color::Rgb(0, 220, 180),
             warning: Color::Rgb(255, 200, 100),
             error: Color::Rgb(255, 100, 100),
@@ -250,7 +331,7 @@ impl ThemeColors {
         }
     }
 
-    /// Monokai theme - classic code editor colors.
+    /// Monokai theme — classic code-editor palette.
     pub fn monokai() -> Self {
         Self {
             primary: Color::Rgb(166, 226, 46),
@@ -266,6 +347,10 @@ impl ThemeColors {
             text: Color::Rgb(248, 248, 242),
             text_dim: Color::Rgb(180, 180, 170),
             text_muted: Color::Rgb(117, 113, 94),
+            text_bright: Color::Rgb(255, 255, 250),
+            ghost: Color::Rgb(70, 71, 65),
+            selection_fg: Color::Rgb(39, 40, 34),
+            selection_bg: Color::Rgb(166, 226, 46),
             success: Color::Rgb(166, 226, 46),
             warning: Color::Rgb(230, 219, 116),
             error: Color::Rgb(249, 38, 114),
@@ -275,203 +360,32 @@ impl ThemeColors {
         }
     }
 
-    /// Dracula-inspired theme.
-    pub fn dracula() -> Self {
+    /// VS Code Dark+ chrome theme — the full VS Code palette, not just code syntax.
+    pub fn vscode() -> Self {
         Self {
-            primary: Color::Rgb(189, 147, 249),
-            secondary: Color::Rgb(139, 233, 253),
-            accent: Color::Rgb(255, 121, 198),
-            background: Color::Rgb(40, 42, 54),
+            primary: Color::Rgb(0, 122, 204),
+            secondary: Color::Rgb(86, 156, 214),
+            accent: Color::Rgb(86, 156, 214),
+            background: Color::Rgb(30, 30, 30),
             surface: [
-                Color::Rgb(45, 48, 62),
-                Color::Rgb(53, 57, 75),
-                Color::Rgb(64, 69, 90),
-                Color::Rgb(76, 82, 106),
+                Color::Rgb(37, 37, 38),
+                Color::Rgb(45, 45, 46),
+                Color::Rgb(55, 55, 56),
+                Color::Rgb(65, 65, 66),
             ],
-            text: Color::Rgb(248, 248, 242),
-            text_dim: Color::Rgb(189, 192, 210),
-            text_muted: Color::Rgb(98, 114, 164),
-            success: Color::Rgb(80, 250, 123),
-            warning: Color::Rgb(241, 250, 140),
-            error: Color::Rgb(255, 85, 85),
-            info: Color::Rgb(139, 233, 253),
-            border: Color::Rgb(98, 114, 164),
-            border_focus: Color::Rgb(189, 147, 249),
-        }
-    }
-
-    /// Nord-inspired dark theme.
-    pub fn nord() -> Self {
-        Self {
-            primary: Color::Rgb(143, 188, 187),
-            secondary: Color::Rgb(136, 192, 208),
-            accent: Color::Rgb(129, 161, 193),
-            background: Color::Rgb(46, 52, 64),
-            surface: [
-                Color::Rgb(59, 66, 82),
-                Color::Rgb(67, 76, 94),
-                Color::Rgb(76, 86, 106),
-                Color::Rgb(94, 103, 124),
-            ],
-            text: Color::Rgb(236, 239, 244),
-            text_dim: Color::Rgb(216, 222, 233),
-            text_muted: Color::Rgb(129, 161, 193),
-            success: Color::Rgb(163, 190, 140),
-            warning: Color::Rgb(235, 203, 139),
-            error: Color::Rgb(191, 97, 106),
-            info: Color::Rgb(136, 192, 208),
-            border: Color::Rgb(76, 86, 106),
-            border_focus: Color::Rgb(143, 188, 187),
-        }
-    }
-
-    /// Solarized-inspired dark theme.
-    pub fn solarized_dark() -> Self {
-        Self {
-            primary: Color::Rgb(38, 139, 210),
-            secondary: Color::Rgb(42, 161, 152),
-            accent: Color::Rgb(108, 113, 196),
-            background: Color::Rgb(0, 43, 54),
-            surface: [
-                Color::Rgb(7, 54, 66),
-                Color::Rgb(15, 63, 76),
-                Color::Rgb(28, 74, 89),
-                Color::Rgb(39, 86, 102),
-            ],
-            text: Color::Rgb(131, 148, 150),
-            text_dim: Color::Rgb(101, 123, 131),
-            text_muted: Color::Rgb(88, 110, 117),
-            success: Color::Rgb(133, 153, 0),
-            warning: Color::Rgb(181, 137, 0),
-            error: Color::Rgb(220, 50, 47),
-            info: Color::Rgb(38, 139, 210),
-            border: Color::Rgb(88, 110, 117),
-            border_focus: Color::Rgb(42, 161, 152),
-        }
-    }
-
-    /// Gruvbox-inspired dark theme.
-    pub fn gruvbox_dark() -> Self {
-        Self {
-            primary: Color::Rgb(250, 189, 47),
-            secondary: Color::Rgb(131, 165, 152),
-            accent: Color::Rgb(211, 134, 155),
-            background: Color::Rgb(40, 40, 40),
-            surface: [
-                Color::Rgb(50, 48, 47),
-                Color::Rgb(60, 56, 54),
-                Color::Rgb(80, 73, 69),
-                Color::Rgb(102, 92, 84),
-            ],
-            text: Color::Rgb(235, 219, 178),
-            text_dim: Color::Rgb(213, 196, 161),
-            text_muted: Color::Rgb(146, 131, 116),
-            success: Color::Rgb(184, 187, 38),
-            warning: Color::Rgb(250, 189, 47),
-            error: Color::Rgb(251, 73, 52),
-            info: Color::Rgb(131, 165, 152),
-            border: Color::Rgb(102, 92, 84),
-            border_focus: Color::Rgb(250, 189, 47),
-        }
-    }
-
-    /// Tokyo Night-inspired dark theme.
-    pub fn tokyo_night() -> Self {
-        Self {
-            primary: Color::Rgb(122, 162, 247),
-            secondary: Color::Rgb(125, 207, 255),
-            accent: Color::Rgb(187, 154, 247),
-            background: Color::Rgb(26, 27, 38),
-            surface: [
-                Color::Rgb(31, 34, 50),
-                Color::Rgb(36, 40, 59),
-                Color::Rgb(52, 59, 88),
-                Color::Rgb(73, 83, 130),
-            ],
-            text: Color::Rgb(192, 202, 245),
-            text_dim: Color::Rgb(169, 177, 214),
-            text_muted: Color::Rgb(86, 95, 137),
-            success: Color::Rgb(158, 206, 106),
-            warning: Color::Rgb(224, 175, 104),
-            error: Color::Rgb(247, 118, 142),
-            info: Color::Rgb(122, 162, 247),
-            border: Color::Rgb(65, 72, 104),
-            border_focus: Color::Rgb(125, 207, 255),
-        }
-    }
-
-    /// Catppuccin Mocha-inspired dark theme.
-    pub fn catppuccin_mocha() -> Self {
-        Self {
-            primary: Color::Rgb(203, 166, 247),
-            secondary: Color::Rgb(137, 220, 235),
-            accent: Color::Rgb(245, 194, 231),
-            background: Color::Rgb(30, 30, 46),
-            surface: [
-                Color::Rgb(49, 50, 68),
-                Color::Rgb(69, 71, 90),
-                Color::Rgb(88, 91, 112),
-                Color::Rgb(108, 112, 134),
-            ],
-            text: Color::Rgb(205, 214, 244),
-            text_dim: Color::Rgb(186, 194, 222),
-            text_muted: Color::Rgb(127, 132, 156),
-            success: Color::Rgb(166, 227, 161),
-            warning: Color::Rgb(249, 226, 175),
-            error: Color::Rgb(243, 139, 168),
-            info: Color::Rgb(137, 220, 235),
-            border: Color::Rgb(108, 112, 134),
-            border_focus: Color::Rgb(203, 166, 247),
-        }
-    }
-
-    /// One Dark-inspired theme.
-    pub fn one_dark() -> Self {
-        Self {
-            primary: Color::Rgb(97, 175, 239),
-            secondary: Color::Rgb(86, 182, 194),
-            accent: Color::Rgb(198, 120, 221),
-            background: Color::Rgb(40, 44, 52),
-            surface: [
-                Color::Rgb(44, 49, 60),
-                Color::Rgb(50, 55, 67),
-                Color::Rgb(58, 63, 77),
-                Color::Rgb(72, 78, 94),
-            ],
-            text: Color::Rgb(171, 178, 191),
-            text_dim: Color::Rgb(146, 153, 166),
-            text_muted: Color::Rgb(92, 99, 112),
-            success: Color::Rgb(152, 195, 121),
-            warning: Color::Rgb(229, 192, 123),
-            error: Color::Rgb(224, 108, 117),
-            info: Color::Rgb(97, 175, 239),
-            border: Color::Rgb(72, 78, 94),
-            border_focus: Color::Rgb(198, 120, 221),
-        }
-    }
-
-    /// Rose Pine-inspired dark theme.
-    pub fn rose_pine() -> Self {
-        Self {
-            primary: Color::Rgb(196, 167, 231),
-            secondary: Color::Rgb(156, 207, 216),
-            accent: Color::Rgb(235, 188, 186),
-            background: Color::Rgb(25, 23, 36),
-            surface: [
-                Color::Rgb(31, 29, 46),
-                Color::Rgb(38, 35, 58),
-                Color::Rgb(49, 44, 63),
-                Color::Rgb(64, 58, 82),
-            ],
-            text: Color::Rgb(224, 222, 244),
-            text_dim: Color::Rgb(144, 140, 170),
-            text_muted: Color::Rgb(110, 106, 134),
-            success: Color::Rgb(49, 116, 143),
-            warning: Color::Rgb(246, 193, 119),
-            error: Color::Rgb(235, 111, 146),
-            info: Color::Rgb(156, 207, 216),
-            border: Color::Rgb(64, 58, 82),
-            border_focus: Color::Rgb(196, 167, 231),
+            text: Color::Rgb(212, 212, 212),
+            text_dim: Color::Rgb(150, 150, 150),
+            text_muted: Color::Rgb(110, 110, 110),
+            text_bright: Color::Rgb(255, 255, 255),
+            ghost: Color::Rgb(62, 62, 66),
+            selection_fg: Color::Rgb(255, 255, 255),
+            selection_bg: Color::Rgb(0, 122, 204),
+            success: Color::Rgb(137, 209, 133),
+            warning: Color::Rgb(204, 167, 0),
+            error: Color::Rgb(244, 71, 71),
+            info: Color::Rgb(86, 156, 214),
+            border: Color::Rgb(62, 62, 66),
+            border_focus: Color::Rgb(0, 122, 204),
         }
     }
 
@@ -487,16 +401,10 @@ impl ThemeColors {
         }
         match key.as_str() {
             "light" => Self::light(),
-            "ocean_dark" | "ocean" => Self::ocean_dark(),
+            "ocean" | "ocean_dark" => Self::ocean_dark(),
             "monokai" => Self::monokai(),
-            "dracula" => Self::dracula(),
-            "nord" => Self::nord(),
-            "solarized_dark" | "solarized" => Self::solarized_dark(),
-            "gruvbox_dark" | "gruvbox" => Self::gruvbox_dark(),
-            "tokyo_night" | "tokyonight" => Self::tokyo_night(),
-            "catppuccin_mocha" | "catppuccin" => Self::catppuccin_mocha(),
-            "one_dark" | "onedark" => Self::one_dark(),
-            "rose_pine" | "rosepine" => Self::rose_pine(),
+            "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode(),
+            // Default (and any unknown name) resolves to the mono-orange brand `dark`.
             _ => Self::dark(),
         }
     }
@@ -540,27 +448,16 @@ impl ThemeColors {
     }
 }
 
-const BUILTIN_THEME_NAMES: &[&str] = &[
-    "dark",
-    "light",
-    "ocean_dark",
-    "monokai",
-    "dracula",
-    "nord",
-    "solarized_dark",
-    "gruvbox_dark",
-    "tokyo_night",
-    "catppuccin_mocha",
-    "one_dark",
-    "rose_pine",
-];
+/// The five canonical chrome themes. `dark` (the mono-orange brand) is first, so it is the
+/// built-in default before any config is loaded.
+const BUILTIN_THEME_NAMES: &[&str] = &["dark", "light", "monokai", "ocean", "vscode"];
 
 static CUSTOM_THEMES: Lazy<RwLock<BTreeMap<String, ThemeColors>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 
 impl Default for ThemeColors {
     fn default() -> Self {
-        Self::ocean_cyan()
+        Self::dark()
     }
 }
 
@@ -589,10 +486,11 @@ impl CortexStyle {
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Selected item style: void text on cyan background.
+    /// Selected item style: near-black text on solid brand-orange background (an explicit inverse
+    /// pair, never `Modifier::REVERSED`).
     #[inline]
     pub fn selected() -> Style {
-        Style::default().fg(VOID).bg(CYAN_PRIMARY)
+        Style::default().fg(CANVAS).bg(ORANGE)
     }
 
     /// Error style: coral red text for error messages.
@@ -743,16 +641,96 @@ mod tests {
 
     #[test]
     fn canonical_v2_tokens_locked() {
-        assert_eq!(VOID, Color::Rgb(10, 22, 40));
-        assert_eq!(BORDER, Color::Rgb(27, 73, 101));
-        assert_eq!(INFO, Color::Rgb(72, 202, 228));
-        assert_eq!(CYAN_PRIMARY, Color::Rgb(0, 255, 163));
-        assert_eq!(SURFACE_0, Color::Rgb(13, 27, 42));
-        assert_eq!(TEXT, Color::Rgb(255, 255, 255));
-        assert_eq!(TEXT_DIM, Color::Rgb(130, 154, 177));
-        assert_eq!(ERROR, Color::Rgb(255, 107, 107));
-        assert_eq!(SUCCESS, Color::Rgb(0, 245, 212));
-        assert_eq!(WARNING, Color::Rgb(255, 200, 87));
+        // The mono-orange brand palette (the source of truth for the default `dark` theme).
+        // Exact RGB mirror `library/design-system.md`.
+        assert_eq!(CANVAS, Color::Rgb(13, 13, 13));
+        assert_eq!(ORANGE, Color::Rgb(232, 146, 86));
+        assert_eq!(ORANGE_D, Color::Rgb(150, 92, 54));
+        assert_eq!(AMBER, Color::Rgb(242, 183, 120));
+        assert_eq!(TXT, Color::Rgb(208, 208, 206));
+        assert_eq!(BRIGHT, Color::Rgb(242, 242, 240));
+        assert_eq!(DIM, Color::Rgb(140, 140, 140));
+        assert_eq!(FAINT, Color::Rgb(92, 92, 98));
+        assert_eq!(GHOST, Color::Rgb(60, 60, 66));
+        assert_eq!(PANEL, Color::Rgb(22, 22, 26));
+        assert_eq!(PANEL2, Color::Rgb(28, 28, 33));
+        assert_eq!(BAR, Color::Rgb(20, 20, 24));
+        assert_eq!(SELBG, Color::Rgb(44, 35, 26));
+        assert_eq!(SOFT, Color::Rgb(34, 28, 22));
+        assert_eq!(BORDER_BRAND, Color::Rgb(92, 66, 46));
+        assert_eq!(OKG, Color::Rgb(96, 204, 110));
+        assert_eq!(ERR, Color::Rgb(224, 96, 96));
+        assert_eq!(ADD_FG, Color::Rgb(124, 196, 124));
+        assert_eq!(ADD_BG, Color::Rgb(18, 38, 22));
+        assert_eq!(DEL_FG, Color::Rgb(212, 118, 108));
+        assert_eq!(DEL_BG, Color::Rgb(46, 22, 22));
+        assert_eq!(LNUM, Color::Rgb(110, 110, 118));
+        assert_eq!(CODEBG, Color::Rgb(24, 24, 28));
+        assert_eq!(INLBG, Color::Rgb(40, 34, 28));
+    }
+
+    #[test]
+    fn dark_theme_is_mono_orange() {
+        let t = ThemeColors::dark();
+        assert_eq!(t.background, CANVAS, "near-black #0d0d0d canvas");
+        assert_eq!(t.primary, ORANGE, "primary accent is brand ORANGE");
+        assert_eq!(t.secondary, AMBER);
+        assert_eq!(t.accent, AMBER);
+        assert_eq!(t.text, TXT);
+        assert_eq!(t.text_bright, BRIGHT);
+        assert_eq!(t.text_dim, DIM);
+        assert_eq!(t.text_muted, FAINT);
+        assert_eq!(t.ghost, GHOST);
+        assert_eq!(t.border, ORANGE_D);
+        assert_eq!(t.success, OKG);
+        assert_eq!(t.error, ERR);
+        // `from_name("dark")` and the Default both resolve to the brand palette.
+        assert_eq!(ThemeColors::from_name("dark"), t);
+        assert_eq!(ThemeColors::default(), t);
+    }
+
+    #[test]
+    fn selection_is_explicit_inverse_pair() {
+        // Selection is a solid inverse pair (near-black text on solid ORANGE), never REVERSED.
+        let t = ThemeColors::dark();
+        assert_eq!(t.selection_bg, ORANGE);
+        assert_eq!(t.selection_fg, CANVAS);
+        assert_ne!(
+            t.selection_fg, t.selection_bg,
+            "fg and bg of a selection differ (a real inverse pair)"
+        );
+        // Every theme defines a distinct selection pair.
+        for theme in [
+            ThemeColors::dark(),
+            ThemeColors::light(),
+            ThemeColors::monokai(),
+            ThemeColors::ocean_dark(),
+            ThemeColors::vscode(),
+        ] {
+            assert_ne!(theme.selection_fg, theme.selection_bg);
+        }
+    }
+
+    #[test]
+    fn all_five_themes_resolve_with_new_tokens() {
+        let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
+        ThemeColors::clear_custom_themes();
+        for name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            let t = ThemeColors::from_name(name);
+            // The four new tokens are always populated (no field falls back to a default-black).
+            assert_ne!(t.text_bright, t.background, "{name}: text_bright is set");
+            assert_ne!(
+                t.selection_fg, t.selection_bg,
+                "{name}: selection pair is a real inverse"
+            );
+            // ghost is a real, distinct neutral tone.
+            let _ = t.ghost;
+        }
+        // `vscode` resolves to full chrome (a distinct background), not just a syntax theme.
+        assert_eq!(
+            ThemeColors::from_name("vscode").background,
+            Color::Rgb(30, 30, 30)
+        );
     }
 
     #[test]
@@ -775,24 +753,12 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_aliases() {
-        assert_eq!(PINK, CYAN_PRIMARY);
-        assert_eq!(PURPLE, TEAL);
-        assert_eq!(GREEN, SUCCESS);
-        assert_eq!(ORANGE, WARNING);
-        assert_eq!(BLUE, INFO);
-        assert_eq!(RED, ERROR);
-        assert_eq!(YELLOW, HIGHLIGHT);
-        assert_eq!(BORDER_HIGHLIGHT, BORDER_FOCUS);
-    }
-
-    #[test]
     fn test_theme_colors() {
-        let theme = ThemeColors::ocean_cyan();
-        assert_eq!(theme.primary, CYAN_PRIMARY);
-        assert_eq!(theme.background, VOID);
-        assert_eq!(theme.surface[2], SURFACE_2);
-        assert_eq!(theme.border_focus, BORDER_FOCUS);
+        let theme = ThemeColors::dark();
+        assert_eq!(theme.primary, ORANGE);
+        assert_eq!(theme.background, CANVAS);
+        assert_eq!(theme.surface[1], PANEL);
+        assert_eq!(theme.border_focus, ORANGE);
         assert_eq!(ThemeColors::default().primary, theme.primary);
     }
 
@@ -809,10 +775,19 @@ mod tests {
             Color::Rgb(166, 226, 46)
         );
         assert_eq!(
-            ThemeColors::from_name("dracula").background,
-            Color::Rgb(40, 42, 54)
+            ThemeColors::from_name("ocean").background,
+            Color::Rgb(10, 25, 47)
         );
-        // Unknown falls back to dark.
+        assert_eq!(
+            ThemeColors::from_name("vscode").primary,
+            Color::Rgb(0, 122, 204)
+        );
+        // The `vscode-dark` alias resolves to the same chrome theme.
+        assert_eq!(
+            ThemeColors::from_name("vscode-dark"),
+            ThemeColors::from_name("vscode")
+        );
+        // Unknown (and "dark") falls back to the mono-orange brand.
         assert_eq!(
             ThemeColors::from_name("nonexistent").primary,
             ThemeColors::dark().primary
@@ -824,9 +799,9 @@ mod tests {
         let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
         ThemeColors::clear_custom_themes();
         let themes = ThemeColors::available_themes();
-        assert_eq!(themes.len(), 12);
-        assert!(themes.contains(&"monokai"));
-        assert!(themes.contains(&"catppuccin_mocha"));
+        assert_eq!(themes, &["dark", "light", "monokai", "ocean", "vscode"]);
+        // `dark` is first so it is the built-in default.
+        assert_eq!(themes.first(), Some(&"dark"));
     }
 
     #[test]

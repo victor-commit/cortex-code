@@ -220,6 +220,126 @@ impl Theme {
         theme
     }
 
+    /// Builds a compact theme from a core set of token colors (keyword, function, type, string,
+    /// number, comment, operator, constant, variable). Used to keep the chrome-bound syntax
+    /// palettes (`cortex_dark`/`light`/`ocean`) consistent and rich enough that every fenced block
+    /// shows multiple distinct colors.
+    #[allow(clippy::too_many_arguments)]
+    fn from_core(
+        kw: u32,
+        func: u32,
+        typ: u32,
+        string: u32,
+        num: u32,
+        comment: u32,
+        op: u32,
+        konst: u32,
+        var: u32,
+    ) -> Self {
+        let mut t = Self::with_default(Style::new().fg(hex_color(op)));
+
+        t.set("keyword", Style::new().fg(hex_color(kw)));
+        t.set("keyword.control", Style::new().fg(hex_color(kw)));
+        t.set("keyword.function", Style::new().fg(hex_color(kw)));
+        t.set("keyword.operator", Style::new().fg(hex_color(kw)));
+        t.set("keyword.import", Style::new().fg(hex_color(kw)));
+        t.set("keyword.return", Style::new().fg(hex_color(kw)));
+
+        t.set("type", Style::new().fg(hex_color(typ)));
+        t.set("type.builtin", Style::new().fg(hex_color(typ)));
+        t.set("namespace", Style::new().fg(hex_color(typ)));
+        t.set("module", Style::new().fg(hex_color(typ)));
+
+        t.set("function", Style::new().fg(hex_color(func)));
+        t.set("function.call", Style::new().fg(hex_color(func)));
+        t.set("function.method", Style::new().fg(hex_color(func)));
+        t.set("function.macro", Style::new().fg(hex_color(func)));
+
+        t.set("variable", Style::new().fg(hex_color(var)));
+        t.set("variable.parameter", Style::new().fg(hex_color(var)));
+        t.set("property", Style::new().fg(hex_color(var)));
+        t.set("attribute", Style::new().fg(hex_color(var)));
+
+        t.set("constant", Style::new().fg(hex_color(konst)));
+        t.set("constant.builtin", Style::new().fg(hex_color(konst)));
+        t.set("constant.numeric", Style::new().fg(hex_color(num)));
+        t.set("number", Style::new().fg(hex_color(num)));
+
+        t.set("string", Style::new().fg(hex_color(string)));
+        t.set("string.special", Style::new().fg(hex_color(string)));
+        t.set("constant.character", Style::new().fg(hex_color(string)));
+
+        t.set("comment", Style::new().fg(hex_color(comment)).italic());
+        t.set("comment.line", Style::new().fg(hex_color(comment)).italic());
+        t.set("comment.block", Style::new().fg(hex_color(comment)).italic());
+
+        t.set("operator", Style::new().fg(hex_color(op)));
+        t.set("punctuation", Style::new().fg(hex_color(op)));
+        t.set("punctuation.bracket", Style::new().fg(hex_color(op)));
+        t.set("punctuation.delimiter", Style::new().fg(hex_color(op)));
+
+        t
+    }
+
+    /// Cortex brand "dark" syntax palette (orange-tinted keywords on the mono-orange theme).
+    /// RGB mirror `library/design-system.md` (Wave 7 `dark` syntax row).
+    pub fn cortex_dark() -> Self {
+        Self::from_core(
+            0xE89256, // keyword  (232,146,86) ORANGE
+            0xF2B778, // function (242,183,120) AMBER
+            0xF2C896, // type     (242,200,150)
+            0xCE9678, // string   (206,150,120)
+            0x60CC6E, // number   (96,204,110)
+            0x78786E, // comment  (120,120,110)
+            0xAAAAAA, // operator (170,170,170)
+            0xF2B778, // constant (242,183,120)
+            0xD0D0CE, // variable (208,208,206) TXT
+        )
+    }
+
+    /// Light syntax palette (dark inks on a light canvas). Wave 7 `light` syntax row.
+    pub fn light() -> Self {
+        Self::from_core(
+            0x0000C8, // keyword  (0,0,200)
+            0x966400, // function (150,100,0)
+            0x008080, // type     (0,128,128)
+            0xA02020, // string   (160,32,32)
+            0x006496, // number   (0,100,150)
+            0x008000, // comment  (0,128,0)
+            0x3C3C3C, // operator (60,60,60)
+            0x006496, // constant (0,100,150)
+            0x1E1E1E, // variable (30,30,30)
+        )
+    }
+
+    /// Ocean syntax palette (cool blues/teals). Wave 7 `ocean` syntax row.
+    pub fn ocean() -> Self {
+        Self::from_core(
+            0x00C8C8, // keyword  (0,200,200)
+            0x64C8DC, // function (100,200,220)
+            0x78D2E6, // type     (120,210,230)
+            0x82DCAA, // string   (130,220,170)
+            0xB4C878, // number   (180,200,120)
+            0x506E8C, // comment  (80,110,140)
+            0xC8DCEB, // operator (200,220,235)
+            0x78D2E6, // constant (120,210,230)
+            0xE6F0FA, // variable (230,240,250)
+        )
+    }
+
+    /// Resolves the syntax theme bound to a chrome theme name, so code blocks and the theme gallery
+    /// switch syntax palettes together with the chrome theme.
+    pub fn from_chrome_name(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "light" => Self::light(),
+            "monokai" => Self::monokai(),
+            "ocean" | "ocean_dark" => Self::ocean(),
+            "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode_dark(),
+            // The brand `dark` theme (and any unknown name) uses the orange-tinted brand syntax.
+            _ => Self::cortex_dark(),
+        }
+    }
+
     /// Creates a Monokai-inspired theme.
     pub fn monokai() -> Self {
         let mut theme = Self::new();
@@ -448,6 +568,38 @@ mod tests {
         let merged = theme.merge(&["keyword", "emphasis"]);
         assert_eq!(merged.fg, Some(Color::BLUE));
         assert!(merged.attributes.is_bold());
+    }
+
+    #[test]
+    fn from_chrome_name_binds_distinct_syntax_palettes() {
+        // Each chrome theme resolves to a syntax theme; the keyword color differs across themes so
+        // a fenced code block looks different under dark vs light/monokai/ocean/vscode.
+        let dark = Theme::from_chrome_name("dark");
+        let light = Theme::from_chrome_name("light");
+        let monokai = Theme::from_chrome_name("monokai");
+        let ocean = Theme::from_chrome_name("ocean");
+        let vscode = Theme::from_chrome_name("vscode");
+
+        let kw = |t: &Theme| t.get("keyword").fg;
+        assert!(kw(&dark).is_some());
+        assert_ne!(kw(&dark), kw(&light));
+        assert_ne!(kw(&dark), kw(&monokai));
+        assert_ne!(kw(&dark), kw(&ocean));
+        assert_ne!(kw(&dark), kw(&vscode));
+
+        // The brand dark syntax has the expected orange keyword and a green number.
+        assert_eq!(dark.get("keyword").fg, Some(Color::from_rgb_u8(232, 146, 86)));
+        assert_ne!(
+            dark.get("keyword").fg,
+            dark.get("string").fg,
+            "multiple distinct token colors"
+        );
+
+        // Unknown names fall back to the brand dark syntax.
+        assert_eq!(
+            Theme::from_chrome_name("nonexistent").get("keyword").fg,
+            dark.get("keyword").fg
+        );
     }
 
     #[test]

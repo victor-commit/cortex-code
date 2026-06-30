@@ -148,7 +148,11 @@ impl CodeBlockRenderer {
     /// └──────────────────────────────────┘
     /// ```
     pub fn render(&self, code: &str, language: Option<&str>, max_width: u16) -> Vec<Line<'static>> {
-        let border_style = Style::default().fg(self.border_color);
+        // Every emitted cell (borders, language tag, code, padding) carries an explicit background
+        // so non-black themes (e.g. light) never show the terminal default behind the box.
+        let border_style = Style::default()
+            .fg(self.border_color)
+            .bg(self.background_color);
         let bg_style = Style::default().bg(self.background_color);
 
         // Highlight the code
@@ -190,6 +194,7 @@ impl CodeBlockRenderer {
             box_width,
             border_style,
             self.lang_tag_style,
+            bg_style,
         ));
 
         // Content lines
@@ -495,8 +500,11 @@ fn render_top_border(
     width: u16,
     border_style: Style,
     lang_style: Style,
+    bg_style: Style,
 ) -> Line<'static> {
     let width = width as usize;
+    // Force the code background onto the language tag so it does not fall through to black.
+    let lang_style = lang_style.patch(bg_style);
 
     if width < 4 {
         return Line::from(vec![Span::styled(
@@ -568,8 +576,12 @@ fn render_content_line(
     // Left border with space
     result.push(Span::styled(format!("{} ", border::VERTICAL), border_style));
 
-    // Content spans
-    result.extend(spans);
+    // Content spans, each forced onto the code background so no syntax cell falls through to the
+    // terminal default (which would render as a black bar on light/non-black themes).
+    for mut span in spans {
+        span.style = span.style.patch(bg_style);
+        result.push(span);
+    }
 
     // Padding to fill width
     let padding_needed = inner_width.saturating_sub(content_width);
@@ -677,6 +689,30 @@ mod tests {
 
         // Should have top border, content, bottom border
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn every_emitted_cell_has_explicit_background() {
+        // On a light (non-black) theme, every span in the rendered box (borders, language tag,
+        // code, and padding) must carry an explicit background so the terminal default never
+        // shows through as a black bar.
+        let light_bg = Color::Rgb(245, 245, 245);
+        let renderer = CodeBlockRenderer::new(create_test_highlighter())
+            .with_background(light_bg)
+            .with_border_color(Color::Rgb(200, 200, 200))
+            .with_text_style(Style::default().fg(Color::Rgb(30, 30, 30)));
+
+        let lines = renderer.render("fn main() {}\nlet x = 1;", Some("rust"), 48);
+        for (row, line) in lines.iter().enumerate() {
+            for span in &line.spans {
+                assert_eq!(
+                    span.style.bg,
+                    Some(light_bg),
+                    "row {row} span {:?} has no explicit background",
+                    span.content
+                );
+            }
+        }
     }
 
     #[test]
@@ -891,7 +927,8 @@ mod tests {
     fn test_render_top_border_without_language() {
         let border_style = Style::default();
         let lang_style = Style::default();
-        let line = render_top_border(None, 20, border_style, lang_style);
+        let bg_style = Style::default();
+        let line = render_top_border(None, 20, border_style, lang_style, bg_style);
 
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.starts_with('┌'));
@@ -902,7 +939,8 @@ mod tests {
     fn test_render_top_border_with_language() {
         let border_style = Style::default();
         let lang_style = Style::default();
-        let line = render_top_border(Some("rust"), 30, border_style, lang_style);
+        let bg_style = Style::default();
+        let line = render_top_border(Some("rust"), 30, border_style, lang_style, bg_style);
 
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.contains("rust"));

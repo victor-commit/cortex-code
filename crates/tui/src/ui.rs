@@ -917,6 +917,16 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     frame.set_cursor_position((cx, cy));
 }
 
+/// The style for a highlighted picker/list row: a solid inverse pair (an explicit `selection_fg`
+/// drawn on an explicit `selection_bg`), never `Modifier::REVERSED`, so a selection reads as a
+/// solid fill with a contrasting foreground in a snapshot.
+fn selected_row_style(theme: &style::ThemeColors) -> Style {
+    Style::default()
+        .fg(theme.selection_fg)
+        .bg(theme.selection_bg)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Build the slash-command menu's rows for the current query, or `None` when the menu is closed.
 /// Each row shows `/name  description`; the highlighted row carries a `▸` marker and bold name.
 /// A non-empty query that matches nothing yields a single graceful "no matching commands" row.
@@ -938,20 +948,25 @@ fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     for (i, command) in matches.iter().enumerate() {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
-        let name_style = if is_selected {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+        if is_selected {
+            let sel = selected_row_style(&theme);
+            lines.push(Line::from(vec![
+                Span::styled(marker, sel),
+                Span::styled(format!("/{}", command.name), sel),
+                Span::styled("  ", sel),
+                Span::styled(command.description.to_owned(), sel),
+            ]));
         } else {
-            Style::default().fg(theme.text)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(theme.info)),
-            Span::styled(format!("/{}", command.name), name_style),
-            Span::raw("  "),
-            Span::styled(
-                command.description.to_owned(),
-                Style::default().fg(theme.text_dim),
-            ),
-        ]));
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.info)),
+                Span::styled(format!("/{}", command.name), Style::default().fg(theme.text)),
+                Span::raw("  "),
+                Span::styled(
+                    command.description.to_owned(),
+                    Style::default().fg(theme.text_dim),
+                ),
+            ]));
+        }
     }
     Some(lines)
 }
@@ -1026,15 +1041,18 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     for (i, path) in matches.iter().enumerate() {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
-        let path_style = if is_selected {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+        if is_selected {
+            let sel = selected_row_style(&theme);
+            lines.push(Line::from(vec![
+                Span::styled(marker, sel),
+                Span::styled(path.clone(), sel),
+            ]));
         } else {
-            Style::default().fg(theme.text)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(theme.info)),
-            Span::styled(path.clone(), path_style),
-        ]));
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.info)),
+                Span::styled(path.clone(), Style::default().fg(theme.text)),
+            ]));
+        }
     }
     Some(lines)
 }
@@ -1314,15 +1332,18 @@ fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static
     for (i, item) in dialog.items.iter().enumerate() {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
-        let item_style = if is_selected {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+        if is_selected {
+            let sel = selected_row_style(theme);
+            lines.push(Line::from(vec![
+                Span::styled(marker, sel),
+                Span::styled(item.clone(), sel),
+            ]));
         } else {
-            Style::default().fg(theme.text)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(theme.info)),
-            Span::styled(item.clone(), item_style),
-        ]));
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.info)),
+                Span::styled(item.clone(), Style::default().fg(theme.text)),
+            ]));
+        }
     }
     lines
 }
@@ -1776,7 +1797,7 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
         } else {
             format!("  {label}")
         };
-        Span::styled(marked, option_style(color, selected == index))
+        Span::styled(marked, option_style(color, selected == index, theme))
     };
     let is_question = tool == "question";
     let allow_once_label = if is_question {
@@ -1877,14 +1898,17 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
     );
 }
 
-/// The style for a permission option: its semantic color, bold and reversed when it is the
-/// highlighted choice so the active option stands out against the modal background.
-fn option_style(color: Color, selected: bool) -> Style {
-    let base = Style::default().fg(color);
+/// The style for a permission option: its semantic color when idle, and an explicit solid inverse
+/// pair when highlighted (near-black text on the semantic color), so the active option stands out
+/// as a solid fill rather than a terminal `REVERSED` swap.
+fn option_style(color: Color, selected: bool, theme: &style::ThemeColors) -> Style {
     if selected {
-        base.add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        Style::default()
+            .fg(theme.background)
+            .bg(color)
+            .add_modifier(Modifier::BOLD)
     } else {
-        base.add_modifier(Modifier::DIM)
+        Style::default().fg(color).add_modifier(Modifier::DIM)
     }
 }
 
@@ -1922,15 +1946,6 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
         let is_selected = i == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let disabled = command.disabled_reason.is_some();
-        let name_style = if disabled {
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::DIM)
-        } else if is_selected {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text)
-        };
         let mut description = command.description.clone();
         if let Some(reason) = &command.disabled_reason {
             if !description.is_empty() {
@@ -1938,12 +1953,31 @@ fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
             }
             description.push_str(reason);
         }
-        lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(theme.info)),
-            Span::styled(command.label.clone(), name_style),
-            Span::raw("  "),
-            Span::styled(description, Style::default().fg(theme.text_dim)),
-        ]));
+        // A highlighted (and enabled) row reads as a solid inverse pair; disabled rows stay dim
+        // even when highlighted so they read as unavailable.
+        if is_selected && !disabled {
+            let sel = selected_row_style(&theme);
+            lines.push(Line::from(vec![
+                Span::styled(marker, sel),
+                Span::styled(command.label.clone(), sel),
+                Span::styled("  ", sel),
+                Span::styled(description, sel),
+            ]));
+        } else {
+            let name_style = if disabled {
+                Style::default()
+                    .fg(theme.text_dim)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.info)),
+                Span::styled(command.label.clone(), name_style),
+                Span::raw("  "),
+                Span::styled(description, Style::default().fg(theme.text_dim)),
+            ]));
+        }
     }
     lines
 }
@@ -2061,9 +2095,12 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
             tab_spans.push(Span::styled(" ", Style::default().fg(theme.text_muted)));
         }
         let style = if *panel == selected {
+            // An explicit solid inverse pair (near-black text on the brand accent), not a terminal
+            // `REVERSED` swap, so the active tab reads as a solid fill in a snapshot.
             Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .fg(theme.selection_fg)
+                .bg(theme.selection_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text_muted)
         };
@@ -2384,6 +2421,44 @@ mod tests {
     }
 
     #[test]
+    fn every_cell_carries_an_explicit_background_on_all_themes() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+
+        // VAL-FOUND-002 / VAL-FOUND-015: no cell may fall through to the terminal-default
+        // background. On the brand `dark` theme the page is near-black #0d0d0d; on `light` (and the
+        // other chrome themes) every cell must still carry an explicit bg so there are no black
+        // bars. Assert across the home screen and an active transcript.
+        for theme_name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            for with_transcript in [false, true] {
+                let mut a = app();
+                a.set_theme(theme_name.to_owned());
+                if with_transcript {
+                    a.transcript.push(Entry::User("hello".to_owned()));
+                }
+
+                let backend = TestBackend::new(92, 30);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal.draw(|frame| draw(frame, &a)).unwrap();
+                let buffer = terminal.backend().buffer();
+
+                for (i, cell) in buffer.content().iter().enumerate() {
+                    assert_ne!(
+                        cell.bg,
+                        Color::Reset,
+                        "{theme_name} (transcript={with_transcript}): cell {i} \
+                         (x={}, y={}, sym={:?}) has no explicit background",
+                        i as u16 % 92,
+                        i as u16 / 92,
+                        cell.symbol(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn slash_palette_and_dialog_rows_use_theme_colors() {
         let mut a = app();
         a.set_theme("monokai".to_owned());
@@ -2391,18 +2466,22 @@ mod tests {
 
         a.input.set_value("/");
         let slash_rows = slash_menu_lines(&a).expect("slash menu open");
-        let slash_marker = slash_rows[0].spans[0].style.fg;
-        let slash_desc = slash_rows[0].spans[3].style.fg;
-        assert_eq!(slash_marker, Some(theme.info));
-        assert_eq!(slash_desc, Some(theme.text_dim));
+        assert!(slash_rows.len() > 1, "multiple slash commands match `/`");
+        // The highlighted (first) row is a solid inverse pair: explicit selection fg on bg, not a
+        // REVERSED swap (VAL-FOUND-017).
+        assert_eq!(slash_rows[0].spans[0].style.fg, Some(theme.selection_fg));
+        assert_eq!(slash_rows[0].spans[0].style.bg, Some(theme.selection_bg));
+        // A non-highlighted row keeps the themed accent marker and dim description.
+        assert_eq!(slash_rows[1].spans[0].style.fg, Some(theme.info));
+        assert_eq!(slash_rows[1].spans[3].style.fg, Some(theme.text_dim));
 
         a.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
         let palette_rows = palette_command_lines(&a);
-        let palette_marker = palette_rows[0].spans[0].style.fg;
-        assert_eq!(palette_marker, Some(theme.info));
+        assert_eq!(palette_rows[0].spans[0].style.fg, Some(theme.selection_fg));
+        assert_eq!(palette_rows[0].spans[0].style.bg, Some(theme.selection_bg));
 
         let dialog = Dialog {
             kind: DialogKind::Models,
@@ -2412,7 +2491,10 @@ mod tests {
             empty: None,
         };
         let dialog_rows = dialog_lines(&dialog, &theme);
-        assert_eq!(dialog_rows[0].spans[0].style.fg, Some(theme.info));
+        // The selected dialog row is the solid inverse pair; the other keeps the accent marker.
+        assert_eq!(dialog_rows[0].spans[0].style.fg, Some(theme.selection_fg));
+        assert_eq!(dialog_rows[0].spans[0].style.bg, Some(theme.selection_bg));
+        assert_eq!(dialog_rows[1].spans[0].style.fg, Some(theme.info));
     }
 
     #[test]

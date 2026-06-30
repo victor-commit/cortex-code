@@ -572,8 +572,13 @@ impl<'a> RenderState<'a> {
 
         if let Some(raw_lang) = self.code_language.as_deref() {
             if let Some(canonical) = normalize_language_name(raw_lang) {
-                let highlighter = get_default_highlighter();
-                if highlighter.has_language(canonical) {
+                let base = get_default_highlighter();
+                if base.has_language(canonical) {
+                    // Bind the syntax palette to the active chrome theme: share the default
+                    // highlighter's compiled grammars but swap in the chrome-bound syntax theme so
+                    // a fenced block looks different under dark vs light/monokai/ocean/vscode.
+                    let syntax = tui_syntax::Theme::from_chrome_name(&self.renderer.theme.syntax_theme);
+                    let highlighter = std::sync::Arc::new(base.themed_clone(syntax));
                     let block = CodeBlockRenderer::new(highlighter)
                         .with_border_color(self.renderer.theme.code_block_border)
                         .with_background(self.renderer.theme.code_block_bg)
@@ -599,9 +604,14 @@ impl<'a> RenderState<'a> {
     /// top border and the code is framed by `┌─┐ │ │ └─┘`, preserving each line's indentation.
     /// Used as the fallback for unknown languages and partial streaming blocks.
     pub(super) fn render_simple_code_block(&self) -> Vec<Line<'static>> {
-        let style = self.renderer.theme.code_block_text;
-        let border_style = Style::default().fg(self.renderer.theme.code_block_border);
-        let lang_style = self.renderer.theme.code_lang_tag;
+        // Every cell (borders, language tag, code, padding) carries the code background so a
+        // light/non-black theme never shows the terminal default as a black bar.
+        let bg = self.renderer.theme.code_block_bg;
+        let style = self.renderer.theme.code_block_text.bg(bg);
+        let border_style = Style::default()
+            .fg(self.renderer.theme.code_block_border)
+            .bg(bg);
+        let lang_style = self.renderer.theme.code_lang_tag.bg(bg);
 
         let total_width = self.renderer.width.max(4) as usize;
         // Inside-the-box content width, after "│ " (2) and " │" (2).

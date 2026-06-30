@@ -33,8 +33,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::style::{
-    BORDER, CYAN_PRIMARY, DEEP_CYAN, HIGHLIGHT, INFO, SKY_BLUE, SUCCESS, SURFACE_0, SURFACE_1,
-    TEXT, TEXT_BRIGHT, TEXT_DIM, TEXT_MUTED,
+    AMBER, BORDER_BRAND, BRIGHT, CODEBG, DIM, FAINT, INLBG, OKG, ORANGE, ORANGE_D, PANEL2, TXT,
 };
 
 /// Comprehensive theme configuration for markdown rendering.
@@ -130,6 +129,14 @@ pub struct MarkdownTheme {
     pub hr: Style,
     /// Style for normal/default text
     pub text: Style,
+
+    // ============================================================
+    // Syntax binding
+    // ============================================================
+    /// The chrome theme name this markdown theme is bound to. Code blocks resolve their
+    /// tree-sitter syntax palette from this (via `tui_syntax::Theme::from_chrome_name`) so the
+    /// syntax colors switch together with the chrome theme.
+    pub syntax_theme: String,
 }
 
 impl MarkdownTheme {
@@ -457,6 +464,7 @@ impl MarkdownTheme {
             link_url: Style::default().fg(Color::Rgb(120, 120, 120)),
             hr: Style::default().fg(Color::Rgb(200, 200, 200)),
             text: Style::default().fg(Color::Rgb(30, 30, 30)),
+            syntax_theme: "light".to_string(),
         }
     }
 
@@ -519,6 +527,7 @@ impl MarkdownTheme {
             link_url: Style::default().fg(Color::Rgb(80, 110, 140)),
             hr: Style::default().fg(Color::Rgb(40, 80, 120)),
             text: Style::default().fg(Color::Rgb(230, 240, 250)),
+            syntax_theme: "ocean".to_string(),
         }
     }
 
@@ -581,6 +590,70 @@ impl MarkdownTheme {
             link_url: Style::default().fg(Color::Rgb(117, 113, 94)),
             hr: Style::default().fg(Color::Rgb(70, 71, 65)),
             text: Style::default().fg(Color::Rgb(248, 248, 242)),
+            syntax_theme: "monokai".to_string(),
+        }
+    }
+
+    /// Create a markdown theme for the "vscode" (VS Code Dark+) chrome theme.
+    pub fn vscode() -> Self {
+        Self {
+            h1: Style::default()
+                .fg(Color::Rgb(86, 156, 214))
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            h2: Style::default()
+                .fg(Color::Rgb(86, 156, 214))
+                .add_modifier(Modifier::BOLD),
+            h3: Style::default()
+                .fg(Color::Rgb(78, 201, 176))
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            h4: Style::default()
+                .fg(Color::Rgb(78, 201, 176))
+                .add_modifier(Modifier::ITALIC),
+            h5: Style::default()
+                .fg(Color::Rgb(150, 150, 150))
+                .add_modifier(Modifier::ITALIC),
+            h6: Style::default()
+                .fg(Color::Rgb(110, 110, 110))
+                .add_modifier(Modifier::ITALIC),
+            bold: Style::default()
+                .fg(Color::Rgb(255, 255, 255))
+                .add_modifier(Modifier::BOLD),
+            italic: Style::default()
+                .fg(Color::Rgb(212, 212, 212))
+                .add_modifier(Modifier::ITALIC),
+            strikethrough: Style::default()
+                .fg(Color::Rgb(150, 150, 150))
+                .add_modifier(Modifier::CROSSED_OUT),
+            code_inline: Style::default()
+                .fg(Color::Rgb(206, 145, 120))
+                .bg(Color::Rgb(45, 45, 46)),
+            code_block_bg: Color::Rgb(30, 30, 30),
+            code_block_border: Color::Rgb(62, 62, 66),
+            code_block_text: Style::default().fg(Color::Rgb(212, 212, 212)),
+            code_lang_tag: Style::default()
+                .fg(Color::Rgb(86, 156, 214))
+                .add_modifier(Modifier::ITALIC),
+            blockquote_border: Color::Rgb(0, 122, 204),
+            blockquote_text: Style::default()
+                .fg(Color::Rgb(150, 150, 150))
+                .add_modifier(Modifier::ITALIC),
+            list_bullet: Style::default().fg(Color::Rgb(0, 122, 204)),
+            list_number: Style::default().fg(Color::Rgb(0, 122, 204)),
+            task_checked: Style::default().fg(Color::Rgb(137, 209, 133)),
+            task_unchecked: Style::default().fg(Color::Rgb(110, 110, 110)),
+            table_border: Color::Rgb(0, 122, 204),
+            table_header_bg: Color::Rgb(45, 45, 46),
+            table_header_text: Style::default()
+                .fg(Color::Rgb(255, 255, 255))
+                .add_modifier(Modifier::BOLD),
+            table_cell_text: Style::default().fg(Color::Rgb(212, 212, 212)),
+            link_text: Style::default()
+                .fg(Color::Rgb(86, 156, 214))
+                .add_modifier(Modifier::UNDERLINED),
+            link_url: Style::default().fg(Color::Rgb(110, 110, 110)),
+            hr: Style::default().fg(Color::Rgb(62, 62, 66)),
+            text: Style::default().fg(Color::Rgb(212, 212, 212)),
+            syntax_theme: "vscode".to_string(),
         }
     }
 
@@ -588,73 +661,70 @@ impl MarkdownTheme {
     pub fn from_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
             "light" => Self::light(),
-            "ocean_dark" | "ocean" => Self::ocean_dark(),
+            "ocean" | "ocean_dark" => Self::ocean_dark(),
             "monokai" => Self::monokai(),
+            "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode(),
             _ => Self::dark(),
         }
     }
 }
 
 impl Default for MarkdownTheme {
+    /// The default markdown theme is the mono-orange brand `dark` theme.
     fn default() -> Self {
         Self {
             // Headers - decreasing prominence from H1 to H6
             h1: Style::default()
-                .fg(CYAN_PRIMARY)
+                .fg(ORANGE)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            h2: Style::default()
-                .fg(CYAN_PRIMARY)
-                .add_modifier(Modifier::BOLD),
+            h2: Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
             h3: Style::default()
-                .fg(SKY_BLUE)
+                .fg(AMBER)
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            h4: Style::default().fg(SKY_BLUE).add_modifier(Modifier::ITALIC),
-            h5: Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
-            h6: Style::default()
-                .fg(TEXT_MUTED)
-                .add_modifier(Modifier::ITALIC),
+            h4: Style::default().fg(AMBER).add_modifier(Modifier::ITALIC),
+            h5: Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            h6: Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
 
             // Text styles
-            bold: Style::default()
-                .fg(CYAN_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-            italic: Style::default().fg(TEXT).add_modifier(Modifier::ITALIC),
+            bold: Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            italic: Style::default().fg(TXT).add_modifier(Modifier::ITALIC),
             strikethrough: Style::default()
-                .fg(TEXT_DIM)
+                .fg(DIM)
                 .add_modifier(Modifier::CROSSED_OUT),
-            code_inline: Style::default().fg(HIGHLIGHT).bg(SURFACE_1),
+            code_inline: Style::default().fg(AMBER).bg(INLBG),
 
             // Code blocks
-            code_block_bg: SURFACE_0,
-            code_block_border: BORDER,
-            code_block_text: Style::default().fg(TEXT),
-            code_lang_tag: Style::default().fg(INFO).add_modifier(Modifier::ITALIC),
+            code_block_bg: CODEBG,
+            code_block_border: BORDER_BRAND,
+            code_block_text: Style::default().fg(TXT),
+            code_lang_tag: Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
 
             // Blockquotes
-            blockquote_border: DEEP_CYAN,
-            blockquote_text: Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
+            blockquote_border: ORANGE_D,
+            blockquote_text: Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
 
             // Lists
-            list_bullet: Style::default().fg(CYAN_PRIMARY),
-            list_number: Style::default().fg(CYAN_PRIMARY),
-            task_checked: Style::default().fg(SUCCESS),
-            task_unchecked: Style::default().fg(TEXT_MUTED),
+            list_bullet: Style::default().fg(ORANGE_D),
+            list_number: Style::default().fg(ORANGE_D),
+            task_checked: Style::default().fg(OKG),
+            task_unchecked: Style::default().fg(FAINT),
 
-            // Tables - use accent color for borders to match theme
-            table_border: CYAN_PRIMARY,
-            table_header_bg: SURFACE_1,
-            table_header_text: Style::default()
-                .fg(TEXT_BRIGHT)
-                .add_modifier(Modifier::BOLD),
-            table_cell_text: Style::default().fg(TEXT),
+            // Tables - use the brand accent for borders
+            table_border: ORANGE_D,
+            table_header_bg: PANEL2,
+            table_header_text: Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            table_cell_text: Style::default().fg(TXT),
 
             // Links
-            link_text: Style::default().fg(INFO).add_modifier(Modifier::UNDERLINED),
-            link_url: Style::default().fg(TEXT_MUTED),
+            link_text: Style::default().fg(AMBER).add_modifier(Modifier::UNDERLINED),
+            link_url: Style::default().fg(FAINT),
 
             // Other elements
-            hr: Style::default().fg(BORDER),
-            text: Style::default().fg(TEXT),
+            hr: Style::default().fg(BORDER_BRAND),
+            text: Style::default().fg(TXT),
+
+            // Syntax binding: the default theme is the brand `dark` chrome.
+            syntax_theme: "dark".to_string(),
         }
     }
 }
@@ -667,13 +737,13 @@ mod tests {
     fn test_default_theme_creation() {
         let theme = MarkdownTheme::default();
 
-        // Verify header styles have expected colors
-        assert_eq!(theme.h1.fg, Some(CYAN_PRIMARY));
-        assert_eq!(theme.h2.fg, Some(CYAN_PRIMARY));
-        assert_eq!(theme.h3.fg, Some(SKY_BLUE));
-        assert_eq!(theme.h4.fg, Some(SKY_BLUE));
-        assert_eq!(theme.h5.fg, Some(TEXT_DIM));
-        assert_eq!(theme.h6.fg, Some(TEXT_MUTED));
+        // Verify header styles use the mono-orange brand palette.
+        assert_eq!(theme.h1.fg, Some(ORANGE));
+        assert_eq!(theme.h2.fg, Some(ORANGE));
+        assert_eq!(theme.h3.fg, Some(AMBER));
+        assert_eq!(theme.h4.fg, Some(AMBER));
+        assert_eq!(theme.h5.fg, Some(DIM));
+        assert_eq!(theme.h6.fg, Some(FAINT));
     }
 
     #[test]
@@ -727,17 +797,17 @@ mod tests {
     fn test_code_inline_has_background() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.code_inline.fg, Some(HIGHLIGHT));
-        assert_eq!(theme.code_inline.bg, Some(SURFACE_1));
+        assert_eq!(theme.code_inline.fg, Some(AMBER));
+        assert_eq!(theme.code_inline.bg, Some(INLBG));
     }
 
     #[test]
     fn test_code_block_colors() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.code_block_bg, SURFACE_0);
-        assert_eq!(theme.code_block_border, BORDER);
-        assert_eq!(theme.code_block_text.fg, Some(TEXT));
+        assert_eq!(theme.code_block_bg, CODEBG);
+        assert_eq!(theme.code_block_border, BORDER_BRAND);
+        assert_eq!(theme.code_block_text.fg, Some(TXT));
         assert!(theme.code_lang_tag.add_modifier.contains(Modifier::ITALIC));
     }
 
@@ -745,8 +815,8 @@ mod tests {
     fn test_blockquote_styles() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.blockquote_border, DEEP_CYAN);
-        assert_eq!(theme.blockquote_text.fg, Some(TEXT_DIM));
+        assert_eq!(theme.blockquote_border, ORANGE_D);
+        assert_eq!(theme.blockquote_text.fg, Some(DIM));
         assert!(
             theme
                 .blockquote_text
@@ -759,43 +829,43 @@ mod tests {
     fn test_list_styles() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.list_bullet.fg, Some(CYAN_PRIMARY));
-        assert_eq!(theme.list_number.fg, Some(CYAN_PRIMARY));
-        assert_eq!(theme.task_checked.fg, Some(SUCCESS));
-        assert_eq!(theme.task_unchecked.fg, Some(TEXT_MUTED));
+        assert_eq!(theme.list_bullet.fg, Some(ORANGE_D));
+        assert_eq!(theme.list_number.fg, Some(ORANGE_D));
+        assert_eq!(theme.task_checked.fg, Some(OKG));
+        assert_eq!(theme.task_unchecked.fg, Some(FAINT));
     }
 
     #[test]
     fn test_table_styles() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.table_border, CYAN_PRIMARY); // Uses accent color for consistency
-        assert_eq!(theme.table_header_bg, SURFACE_1);
-        assert_eq!(theme.table_header_text.fg, Some(TEXT_BRIGHT));
+        assert_eq!(theme.table_border, ORANGE_D); // Uses the brand accent for consistency
+        assert_eq!(theme.table_header_bg, PANEL2);
+        assert_eq!(theme.table_header_text.fg, Some(BRIGHT));
         assert!(
             theme
                 .table_header_text
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
-        assert_eq!(theme.table_cell_text.fg, Some(TEXT));
+        assert_eq!(theme.table_cell_text.fg, Some(TXT));
     }
 
     #[test]
     fn test_link_styles() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.link_text.fg, Some(INFO));
+        assert_eq!(theme.link_text.fg, Some(AMBER));
         assert!(theme.link_text.add_modifier.contains(Modifier::UNDERLINED));
-        assert_eq!(theme.link_url.fg, Some(TEXT_MUTED));
+        assert_eq!(theme.link_url.fg, Some(FAINT));
     }
 
     #[test]
     fn test_other_styles() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.hr.fg, Some(BORDER));
-        assert_eq!(theme.text.fg, Some(TEXT));
+        assert_eq!(theme.hr.fg, Some(BORDER_BRAND));
+        assert_eq!(theme.text.fg, Some(TXT));
     }
 
     #[test]
@@ -1176,6 +1246,22 @@ mod tests {
 
         let monokai = MarkdownTheme::from_name("monokai");
         assert_eq!(monokai.h1.fg, MarkdownTheme::monokai().h1.fg);
+
+        let vscode = MarkdownTheme::from_name("vscode");
+        assert_eq!(vscode.h1.fg, MarkdownTheme::vscode().h1.fg);
+    }
+
+    #[test]
+    fn from_name_binds_syntax_theme_to_chrome() {
+        // Each chrome theme carries the matching syntax-theme name so code blocks switch palettes
+        // together with the chrome theme.
+        assert_eq!(MarkdownTheme::from_name("dark").syntax_theme, "dark");
+        assert_eq!(MarkdownTheme::from_name("light").syntax_theme, "light");
+        assert_eq!(MarkdownTheme::from_name("monokai").syntax_theme, "monokai");
+        assert_eq!(MarkdownTheme::from_name("ocean").syntax_theme, "ocean");
+        assert_eq!(MarkdownTheme::from_name("vscode").syntax_theme, "vscode");
+        // The default theme is the brand dark chrome.
+        assert_eq!(MarkdownTheme::default().syntax_theme, "dark");
     }
 
     #[test]
@@ -1206,6 +1292,7 @@ mod tests {
             MarkdownTheme::light(),
             MarkdownTheme::ocean_dark(),
             MarkdownTheme::monokai(),
+            MarkdownTheme::vscode(),
         ] {
             assert!(theme.h1.fg.is_some());
             assert!(theme.h2.fg.is_some());
