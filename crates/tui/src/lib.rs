@@ -54,6 +54,9 @@ pub struct LaunchOptions {
     pub server_url: Option<String>,
     /// Whether configured plugin resolution/runtime/hook execution is disabled for this TUI.
     pub pure_plugins: bool,
+    /// Whether reduced-motion is requested (animations off; render the final static frame). Set by
+    /// the `--no-anim` flag or the `CORTEX_NO_ANIM` environment preference.
+    pub reduced_motion: bool,
 }
 
 impl LaunchOptions {
@@ -64,6 +67,7 @@ impl LaunchOptions {
             session: env_non_empty("CORTEX_SESSION"),
             server_url: env_non_empty("CORTEX_SERVER_URL"),
             pure_plugins: env_pure_enabled(),
+            reduced_motion: env_no_anim_enabled(),
         }
     }
 }
@@ -97,6 +101,7 @@ pub fn launch_with_options(options: LaunchOptions) -> ExitCode {
 
 fn run(options: LaunchOptions) -> io::Result<()> {
     let mut app = App::new(initial_status());
+    app.set_reduced_motion(options.reduced_motion);
     app::apply_startup_attention_and_theme_diagnostics(&mut app);
     // Honor a persisted theme choice so colors match the last selection across restarts.
     app.set_theme(app::active_theme_name());
@@ -370,15 +375,12 @@ fn event_loop<B: Backend + Write>(
             continue;
         }
 
-        // Poll for input with a short timeout while a turn streams (so the spinner animates and
-        // deltas are applied promptly) or while a toast is on screen (so it auto-dismisses on time
-        // and its depletion animation stays smooth), and a longer one when idle (so the loop stays
-        // cheap).
-        let timeout = if app.is_busy() || app.has_toasts() {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_millis(200)
-        };
+        // Poll for input with the animation-tick cadence while a turn streams (so the spinner
+        // animates and deltas are applied promptly) or while a toast is on screen (so it
+        // auto-dismisses on time and its depletion animation stays smooth), and the cheap idle
+        // cadence otherwise so the loop blocks rather than busy-spinning. Reduced-motion renders a
+        // static frame, but a turn/toast still polls at the active cadence to apply deltas.
+        let timeout = app.poll_timeout();
         if let Some(key) = pending_keys.pop_front() {
             app.on_key(key);
         } else if event::poll(timeout)? {
@@ -457,6 +459,15 @@ fn env_non_empty(key: &str) -> Option<String> {
 
 fn env_pure_enabled() -> bool {
     std::env::var_os("CORTEX_PURE").is_some_and(|value| value.to_string_lossy() == "1")
+}
+
+/// Whether the `CORTEX_NO_ANIM` reduced-motion preference is set. Accepts `1`/`true` (any case) as
+/// truthy so the no-subcommand TUI launch can honor reduced-motion without the `--no-anim` flag.
+fn env_no_anim_enabled() -> bool {
+    std::env::var_os("CORTEX_NO_ANIM").is_some_and(|value| {
+        let value = value.to_string_lossy().to_ascii_lowercase();
+        matches!(value.as_str(), "1" | "true")
+    })
 }
 
 fn load_plugin_text_complete_hooks(pure_plugins: bool) -> Option<plugins::PluginEventHooks> {

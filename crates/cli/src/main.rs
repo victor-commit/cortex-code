@@ -93,6 +93,7 @@ fn main() -> ExitCode {
             session: args.session,
             server_url: args.server,
             pure_plugins,
+            reduced_motion: args.no_anim || env_no_anim_enabled(),
         }),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
@@ -128,6 +129,14 @@ fn main() -> ExitCode {
         Some(Command::Uninstall(args)) => lifecycle::run_uninstall(args).into(),
         Some(Command::Debug(args)) => debug_cmd::run(args).into(),
     }
+}
+
+/// Whether the `CORTEX_NO_ANIM` reduced-motion preference is set (the environment equivalent of the
+/// `--no-anim` flag). Accepts `1`/`true` (any case) as truthy.
+fn env_no_anim_enabled() -> bool {
+    std::env::var_os("CORTEX_NO_ANIM").is_some_and(|value| {
+        matches!(value.to_string_lossy().to_ascii_lowercase().as_str(), "1" | "true")
+    })
 }
 
 /// Map the dispatched subcommand to the surface that emits the startup lifecycle event.

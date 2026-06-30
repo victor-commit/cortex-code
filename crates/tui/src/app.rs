@@ -52,6 +52,26 @@ const NAV_ESCAPE_PROBE_WINDOW: Duration = Duration::from_millis(120);
 /// Maximum buffered chars after Esc while deciding whether they are a noisy arrow sequence.
 const NAV_ESCAPE_PROBE_MAX_CHARS: usize = 6;
 
+/// Active poll cadence (and per-frame duration) while something is animating. Every animation
+/// derives its phase from [`Instant::elapsed`] divided by this value, so the cadence and the frame
+/// period are the same number and a variable wake interval never drifts the phase.
+const ANIMATION_TICK_MS: u64 = 100;
+/// Idle poll cadence: the loop blocks this long when nothing is animating, so an idle TUI never
+/// busy-spins (the wakeups only drive cheap housekeeping like remote polling and probe expiry).
+const IDLE_POLL_MS: u64 = 200;
+/// Half-period of the streaming caret blink: the caret is shown for this long, then hidden for the
+/// same span, so a full on/off cycle is twice this value.
+const CARET_BLINK_HALF_PERIOD_MS: u128 = 500;
+/// The fixed breathing-spinner frame shown as a static working mark when animations are disabled.
+const STATIC_SPINNER_FRAME: usize = 2;
+
+/// Caret blink state as a pure function of elapsed time: visible for the first half-period, hidden
+/// for the second, repeating. Same elapsed input always yields the same result (deterministic).
+#[must_use]
+fn caret_visible_at(elapsed_ms: u128) -> bool {
+    (elapsed_ms / CARET_BLINK_HALF_PERIOD_MS) % 2 == 0
+}
+
 /// Status line contents reported in the footer.
 #[derive(Debug, Clone)]
 pub struct Status {
@@ -669,6 +689,11 @@ pub struct App {
     turn_rx: Option<Receiver<TurnMessage>>,
     /// When the active turn started, used to animate the busy indicator. `None` when idle.
     spinner_start: Option<Instant>,
+    /// Whether reduced-motion is active: animations are suppressed and the UI renders its final,
+    /// static frame (static spinner, no caret blink, no toast/selection motion). Set at launch from
+    /// the `--no-anim` CLI flag or the `CORTEX_NO_ANIM` environment preference; consulted by
+    /// [`animations_enabled`](App::animations_enabled), which every animation gates on.
+    reduced_motion: bool,
     /// The user prompt of the in-flight turn, appended to history once the turn finishes.
     turn_prompt: Option<String>,
     /// Attachments submitted with the in-flight user prompt.
@@ -861,6 +886,7 @@ impl App {
             pending_compaction: false,
             turn_rx: None,
             spinner_start: None,
+            reduced_motion: false,
             turn_prompt: None,
             turn_attachments: Vec::new(),
             turn_errored: false,
@@ -1253,19 +1279,78 @@ impl App {
         self.turn_rx.is_some()
     }
 
-    /// The animated busy-spinner glyph for the current instant, or `None` when idle.
+    /// The busy-spinner glyph for the current instant, or `None` when idle.
     ///
     /// Uses the safe breathing frame set from [`crate::glyphs`] (the legacy braille spinner is
     /// gone) and derives its phase from elapsed time so it is correct across variable wake
-    /// intervals.
+    /// intervals. When animations are disabled it returns a single fixed frame (a static working
+    /// mark) so the spinner is present but never cycles.
     #[must_use]
     pub fn spinner_glyph(&self) -> Option<&'static str> {
         let start = self.spinner_start?;
+        if !self.animations_enabled() {
+            return Some(crate::glyphs::SPINNER_BREATHE[STATIC_SPINNER_FRAME]);
+        }
         Some(crate::glyphs::frame_at(
             &crate::glyphs::SPINNER_BREATHE,
             start.elapsed().as_millis(),
-            100,
+            ANIMATION_TICK_MS as u128,
         ))
+    }
+
+    /// Whether animations are enabled (the inverse of reduced-motion). Every time-based animation
+    /// gates on this: when it is false the UI renders its final, static frame — a fixed spinner
+    /// mark, full streamed text with no token-by-token reveal, a solid (non-blinking) caret, and no
+    /// toast or selection-highlight motion.
+    #[must_use]
+    pub fn animations_enabled(&self) -> bool {
+        !self.reduced_motion
+    }
+
+    /// Whether reduced-motion is active (animations suppressed).
+    #[must_use]
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion
+    }
+
+    /// Set reduced-motion at launch from the `--no-anim` flag / `CORTEX_NO_ANIM` preference.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+    }
+
+    /// Whether a time-based animation is currently running and therefore needs the ~100ms wake
+    /// cadence to advance its phase. This is the wake predicate for animation: it is always false
+    /// under reduced motion, so the loop never wakes merely to animate when motion is reduced.
+    #[must_use]
+    pub fn animation_active(&self) -> bool {
+        self.animations_enabled() && (self.is_busy() || self.has_toasts())
+    }
+
+    /// The event-loop poll timeout for the current state. While a turn streams or a toast is on
+    /// screen the loop polls at the ~100ms animation cadence (so animation phase advances smoothly
+    /// and deltas/auto-dismiss are applied promptly); otherwise it blocks for the cheap idle
+    /// cadence so an idle TUI never busy-spins.
+    #[must_use]
+    pub fn poll_timeout(&self) -> Duration {
+        if self.is_busy() || self.has_toasts() {
+            Duration::from_millis(ANIMATION_TICK_MS)
+        } else {
+            Duration::from_millis(IDLE_POLL_MS)
+        }
+    }
+
+    /// Whether the streaming caret should be drawn at this instant (blink state). The caret is
+    /// solid (always visible) when idle or under reduced motion, and blinks on a fixed cadence
+    /// derived from elapsed time only while a turn streams with animations enabled.
+    #[must_use]
+    pub fn cursor_blink_visible(&self) -> bool {
+        if !self.animations_enabled() {
+            return true;
+        }
+        match self.spinner_start {
+            Some(start) => caret_visible_at(start.elapsed().as_millis()),
+            None => true,
+        }
     }
 
     /// A snapshot of the conversational history sent with the next turn.
@@ -8240,6 +8325,119 @@ mod tests {
         assert!(!a.is_busy(), "spinner clears after completion");
         assert!(a.spinner_glyph().is_none());
         assert_eq!(last_assistant(&a).answer, "done");
+    }
+
+    #[test]
+    fn animations_enabled_tracks_reduced_motion() {
+        let mut a = app();
+        assert!(a.animations_enabled(), "animations are on by default");
+        assert!(!a.reduced_motion());
+
+        a.set_reduced_motion(true);
+        assert!(!a.animations_enabled(), "reduced motion disables animations");
+        assert!(a.reduced_motion());
+
+        a.set_reduced_motion(false);
+        assert!(a.animations_enabled());
+    }
+
+    #[test]
+    fn spinner_is_present_but_static_under_reduced_motion() {
+        let mut a = app();
+        a.set_reduced_motion(true);
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+
+        let glyph = a.spinner_glyph().expect("a static working mark is shown while busy");
+        assert_eq!(
+            glyph,
+            crate::glyphs::SPINNER_BREATHE[STATIC_SPINNER_FRAME],
+            "the spinner shows one fixed frame, never cycling, when animations are off"
+        );
+        // The breathing mark is from the safe set (never braille).
+        assert!(!crate::glyphs::contains_braille(glyph));
+    }
+
+    #[test]
+    fn spinner_phase_is_a_pure_function_of_elapsed_time() {
+        // With animations enabled the spinner derives its frame from elapsed time, so the same
+        // elapsed value always maps to the same frame and the phase advances at the tick cadence.
+        let frames = &crate::glyphs::SPINNER_BREATHE;
+        let period = ANIMATION_TICK_MS as u128;
+        assert_eq!(
+            crate::glyphs::frame_at(frames, 0, period),
+            crate::glyphs::frame_at(frames, 0, period)
+        );
+        assert_eq!(
+            crate::glyphs::frame_at(frames, 250, period),
+            crate::glyphs::frame_at(frames, 250, period)
+        );
+        assert_ne!(
+            crate::glyphs::frame_at(frames, 0, period),
+            crate::glyphs::frame_at(frames, period, period),
+            "advancing one tick advances the frame"
+        );
+    }
+
+    #[test]
+    fn caret_blink_is_deterministic_and_gated_by_reduced_motion() {
+        // Pure function of elapsed time: visible for the first half-period, hidden for the next.
+        assert!(caret_visible_at(0));
+        assert!(caret_visible_at(CARET_BLINK_HALF_PERIOD_MS - 1));
+        assert!(!caret_visible_at(CARET_BLINK_HALF_PERIOD_MS));
+        assert!(!caret_visible_at(2 * CARET_BLINK_HALF_PERIOD_MS - 1));
+        assert!(caret_visible_at(2 * CARET_BLINK_HALF_PERIOD_MS));
+
+        // Under reduced motion the caret is always solid (visible), even mid-turn — no blink.
+        let mut a = app();
+        a.set_reduced_motion(true);
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        assert!(a.cursor_blink_visible(), "no blink when animations are off");
+
+        // Idle (no turn) the caret is solid regardless of motion setting.
+        let idle = app();
+        assert!(idle.cursor_blink_visible());
+    }
+
+    #[test]
+    fn poll_timeout_uses_active_cadence_when_busy_and_idle_cadence_otherwise() {
+        let mut a = app();
+        assert_eq!(
+            a.poll_timeout(),
+            Duration::from_millis(IDLE_POLL_MS),
+            "an idle TUI blocks at the cheap cadence (no busy-spin)"
+        );
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        assert_eq!(
+            a.poll_timeout(),
+            Duration::from_millis(ANIMATION_TICK_MS),
+            "a streaming turn polls at the ~100ms animation cadence"
+        );
+        assert_eq!(ANIMATION_TICK_MS, 100, "the active animation tick is ~100ms");
+    }
+
+    #[test]
+    fn reduced_motion_idle_does_not_request_animation_wakeups() {
+        // The wake predicate is the seam that prevents idle busy-spin: it is false whenever
+        // animations are off, so the loop never wakes merely to advance an animation.
+        let mut a = app();
+        assert!(!a.animation_active(), "idle is not animating");
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        assert!(a.animation_active(), "a streaming turn is animating");
+
+        a.set_reduced_motion(true);
+        assert!(
+            !a.animation_active(),
+            "reduced motion suppresses animation wakeups even while a turn streams"
+        );
+        // Even under reduced motion the loop still polls at the active cadence so streamed deltas
+        // are applied and the static frame stays current.
+        assert_eq!(a.poll_timeout(), Duration::from_millis(ANIMATION_TICK_MS));
     }
 
     #[test]

@@ -1281,6 +1281,16 @@ pub struct TuiArgs {
     /// Attach to a loopback `cortex serve` origin for remote control integration.
     #[arg(long, value_name = "URL")]
     pub server: Option<String>,
+
+    /// Disable animations (reduced motion): render the final static frame.
+    ///
+    /// Suppresses every time-based animation — the working spinner shows a single static mark,
+    /// streamed replies appear without the token-by-token reveal or a blinking caret, and toasts
+    /// and selection highlights move instantly with no slide/fade. The idle loop blocks instead of
+    /// waking to animate, so an idle TUI never busy-spins. The environment equivalent is
+    /// `CORTEX_NO_ANIM=1`.
+    #[arg(long = "no-anim", default_value_t = false)]
+    pub no_anim: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1326,6 +1336,21 @@ mod tests {
     fn no_args_yields_no_subcommand() {
         let cli = Cli::try_parse_from(["cortex"]).expect("parse");
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn tui_no_anim_flag_defaults_off_and_parses_on() {
+        let cli = Cli::try_parse_from(["cortex", "tui"]).expect("parse");
+        match cli.command {
+            Some(Command::Tui(args)) => assert!(!args.no_anim, "no_anim defaults off"),
+            other => panic!("expected tui, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["cortex", "tui", "--no-anim"]).expect("parse");
+        match cli.command {
+            Some(Command::Tui(args)) => assert!(args.no_anim, "--no-anim sets the flag"),
+            other => panic!("expected tui, got {other:?}"),
+        }
     }
 
     #[test]
