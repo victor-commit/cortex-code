@@ -818,7 +818,7 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColor
     )));
 
     let block = Block::default()
-        .style(Style::default().bg(theme.surface[0]))
+        .style(Style::default().bg(theme.background))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
@@ -2476,6 +2476,54 @@ mod tests {
             .find(|c| c.symbol() == "▐")
             .expect("a mascot block cell is on screen");
         assert_eq!(block.fg, theme.primary, "the mascot is the brand accent");
+    }
+
+    #[test]
+    fn home_body_background_is_canvas_not_bar_on_dark() {
+        // VAL-FOUND-002: under the default `dark` theme the home/MOTD body fills with the CANVAS
+        // near-black (#0d0d0d, the theme background), not the BAR surface; BAR (surface[0]) is
+        // reserved for the status/footer bar.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let a = app(); // empty transcript -> home screen, default `dark` theme
+        assert_eq!(a.theme(), "dark", "the default theme under test is `dark`");
+        let theme = style::ThemeColors::from_name(a.theme());
+        assert_ne!(
+            theme.background, theme.surface[0],
+            "CANVAS and BAR must differ for this assertion to be meaningful"
+        );
+
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // The brand star is part of the welcome-card body; its cell background is the card's
+        // interior fill, which must be the CANVAS background rather than the BAR surface.
+        let star = buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "✦")
+            .expect("the brand star is on the home screen");
+        assert_eq!(
+            star.bg, theme.background,
+            "the home body background is the CANVAS near-black (theme.background)"
+        );
+        assert_ne!(
+            star.bg, theme.surface[0],
+            "the home body background is not the BAR surface (surface[0])"
+        );
+
+        // BAR (surface[0]) is still used for the status/footer bar on the home screen.
+        let width = buffer.area.width as usize;
+        let height = buffer.area.height as usize;
+        let footer_bg = buffer.content()[(height - 1) * width].bg;
+        assert_eq!(
+            footer_bg,
+            theme.surface[0],
+            "the status/footer bar still carries the BAR surface"
+        );
     }
 
     #[test]
