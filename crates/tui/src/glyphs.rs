@@ -56,6 +56,9 @@ pub const BOX_VERTICAL: &str = "│";
 pub const DISCLOSURE_COLLAPSED: &str = "▶";
 /// Expanded disclosure affordance.
 pub const DISCLOSURE_EXPANDED: &str = "▼";
+/// Scrollback "more above" marker (GHOST); shown alone on row 0 when earlier rows are clipped off
+/// the top of the viewport (the heavy up-triangle, never the thin `▴`).
+pub const SCROLLBACK_ABOVE: &str = "▲";
 
 // --- Status dots / marks ---
 
@@ -141,6 +144,7 @@ mod tests {
             BOX_VERTICAL,
             DISCLOSURE_COLLAPSED,
             DISCLOSURE_EXPANDED,
+            SCROLLBACK_ABOVE,
             DOT_FILLED,
             DOT_HOLLOW,
             DOT_DIAMOND,
@@ -219,6 +223,8 @@ mod tests {
     fn disclosure_uses_heavy_triangles() {
         assert_eq!(DISCLOSURE_COLLAPSED, "▶");
         assert_eq!(DISCLOSURE_EXPANDED, "▼");
+        // The scrollback marker is the heavy up-triangle, matching the heavy disclosure set.
+        assert_eq!(SCROLLBACK_ABOVE, "▲");
     }
 
     #[test]

@@ -103,25 +103,31 @@ pub fn greeting(user: &str) -> String {
 /// The composer placeholder shown on the home screen (distinct from the conversation placeholder).
 pub const HOME_PLACEHOLDER: &str = "what should we build today…";
 
-/// Push the home/MOTD welcome card and its meta panels as the top block of the scrollback buffer.
+/// Push the MOTD welcome card as the top block of the scrollback buffer, followed by a separator
+/// row. The card is always emitted (it is the persistent top of the single scroll buffer); the home
+/// meta panels (Directory/Org, Plan/Model) are emitted only on the pristine home (`show_meta`), so
+/// once the user starts typing or a conversation exists the card alone leads the buffer.
 pub fn push_home(
     lines: &mut Vec<Line<'static>>,
     model: &str,
     width: usize,
     theme: &ThemeColors,
+    show_meta: bool,
 ) {
     if width < MIN_CARD_WIDTH {
-        push_compact_home(lines, model, theme);
+        push_compact_home(lines, model, theme, show_meta);
         return;
     }
     push_card(lines, theme, width);
     lines.push(Line::from(""));
-    push_meta_panels(lines, model, width, theme);
+    if show_meta {
+        push_meta_panels(lines, model, width, theme);
+    }
 }
 
-/// Compact fallback for very narrow terminals: the wordmark, mascot, and a one-line meta summary,
-/// drawn without the bordered frame so nothing overflows.
-fn push_compact_home(lines: &mut Vec<Line<'static>>, model: &str, theme: &ThemeColors) {
+/// Compact fallback for very narrow terminals: the wordmark, mascot, and (on the pristine home) a
+/// one-line model summary, drawn without the bordered frame so nothing overflows.
+fn push_compact_home(lines: &mut Vec<Line<'static>>, model: &str, theme: &ThemeColors, show_meta: bool) {
     let mut title = brand::wordmark(theme);
     title
         .spans
@@ -145,10 +151,12 @@ fn push_compact_home(lines: &mut Vec<Line<'static>>, model: &str, theme: &ThemeC
         "Your agentic coding terminal.",
         Style::default().fg(theme.text_dim),
     )));
-    lines.push(Line::from(vec![
-        Span::styled("Model ", Style::default().fg(theme.text_muted)),
-        Span::styled(model.to_owned(), Style::default().fg(theme.text_bright)),
-    ]));
+    if show_meta {
+        lines.push(Line::from(vec![
+            Span::styled("Model ", Style::default().fg(theme.text_muted)),
+            Span::styled(model.to_owned(), Style::default().fg(theme.text_bright)),
+        ]));
+    }
 }
 
 /// Push the 7-row welcome card: titled top border, blank, mascot rows with greeting/tip, bottom
@@ -488,7 +496,7 @@ mod tests {
     fn home_card_title_has_star_wordmark_and_real_version() {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
-        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme);
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
         assert!(text.contains('✦'), "brand star in the title border:\n{text}");
         assert!(text.contains("Cortex Code"), "wordmark name:\n{text}");
@@ -525,7 +533,7 @@ mod tests {
     fn home_renders_the_brain_mascot_in_orange() {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
-        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme);
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
         assert!(
             text.contains("██ ▌  ▐ ██"),
@@ -547,7 +555,7 @@ mod tests {
     fn home_greeting_uses_the_real_user_two_lines() {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
-        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme);
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
         let user = current_user();
         assert!(
@@ -565,7 +573,7 @@ mod tests {
     fn home_tip_row_has_caps_and_labels() {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
-        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme);
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
         for fragment in [
             "/help",
@@ -597,7 +605,7 @@ mod tests {
     fn home_meta_panels_show_real_dynamic_values() {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
-        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme);
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
         for fragment in ["Directory", "Org", "Plan", "Model"] {
             assert!(text.contains(fragment), "meta label `{fragment}`:\n{text}");
@@ -608,6 +616,25 @@ mod tests {
         );
         assert!(!text.contains("opus-4.8"), "never the mockup model literal");
         assert!(text.contains(&current_dir_display()), "real cwd shown:\n{text}");
+    }
+
+    #[test]
+    fn card_only_home_omits_the_meta_panels() {
+        // With `show_meta = false` (typing / active conversation) the welcome card still leads the
+        // buffer, but the Directory/Org/Plan/Model meta panels are not emitted, leaving the region
+        // below the card empty for the transcript.
+        let theme = ThemeColors::dark();
+        let mut lines = Vec::new();
+        push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, false);
+        let text = rendered(&lines);
+        assert!(text.contains("Cortex Code"), "card wordmark still present:\n{text}");
+        assert!(text.contains("Welcome back,"), "card greeting still present:\n{text}");
+        for fragment in ["Directory", "Org", "Plan ", "Model "] {
+            assert!(
+                !text.contains(fragment),
+                "meta panel `{fragment}` must be absent without show_meta:\n{text}"
+            );
+        }
     }
 
     #[test]

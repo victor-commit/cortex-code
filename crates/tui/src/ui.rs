@@ -37,6 +37,11 @@ const TOOL_CARD_WIDTH: usize = 76;
 /// Width (in columns) of the session sidebar panel when shown.
 const SIDEBAR_WIDTH: u16 = 30;
 
+/// Left margin (columns) that transcript content (the `›`/`✦` author marks and the scrollback
+/// `▲ N lines above` marker) is inset from the viewport edge, aligning with the MOTD card frame and
+/// the status-bar zones.
+const CONTENT_MARGIN: usize = 2;
+
 /// Maximum number of toasts drawn at once in the overlay (matches the app's retention cap).
 const MAX_VISIBLE_TOASTS: usize = 4;
 /// Width of the left file-tree pane in the `/diff` viewer.
@@ -154,12 +159,38 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
     let max_scroll = lines.len().saturating_sub(height);
     let scroll = app.scroll().min(max_scroll);
     let start = max_scroll - scroll;
-    let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
+    let visible: Vec<Line> = if start == 0 || height == 0 {
+        // Nothing is clipped above (or there is no room): draw the window verbatim, MOTD on top.
+        lines.into_iter().skip(start).take(height).collect()
+    } else {
+        // Earlier rows are clipped above the viewport: row 0 carries a `▲ N lines above` marker
+        // (GHOST) alone, and the transcript fills the remaining rows below it with the bottom still
+        // pinned. The line that would have been at the top is hidden behind the marker, so the
+        // count is `start + 1`.
+        let above = start + 1;
+        let mut out: Vec<Line<'static>> = Vec::with_capacity(height);
+        out.push(scrollback_marker(above, theme));
+        out.extend(lines.into_iter().skip(start + 1).take(height - 1));
+        out
+    };
 
     frame.render_widget(
         Paragraph::new(visible).style(Style::default().fg(theme.text).bg(theme.background)),
         area,
     );
+}
+
+/// The clip-aware scrollback marker shown alone on row 0 when earlier rows are clipped off the top:
+/// `▲ N lines above` in GHOST, inset by [`CONTENT_MARGIN`].
+fn scrollback_marker(count: usize, theme: &style::ThemeColors) -> Line<'static> {
+    let plural = if count == 1 { "line" } else { "lines" };
+    Line::from(vec![
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(
+            format!("{} {count} {plural} above", crate::glyphs::SCROLLBACK_ABOVE),
+            Style::default().fg(theme.ghost),
+        ),
+    ])
 }
 
 /// The fully rendered transcript: the pre-wrapped lines plus the first line index of each transcript
@@ -178,11 +209,12 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
     let theme = style::ThemeColors::from_name(app.theme());
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut entry_starts: Vec<usize> = Vec::with_capacity(app.transcript.len());
-    // MOTD-as-scrollback: on a fresh session (no entries, no active turn) the welcome card and meta
-    // panels are the top block of the same buffer, not a separate full-screen empty state.
-    if app.transcript.is_empty() {
-        crate::motd::push_home(&mut lines, &app.status.model, width, &theme);
-    }
+    // MOTD-as-scrollback: the welcome card is always the top block of the single buffer (regardless
+    // of transcript contents), so as messages stack below it the card scrolls/clips off the top
+    // behind the `▲ N lines above` marker. The home meta panels are shown only on the pristine home
+    // (no transcript, empty composer) so the typing/conversation states show the card alone.
+    let pristine_home = app.transcript.is_empty() && app.input_value().trim().is_empty();
+    crate::motd::push_home(&mut lines, &app.status.model, width, &theme, pristine_home);
     for entry in &app.transcript {
         entry_starts.push(lines.len());
         match entry {
@@ -394,16 +426,34 @@ fn apply_row_bg(line: &Line<'static>, bg: Color, width: usize) -> Line<'static> 
     Line::from(spans)
 }
 
-/// Append a user prompt: a bold marker header followed by the wrapped prompt body.
+/// Append a user prompt: a `›` mark (ORANGE) at the content-left column followed by the message text
+/// (TXT) on the same line, with wrapped continuation lines hanging-indented under the text column.
 fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: usize, theme: &style::ThemeColors) {
-    lines.push(Line::from(Span::styled(
-        "› you",
-        Style::default()
-            .fg(theme.primary)
-            .add_modifier(Modifier::BOLD),
-    )));
-    for wrapped in wrap(text, width) {
-        lines.push(Line::from(Span::raw(wrapped)));
+    let mark = Style::default().fg(theme.primary);
+    let body = Style::default().fg(theme.text);
+    // Content margin + `› ` (mark + space) before the text column; continuation lines hang under it.
+    let text_indent = CONTENT_MARGIN + 2;
+    let body_width = width.saturating_sub(text_indent).max(1);
+    let wrapped = wrap(text, body_width);
+    if wrapped.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(CONTENT_MARGIN)),
+            Span::styled(format!("{} ", crate::glyphs::PROMPT), mark),
+        ]));
+    }
+    for (i, line) in wrapped.into_iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(CONTENT_MARGIN)),
+                Span::styled(format!("{} ", crate::glyphs::PROMPT), mark),
+                Span::styled(line, body),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(text_indent)),
+                Span::styled(line, body),
+            ]));
+        }
     }
     lines.push(Line::from(""));
 }
@@ -436,25 +486,35 @@ fn push_assistant(
         lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(Span::styled(
-        "• cortex",
-        Style::default()
-            .fg(theme.secondary)
-            .add_modifier(Modifier::BOLD),
-    )));
-    // Render the assistant answer as markdown so headings, emphasis, lists, inline code, fenced
-    // code blocks, tables, and blockquotes display as structured elements rather than raw markup.
-    // Re-rendered every frame from the accumulated answer, so it updates incrementally as the
-    // turn streams.
-    if turn.answer.trim().is_empty() {
-        lines.push(Line::from(""));
+    // The assistant reply leads with a `✦` author mark (AMBER) at the content-left column, inline
+    // with the first line of the reply; wrapped/subsequent lines hang-indent under the text column
+    // (one column past the mark). The answer is markdown-rendered so headings, emphasis, lists,
+    // inline code, fenced code blocks, tables, and blockquotes display as structured elements, with
+    // plain prose promoted to BRIGHT to match the reply tone. Re-rendered every frame from the
+    // accumulated answer, so it updates incrementally as the turn streams.
+    let mark = Style::default().fg(theme.secondary);
+    let text_indent = CONTENT_MARGIN + 2;
+    let body_lines: Vec<Line<'static>> = if turn.answer.trim().is_empty() {
+        vec![Line::from("")]
     } else {
-        let md_width = width.clamp(1, u16::MAX as usize) as u16;
+        let md_width = width.saturating_sub(text_indent).clamp(1, u16::MAX as usize) as u16;
         let renderer = frame::markdown::MarkdownRenderer::with_theme(
-            frame::markdown::MarkdownTheme::from_name(theme_name),
+            frame::markdown::MarkdownTheme::from_name(theme_name)
+                .with_text(Style::default().fg(theme.text_bright)),
         )
         .with_width(md_width);
-        lines.extend(renderer.render(&turn.answer));
+        renderer.render(&turn.answer)
+    };
+    for (i, line) in body_lines.into_iter().enumerate() {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+        if i == 0 {
+            spans.push(Span::raw(" ".repeat(CONTENT_MARGIN)));
+            spans.push(Span::styled(format!("{} ", crate::glyphs::BRAND_STAR), mark));
+        } else {
+            spans.push(Span::raw(" ".repeat(text_indent)));
+        }
+        spans.extend(line.spans);
+        lines.push(Line::from(spans));
     }
     lines.push(Line::from(""));
 }
@@ -908,20 +968,42 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             )),
             input_area,
         );
+        // An empty composer keeps the hardware cursor at the input start so a caret is still shown.
+        frame.set_cursor_position((input_area.x, input_area.y));
     } else {
+        // Typed text renders in BRIGHT (replacing the FAINT placeholder).
+        let bright = Style::default().fg(theme.text_bright);
         let lines: Vec<Line> = app
             .input
             .lines()
             .iter()
-            .map(|l| Line::from(l.clone()))
+            .map(|l| Line::from(Span::styled(l.clone(), bright)))
             .collect();
-        frame.render_widget(Paragraph::new(lines), input_area);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background)),
+            input_area,
+        );
+        // A `▏` caret (ORANGE) sits at the cursor — immediately after the last typed character with
+        // no gap. It is gated by the blink state (solid under reduced motion / when idle), and the
+        // hardware cursor is left unset so exactly one caret is drawn.
+        if app.cursor_blink_visible() {
+            let cursor = app.cursor();
+            let cx = input_area.x + (cursor.col as u16).min(input_area.width.saturating_sub(1));
+            let cy = input_area.y + (cursor.row as u16).min(input_area.height.saturating_sub(1));
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    crate::glyphs::CURSOR,
+                    Style::default().fg(theme.primary),
+                )),
+                Rect {
+                    x: cx,
+                    y: cy,
+                    width: 1,
+                    height: 1,
+                },
+            );
+        }
     }
-
-    let cursor = app.cursor();
-    let cx = input_area.x + (cursor.col as u16).min(input_area.width.saturating_sub(1));
-    let cy = input_area.y + (cursor.row as u16).min(input_area.height.saturating_sub(1));
-    frame.set_cursor_position((cx, cy));
 }
 
 /// The two-column leading marker for a list/menu/dialog row: the brand `›` selection marker
@@ -2407,15 +2489,17 @@ mod tests {
 
         let lines = transcript_lines(&a, 80);
         let theme = style::ThemeColors::light();
+        // The user `›` mark is inline with the message text and uses the theme primary (ORANGE).
         let user = lines
             .iter()
-            .find(|line| plain(line).starts_with("› you"))
-            .and_then(|line| line.spans.first())
+            .find(|line| plain(line).contains("› hello"))
+            .and_then(|line| line.spans.iter().find(|s| s.content.starts_with('›')))
             .and_then(|span| span.style.fg);
+        // The assistant `✦` mark is inline with the reply and uses the theme secondary (AMBER).
         let assistant = lines
             .iter()
-            .find(|line| plain(line).starts_with("• cortex"))
-            .and_then(|line| line.spans.first())
+            .find(|line| plain(line).contains("✦ world"))
+            .and_then(|line| line.spans.iter().find(|s| s.content.starts_with('✦')))
             .and_then(|span| span.style.fg);
 
         assert_eq!(user, Some(theme.primary), "user marker uses theme primary");
@@ -2424,6 +2508,238 @@ mod tests {
             Some(theme.secondary),
             "assistant marker uses theme secondary"
         );
+    }
+
+    #[test]
+    fn user_line_uses_inline_orange_prompt_mark() {
+        // VAL-CONV-017: a sent user message renders as a `›` mark (ORANGE) at the content-left
+        // column followed by the message text (TXT) on the same line.
+        let mut a = app();
+        a.transcript
+            .push(Entry::User("the streaming buffer grows unbounded".to_owned()));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = transcript_lines(&a, 80);
+        let line = lines
+            .iter()
+            .find(|l| plain(l).contains("› the streaming buffer"))
+            .expect("user line with inline prompt mark");
+        // The mark is ORANGE; the body that follows is TXT.
+        let mark = line
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('›'))
+            .expect("prompt mark span");
+        assert_eq!(mark.style.fg, Some(theme.primary), "mark is ORANGE");
+        let body = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("streaming"))
+            .expect("body span");
+        assert_eq!(body.style.fg, Some(theme.text), "body is TXT");
+        // No legacy `› you` author label leads the line.
+        assert!(!plain(line).contains("you"), "no legacy author label");
+    }
+
+    #[test]
+    fn assistant_line_uses_inline_amber_star_with_hanging_indent() {
+        // VAL-CONV-018/019: the assistant reply renders a `✦` mark (AMBER) at the content-left
+        // column followed by the first line, and wrapped continuation lines hang-indent under the
+        // text column (two columns past the mark), not under the mark itself.
+        let mut a = app();
+        let answer =
+            "I'll add a buffer-size limit to StreamProcessor and trim the oldest chunks past the cap. Reading the processor first.";
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: answer.to_owned(),
+        }));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = transcript_lines(&a, 60);
+
+        // First reply line carries the `✦` mark in AMBER, with the reply text in BRIGHT. (Matched
+        // by reply content so the MOTD card's own `✦ Cortex Code` title is not picked up.)
+        let star_idx = lines
+            .iter()
+            .position(|l| plain(l).contains("✦ I'll"))
+            .expect("assistant line with star mark");
+        let first = &lines[star_idx];
+        let star = first
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('✦'))
+            .expect("star mark span");
+        assert_eq!(star.style.fg, Some(theme.secondary), "star mark is AMBER");
+        assert!(
+            first.spans.iter().any(|s| s.style.fg == Some(theme.text_bright)),
+            "reply body is BRIGHT:\n{}",
+            plain(first)
+        );
+
+        // The reply wraps; the continuation line indents under the text column (4 cols), aligning
+        // past the mark, and carries no `✦`.
+        let cont = &lines[star_idx + 1];
+        let cont_text = plain(cont);
+        assert!(
+            cont_text.starts_with("    ") && !cont_text.trim_start().is_empty(),
+            "continuation hangs under the text column: {cont_text:?}"
+        );
+        assert!(!cont_text.contains('✦'), "continuation has no mark");
+    }
+
+    #[test]
+    fn motd_card_leads_the_buffer_even_with_a_transcript() {
+        // VAL-CONV-021 / VAL-CROSS-001: the MOTD welcome card is the top of the single scrollback
+        // buffer regardless of transcript contents (not gated on an empty transcript), with the
+        // user line appended directly beneath it.
+        let mut a = app();
+        a.transcript.push(Entry::User("hello there".to_owned()));
+        let lines = transcript_lines(&a, 92);
+        let card_idx = lines
+            .iter()
+            .position(|l| plain(l).contains("Cortex Code"))
+            .expect("MOTD card wordmark present at the top");
+        let user_idx = lines
+            .iter()
+            .position(|l| plain(l).contains("› hello there"))
+            .expect("user line present");
+        assert!(
+            card_idx < user_idx,
+            "MOTD card precedes the user line in the same buffer"
+        );
+        // The card-only home omits the meta panels once a conversation exists.
+        let text = rendered(&lines);
+        assert!(!text.contains("Directory"), "no meta panels with a transcript");
+    }
+
+    #[test]
+    fn deep_session_clips_motd_behind_an_above_marker() {
+        // VAL-CONV-021 / VAL-CONV-063: in a session deep enough to overflow the viewport, the MOTD
+        // upper rows scroll off the top and a `▲ N lines above` marker (GHOST) occupies row 0
+        // alone, with the transcript below it.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        for i in 0..40 {
+            a.transcript.push(Entry::User(format!("question number {i}")));
+            a.transcript.push(Entry::Assistant(AssistantTurn {
+                reasoning: String::new(),
+                answer: format!("answer number {i}"),
+            }));
+        }
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Row 0 holds the `▲ … lines above` marker, in GHOST.
+        let row0: String = (0..92)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(
+            row0.contains('▲') && row0.contains("lines above"),
+            "row 0 shows the scrollback marker: {row0:?}"
+        );
+        let marker_cell = (0..92)
+            .map(|x| buffer[(x, 0)].clone())
+            .find(|c| c.symbol() == "▲")
+            .expect("the ▲ marker glyph");
+        assert_eq!(marker_cell.fg, theme.ghost, "marker is GHOST");
+
+        // The MOTD wordmark has scrolled off the top (it is not on screen anymore).
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            !screen.contains("Cortex Code"),
+            "the MOTD wordmark is clipped off the top in a deep session"
+        );
+    }
+
+    #[test]
+    fn above_marker_count_tracks_scroll_position() {
+        // VAL-CONV-063: scrolling up reveals earlier rows and the `▲ N lines above` count drops as
+        // earlier content comes into view; scrolling back to the bottom re-pins the larger count.
+        let mut a = app();
+        for i in 0..60 {
+            a.transcript.push(Entry::Notice(format!("notice line {i}")));
+        }
+        a.set_viewport(92, 20);
+
+        let count_above = |a: &App| -> usize {
+            let lines = transcript_lines(a, 92);
+            let height = 20usize;
+            let max_scroll = lines.len().saturating_sub(height);
+            let scroll = a.scroll().min(max_scroll);
+            let start = max_scroll - scroll;
+            if start == 0 { 0 } else { start + 1 }
+        };
+
+        let pinned = count_above(&a);
+        assert!(pinned > 0, "deep session clips lines above when pinned");
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::PageUp,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let scrolled = count_above(&a);
+        assert!(
+            scrolled < pinned,
+            "scrolling up reduces the lines-above count ({scrolled} < {pinned})"
+        );
+    }
+
+    #[test]
+    fn typing_shows_bright_text_and_orange_caret_over_full_motd() {
+        // VAL-CONV-014/015/016: typed input renders in BRIGHT after the prompt with a `▏` ORANGE
+        // caret at the tail, while the full MOTD card stays at the top and the transcript region is
+        // empty (no meta panels, no transcript blocks).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        // Type the message the way a user would, so the cursor ends at the tail of the text.
+        for ch in "the streaming buffer grows unbounded on long responses".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Exactly one `▏` caret is on screen; locate it.
+        let mut caret_pos = None;
+        for y in 0..30u16 {
+            for x in 0..92u16 {
+                if buffer[(x, y)].symbol() == "▏" {
+                    assert!(caret_pos.is_none(), "exactly one caret on screen");
+                    caret_pos = Some((x, y));
+                }
+            }
+        }
+        let (cx, cy) = caret_pos.expect("a ▏ caret at the typed-text tail");
+        assert_eq!(buffer[(cx, cy)].fg, theme.primary, "caret is ORANGE");
+        // The cell immediately before the caret is the tail of the typed text (`responses`), in
+        // BRIGHT — confirming both the BRIGHT typed text and the no-gap caret placement.
+        let before = &buffer[(cx - 1, cy)];
+        assert_eq!(before.symbol(), "s", "caret sits at the tail of the typed text");
+        assert_eq!(before.fg, theme.text_bright, "typed text renders in BRIGHT");
+
+        // The full MOTD card is still visible (nothing scrolled) and no meta panels / transcript.
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen.contains("Cortex Code"), "MOTD card still visible while typing");
+        assert!(!screen.contains("Directory"), "no meta panels while typing");
+        assert!(!screen.contains('▲'), "nothing clipped off the top while typing");
     }
 
     #[test]
@@ -3631,7 +3947,9 @@ mod tests {
         for i in 0..50 {
             a.transcript.push(Entry::Notice(format!("LINE{i:02}")));
         }
-        let backend = TestBackend::new(40, 12);
+        // The MOTD card is now the always-present top of the scroll buffer, so the viewport must be
+        // tall enough that scrolling to the top reveals the earliest transcript line beneath it.
+        let backend = TestBackend::new(40, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &a)).unwrap();
