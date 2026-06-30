@@ -1298,6 +1298,49 @@ impl App {
         ))
     }
 
+    /// The rotating spinner glyph shown on a running tool card for the current instant.
+    ///
+    /// Uses the safe half-circle rotation set (`◐◑◒◓`) from [`crate::glyphs`] — distinct from the
+    /// working band's breathing spinner — and derives its phase from elapsed time. Returns a single
+    /// fixed frame under reduced motion, and `None` only when idle (no turn in progress).
+    #[must_use]
+    pub fn tool_spinner_glyph(&self) -> Option<&'static str> {
+        let start = self.spinner_start?;
+        if !self.animations_enabled() {
+            return Some(crate::glyphs::SPINNER_ROTATE[0]);
+        }
+        Some(crate::glyphs::frame_at(
+            &crate::glyphs::SPINNER_ROTATE,
+            start.elapsed().as_millis(),
+            ANIMATION_TICK_MS as u128,
+        ))
+    }
+
+    /// The elapsed whole seconds since the current turn began, for the working band's live timer.
+    /// Zero when no turn is in progress.
+    #[must_use]
+    pub fn turn_elapsed_secs(&self) -> u64 {
+        self.spinner_start
+            .map_or(0, |start| start.elapsed().as_secs())
+    }
+
+    /// A short, dynamic detail label for the working band (`Working · <detail>`), reflecting the
+    /// current turn phase: the running tool when one is in flight, otherwise that the model is
+    /// thinking.
+    #[must_use]
+    pub fn working_detail(&self) -> String {
+        let running_tool = self.transcript.iter().rev().find_map(|entry| match entry {
+            Entry::Tool(card) if card.status == crate::tool_card::ToolStatus::Running => {
+                Some(card.name.clone())
+            }
+            _ => None,
+        });
+        match running_tool {
+            Some(name) => format!("running {name}"),
+            None => "thinking".to_owned(),
+        }
+    }
+
     /// Whether animations are enabled (the inverse of reduced-motion). Every time-based animation
     /// gates on this: when it is false the UI renders its final, static frame — a fixed spinner
     /// mark, full streamed text with no token-by-token reveal, a solid (non-blinking) caret, and no
@@ -6883,6 +6926,11 @@ fn parse_custom_theme_value(
         object,
         &["card_border", "cardBorder"],
         &mut theme.card_border,
+    )?;
+    apply_color_key(
+        object,
+        &["soft", "working_bg", "workingBand"],
+        &mut theme.soft,
     )?;
 
     if let Some(surface) = object.get("surface").or_else(|| object.get("surfaces")) {

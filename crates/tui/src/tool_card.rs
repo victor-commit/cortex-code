@@ -9,6 +9,8 @@
 //! renders a distinct error state when the tool fails (VAL-TUI-027). Rendering to `ratatui` lines
 //! lives in [`crate::ui`]; this module owns the data model and the argument/output summarization.
 
+use std::time::Instant;
+
 use protocol::ToolResultPart;
 
 /// The lifecycle state of a tool call as observed by the transcript.
@@ -37,6 +39,13 @@ pub struct ToolCard {
     pub output: String,
     /// The lifecycle state driving the card's status styling.
     pub status: ToolStatus,
+    /// Wall-clock duration of the call (set when it finishes), shown as the `· <N>ms` meta tail.
+    pub duration_ms: Option<u64>,
+    /// For file-mutating tools (write/edit/apply_patch), the (additions, removals) line counts shown
+    /// as the `+N -N` diff meta; `None` for tools without a diff shape.
+    pub diff_stat: Option<(usize, usize)>,
+    /// When the call started, used to measure [`ToolCard::duration_ms`] on completion.
+    started: Instant,
 }
 
 impl ToolCard {
@@ -45,6 +54,7 @@ impl ToolCard {
     pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: &str) -> Self {
         let name = name.into();
         let arguments = redaction::redact(arguments);
+        let diff_stat = diff_stat_for(&name, &arguments);
         Self {
             id: id.into(),
             summary: redaction::redact(&summarize_args(&name, &arguments)),
@@ -52,6 +62,9 @@ impl ToolCard {
             name,
             output: String::new(),
             status: ToolStatus::Running,
+            duration_ms: None,
+            diff_stat,
+            started: Instant::now(),
         }
     }
 
@@ -66,7 +79,66 @@ impl ToolCard {
         } else {
             ToolStatus::Completed
         };
+        self.duration_ms = Some(self.started.elapsed().as_millis() as u64);
     }
+}
+
+/// Best-effort `(additions, removals)` line counts for a file-mutating tool call, derived from its
+/// arguments so the card can show a `+N -N` diff meta. Returns `None` for tools without a known
+/// edit shape (the meta then falls back to the duration tail alone).
+fn diff_stat_for(name: &str, arguments: &str) -> Option<(usize, usize)> {
+    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let str_arg = |keys: &[&str]| -> Option<String> {
+        keys.iter().find_map(|k| {
+            value
+                .get(*k)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+    };
+    match name {
+        "edit" | "multiedit" => {
+            let old = str_arg(&["oldString", "old_str", "oldText"]).unwrap_or_default();
+            let new = str_arg(&["newString", "new_str", "newText"]).unwrap_or_default();
+            Some((line_count(&new), line_count(&old)))
+        }
+        "write" => {
+            let content = str_arg(&["content", "text"]).unwrap_or_default();
+            Some((line_count(&content), 0))
+        }
+        "apply_patch" => {
+            let patch = str_arg(&["patch", "patchText", "patch_text", "input"])?;
+            Some(patch_line_counts(&patch))
+        }
+        _ => None,
+    }
+}
+
+/// The number of text lines in `s` (an empty string is zero lines).
+fn line_count(s: &str) -> usize {
+    if s.is_empty() {
+        0
+    } else {
+        s.lines().count()
+    }
+}
+
+/// Count the `(added, removed)` body lines of a patch envelope, ignoring the `+++`/`---` file
+/// markers so only real content changes are tallied.
+fn patch_line_counts(patch: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in patch.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        match line.as_bytes().first() {
+            Some(b'+') => added += 1,
+            Some(b'-') => removed += 1,
+            _ => {}
+        }
+    }
+    (added, removed)
 }
 
 /// The maximum number of characters kept in a card's one-line argument summary.
@@ -274,5 +346,49 @@ mod tests {
         let card = ToolCard::new("c", "bash", r#"{"command":"ls"}"#);
         assert!(card.args_detail.contains("\"command\""));
         assert!(card.args_detail.contains("ls"));
+    }
+
+    #[test]
+    fn edit_card_derives_diff_stat_from_old_and_new_strings() {
+        let card = ToolCard::new(
+            "c",
+            "edit",
+            r#"{"path":"a.rs","oldString":"one\ntwo","newString":"alpha\nbeta\ngamma"}"#,
+        );
+        assert_eq!(card.diff_stat, Some((3, 2)));
+    }
+
+    #[test]
+    fn write_card_counts_content_as_additions_only() {
+        let card = ToolCard::new("c", "write", r#"{"path":"a.rs","content":"x\ny\nz"}"#);
+        assert_eq!(card.diff_stat, Some((3, 0)));
+    }
+
+    #[test]
+    fn apply_patch_card_counts_plus_minus_body_lines() {
+        let patch = "*** Update File: a.rs\n@@\n-old line\n+new line\n+extra line\n context";
+        let args = serde_json::json!({ "patch": patch }).to_string();
+        let card = ToolCard::new("c", "apply_patch", &args);
+        assert_eq!(card.diff_stat, Some((2, 1)));
+    }
+
+    #[test]
+    fn non_mutating_tools_have_no_diff_stat() {
+        assert_eq!(
+            ToolCard::new("c", "read", r#"{"path":"a.rs"}"#).diff_stat,
+            None
+        );
+        assert_eq!(
+            ToolCard::new("c", "bash", r#"{"command":"ls"}"#).diff_stat,
+            None
+        );
+    }
+
+    #[test]
+    fn completing_a_card_records_a_duration() {
+        let mut card = ToolCard::new("c", "read", r#"{"path":"a.rs"}"#);
+        assert_eq!(card.duration_ms, None);
+        card.complete(&[ToolResultPart::text("ok")], false);
+        assert!(card.duration_ms.is_some());
     }
 }

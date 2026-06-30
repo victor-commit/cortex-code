@@ -249,6 +249,9 @@ pub struct ThemeColors {
     /// Card/panel border color for brand cards (the MOTD welcome card and meta panels); a dimmer
     /// tone than `border` on the brand theme so cards read softer than active chrome.
     pub card_border: Color,
+    /// Very soft warm surface for the working/loading band (a tint just above the canvas); every
+    /// theme defines a non-canvas value so the band never falls through to a default-black bar.
+    pub soft: Color,
 }
 
 impl ThemeColors {
@@ -274,6 +277,7 @@ impl ThemeColors {
             border: ORANGE_D,
             border_focus: ORANGE,
             card_border: BORDER_BRAND,
+            soft: SOFT,
         }
     }
 
@@ -304,6 +308,7 @@ impl ThemeColors {
             border: Color::Rgb(200, 200, 200),
             border_focus: Color::Rgb(0, 150, 100),
             card_border: Color::Rgb(205, 205, 205),
+            soft: Color::Rgb(240, 238, 232),
         }
     }
 
@@ -334,6 +339,7 @@ impl ThemeColors {
             border: Color::Rgb(40, 80, 120),
             border_focus: Color::Rgb(0, 200, 200),
             card_border: Color::Rgb(40, 80, 120),
+            soft: Color::Rgb(18, 40, 64),
         }
     }
 
@@ -364,6 +370,7 @@ impl ThemeColors {
             border: Color::Rgb(70, 71, 65),
             border_focus: Color::Rgb(166, 226, 46),
             card_border: Color::Rgb(70, 71, 65),
+            soft: Color::Rgb(50, 51, 44),
         }
     }
 
@@ -394,6 +401,7 @@ impl ThemeColors {
             border: Color::Rgb(62, 62, 66),
             border_focus: Color::Rgb(0, 122, 204),
             card_border: Color::Rgb(62, 62, 66),
+            soft: Color::Rgb(42, 42, 40),
         }
     }
 
@@ -691,6 +699,7 @@ mod tests {
         assert_eq!(t.ghost, GHOST);
         assert_eq!(t.border, ORANGE_D);
         assert_eq!(t.card_border, BORDER_BRAND);
+        assert_eq!(t.soft, SOFT, "working-band soft surface is the brand SOFT tint");
         assert_eq!(t.success, OKG);
         assert_eq!(t.error, ERR);
         // `from_name("dark")` and the Default both resolve to the brand palette.
@@ -734,6 +743,8 @@ mod tests {
             );
             // ghost is a real, distinct neutral tone.
             let _ = t.ghost;
+            // The working-band soft surface is an explicit non-canvas tint (no black-bar fallthrough).
+            assert_ne!(t.soft, t.background, "{name}: soft band surface is set");
         }
         // `vscode` resolves to full chrome (a distinct background), not just a syntax theme.
         assert_eq!(

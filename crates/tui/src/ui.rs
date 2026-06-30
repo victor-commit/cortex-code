@@ -9,7 +9,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
-use tui_components::borders::ROUNDED_BORDER;
 use tui_components::style;
 use tui_components::toast::ToastLevel;
 
@@ -30,9 +29,6 @@ const MAX_PROMPT_ROWS: usize = 8;
 
 /// Maximum number of output lines shown inside an expanded tool card before truncation.
 const MAX_TOOL_DETAIL_LINES: usize = 40;
-
-/// Maximum drawn width of a tool card's top/bottom border.
-const TOOL_CARD_WIDTH: usize = 76;
 
 /// Width (in columns) of the session sidebar panel when shown.
 const SIDEBAR_WIDTH: u16 = 30;
@@ -68,24 +64,40 @@ pub fn draw(frame: &mut Frame, app: &App) {
     };
 
     let prompt_rows = prompt_rows(app, main_area.height);
+    // While a turn is in flight a Working band sits directly above the composer, separated from it
+    // by one blank gap row (so the band area is two rows: the band itself, then the gap). It is only
+    // reserved when there is room to keep at least one transcript row.
+    let band_rows: u16 = if app.is_busy() && main_area.height > prompt_rows + 2 + 1 + 2 {
+        2
+    } else {
+        0
+    };
     let chunks = Layout::vertical([
         Constraint::Min(1),
+        Constraint::Length(band_rows),
         Constraint::Length(prompt_rows + 2),
         Constraint::Length(1),
     ])
     .split(main_area);
+    let transcript_area = chunks[0];
+    let band_area = chunks[1];
+    let prompt_area = chunks[2];
+    let footer_area = chunks[3];
 
-    draw_transcript(frame, app, chunks[0], &theme);
-    draw_prompt(frame, app, chunks[1], &theme);
-    draw_footer(frame, app, chunks[2], &theme);
+    draw_transcript(frame, app, transcript_area, &theme);
+    if band_rows > 0 {
+        draw_working_band(frame, app, band_area, &theme);
+    }
+    draw_prompt(frame, app, prompt_area, &theme);
+    draw_footer(frame, app, footer_area, &theme);
     // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
-    draw_slash_menu(frame, app, chunks[1], &theme);
+    draw_slash_menu(frame, app, prompt_area, &theme);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
-    draw_mention_menu(frame, app, chunks[1], &theme);
+    draw_mention_menu(frame, app, prompt_area, &theme);
     // The find-in-chat search bar floats above the prompt while find mode is active.
-    draw_find_bar(frame, app, chunks[1], &theme);
+    draw_find_bar(frame, app, prompt_area, &theme);
     // A transient acknowledgement (e.g. a copy confirmation) shows just above the prompt.
-    draw_ack(frame, app, chunks[1], &theme);
+    draw_ack(frame, app, prompt_area, &theme);
     // The sidebar occupies its reserved column beside the main content.
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(frame, app, sidebar, &theme);
@@ -227,7 +239,7 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                     card,
                     width,
                     app.tool_card_expanded(card),
-                    app.spinner_glyph(),
+                    app.tool_spinner_glyph(),
                     &theme,
                 );
             }
@@ -237,22 +249,8 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
             Entry::Error(message) => push_error(&mut lines, message, width, &theme),
         }
     }
-    if let Some(glyph) = app.spinner_glyph() {
-        // The hint advertises the interrupt key; a queued-message count (messages submitted
-        // mid-stream) reads as accepted even after its transient toast has dismissed.
-        let mut label = format!("{glyph} Thinking… (Esc to interrupt)");
-        let queued = app.queued_count();
-        if queued > 0 {
-            let plural = if queued == 1 { "message" } else { "messages" };
-            label.push_str(&format!(" · {queued} queued {plural}"));
-        }
-        lines.push(Line::from(Span::styled(
-            label,
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
+    // The busy/working indicator is no longer appended to the scrollback: it renders as a dedicated
+    // Working band fixed above the composer (see `draw`/`working_band_line`).
     RenderedTranscript {
         lines,
         entry_starts,
@@ -531,10 +529,12 @@ fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff, theme: &style::The
     lines.push(Line::from(""));
 }
 
-/// Append an agent tool call as a labeled card: a colored top border carrying the tool name and its
-/// running/completed/error status, a one-line argument summary, and — when expanded — the full
-/// arguments and output. A failed card is rendered in a distinct error state (red border + glyph)
-/// and shows its failure message inline so the error is legible without expanding.
+/// Append an agent tool call as an inline scrollback card: a status dot, the verb + target on the
+/// header row with a right-aligned meta column, and a `└ <result>` connector line below it. A
+/// running card swaps the `●` dot for a rotating spinner and a `running` meta; a completed card
+/// keeps the `●` ORANGE dot with a derived metric/duration meta; a failed card uses the error accent
+/// and surfaces the failure message on the connector. When expanded (Ctrl+O) the full output is
+/// revealed indented under the header.
 fn push_tool(
     lines: &mut Vec<Line<'static>>,
     card: &ToolCard,
@@ -543,99 +543,243 @@ fn push_tool(
     spinner: Option<&str>,
     theme: &style::ThemeColors,
 ) {
-    let box_w = width.clamp(8, TOOL_CARD_WIDTH);
-    let (accent, glyph, state) = match card.status {
-        ToolStatus::Running => (theme.info, "⚙", "running"),
-        ToolStatus::Completed => (theme.success, "✓", "done"),
-        ToolStatus::Failed => (theme.error, "✗", "error"),
+    let w = width.max(1);
+    // Status dot/glyph: a rotating spinner while running (a single static frame when not animating),
+    // the `●` ORANGE dot when done, and the `●` dot in the error accent when failed.
+    let glyph = match card.status {
+        ToolStatus::Running => spinner.unwrap_or(crate::glyphs::SPINNER_ROTATE[0]),
+        _ => crate::glyphs::DOT_FILLED,
     };
-    let border = Style::default().fg(accent);
-    let border_bold = border.add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(theme.text);
-    let detail_style = Style::default().fg(theme.text_dim);
-    let error_style = Style::default().fg(theme.error);
+    let dot_style = match card.status {
+        ToolStatus::Failed => Style::default().fg(theme.error),
+        _ => Style::default().fg(theme.primary),
+    };
+    let verb = tool_verb(&card.name);
+    let verb_style = Style::default()
+        .fg(theme.text_bright)
+        .add_modifier(Modifier::BOLD);
+    let target_style = Style::default().fg(theme.text_dim);
+    let faint = Style::default().fg(theme.text_muted);
 
-    // Top border carries the card label: tool name + status (with a spinner while running).
-    let mut header = format!("{glyph} {} · {state}", card.name);
-    if matches!(card.status, ToolStatus::Running) {
-        if let Some(s) = spinner {
-            header.push(' ');
-            header.push_str(s);
-        }
-    }
-    let prefix = format!(
-        "{}{} {header} ",
-        ROUNDED_BORDER.top_left, ROUNDED_BORDER.horizontal_top
-    );
-    let fill = box_w.saturating_sub(prefix.chars().count());
-    lines.push(Line::from(Span::styled(
-        format!("{prefix}{}", ROUNDED_BORDER.horizontal_top.repeat(fill)),
-        border_bold,
-    )));
+    // Header row laid out in a cell buffer so the meta column right-aligns and the target clips
+    // before colliding with it (a ≥2-col gap is preserved between target and meta).
+    let base = Style::default().fg(theme.text);
+    let mut cells: Vec<(char, Style)> = vec![(' ', base); w];
+    let meta = tool_meta_segments(card, theme);
+    let meta_w: usize = meta.iter().map(|(t, _)| t.chars().count()).sum();
+    let meta_start = w.saturating_sub(CONTENT_MARGIN + meta_w);
+    place_segments(&mut cells, meta_start, &meta);
 
-    // Body lines are prefixed with the left border bar and wrapped to the inner width.
-    let bar = format!("{} ", ROUNDED_BORDER.vertical_left);
-    let inner = box_w.saturating_sub(bar.chars().count()).max(1);
-    let emit = |lines: &mut Vec<Line<'static>>, content: &str, st: Style| {
-        for wrapped in wrap(content, inner) {
+    let verb_len = verb.chars().count();
+    // margin + "● " (2) + verb, then a space before the target.
+    let target_col = CONTENT_MARGIN + 2 + verb_len + 1;
+    let target_room = meta_start.saturating_sub(target_col + 2);
+    let target = clip_text(&card.summary, target_room);
+    let left: Vec<(String, Style)> = vec![
+        (format!("{glyph} "), dot_style),
+        (verb, verb_style),
+        (
+            if target.is_empty() {
+                String::new()
+            } else {
+                format!(" {target}")
+            },
+            target_style,
+        ),
+    ];
+    place_segments(&mut cells, CONTENT_MARGIN, &left);
+    lines.push(cells_to_line(&cells));
+
+    // Connector row: `  └ <result>` in FAINT (the error message in the error accent when failed).
+    let connector_indent = CONTENT_MARGIN + 2;
+    let result_room = w.saturating_sub(connector_indent + 2 + CONTENT_MARGIN).max(1);
+    let result = clip_text(&tool_result_summary(card), result_room);
+    let result_style = if matches!(card.status, ToolStatus::Failed) {
+        Style::default().fg(theme.error)
+    } else {
+        faint
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(connector_indent)),
+        Span::styled(format!("{} ", crate::glyphs::TOOL_CONNECTOR), faint),
+        Span::styled(result, result_style),
+    ]));
+
+    // Expanded (Ctrl+O): reveal the full output indented under the header so the detail is legible.
+    if expanded && !card.output.is_empty() {
+        let body_indent = CONTENT_MARGIN + 4;
+        let body_style = match card.status {
+            ToolStatus::Failed => Style::default().fg(theme.error),
+            _ => Style::default().fg(theme.text),
+        };
+        let out_lines: Vec<&str> = card.output.lines().collect();
+        let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
+        for line in &out_lines[..shown] {
             lines.push(Line::from(vec![
-                Span::styled(bar.clone(), border),
-                Span::styled(wrapped, st),
+                Span::raw(" ".repeat(body_indent)),
+                Span::styled((*line).to_owned(), body_style),
             ]));
         }
-    };
-
-    emit(lines, &card.summary, text_style);
-
-    if expanded {
-        if !card.args_detail.is_empty() {
-            emit(lines, "arguments", detail_style);
-            for line in card.args_detail.lines() {
-                emit(lines, line, text_style);
-            }
+        if out_lines.len() > shown {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(body_indent)),
+                Span::styled(
+                    format!("{} ({} more lines)", crate::glyphs::ELLIPSIS, out_lines.len() - shown),
+                    faint,
+                ),
+            ]));
         }
-        if !card.output.is_empty() {
-            let (label, body_style) = match card.status {
-                ToolStatus::Failed => ("error", error_style),
-                _ => ("output", text_style),
-            };
-            emit(lines, label, detail_style);
-            let out_lines: Vec<&str> = card.output.lines().collect();
-            let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
-            for line in &out_lines[..shown] {
-                emit(lines, line, body_style);
-            }
-            if out_lines.len() > shown {
-                emit(
-                    lines,
-                    &format!("… ({} more lines)", out_lines.len() - shown),
-                    detail_style,
-                );
-            }
-        }
-    } else if matches!(card.status, ToolStatus::Failed) && !card.output.is_empty() {
-        // Show the failure message inline so the error is legible without expanding.
-        emit(
-            lines,
-            card.output.lines().next().unwrap_or_default(),
-            error_style,
-        );
-        emit(lines, "Ctrl+O for detail", detail_style);
-    } else {
-        emit(lines, "Ctrl+O to expand", detail_style);
     }
 
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{}{}",
-            ROUNDED_BORDER.bottom_left,
-            ROUNDED_BORDER
-                .horizontal_bottom
-                .repeat(box_w.saturating_sub(1))
-        ),
-        border,
-    )));
     lines.push(Line::from(""));
+}
+
+/// The display verb for a tool card header (e.g. `read` → `Read`, `edit`/`apply_patch` → `Update`).
+fn tool_verb(name: &str) -> String {
+    match name {
+        "read" => "Read".to_owned(),
+        "write" => "Write".to_owned(),
+        "edit" | "multiedit" | "apply_patch" => "Update".to_owned(),
+        "bash" => "Bash".to_owned(),
+        "grep" => "Grep".to_owned(),
+        "search" => "Search".to_owned(),
+        "glob" => "Glob".to_owned(),
+        "list" => "List".to_owned(),
+        "webfetch" => "Fetch".to_owned(),
+        "websearch" => "Search".to_owned(),
+        "task" => "Task".to_owned(),
+        "todo" => "Todo".to_owned(),
+        "lsp" => "Lsp".to_owned(),
+        "question" => "Question".to_owned(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+/// The metric a completed tool card summarizes in its meta column / connector.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolMetric {
+    /// Lines read (read).
+    Lines,
+    /// Search matches (grep/search).
+    Matches,
+    /// Listed entries (glob/list).
+    Items,
+    /// Added/removed line counts (write/edit/apply_patch).
+    Diff,
+    /// No headline metric (bash and other tools) — duration only.
+    None,
+}
+
+/// The headline metric class for a tool by name.
+fn tool_metric(name: &str) -> ToolMetric {
+    match name {
+        "read" => ToolMetric::Lines,
+        "grep" | "search" => ToolMetric::Matches,
+        "glob" | "list" => ToolMetric::Items,
+        "write" | "edit" | "multiedit" | "apply_patch" => ToolMetric::Diff,
+        _ => ToolMetric::None,
+    }
+}
+
+/// The number of non-empty output lines a card produced (its headline count for read/grep/glob).
+fn tool_output_count(card: &ToolCard) -> usize {
+    card.output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
+/// Format a duration in milliseconds for the meta tail: `<N>ms` under a second, else `<N.N>s`.
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
+/// The right-aligned meta column segments for a tool card: `running`/`error` words while in flight,
+/// otherwise the headline metric (`<N> lines`, `+N -N`, …) plus a `· <N>ms` duration tail. The diff
+/// `+N`/`-N` counts are the only non-orange foregrounds a card emits.
+fn tool_meta_segments(card: &ToolCard, theme: &style::ThemeColors) -> Vec<(String, Style)> {
+    let faint = Style::default().fg(theme.text_muted);
+    match card.status {
+        ToolStatus::Running => vec![("running".to_owned(), Style::default().fg(theme.secondary))],
+        ToolStatus::Failed => vec![("error".to_owned(), Style::default().fg(theme.error))],
+        ToolStatus::Completed => {
+            let mut segs: Vec<(String, Style)> = Vec::new();
+            match tool_metric(&card.name) {
+                ToolMetric::Lines => {
+                    segs.push((format!("{} lines", card.output.lines().count()), faint));
+                }
+                ToolMetric::Matches => {
+                    segs.push((format!("{} matches", tool_output_count(card)), faint));
+                }
+                ToolMetric::Items => {
+                    segs.push((format!("{} items", tool_output_count(card)), faint));
+                }
+                ToolMetric::Diff => {
+                    if let Some((added, removed)) = card.diff_stat {
+                        segs.push((format!("+{added}"), Style::default().fg(theme.success)));
+                        segs.push((" ".to_owned(), faint));
+                        segs.push((format!("-{removed}"), Style::default().fg(theme.error)));
+                    }
+                }
+                ToolMetric::None => {}
+            }
+            if let Some(ms) = card.duration_ms {
+                if !segs.is_empty() {
+                    segs.push((" · ".to_owned(), faint));
+                }
+                segs.push((format_duration(ms), faint));
+            }
+            if segs.is_empty() {
+                segs.push(("done".to_owned(), faint));
+            }
+            segs
+        }
+    }
+}
+
+/// The `└ <result>` connector text for a tool card: a derived metric phrase for completed read/
+/// search/list tools, the first real output line otherwise, and the failure/placeholder line for
+/// failed/running calls.
+fn tool_result_summary(card: &ToolCard) -> String {
+    let first_out = card
+        .output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty());
+    match card.status {
+        ToolStatus::Failed => first_out.unwrap_or("error").to_owned(),
+        ToolStatus::Running => first_out.unwrap_or("running…").to_owned(),
+        ToolStatus::Completed => match tool_metric(&card.name) {
+            ToolMetric::Lines => format!("{} lines read", card.output.lines().count()),
+            ToolMetric::Matches => format!("{} matches", tool_output_count(card)),
+            ToolMetric::Items => format!("{} items", tool_output_count(card)),
+            _ => first_out
+                .map(str::to_owned)
+                .unwrap_or_else(|| card.summary.clone()),
+        },
+    }
+}
+
+/// Truncate `text` to at most `max` display columns, appending an ellipsis when shortened.
+fn clip_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}{}", crate::glyphs::ELLIPSIS)
 }
 
 /// Append a system notice (e.g. a dispatched slash command or an unknown-command message) as a
@@ -2321,6 +2465,74 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
+/// Render the Working band on the first row of `area` (the second row is the gap to the composer).
+/// The band is a `SOFT`-filled status row shown while a turn is in flight.
+fn draw_working_band(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    if area.height == 0 {
+        return;
+    }
+    let band_row = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    let line = working_band_line(app, area.width as usize, theme);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.soft)),
+        band_row,
+    );
+}
+
+/// Build the Working band line: a breathing spinner (ORANGE) + `Working` (BRIGHT) + ` · ` (FAINT) +
+/// a dynamic detail label (DIM), with a right-aligned `<N>s · esc to interrupt` (FAINT), all on the
+/// `SOFT` band surface. Every cell carries the explicit `soft` background so the band reads as a
+/// continuous surface.
+pub fn working_band_line(app: &App, width: usize, theme: &style::ThemeColors) -> Line<'static> {
+    let w = width.max(1);
+    let soft = theme.soft;
+    let base = Style::default().fg(theme.text).bg(soft);
+    let mut cells: Vec<(char, Style)> = vec![(' ', base); w];
+
+    // The breathing spinner uses the safe `· ✢ ✻ ✽` set (distinct from the tool-card rotation); a
+    // single static frame is shown when not animating so the band still reads while busy.
+    let glyph = app
+        .spinner_glyph()
+        .unwrap_or(crate::glyphs::SPINNER_BREATHE[0]);
+    let left: Vec<(String, Style)> = vec![
+        (format!("{glyph} "), Style::default().fg(theme.primary).bg(soft)),
+        (
+            "Working".to_owned(),
+            Style::default()
+                .fg(theme.text_bright)
+                .bg(soft)
+                .add_modifier(Modifier::BOLD),
+        ),
+        (" · ".to_owned(), Style::default().fg(theme.text_muted).bg(soft)),
+        (
+            app.working_detail(),
+            Style::default().fg(theme.text_dim).bg(soft),
+        ),
+    ];
+    place_segments(&mut cells, CONTENT_MARGIN, &left);
+
+    // Right zone: a live elapsed timer + the interrupt hint, flush to the content margin.
+    let right_text = format!(
+        "{}s {} esc to interrupt",
+        app.turn_elapsed_secs(),
+        crate::glyphs::SEPARATOR
+    );
+    let right_w = right_text.chars().count();
+    let right_start = w.saturating_sub(CONTENT_MARGIN + right_w);
+    place_segments(
+        &mut cells,
+        right_start,
+        &[(right_text, Style::default().fg(theme.text_muted).bg(soft))],
+    );
+
+    cells_to_line(&cells)
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let width = area.width.max(1) as usize;
     let footer = Paragraph::new(status_bar_line(app, width))
@@ -3015,7 +3227,14 @@ mod tests {
     #[test]
     fn tool_card_colors_follow_theme_semantics() {
         let theme = style::ThemeColors::ocean_dark();
+        let dot_fg = |line: &Line, glyph: &str| -> Option<Color> {
+            line.spans
+                .iter()
+                .find(|s| s.content.contains(glyph))
+                .and_then(|s| s.style.fg)
+        };
 
+        // Running: a rotating spinner dot in the brand primary (ORANGE), with a `running` meta.
         let running = tool_card("read", r#"{"path":"a.txt"}"#);
         let mut running_lines = Vec::new();
         push_tool(
@@ -3026,19 +3245,32 @@ mod tests {
             Some(crate::glyphs::SPINNER_ROTATE[0]),
             &theme,
         );
-        assert_eq!(running_lines[0].spans[0].style.fg, Some(theme.info));
+        assert_eq!(
+            dot_fg(&running_lines[0], crate::glyphs::SPINNER_ROTATE[0]),
+            Some(theme.primary)
+        );
+        assert!(rendered(&running_lines).contains("running"));
 
+        // Completed: the `●` dot stays in the brand primary (no running spinner).
         let mut completed = tool_card("read", r#"{"path":"a.txt"}"#);
         completed.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut completed_lines = Vec::new();
         push_tool(&mut completed_lines, &completed, 80, false, None, &theme);
-        assert_eq!(completed_lines[0].spans[0].style.fg, Some(theme.success));
+        assert_eq!(
+            dot_fg(&completed_lines[0], crate::glyphs::DOT_FILLED),
+            Some(theme.primary)
+        );
+        assert!(!rendered(&completed_lines).contains("running"));
 
+        // Failed: the dot adopts the error accent.
         let mut failed = tool_card("read", r#"{"path":"a.txt"}"#);
         failed.complete(&[protocol::ToolResultPart::text("boom")], true);
         let mut failed_lines = Vec::new();
         push_tool(&mut failed_lines, &failed, 80, false, None, &theme);
-        assert_eq!(failed_lines[0].spans[0].style.fg, Some(theme.error));
+        assert_eq!(
+            dot_fg(&failed_lines[0], crate::glyphs::DOT_FILLED),
+            Some(theme.error)
+        );
     }
 
     #[test]
@@ -3080,8 +3312,11 @@ mod tests {
         let text = rendered(&transcript_lines(&a, 80));
         assert!(text.contains("hello there"), "user prompt present:\n{text}");
         assert!(text.contains("partial"), "partial answer present:\n{text}");
-        // The busy indicator is shown while streaming.
-        assert!(text.contains("Thinking"), "busy indicator present:\n{text}");
+        // The busy indicator is now the Working band above the composer, not a transcript line.
+        assert!(!text.contains("Thinking"), "no transcript busy line:\n{text}");
+        assert!(a.is_busy(), "the turn is streaming");
+        let band = rendered(&[working_band_line(&a, 80, &style::ThemeColors::dark())]);
+        assert!(band.contains("Working"), "working band present:\n{band}");
     }
 
     #[test]
@@ -3101,6 +3336,8 @@ mod tests {
         let text = rendered(&transcript_lines(&a, 80));
         assert!(!text.contains("Thinking"), "indicator cleared:\n{text}");
         assert!(text.contains("the full reply"), "reply present:\n{text}");
+        // The Working band is gated on the busy state, so it is gone once the turn completes.
+        assert!(!a.is_busy(), "turn completed, no working band");
     }
 
     #[test]
@@ -3248,10 +3485,17 @@ mod tests {
         ToolCard::new("call_1", name, args)
     }
 
+    /// The foreground of the first span containing `glyph` in `line` (the status dot's color).
+    fn dot_fg(line: &Line, glyph: &str) -> Option<Color> {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains(glyph))
+            .and_then(|s| s.style.fg)
+    }
+
     #[test]
     fn running_tool_card_renders_label_and_summary() {
-        // VAL-TUI-024 / VAL-TUI-025 (running): the card names the tool, summarizes its args, and
-        // shows a running state.
+        // VAL-CONV-022/026: the card shows a rotating spinner dot, the verb + target, and `running`.
         let card = tool_card("read", r#"{"path":"src/main.rs"}"#);
         let mut lines = Vec::new();
         push_tool(
@@ -3263,19 +3507,21 @@ mod tests {
             &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);
-        assert!(text.contains("read"), "tool name labeled:\n{text}");
+        assert!(text.contains("Read"), "verb labeled:\n{text}");
         assert!(text.contains("running"), "running status:\n{text}");
-        assert!(text.contains("src/main.rs"), "arg summary:\n{text}");
-        // Distinct card structure: rounded border corners are drawn.
+        assert!(text.contains("src/main.rs"), "target summary:\n{text}");
+        // The leading dot is the rotating spinner glyph while running, not the `●` done dot.
         assert!(
-            text.contains('╭') && text.contains('╰'),
-            "card border:\n{text}"
+            text.contains(crate::glyphs::SPINNER_ROTATE[0]),
+            "running spinner dot:\n{text}"
         );
+        // The connector line is present.
+        assert!(text.contains(crate::glyphs::TOOL_CONNECTOR), "connector:\n{text}");
     }
 
     #[test]
     fn completed_tool_card_shows_done_state() {
-        // VAL-TUI-025 (completed): the card transitions to a completed state.
+        // VAL-CONV-022/027: a completed card keeps the `●` dot and shows a derived meta, no spinner.
         let mut card = tool_card("grep", r#"{"pattern":"TODO","path":"src"}"#);
         card.complete(&[protocol::ToolResultPart::text("src/a.rs:1: TODO")], false);
         let mut lines = Vec::new();
@@ -3288,14 +3534,90 @@ mod tests {
             &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);
-        assert!(text.contains("grep"), "tool labeled:\n{text}");
-        assert!(text.contains("done"), "completed status:\n{text}");
+        assert!(text.contains("Grep"), "verb labeled:\n{text}");
+        assert!(text.contains(crate::glyphs::DOT_FILLED), "done dot:\n{text}");
         assert!(!text.contains("running"), "no longer running:\n{text}");
+        // grep summarizes its result as a match count on the connector.
+        assert!(text.contains("1 matches"), "match count meta:\n{text}");
+    }
+
+    #[test]
+    fn read_card_meta_shows_lines_and_duration() {
+        // VAL-CONV-024: the Read card meta is `<N> lines · <N>ms`.
+        let mut card = tool_card("read", r#"{"path":"stream_processor.rs"}"#);
+        card.complete(
+            &[protocol::ToolResultPart::text("line1\nline2\nline3")],
+            false,
+        );
+        card.duration_ms = Some(8);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, None, &style::ThemeColors::dark());
+        let text = rendered(&lines);
+        assert!(text.contains("3 lines"), "line count meta:\n{text}");
+        assert!(text.contains("8ms"), "duration meta:\n{text}");
+        assert!(text.contains("3 lines read"), "connector summary:\n{text}");
+    }
+
+    #[test]
+    fn update_card_diff_meta_is_green_and_red() {
+        // VAL-CONV-025: the Update card meta shows `+N` (GREEN) and `-N` (RED) followed by `· <N>ms`,
+        // and those are the only non-orange foregrounds on the card.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card(
+            "edit",
+            r#"{"path":"stream_processor.rs","oldString":"a\nb","newString":"x\ny\nz"}"#,
+        );
+        card.complete(
+            &[protocol::ToolResultPart::text("edit: replaced 1 occurrence")],
+            false,
+        );
+        card.duration_ms = Some(22);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, None, &theme);
+        let header = &lines[0];
+        let plus = header
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('+'))
+            .expect("a +N segment");
+        let minus = header
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('-'))
+            .expect("a -N segment");
+        assert_eq!(plus.content, "+3");
+        assert_eq!(plus.style.fg, Some(theme.success), "additions are GREEN");
+        assert_eq!(minus.content, "-2");
+        assert_eq!(minus.style.fg, Some(theme.error), "removals are RED");
+        assert!(rendered(&lines).contains("22ms"), "duration meta present");
+
+        // The +N/-N counts are the only non-orange-family foregrounds on the header row.
+        let neutral = [
+            theme.primary,
+            theme.secondary,
+            theme.text,
+            theme.text_dim,
+            theme.text_muted,
+            theme.text_bright,
+        ];
+        for span in &header.spans {
+            if span.content.starts_with('+') || span.content.starts_with('-') {
+                continue;
+            }
+            if let Some(fg) = span.style.fg {
+                assert!(
+                    neutral.contains(&fg),
+                    "non-+/- span {:?} uses a non-orange fg {fg:?}",
+                    span.content
+                );
+            }
+        }
     }
 
     #[test]
     fn tool_card_expands_to_reveal_output_then_collapses() {
-        // VAL-TUI-026: collapsed shows only the summary; expanded reveals the full output.
+        // VAL-CONV-023 + expand: collapsed shows the connector summary (not the raw output);
+        // expanding (Ctrl+O) reveals the full output indented under the header.
         let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
         card.complete(
             &[protocol::ToolResultPart::text("1: secret detail line")],
@@ -3316,9 +3638,10 @@ mod tests {
             !collapsed_text.contains("secret detail line"),
             "collapsed hides output:\n{collapsed_text}"
         );
+        // The collapsed card always carries a `└ <summary>` connector line.
         assert!(
-            collapsed_text.contains("expand"),
-            "collapsed hints at expansion:\n{collapsed_text}"
+            collapsed_text.contains(crate::glyphs::TOOL_CONNECTOR),
+            "collapsed shows the connector:\n{collapsed_text}"
         );
 
         let mut expanded = Vec::new();
@@ -3337,7 +3660,7 @@ mod tests {
         );
         assert!(
             expanded_text.contains("a.txt"),
-            "expanded still shows summary:\n{expanded_text}"
+            "expanded still shows target:\n{expanded_text}"
         );
         // The expanded card occupies strictly more lines than the collapsed one.
         assert!(
@@ -3350,48 +3673,197 @@ mod tests {
 
     #[test]
     fn failed_tool_card_renders_distinct_error_state() {
-        // VAL-TUI-027: a failed call shows a distinct error state with the failure message and is
-        // colored differently from a success card.
+        // A failed call shows a distinct error accent, surfaces the failure message on the
+        // connector, and colors its dot differently from a completed card.
+        let theme = style::ThemeColors::dark();
         let mut failed = tool_card("read", r#"{"path":"nope.txt"}"#);
         failed.complete(
             &[protocol::ToolResultPart::text("file not found: nope.txt")],
             true,
         );
         let mut lines = Vec::new();
-        push_tool(
-            &mut lines,
-            &failed,
-            80,
-            false,
-            None,
-            &style::ThemeColors::dark(),
-        );
+        push_tool(&mut lines, &failed, 80, false, None, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("error"), "error indicator:\n{text}");
+        assert!(text.contains("error"), "error meta:\n{text}");
         assert!(
             text.contains("file not found"),
-            "failure message shown inline:\n{text}"
+            "failure message shown on the connector:\n{text}"
         );
 
-        // The error border color differs from a completed card's border color.
         let mut ok = tool_card("read", r#"{"path":"a.txt"}"#);
         ok.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut ok_lines = Vec::new();
-        push_tool(
-            &mut ok_lines,
-            &ok,
-            80,
-            false,
-            None,
-            &style::ThemeColors::dark(),
+        push_tool(&mut ok_lines, &ok, 80, false, None, &theme);
+
+        assert_eq!(
+            dot_fg(&lines[0], crate::glyphs::DOT_FILLED),
+            Some(theme.error)
+        );
+        assert_eq!(
+            dot_fg(&ok_lines[0], crate::glyphs::DOT_FILLED),
+            Some(theme.primary)
+        );
+    }
+
+    #[test]
+    fn inline_tool_card_header_and_connector_layout() {
+        // VAL-CONV-022/023: `● verb target` header with a right-aligned meta, then a `└ <summary>`
+        // FAINT connector line below it.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("read", r#"{"path":"stream_processor.rs"}"#);
+        card.complete(&[protocol::ToolResultPart::text("alpha\nbeta")], false);
+        card.duration_ms = Some(8);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, None, &theme);
+
+        let header = &lines[0];
+        let dot = header
+            .spans
+            .iter()
+            .find(|s| s.content.contains(crate::glyphs::DOT_FILLED))
+            .expect("status dot");
+        assert_eq!(dot.style.fg, Some(theme.primary), "dot is ORANGE");
+        let verb = header
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Read"))
+            .expect("verb");
+        assert_eq!(verb.style.fg, Some(theme.text_bright), "verb is BRIGHT");
+        let target = header
+            .spans
+            .iter()
+            .find(|s| s.content.contains("stream_processor.rs"))
+            .expect("target");
+        assert_eq!(target.style.fg, Some(theme.text_dim), "target is DIM");
+
+        // The meta column is right-aligned with a 2-col margin before the right edge.
+        let header_text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            header_text.ends_with("8ms  "),
+            "meta is flush-right with a 2-col margin: {header_text:?}"
         );
 
-        let failed_border = lines[0].spans.first().map(|s| s.style.fg);
-        let ok_border = ok_lines[0].spans.first().map(|s| s.style.fg);
-        assert!(failed_border.is_some() && ok_border.is_some());
-        assert_ne!(
-            failed_border, ok_border,
-            "failed and completed cards are colored distinctly"
+        // Connector: `└ <summary>` in FAINT.
+        let connector = &lines[1];
+        let conn = connector
+            .spans
+            .iter()
+            .find(|s| s.content.contains(crate::glyphs::TOOL_CONNECTOR))
+            .expect("connector glyph");
+        assert_eq!(conn.style.fg, Some(theme.text_muted), "connector is FAINT");
+        let conn_text: String = connector.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(conn_text.contains("2 lines read"), "connector summary: {conn_text:?}");
+    }
+
+    #[test]
+    fn running_bash_card_uses_rotate_spinner_and_running_meta() {
+        // VAL-CONV-026/027: a running card swaps `●` for a `◐◑◒◓` spinner and shows `running`.
+        let theme = style::ThemeColors::dark();
+        let card = tool_card("bash", r#"{"command":"cargo test streaming"}"#);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, Some("◑"), &theme);
+        let header = &lines[0];
+        let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("Bash"), "verb: {text:?}");
+        assert!(text.contains("cargo test streaming"), "target: {text:?}");
+        assert!(text.contains('◑'), "rotate spinner dot: {text:?}");
+        assert!(
+            !text.contains(crate::glyphs::DOT_FILLED),
+            "no done dot while running: {text:?}"
+        );
+        let meta = header
+            .spans
+            .iter()
+            .find(|s| s.content.contains("running"))
+            .expect("running meta");
+        assert_eq!(meta.style.fg, Some(theme.secondary), "running meta is AMBER");
+    }
+
+    #[test]
+    fn running_card_without_spinner_falls_back_to_static_rotate_frame() {
+        // A static (non-animated) running card still shows the first rotate frame `◐`.
+        let theme = style::ThemeColors::dark();
+        let card = tool_card("bash", r#"{"command":"ls"}"#);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, None, &theme);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(crate::glyphs::SPINNER_ROTATE[0]), "static ◐: {text:?}");
+    }
+
+    #[test]
+    fn working_band_line_carries_soft_bg_and_breathing_spinner() {
+        // VAL-CONV-029/030/061: breathing spinner (ORANGE) + Working (BRIGHT) + detail + right-aligned
+        // `<N>s · esc to interrupt`, with every cell painted on the soft band surface.
+        let theme = style::ThemeColors::dark();
+        let mut a = app();
+        let (_tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        let line = working_band_line(&a, 92, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("Working"), "label: {text:?}");
+        assert!(text.contains("esc to interrupt"), "interrupt hint: {text:?}");
+
+        // Every cell carries the explicit soft background (no black-bar fall-through).
+        for span in &line.spans {
+            assert_eq!(
+                span.style.bg,
+                Some(theme.soft),
+                "band span {:?} has the soft bg",
+                span.content
+            );
+        }
+        // The spinner is the only primary-colored span and its glyph is from the breathing set.
+        let spinner = line
+            .spans
+            .iter()
+            .find(|s| s.style.fg == Some(theme.primary))
+            .expect("spinner span");
+        let glyph = spinner.content.trim();
+        assert!(
+            crate::glyphs::SPINNER_BREATHE.contains(&glyph),
+            "breathing spinner glyph, got {glyph:?}"
+        );
+        // `Working` is BRIGHT.
+        let working = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Working"))
+            .expect("Working span");
+        assert_eq!(working.style.fg, Some(theme.text_bright));
+    }
+
+    #[test]
+    fn working_band_renders_above_composer_with_a_gap_row() {
+        // VAL-CONV-028/032: while busy, a Working band sits above the composer with exactly one
+        // blank gap row between the band and the composer's top border.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let (_tx, rx) = channel();
+        a.begin_turn("do something".to_owned(), rx, flag());
+        assert!(a.is_busy());
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let row_text = |y: u16| -> String {
+            (0..92).map(|x| buffer[(x, y)].symbol()).collect::<Vec<_>>().concat()
+        };
+        let band_y = (0..30u16)
+            .find(|&y| row_text(y).contains("Working"))
+            .expect("a Working band row");
+        // The band row is painted on the soft surface.
+        assert_eq!(buffer[(2, band_y)].bg, theme.soft, "band bg is soft");
+        // Exactly one blank gap row, then the composer's rounded top border.
+        let gap = row_text(band_y + 1);
+        assert!(!gap.contains("Working"), "gap row holds no band content: {gap:?}");
+        let composer_top = row_text(band_y + 2);
+        assert!(
+            composer_top.contains('╭'),
+            "composer top border one gap row below the band: {composer_top:?}"
         );
     }
 

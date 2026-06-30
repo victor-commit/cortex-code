@@ -49,6 +49,8 @@ pub const BOX_BOTTOM_RIGHT: &str = "╯";
 pub const BOX_HORIZONTAL: &str = "─";
 /// Vertical edge.
 pub const BOX_VERTICAL: &str = "│";
+/// Inline tool-card result connector (`└ <summary>` under a tool header).
+pub const TOOL_CONNECTOR: &str = "└";
 
 // --- Disclosure (heavy triangles only; never the thin `▸`/`▾`) ---
 
@@ -142,6 +144,7 @@ mod tests {
             BOX_BOTTOM_RIGHT,
             BOX_HORIZONTAL,
             BOX_VERTICAL,
+            TOOL_CONNECTOR,
             DISCLOSURE_COLLAPSED,
             DISCLOSURE_EXPANDED,
             SCROLLBACK_ABOVE,
