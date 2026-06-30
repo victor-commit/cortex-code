@@ -246,6 +246,9 @@ pub struct ThemeColors {
     pub border: Color,
     /// Focused border color.
     pub border_focus: Color,
+    /// Card/panel border color for brand cards (the MOTD welcome card and meta panels); a dimmer
+    /// tone than `border` on the brand theme so cards read softer than active chrome.
+    pub card_border: Color,
 }
 
 impl ThemeColors {
@@ -270,6 +273,7 @@ impl ThemeColors {
             info: INFO_DOT,
             border: ORANGE_D,
             border_focus: ORANGE,
+            card_border: BORDER_BRAND,
         }
     }
 
@@ -299,6 +303,7 @@ impl ThemeColors {
             info: Color::Rgb(50, 100, 200),
             border: Color::Rgb(200, 200, 200),
             border_focus: Color::Rgb(0, 150, 100),
+            card_border: Color::Rgb(205, 205, 205),
         }
     }
 
@@ -328,6 +333,7 @@ impl ThemeColors {
             info: Color::Rgb(100, 180, 255),
             border: Color::Rgb(40, 80, 120),
             border_focus: Color::Rgb(0, 200, 200),
+            card_border: Color::Rgb(40, 80, 120),
         }
     }
 
@@ -357,6 +363,7 @@ impl ThemeColors {
             info: Color::Rgb(102, 217, 239),
             border: Color::Rgb(70, 71, 65),
             border_focus: Color::Rgb(166, 226, 46),
+            card_border: Color::Rgb(70, 71, 65),
         }
     }
 
@@ -386,6 +393,7 @@ impl ThemeColors {
             info: Color::Rgb(86, 156, 214),
             border: Color::Rgb(62, 62, 66),
             border_focus: Color::Rgb(0, 122, 204),
+            card_border: Color::Rgb(62, 62, 66),
         }
     }
 
@@ -682,6 +690,7 @@ mod tests {
         assert_eq!(t.text_muted, FAINT);
         assert_eq!(t.ghost, GHOST);
         assert_eq!(t.border, ORANGE_D);
+        assert_eq!(t.card_border, BORDER_BRAND);
         assert_eq!(t.success, OKG);
         assert_eq!(t.error, ERR);
         // `from_name("dark")` and the Default both resolve to the brand palette.

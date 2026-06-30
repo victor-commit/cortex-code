@@ -17,6 +17,7 @@ mod keybind;
 mod lsp_bridge;
 mod mcp_runtime;
 mod mention;
+mod motd;
 mod permission;
 mod remote;
 mod shell;

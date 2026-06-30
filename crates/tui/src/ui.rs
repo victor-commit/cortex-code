@@ -4,9 +4,9 @@
 //! reflows on resize, and the transcript auto-scrolls to keep the latest content visible.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use tui_components::borders::ROUNDED_BORDER;
@@ -14,9 +14,8 @@ use tui_components::style;
 use tui_components::toast::ToastLevel;
 
 use crate::app::{
-    App, AssistantTurn, Dialog, DialogKind, DiffViewMode, DiffViewerFocus, Entry, UsageSummary,
+    App, AssistantTurn, Dialog, DialogKind, DiffViewMode, DiffViewerFocus, Entry,
 };
-use crate::brand;
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
@@ -120,11 +119,6 @@ fn prompt_rows(app: &App, total_height: u16) -> u16 {
 /// highlight, find-match highlight, and the scroll offset let the user reach and mark earlier
 /// content; the most-recent content returns into view when the scroll offset is zero.
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    if app.transcript.is_empty() && !app.is_busy() {
-        draw_home(frame, app, area, theme);
-        return;
-    }
-
     let width = area.width.max(1) as usize;
     let height = area.height as usize;
     // Record the viewport so key handlers can page-scroll and locate find matches/messages
@@ -184,6 +178,11 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
     let theme = style::ThemeColors::from_name(app.theme());
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut entry_starts: Vec<usize> = Vec::with_capacity(app.transcript.len());
+    // MOTD-as-scrollback: on a fresh session (no entries, no active turn) the welcome card and meta
+    // panels are the top block of the same buffer, not a separate full-screen empty state.
+    if app.transcript.is_empty() {
+        crate::motd::push_home(&mut lines, &app.status.model, width, &theme);
+    }
     for entry in &app.transcript {
         entry_starts.push(lines.len());
         match entry {
@@ -783,64 +782,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn draw_home(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    let dim = Style::default()
-        .fg(theme.text_dim)
-        .add_modifier(Modifier::DIM);
-
-    let leader = app.keybinds().leader.display();
-
-    // The card leads with the `✦ Cortex Code` brand lockup and the brain mascot block-art (both
-    // drawn via theme tokens, so they are mono-orange on the default theme). The mascot rows are a
-    // fixed width, so the centered card keeps the art aligned — hence no `Wrap` here.
-    let mut body: Vec<Line<'static>> = Vec::new();
-    body.push(Line::from(""));
-    body.push(brand::wordmark(theme));
-    body.push(Line::from(""));
-    body.extend(brand::mascot_lines(theme));
-    body.push(Line::from(""));
-    body.push(Line::from(Span::styled(
-        "Your terminal coding agent. Start a new conversation.",
-        Style::default().fg(theme.text),
-    )));
-    body.push(Line::from(""));
-    body.push(Line::from(Span::styled(
-        "Type a message and press Enter to begin.",
-        dim,
-    )));
-    body.push(Line::from(Span::styled(
-        "Shift+Enter inserts a newline · /exit or Ctrl+C to quit.",
-        dim,
-    )));
-    body.push(Line::from(Span::styled(
-        format!("Press {leader} for keybindings (which-key)."),
-        dim,
-    )));
-
-    let block = Block::default()
-        .style(Style::default().bg(theme.background))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Cortex Code ")
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    let paragraph = Paragraph::new(Text::from(body))
-        .block(block)
-        .alignment(Alignment::Center);
-
-    frame.render_widget(paragraph, area);
-}
-
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     // Shell mode wears a distinct title and border color so it is unmistakably set apart from chat.
     let shell = app.shell_mode();
+    // The composer is a plain rounded `ORANGE_D` box on the brand canvas (no title); shell mode is
+    // the one exception, wearing a distinct title + warning border so it is unmistakably set apart.
     let mut block = Block::default()
-        .style(Style::default().bg(theme.surface[1]).fg(theme.text))
+        .style(Style::default().bg(theme.background).fg(theme.text))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border));
@@ -853,12 +801,6 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
                     .add_modifier(Modifier::BOLD),
             )
             .border_style(Style::default().fg(theme.warning));
-    } else {
-        block = block.title(" Prompt ").title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -891,19 +833,73 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         );
     }
 
+    // Composer accent edge `▌` + `›` prompt glyph at the left inner column (both ORANGE).
+    let accent = Style::default().fg(theme.primary);
+    let prefix_w = inner.width.min(3);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(crate::glyphs::ACCENT_BAR, accent),
+            Span::raw(" "),
+            Span::styled(crate::glyphs::PROMPT, accent),
+        ])),
+        Rect {
+            x: inner.x,
+            y: input_area.y,
+            width: prefix_w,
+            height: 1,
+        },
+    );
+
+    // Right-aligned FAINT action hint on the input row (reserved out of the text region).
+    let hint = if shell {
+        format!("{} run   esc dismiss", crate::glyphs::KEY_ENTER)
+    } else {
+        format!("{} send", crate::glyphs::KEY_ENTER)
+    };
+    let hint_w = hint.chars().count() as u16;
+    let hint_reserve = if inner.width > hint_w + 8 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                hint,
+                Style::default().fg(theme.text_muted),
+            )),
+            Rect {
+                x: inner.x + inner.width - hint_w,
+                y: input_area.y,
+                width: hint_w,
+                height: 1,
+            },
+        );
+        hint_w + 1
+    } else {
+        0
+    };
+
+    // The text region begins after the `▌ › ` prefix (4 columns) so typed text and the caret sit at
+    // the input column and continuation lines hang under it.
+    let prefix = 4u16;
+    let text_x = inner.x + prefix.min(inner.width);
+    let text_w = inner.width.saturating_sub(prefix + hint_reserve).max(1);
+    let input_area = Rect {
+        x: text_x,
+        y: input_area.y,
+        width: text_w,
+        height: input_area.height,
+    };
+
     let value = app.input_value();
     if value.is_empty() {
         let placeholder = if shell {
-            "$ run a shell command…  (Esc to exit)"
+            "run a shell command…"
+        } else if app.transcript.is_empty() {
+            crate::motd::HOME_PLACEHOLDER
         } else {
-            "Type a message…  (/ for commands, ! for shell)"
+            "reply to cortex…"
         };
         frame.render_widget(
             Paragraph::new(Span::styled(
                 placeholder,
-                Style::default()
-                    .fg(theme.text_dim)
-                    .add_modifier(Modifier::DIM),
+                Style::default().fg(theme.text_muted),
             )),
             input_area,
         );
@@ -918,8 +914,8 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     }
 
     let cursor = app.cursor();
-    let cx = input_area.x + (cursor.col as u16).min(input_area.width - 1);
-    let cy = input_area.y + (cursor.row as u16).min(input_area.height - 1);
+    let cx = input_area.x + (cursor.col as u16).min(input_area.width.saturating_sub(1));
+    let cy = input_area.y + (cursor.row as u16).min(input_area.height.saturating_sub(1));
     frame.set_cursor_position((cx, cy));
 }
 
@@ -2239,82 +2235,106 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    let footer = Paragraph::new(footer_line(app))
+    let width = area.width.max(1) as usize;
+    let footer = Paragraph::new(status_bar_line(app, width))
         .style(Style::default().fg(theme.text).bg(theme.surface[0]));
     frame.render_widget(footer, area);
 }
 
-/// Build the status footer: model / agent / mode / session plus the token-and-cost usage segment.
-/// Before any turn reports usage the segment reads `usage —`; after a turn it shows the running
-/// token counts (and cost when reported), so a usage figure appears/increments versus before.
-///
-/// The label/value/separator colors come from the active theme, so switching theme visibly
-/// recolors the status bar (the comparable element validated for a theme change).
-pub fn footer_line(app: &App) -> Line<'static> {
+/// Build the 3-zone status bar: left `? for help` (or an attention cue when one is active), a
+/// mathematically-centered autonomy/permission segment, and the real active model id flush to the
+/// right margin. It is painted on the `BAR` surface by [`draw_footer`]. The right zone shows the
+/// live binary default model id (never the mockup `opus-4.8`), so switching model recolors/relabels
+/// it; the colors come from the active theme so a theme switch visibly recolors the bar.
+pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
     let theme = style::ThemeColors::from_name(app.theme());
-    let label_color = theme.primary;
-    let value_color = theme.text;
-    let sep_color = theme.text_muted;
-    let label = Style::default()
-        .fg(label_color)
-        .add_modifier(Modifier::BOLD);
-    let value = Style::default().fg(value_color);
-    let sep = move || Span::styled(" · ", Style::default().fg(sep_color));
+    let w = width.max(1);
+    let base = Style::default().fg(theme.text);
+    let mut cells: Vec<(char, Style)> = vec![(' ', base); w];
 
-    let mut spans = Vec::new();
-    if let Some(attention) = app.attention_badge() {
-        spans.push(Span::styled("attention ", label));
-        spans.push(Span::styled(
-            attention.to_owned(),
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(sep());
-    }
-    spans.extend([
-        Span::styled("model ", label),
-        Span::styled(app.status.model.clone(), value),
-        sep(),
-        Span::styled("agent ", label),
-        Span::styled(app.status.agent.clone(), value),
-        sep(),
-        Span::styled("mode ", label),
-        Span::styled(app.status.mode.clone(), value),
-        sep(),
-        Span::styled("variant ", label),
-        Span::styled(app.status.variant.clone(), value),
-        sep(),
-        Span::styled("session ", label),
-        Span::styled(app.status.session.clone(), value),
-        sep(),
-        Span::styled("usage ", label),
-    ]);
-    spans.push(Span::styled(usage_text(&app.usage), value));
-    let (sub_total, sub_running, sub_done) = app.subagent_footer_summary();
-    spans.push(sep());
-    spans.push(Span::styled("subagents ", label));
-    spans.push(Span::styled(
-        format!("{sub_total} ({sub_running} running, {sub_done} done)"),
-        value,
-    ));
-    spans.push(sep());
-    spans.push(Span::styled("queued ", label));
-    spans.push(Span::styled(app.queued_count().to_string(), value));
-    Line::from(spans)
+    // Left zone: an attention cue takes precedence over the help hint when one is active, so the
+    // existing attention surface is preserved within the new bar.
+    let left: Vec<(String, Style)> = if let Some(attention) = app.attention_badge() {
+        vec![
+            (
+                "attention ".to_owned(),
+                Style::default().fg(theme.text_muted),
+            ),
+            (
+                attention.to_owned(),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![
+            ("?".to_owned(), Style::default().fg(theme.border)),
+            (" for help".to_owned(), Style::default().fg(theme.text_muted)),
+        ]
+    };
+    place_segments(&mut cells, 2, &left);
+
+    // Center zone: `auto` (AMBER head) + ` (high)` (FAINT tail) + ` · ` (GHOST) + permission (DIM),
+    // centered so its midpoint sits at the terminal's horizontal center.
+    let center: Vec<(String, Style)> = vec![
+        ("auto".to_owned(), Style::default().fg(theme.secondary)),
+        (" (high)".to_owned(), Style::default().fg(theme.text_muted)),
+        (" · ".to_owned(), Style::default().fg(theme.ghost)),
+        (
+            "allow all commands".to_owned(),
+            Style::default().fg(theme.text_dim),
+        ),
+    ];
+    let center_len: usize = center.iter().map(|(t, _)| t.chars().count()).sum();
+    let center_start = w.saturating_sub(center_len) / 2;
+    place_segments(&mut cells, center_start, &center);
+
+    // Right zone: the real active model id, flush to the right margin.
+    let model = app.status.model.clone();
+    let model_w = model.chars().count();
+    let right_start = w.saturating_sub(2 + model_w);
+    place_segments(&mut cells, right_start, &[(model, base)]);
+
+    cells_to_line(&cells)
 }
 
-/// The footer's usage text: a placeholder dash before any turn, otherwise the token totals and
-/// (when reported) the accumulated cost.
-fn usage_text(usage: &UsageSummary) -> String {
-    if !usage.reported {
-        return "—".to_owned();
+/// Overwrite `cells` starting at column `start` with the characters of each styled segment, clipping
+/// at the right edge.
+fn place_segments(cells: &mut [(char, Style)], start: usize, segments: &[(String, Style)]) {
+    let mut col = start;
+    for (text, style) in segments {
+        for ch in text.chars() {
+            if col >= cells.len() {
+                return;
+            }
+            cells[col] = (ch, *style);
+            col += 1;
+        }
     }
-    let mut text = format!("↑{} ↓{} tok", usage.input_tokens, usage.output_tokens);
-    if let Some(cost) = usage.cost {
-        text.push_str(&format!(" · ${cost:.4}"));
+}
+
+/// Collapse a styled cell buffer into a [`Line`], grouping runs of equal style into single spans.
+fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_style: Option<Style> = None;
+    for (ch, style) in cells {
+        match run_style {
+            Some(s) if s == *style => run.push(*ch),
+            _ => {
+                if let Some(s) = run_style.take() {
+                    spans.push(Span::styled(std::mem::take(&mut run), s));
+                }
+                run.push(*ch);
+                run_style = Some(*style);
+            }
+        }
     }
-    text
+    if let Some(s) = run_style {
+        spans.push(Span::styled(run, s));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -2409,6 +2429,9 @@ mod tests {
         let mut a = app();
         a.set_theme("light".to_owned());
         a.transcript.push(Entry::User("hello".to_owned()));
+        // Open the slash menu so the elevated overlay surface (PANEL) is exercised: the composer
+        // itself is flat on the CANVAS in the brand design, so the PANEL layer comes from overlays.
+        a.input.set_value("/");
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2422,7 +2445,7 @@ mod tests {
         );
         assert!(
             cells.iter().any(|c| c.bg == theme.surface[1]),
-            "prompt/overlay surfaces use themed surface background"
+            "overlay surfaces use themed surface background"
         );
         assert!(
             cells.iter().any(|c| c.bg == theme.surface[0]),
@@ -3224,13 +3247,9 @@ mod tests {
     }
 
     #[test]
-    fn footer_usage_appears_after_a_turn() {
+    fn usage_totals_accumulate_after_a_turn() {
         let mut a = app();
-        let before = plain(&footer_line(&a));
-        assert!(
-            before.contains("usage —"),
-            "no figure before a turn: {before}"
-        );
+        assert!(!a.usage.reported, "no usage is reported before a turn");
 
         let (tx, rx) = channel();
         a.begin_turn("q".to_owned(), rx, flag());
@@ -3248,10 +3267,10 @@ mod tests {
         .unwrap();
         a.poll_turn();
 
-        let after = plain(&footer_line(&a));
-        assert!(after.contains("↑12"), "input tokens shown: {after}");
-        assert!(after.contains("↓34"), "output tokens shown: {after}");
-        assert!(after.contains("$0.0021"), "cost shown: {after}");
+        assert!(a.usage.reported, "usage is reported after a turn");
+        assert_eq!(a.usage.input_tokens, 12, "input tokens tracked");
+        assert_eq!(a.usage.output_tokens, 34, "output tokens tracked");
+        assert_eq!(a.usage.cost, Some(0.0021), "cost tracked");
     }
 
     #[test]
@@ -3261,10 +3280,10 @@ mod tests {
 
         let mut enabled = app();
         enabled.note_error("network disabled".to_owned());
-        let enabled_footer = plain(&footer_line(&enabled));
+        let enabled_footer = plain(&status_bar_line(&enabled, 70));
         assert!(
-            enabled_footer.starts_with("attention error"),
-            "attention cue should be prioritized at the start of the footer: {enabled_footer}"
+            enabled_footer.trim_start().starts_with("attention error"),
+            "attention cue should be prioritized in the status bar's left zone: {enabled_footer}"
         );
 
         let enabled_backend = TestBackend::new(70, 12);

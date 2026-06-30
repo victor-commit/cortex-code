@@ -6879,6 +6879,11 @@ fn parse_custom_theme_value(
         &["border_focus", "borderFocus"],
         &mut theme.border_focus,
     )?;
+    apply_color_key(
+        object,
+        &["card_border", "cardBorder"],
+        &mut theme.card_border,
+    )?;
 
     if let Some(surface) = object.get("surface").or_else(|| object.get("surfaces")) {
         let values = surface

@@ -28,6 +28,13 @@ pub const ACCENT_BAR: &str = "▌";
 /// Caret / blinking cursor at the input or stream tail (ORANGE).
 pub const CURSOR: &str = "▏";
 
+// --- Key caps (hints) ---
+
+/// Enter / submit key cap.
+pub const KEY_ENTER: &str = "↵";
+/// Tab / autocomplete key cap.
+pub const KEY_TAB: &str = "⇥";
+
 // --- Box drawing (rounded only) ---
 
 /// Top-left rounded corner.
@@ -124,6 +131,8 @@ mod tests {
             PROMPT,
             ACCENT_BAR,
             CURSOR,
+            KEY_ENTER,
+            KEY_TAB,
             BOX_TOP_LEFT,
             BOX_TOP_RIGHT,
             BOX_BOTTOM_LEFT,
