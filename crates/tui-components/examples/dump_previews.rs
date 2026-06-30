@@ -318,9 +318,7 @@ fn preview_spinner() -> String {
     let styles = [
         (SpinnerStyle::Breathing, "Breathing (default)"),
         (SpinnerStyle::HalfCircle, "HalfCircle (tools)"),
-        (SpinnerStyle::Dots, "Dots"),
         (SpinnerStyle::Line, "Line"),
-        (SpinnerStyle::Braille, "Braille"),
         (SpinnerStyle::Blocks, "Blocks"),
     ];
 

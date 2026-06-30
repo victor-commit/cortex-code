@@ -25,12 +25,8 @@ pub enum SpinnerStyle {
     Breathing,
     /// Half-circle rotation for tool execution
     HalfCircle,
-    /// Classic braille dots
-    Dots,
     /// Simple line rotation
     Line,
-    /// Braille pattern
-    Braille,
     /// Block pattern
     Blocks,
 }
@@ -43,9 +39,7 @@ impl SpinnerStyle {
             SpinnerStyle::Breathing => &["·", "✢", "✻", "✽", "✻", "✢"],
             // Half-circle rotation for tools
             SpinnerStyle::HalfCircle => &["◐", "◑", "◒", "◓"],
-            SpinnerStyle::Dots => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
             SpinnerStyle::Line => &["|", "/", "-", "\\"],
-            SpinnerStyle::Braille => &["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
             SpinnerStyle::Blocks => &["▖", "▘", "▝", "▗"],
         }
     }
@@ -136,9 +130,28 @@ mod tests {
 
     #[test]
     fn test_spinner_styles() {
-        assert!(!SpinnerStyle::Dots.frames().is_empty());
+        assert!(!SpinnerStyle::Breathing.frames().is_empty());
+        assert!(!SpinnerStyle::HalfCircle.frames().is_empty());
         assert!(!SpinnerStyle::Line.frames().is_empty());
-        assert!(!SpinnerStyle::Braille.frames().is_empty());
         assert!(!SpinnerStyle::Blocks.frames().is_empty());
+    }
+
+    #[test]
+    fn no_spinner_style_uses_braille() {
+        for style in [
+            SpinnerStyle::Breathing,
+            SpinnerStyle::HalfCircle,
+            SpinnerStyle::Line,
+            SpinnerStyle::Blocks,
+        ] {
+            for frame in style.frames() {
+                assert!(
+                    !frame
+                        .chars()
+                        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
+                    "braille glyph in spinner frames: {frame:?}"
+                );
+            }
+        }
     }
 }

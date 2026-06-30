@@ -2503,7 +2503,14 @@ mod tests {
 
         let running = tool_card("read", r#"{"path":"a.txt"}"#);
         let mut running_lines = Vec::new();
-        push_tool(&mut running_lines, &running, 80, false, Some("⠋"), &theme);
+        push_tool(
+            &mut running_lines,
+            &running,
+            80,
+            false,
+            Some(crate::glyphs::SPINNER_ROTATE[0]),
+            &theme,
+        );
         assert_eq!(running_lines[0].spans[0].style.fg, Some(theme.info));
 
         let mut completed = tool_card("read", r#"{"path":"a.txt"}"#);
@@ -2737,7 +2744,7 @@ mod tests {
             &card,
             80,
             false,
-            Some("⠋"),
+            Some(crate::glyphs::SPINNER_ROTATE[0]),
             &style::ThemeColors::dark(),
         );
         let text = rendered(&lines);

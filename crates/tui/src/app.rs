@@ -1254,12 +1254,18 @@ impl App {
     }
 
     /// The animated busy-spinner glyph for the current instant, or `None` when idle.
+    ///
+    /// Uses the safe breathing frame set from [`crate::glyphs`] (the legacy braille spinner is
+    /// gone) and derives its phase from elapsed time so it is correct across variable wake
+    /// intervals.
     #[must_use]
     pub fn spinner_glyph(&self) -> Option<&'static str> {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let start = self.spinner_start?;
-        let frame = (start.elapsed().as_millis() / 100) as usize % FRAMES.len();
-        Some(FRAMES[frame])
+        Some(crate::glyphs::frame_at(
+            &crate::glyphs::SPINNER_BREATHE,
+            start.elapsed().as_millis(),
+            100,
+        ))
     }
 
     /// A snapshot of the conversational history sent with the next turn.

@@ -11,6 +11,7 @@ mod attachments;
 mod checkpoint;
 mod diff;
 mod format_bridge;
+mod glyphs;
 mod keybind;
 mod lsp_bridge;
 mod mcp_runtime;
