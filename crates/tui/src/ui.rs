@@ -2240,6 +2240,8 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             | DialogKind::Agents
             | DialogKind::Skills
             | DialogKind::Variants
+            | DialogKind::Themes
+            | DialogKind::Subagents
     );
     let searchable = matches!(dialog.kind, DialogKind::Sessions | DialogKind::Models);
 
@@ -2258,9 +2260,9 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             query: app.picker_search_query().to_owned(),
             placeholder: "type to filter…".to_owned(),
         });
-        // Agents/variants use an AMBER key; the other rich pickers use BRIGHT keys.
+        // Agents/variants/subagents use an AMBER key; the other rich pickers use BRIGHT keys.
         let key_color = match dialog.kind {
-            DialogKind::Agents | DialogKind::Variants => theme.secondary,
+            DialogKind::Agents | DialogKind::Variants | DialogKind::Subagents => theme.secondary,
             _ => theme.text_bright,
         };
         (
@@ -2295,7 +2297,18 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         None
     };
 
-    let width = dialog_width(&rows, key_width, &dialog.title, &hints, rename, area.width);
+    // The theme picker advertises its live-preview behavior with a right-aligned footer note.
+    let note = (dialog.kind == DialogKind::Themes).then(|| "live preview".to_owned());
+
+    let width = dialog_width(
+        &rows,
+        key_width,
+        &dialog.title,
+        &hints,
+        note.as_deref(),
+        rename,
+        area.width,
+    );
 
     let input = rename.map(|text| crate::modal::ModalInput {
         prefix: "Rename: ".to_owned(),
@@ -2307,7 +2320,7 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         rows,
         selected: dialog.selected(),
         hints,
-        note: None,
+        note,
         search,
         input,
         empty,
@@ -2352,6 +2365,19 @@ fn dialog_hints(kind: DialogKind, renaming: bool) -> Vec<crate::modal::ModalHint
             ModalHint::new(crate::glyphs::KEY_ENTER, "select"),
             ModalHint::new("esc", "close"),
         ],
+        DialogKind::Themes => vec![
+            ModalHint::new(
+                format!("{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN),
+                "preview",
+            ),
+            ModalHint::new(crate::glyphs::KEY_ENTER, "apply"),
+            ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Subagents => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "view"),
+            ModalHint::new("^C", "cancel"),
+            ModalHint::new("esc", "close"),
+        ],
         _ => parse_hints(dialog_hint(kind, false)),
     }
 }
@@ -2363,6 +2389,7 @@ fn dialog_width(
     key_width: Option<usize>,
     title: &str,
     hints: &[crate::modal::ModalHint],
+    note: Option<&str>,
     rename: Option<&str>,
     area_width: u16,
 ) -> u16 {
@@ -2390,10 +2417,12 @@ fn dialog_width(
         .iter()
         .map(|hint| hint.key.chars().count() + hint.label.chars().count() + 4)
         .sum();
+    // The footer must fit the hints plus any right-aligned note without collision.
+    let footer_w = hint_w + note.map_or(0, |text| text.chars().count() + 3);
     let title_w = title.chars().count() + 4;
     let rename_w = rename.map_or(0, |text| text.chars().count() + 12);
     // +2 for the left/right borders.
-    let width = content.max(hint_w + 2).max(title_w).max(rename_w) + 2;
+    let width = content.max(footer_w + 2).max(title_w).max(rename_w) + 2;
     (width as u16).min(area_width)
 }
 
@@ -3826,6 +3855,62 @@ mod tests {
         assert!(
             !text.contains("type to filter…"),
             "skill picker has no search row"
+        );
+        assert!(!crate::glyphs::contains_braille(&text), "no braille");
+    }
+
+    #[test]
+    fn theme_picker_renders_descriptors_characters_and_live_preview_footer() {
+        // VAL-PICK-043..046/050: titled `Themes` modal, the five theme names + descriptors + a
+        // right-aligned character column, a `↑↓ preview` / `↵ apply` / `esc close` footer and a
+        // `live preview` note; no search row, no braille.
+        let mut a = app();
+        open_via_slash(&mut a, "/themes");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Themes"), "titled modal:\n{text}");
+        for name in ["dark", "light", "vscode-dark", "monokai", "ocean"] {
+            assert!(text.contains(name), "theme {name} listed:\n{text}");
+        }
+        assert!(text.contains("cortex default"), "descriptor rendered:\n{text}");
+        for character in ["warm", "cool", "neutral", "high-contrast", "calm"] {
+            assert!(
+                text.contains(character),
+                "character {character} rendered:\n{text}"
+            );
+        }
+        assert!(
+            text.contains(crate::glyphs::KEY_UP) && text.contains("preview"),
+            "↑↓ preview footer hint:\n{text}"
+        );
+        assert!(
+            text.contains(crate::glyphs::KEY_ENTER) && text.contains("apply"),
+            "↵ apply footer hint:\n{text}"
+        );
+        assert!(text.contains("live preview"), "live preview note:\n{text}");
+        assert!(
+            !text.contains("type to filter…"),
+            "theme picker has no search row"
+        );
+        assert!(text.contains('╭') && text.contains('╯'), "rounded border");
+        assert!(!crate::glyphs::contains_braille(&text), "no braille");
+    }
+
+    #[test]
+    fn subagent_picker_renders_footer_hints_and_empty_state() {
+        // VAL-PICK-051/056/057: `/subagents` opens the titled `Subagents` modal with a `↵ view` /
+        // `^C cancel` / `esc close` footer; with no children it shows a clear empty state.
+        let mut a = app();
+        open_via_slash(&mut a, "/subagents");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Subagents"), "titled modal:\n{text}");
+        assert!(
+            text.contains("view") && text.contains("cancel") && text.contains("close"),
+            "subagent footer hints present:\n{text}"
+        );
+        assert!(text.contains("^C"), "^C cancel advertised:\n{text}");
+        assert!(
+            text.contains("No subagents"),
+            "empty state shown when there are no children:\n{text}"
         );
         assert!(!crate::glyphs::contains_braille(&text), "no braille");
     }

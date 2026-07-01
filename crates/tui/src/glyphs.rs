@@ -36,6 +36,10 @@ pub const KEY_ENTER: &str = "↵";
 pub const KEY_TAB: &str = "⇥";
 /// Delete / erase key cap (picker footer `⌫ delete` hint).
 pub const KEY_DELETE: &str = "⌫";
+/// Up-arrow key cap (picker footer `↑↓` navigation hint).
+pub const KEY_UP: &str = "↑";
+/// Down-arrow key cap (picker footer `↑↓` navigation hint).
+pub const KEY_DOWN: &str = "↓";
 
 // --- Box drawing (rounded only) ---
 
@@ -143,6 +147,8 @@ mod tests {
             KEY_ENTER,
             KEY_TAB,
             KEY_DELETE,
+            KEY_UP,
+            KEY_DOWN,
             BOX_TOP_LEFT,
             BOX_TOP_RIGHT,
             BOX_BOTTOM_LEFT,

@@ -180,6 +180,8 @@ pub enum DialogKind {
     Variants,
     /// The theme picker (`/themes`).
     Themes,
+    /// The subagent picker (`/subagents`).
+    Subagents,
     /// Runtime status details (`/status`).
     Status,
     /// The MCP status/list view (`/mcp`).
@@ -397,6 +399,34 @@ struct SkillPick {
     /// `plugin` (a plugin-provided slot).
     source: String,
 }
+
+/// One row of the subagent picker: the agent name (key), its task description, a status word with
+/// elapsed time (`running 8s`/`queued`/`done 2s`), the raw state (for the semantic meta color), and
+/// the backing child session id (for `↵ view`).
+#[derive(Debug, Clone)]
+struct SubagentPick {
+    /// The backing child session id (opened on `↵ view`).
+    id: String,
+    /// The subagent's agent name (e.g. `explore`, `plan`, `general`).
+    name: String,
+    /// The subagent's task description.
+    task: String,
+    /// The status meta text (`running 8s`, `queued`, `done 2s`).
+    status: String,
+    /// The raw state (`running`/`queued`/`done`/`error`) driving the meta color.
+    state: &'static str,
+}
+
+/// The five brand themes shown in the theme picker, in reference order: display name, one-word
+/// descriptor, and a right-aligned character tag. Display names are accepted by
+/// [`frame::style::ThemeColors::from_name`] (e.g. `vscode-dark` resolves to the `vscode` chrome).
+const THEME_PICKS: &[(&str, &str, &str)] = &[
+    ("dark", "cortex default", "warm"),
+    ("light", "daytime", "cool"),
+    ("vscode-dark", "familiar", "neutral"),
+    ("monokai", "vivid", "high-contrast"),
+    ("ocean", "cool blues", "calm"),
+];
 
 /// One timeline row in the `/timeline` and `/fork` dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -862,6 +892,9 @@ pub struct App {
     skill_pending: Option<BTreeSet<String>>,
     /// Variant-picker row mapping: selected row -> variant id.
     variant_rows: Vec<String>,
+    /// Subagent-picker row mapping: selected row -> child session id (for `↵ view`), parallel to
+    /// the dialog's item rows. Populated when the subagent picker opens; cleared when it closes.
+    subagent_ids: Vec<String>,
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
     /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
     session_rename: Option<String>,
@@ -1015,6 +1048,7 @@ impl App {
             enabled_skills: BTreeSet::new(),
             skill_pending: None,
             variant_rows: Vec::new(),
+            subagent_ids: Vec::new(),
             session_rename: None,
             scroll: 0,
             viewport: Cell::new((80, 24)),
@@ -3297,7 +3331,7 @@ impl App {
             "sessions" => self.open_sessions_dialog(),
             "timeline" => self.open_timeline_dialog(),
             "fork" => self.open_fork_dialog(),
-            "subagents" => self.open_palette_scope(PaletteScope::Subagents),
+            "subagents" => self.open_subagents_dialog(),
             "queue" => self.open_palette_scope(PaletteScope::QueuedPrompts),
             "sidebar-toggle" => self.toggle_sidebar(),
             "sidebar-context" => self.set_sidebar_panel(SidebarPanel::Context),
@@ -3812,36 +3846,59 @@ impl App {
         });
     }
 
-    /// Open the theme picker (`/themes`): the selectable themes, with the active theme
-    /// pre-highlighted.
+    /// Open the theme picker (`/themes`): the five brand themes as rich `name + descriptor` rows
+    /// with a right-aligned character tag (`warm`/`cool`/…), plus any custom/plugin themes, with the
+    /// active theme pre-highlighted. Moving the highlight live-previews the theme; Enter commits it;
+    /// Esc restores the theme active when the picker opened.
     fn open_themes_dialog(&mut self) {
-        let mut items = frame::style::ThemeColors::available_theme_names();
+        let mut items: Vec<String> = Vec::new();
+        let mut rows: Vec<crate::modal::ModalRow> = Vec::new();
+        let mut covered: BTreeSet<String> = BTreeSet::new();
+        for (display, descriptor, character) in THEME_PICKS {
+            covered.insert(canonical_theme_key(display));
+            items.push((*display).to_owned());
+            rows.push(crate::modal::ModalRow {
+                key: (*display).to_owned(),
+                desc: Some((*descriptor).to_owned()),
+                meta: Some((*character).to_owned()),
+                meta_color: None,
+            });
+        }
+        // Append any extra registered/custom/plugin themes not already covered by the brand set.
+        let mut extras: Vec<String> = frame::style::ThemeColors::available_theme_names();
         if let Some(hooks) = self.plugin_text_complete.as_ref() {
-            let mut plugin_themes = hooks
-                .theme_entries()
-                .into_iter()
-                .filter_map(|entry| {
-                    let name = if entry.name.trim().is_empty() {
-                        entry.id
-                    } else {
-                        entry.name
-                    };
-                    let name = name.trim().to_owned();
-                    (!name.is_empty()).then_some(name)
-                })
-                .collect::<Vec<_>>();
-            plugin_themes.sort();
-            plugin_themes.dedup();
-            for name in plugin_themes {
-                if !items.iter().any(|item| item == &name) {
-                    items.push(name);
+            for entry in hooks.theme_entries() {
+                let name = if entry.name.trim().is_empty() {
+                    entry.id
+                } else {
+                    entry.name
+                };
+                let name = name.trim().to_owned();
+                if !name.is_empty() {
+                    extras.push(name);
                 }
             }
         }
+        extras.sort();
+        extras.dedup();
+        for name in extras {
+            if covered.insert(canonical_theme_key(&name)) {
+                items.push(name.clone());
+                rows.push(crate::modal::ModalRow {
+                    key: name,
+                    desc: Some("custom theme".to_owned()),
+                    meta: None,
+                    meta_color: None,
+                });
+            }
+        }
+        let active = canonical_theme_key(&self.theme);
         let selected = items
             .iter()
-            .position(|name| *name == self.theme)
+            .position(|name| canonical_theme_key(name) == active)
             .unwrap_or(0);
+        self.picker_rows = rows;
+        self.picker_key_width = None;
         // Remember the active theme so cancelling restores it after any live preview.
         self.theme_restore = Some(self.theme.clone());
         self.open_dialog(Dialog {
@@ -3851,6 +3908,142 @@ impl App {
             selected,
             empty: None,
         });
+    }
+
+    /// Open the subagent picker (`/subagents`): the live child subagents of the active session as
+    /// rich `agent + task` rows with a right-aligned, semantically-colored status meta (running →
+    /// AMBER, done → GREEN, queued → FAINT). Enter views the highlighted subagent; `^C` cancels a
+    /// running one; Esc closes without changing any subagent's state.
+    fn open_subagents_dialog(&mut self) {
+        let theme = frame::style::ThemeColors::from_name(&self.theme);
+        let picks = self.subagent_picks();
+        let mut items = Vec::new();
+        let mut rows = Vec::new();
+        let mut ids = Vec::new();
+        for pick in picks {
+            let meta_color = match pick.state {
+                "running" => theme.secondary,
+                "done" => theme.success,
+                "error" => theme.error,
+                _ => theme.text_muted,
+            };
+            items.push(pick.name.clone());
+            rows.push(crate::modal::ModalRow {
+                key: pick.name,
+                desc: Some(pick.task),
+                meta: Some(pick.status),
+                meta_color: Some(meta_color),
+            });
+            ids.push(pick.id);
+        }
+        self.subagent_ids = ids;
+        self.picker_rows = rows;
+        self.picker_key_width = None;
+        self.open_dialog(Dialog {
+            kind: DialogKind::Subagents,
+            title: "Subagents".to_owned(),
+            items,
+            selected: 0,
+            empty: Some("No subagents for this session.".to_owned()),
+        });
+    }
+
+    /// The rich subagent-picker rows for the active session's child subagents: each carries the
+    /// agent name, its task description, a status word with elapsed time, and the raw state so the
+    /// caller can pick a semantic color. Empty when there is no active session or no children.
+    fn subagent_picks(&self) -> Vec<SubagentPick> {
+        let Some(db) = self.open_store() else {
+            return Vec::new();
+        };
+        let Some(parent_id) = self.session_id.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(sessions) = db.sessions().list() else {
+            return Vec::new();
+        };
+        let now = current_epoch_secs();
+        let mut picks = Vec::new();
+        for session in sessions {
+            let Some(title) = session.title.as_deref() else {
+                continue;
+            };
+            if !title.contains("subagent:") || !title.contains(&format!("parent:{parent_id}")) {
+                continue;
+            }
+            let (name, parsed_task) = parse_subagent_title(title);
+            let messages = db
+                .messages()
+                .list_for_session(&session.id)
+                .unwrap_or_default();
+            let last = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant")
+                .map(|message| message.content.clone());
+            let state: &'static str = if last
+                .as_deref()
+                .is_some_and(|text| text.to_ascii_lowercase().contains("state: error"))
+            {
+                "error"
+            } else if last.is_some() {
+                "done"
+            } else if messages.is_empty() {
+                "queued"
+            } else {
+                "running"
+            };
+            let elapsed = match state {
+                "done" | "error" => parse_epoch_secs(&session.updated_at)
+                    .zip(parse_epoch_secs(&session.created_at))
+                    .map(|(updated, created)| (updated - created).max(0)),
+                "running" => parse_epoch_secs(&session.created_at).map(|created| (now - created).max(0)),
+                _ => None,
+            };
+            let status = match (state, elapsed) {
+                ("queued", _) => "queued".to_owned(),
+                (word, Some(secs)) => format!("{word} {}", format_duration_secs(secs)),
+                (word, None) => word.to_owned(),
+            };
+            let task = parsed_task
+                .or_else(|| last.as_deref().map(first_line))
+                .unwrap_or_else(|| "awaiting result".to_owned());
+            picks.push(SubagentPick {
+                id: session.id,
+                name,
+                task,
+                status,
+                state,
+            });
+        }
+        picks
+    }
+
+    /// Cancel the highlighted subagent if it is running (`^C` in the subagent picker). There is no
+    /// live in-process handle in the TUI, so this surfaces a cancel request as a notice/toast; a
+    /// non-running highlight is a no-op. Never quits the app.
+    fn cancel_selected_subagent(&mut self) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        if dialog.kind != DialogKind::Subagents {
+            return;
+        }
+        let selected = dialog.selected();
+        let name = self
+            .picker_rows
+            .get(selected)
+            .map(|row| row.key.clone())
+            .unwrap_or_default();
+        let running = self
+            .picker_rows
+            .get(selected)
+            .and_then(|row| row.meta.as_deref())
+            .is_some_and(|meta| meta.starts_with("running"));
+        if running {
+            self.push_toast(ToastLevel::Info, format!("Cancelling subagent {name}"));
+            self.transcript
+                .push(Entry::Notice(format!("Requested cancel of subagent {name}")));
+        }
     }
 
     /// Open the attachment picker (`/attach`): project files, newest-first sorting not required.
@@ -4496,6 +4689,7 @@ impl App {
         self.skill_picks.clear();
         self.skill_pending = None;
         self.variant_rows.clear();
+        self.subagent_ids.clear();
         self.session_rename = None;
     }
 
@@ -4509,6 +4703,12 @@ impl App {
     /// the new title, `Enter` commits, `Esc` cancels the rename), and `Ctrl+D`/`Delete` removes it.
     fn on_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
         if ctrl && key.code == KeyCode::Char('c') {
+            // In the subagent picker `^C` cancels the highlighted running subagent (VAL-PICK-056)
+            // rather than quitting the app.
+            if self.dialog.as_ref().map(|dialog| dialog.kind) == Some(DialogKind::Subagents) {
+                self.cancel_selected_subagent();
+                return;
+            }
             self.should_quit = true;
             return;
         }
@@ -4724,6 +4924,18 @@ impl App {
                 }
             }
             Some(DialogKind::Fork) => self.fork_from_timeline_selection(),
+            Some(DialogKind::Subagents) => {
+                if let Some(id) = self
+                    .dialog
+                    .as_ref()
+                    .map(Dialog::selected)
+                    .and_then(|selected| self.subagent_ids.get(selected).cloned())
+                {
+                    self.close_dialog();
+                    self.load_session(&id);
+                    return;
+                }
+            }
             Some(DialogKind::Attachments) => {
                 self.confirm_attachment_selection();
             }
@@ -7232,6 +7444,50 @@ fn first_line(text: &str) -> String {
     } else {
         let kept: String = line.chars().take(87).collect();
         format!("{kept}…")
+    }
+}
+
+/// A canonical key for a theme name so display aliases compare equal to the registered id
+/// (`vscode-dark`/`vscode_dark` == `vscode`, `ocean_dark` == `ocean`).
+fn canonical_theme_key(name: &str) -> String {
+    match name.trim().to_lowercase().as_str() {
+        "vscode" | "vscode-dark" | "vscode_dark" => "vscode".to_owned(),
+        "ocean" | "ocean_dark" => "ocean".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// Split a child-session title into `(agent_name, task)`. Subagent titles are either
+/// `"<task> (subagent:<agent> parent:<id>)"` or the bare `"subagent:<agent> parent:<id>"` form.
+fn parse_subagent_title(title: &str) -> (String, Option<String>) {
+    let Some(idx) = title.find("subagent:") else {
+        return (title.trim().to_owned(), None);
+    };
+    let after = &title[idx + "subagent:".len()..];
+    let name = after
+        .split_whitespace()
+        .next()
+        .unwrap_or("subagent")
+        .to_owned();
+    let task = if idx > 0 {
+        let prefix = title[..idx].trim_end();
+        let prefix = prefix.strip_suffix('(').unwrap_or(prefix).trim_end();
+        (!prefix.is_empty()).then(|| prefix.to_owned())
+    } else {
+        None
+    };
+    (name, task)
+}
+
+/// A compact whole-seconds elapsed duration for a subagent status meta: `8s`, `2m`, `1h`.
+fn format_duration_secs(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h", secs / 3_600)
     }
 }
 
@@ -10565,6 +10821,226 @@ mod tests {
             dialog.items
         );
         frame::style::ThemeColors::clear_custom_themes();
+    }
+
+    #[test]
+    fn theme_picker_lists_the_five_brand_themes_with_descriptors_and_characters() {
+        // VAL-PICK-044/045/050: exactly the five real themes in reference order, each with its
+        // descriptor and a right-aligned character tag.
+        frame::style::ThemeColors::clear_custom_themes();
+        let mut a = app();
+        dispatch(&mut a, "themes");
+        let dialog = a.dialog().expect("theme picker opened");
+        assert_eq!(dialog.kind, DialogKind::Themes);
+        assert_eq!(
+            dialog.items,
+            vec!["dark", "light", "vscode-dark", "monokai", "ocean"],
+            "the five themes appear in reference order with no extras"
+        );
+        let rows = a.picker_rows();
+        let descriptor = |name: &str| {
+            rows.iter()
+                .find(|row| row.key == name)
+                .and_then(|row| row.desc.clone())
+                .unwrap_or_default()
+        };
+        let character = |name: &str| {
+            rows.iter()
+                .find(|row| row.key == name)
+                .and_then(|row| row.meta.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(descriptor("dark"), "cortex default");
+        assert_eq!(descriptor("vscode-dark"), "familiar");
+        assert_eq!(character("dark"), "warm");
+        assert_eq!(character("monokai"), "high-contrast");
+        assert_eq!(character("ocean"), "calm");
+    }
+
+    #[test]
+    fn selecting_vscode_dark_applies_the_vscode_chrome() {
+        // VAL-PICK-048: committing `vscode-dark` re-renders the UI in the vscode chrome (its
+        // display name resolves to the registered `vscode` theme without error).
+        let mut a = app();
+        dispatch(&mut a, "themes");
+        // Move the highlight onto the `vscode-dark` row.
+        let idx = a
+            .dialog()
+            .expect("theme picker")
+            .items
+            .iter()
+            .position(|name| name == "vscode-dark")
+            .expect("vscode-dark row present");
+        if let Some(dialog) = a.dialog.as_mut() {
+            dialog.selected = idx;
+        }
+        a.sync_theme_preview();
+        let confirmed = a.confirm_theme_selection().expect("theme committed");
+        assert_eq!(confirmed, "vscode-dark");
+        let applied = frame::style::ThemeColors::from_name(a.theme());
+        assert_eq!(
+            applied.background,
+            frame::style::ThemeColors::vscode().background,
+            "vscode-dark resolves to the vscode chrome palette"
+        );
+    }
+
+    /// Seed a parent session with three child subagents (running / queued / done) and load it as the
+    /// active session, returning `(app, done_child_id)`.
+    fn app_with_seeded_subagents(tag: &str) -> (App, String) {
+        let path = session_store_path(tag);
+        let parent_id = "ses_parent_subpick";
+        let done_id;
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent session");
+            let running = db
+                .sessions()
+                .create(Some(&format!(
+                    "find existing auth middleware (subagent:explore parent:{parent_id})"
+                )))
+                .expect("running child");
+            db.messages()
+                .create(&running.id, "user", "go")
+                .expect("running user message");
+            db.sessions()
+                .create(Some(&format!(
+                    "design token-refresh flow (subagent:plan parent:{parent_id})"
+                )))
+                .expect("queued child");
+            let done = db
+                .sessions()
+                .create(Some(&format!(
+                    "summarize redaction audit (subagent:general parent:{parent_id})"
+                )))
+                .expect("done child");
+            db.messages()
+                .create(&done.id, "assistant", "audit complete")
+                .expect("done assistant message");
+            done_id = done.id.clone();
+        }
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(parent_id);
+        (a, done_id)
+    }
+
+    #[test]
+    fn dispatching_subagents_opens_the_subagent_picker_with_real_children() {
+        // VAL-PICK-051/052: `/subagents` opens the modal titled `Subagents`, listing the live child
+        // subagents with their agent names and task descriptions.
+        let (mut a, _done) = app_with_seeded_subagents("subpick-open");
+        dispatch(&mut a, "subagents");
+        let dialog = a.dialog().expect("the subagent picker opened");
+        assert_eq!(dialog.kind, DialogKind::Subagents);
+        assert_eq!(dialog.title, "Subagents");
+        let rows = a.picker_rows();
+        for name in ["explore", "plan", "general"] {
+            assert!(
+                rows.iter().any(|row| row.key == name),
+                "subagent {name} listed: {rows:?}"
+            );
+        }
+        let explore = rows
+            .iter()
+            .find(|row| row.key == "explore")
+            .expect("explore row");
+        assert_eq!(
+            explore.desc.as_deref(),
+            Some("find existing auth middleware"),
+            "task description shown"
+        );
+    }
+
+    #[test]
+    fn subagent_status_meta_uses_semantic_colors() {
+        // VAL-PICK-053/054: running → AMBER, queued → FAINT, done → GREEN; green appears only on
+        // done.
+        let (mut a, _done) = app_with_seeded_subagents("subpick-colors");
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        dispatch(&mut a, "subagents");
+        let rows = a.picker_rows().to_vec();
+        let row = |name: &str| rows.iter().find(|row| row.key == name).expect("row");
+        let running = row("explore");
+        assert!(
+            running.meta.as_deref().unwrap_or_default().starts_with("running"),
+            "running status word: {:?}",
+            running.meta
+        );
+        assert_eq!(running.meta_color, Some(theme.secondary), "running is AMBER");
+        let queued = row("plan");
+        assert_eq!(queued.meta.as_deref(), Some("queued"));
+        assert_eq!(queued.meta_color, Some(theme.text_muted), "queued is FAINT");
+        let done = row("general");
+        assert!(
+            done.meta.as_deref().unwrap_or_default().starts_with("done"),
+            "done status word: {:?}",
+            done.meta
+        );
+        assert_eq!(done.meta_color, Some(theme.success), "done is GREEN");
+        // Green appears on the done status only.
+        let green_rows = rows
+            .iter()
+            .filter(|row| row.meta_color == Some(theme.success))
+            .count();
+        assert_eq!(green_rows, 1, "green is used only for the done status");
+    }
+
+    #[test]
+    fn subagent_picker_enter_views_the_highlighted_child() {
+        // VAL-PICK-056: Enter (`↵ view`) loads the highlighted subagent's session transcript.
+        let (mut a, done_id) = app_with_seeded_subagents("subpick-view");
+        dispatch(&mut a, "subagents");
+        let idx = a
+            .picker_rows()
+            .iter()
+            .position(|row| row.key == "general")
+            .expect("done subagent row");
+        if let Some(dialog) = a.dialog.as_mut() {
+            dialog.selected = idx;
+        }
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.dialog_open(), "Enter closes the picker");
+        assert_eq!(
+            a.status.session, done_id,
+            "viewing loads the highlighted subagent's session"
+        );
+    }
+
+    #[test]
+    fn subagent_picker_ctrl_c_cancels_running_without_quitting() {
+        // VAL-PICK-056: `^C` on a running subagent requests cancel (a notice), and does NOT quit.
+        let (mut a, _done) = app_with_seeded_subagents("subpick-cancel");
+        dispatch(&mut a, "subagents");
+        let idx = a
+            .picker_rows()
+            .iter()
+            .position(|row| row.key == "explore")
+            .expect("running subagent row");
+        if let Some(dialog) = a.dialog.as_mut() {
+            dialog.selected = idx;
+        }
+        a.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!a.should_quit, "^C in the subagent picker never quits");
+        assert!(
+            a.transcript
+                .iter()
+                .any(|entry| matches!(entry, Entry::Notice(text) if text.contains("cancel"))),
+            "a cancel request is surfaced"
+        );
+    }
+
+    #[test]
+    fn subagent_picker_esc_closes_without_changing_state() {
+        // VAL-PICK-057: esc closes the picker and returns to the conversation unchanged.
+        let (mut a, _done) = app_with_seeded_subagents("subpick-esc");
+        let before = a.status.session.clone();
+        dispatch(&mut a, "subagents");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open(), "esc closes the subagent picker");
+        assert_eq!(a.status.session, before, "the active session is unchanged");
     }
 
     #[test]
