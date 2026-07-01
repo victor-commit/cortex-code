@@ -64,12 +64,25 @@ const IDLE_POLL_MS: u64 = 200;
 const CARET_BLINK_HALF_PERIOD_MS: u128 = 500;
 /// The fixed breathing-spinner frame shown as a static working mark when animations are disabled.
 const STATIC_SPINNER_FRAME: usize = 2;
+/// Duration of the picker selection-highlight transition: moving the highlight one row cross-fades
+/// the inverse bar from the old row to the new one over this span, then settles instantly.
+const SELECTION_TRANSITION_MS: u128 = 140;
 
 /// Caret blink state as a pure function of elapsed time: visible for the first half-period, hidden
 /// for the second, repeating. Same elapsed input always yields the same result (deterministic).
 #[must_use]
 fn caret_visible_at(elapsed_ms: u128) -> bool {
     (elapsed_ms / CARET_BLINK_HALF_PERIOD_MS) % 2 == 0
+}
+
+/// An in-flight picker selection-highlight transition: the inverse bar interpolates from row `from`
+/// to row `to` starting at `start`. Only created while animations are enabled and the move was a
+/// single adjacent step; it expires on its own after [`SELECTION_TRANSITION_MS`].
+#[derive(Debug, Clone, Copy)]
+struct SelectionTransition {
+    from: usize,
+    to: usize,
+    start: Instant,
 }
 
 /// Status line contents reported in the footer.
@@ -694,6 +707,10 @@ pub struct App {
     /// the `--no-anim` CLI flag or the `CORTEX_NO_ANIM` environment preference; consulted by
     /// [`animations_enabled`](App::animations_enabled), which every animation gates on.
     reduced_motion: bool,
+    /// The in-flight picker selection-highlight transition, or `None` when the highlight is at rest.
+    /// Recorded when the open dialog's selection moves one adjacent row with animations enabled, and
+    /// read each frame by [`App::selection_anim_state`] to drive the cross-fade; expires on its own.
+    selection_anim: Option<SelectionTransition>,
     /// The user prompt of the in-flight turn, appended to history once the turn finishes.
     turn_prompt: Option<String>,
     /// Attachments submitted with the in-flight user prompt.
@@ -887,6 +904,7 @@ impl App {
             turn_rx: None,
             spinner_start: None,
             reduced_motion: false,
+            selection_anim: None,
             turn_prompt: None,
             turn_attachments: Vec::new(),
             turn_errored: false,
@@ -1366,7 +1384,54 @@ impl App {
     /// under reduced motion, so the loop never wakes merely to animate when motion is reduced.
     #[must_use]
     pub fn animation_active(&self) -> bool {
-        self.animations_enabled() && (self.is_busy() || self.has_toasts())
+        self.animations_enabled()
+            && (self.is_busy() || self.has_toasts() || self.selection_transition_active())
+    }
+
+    /// Record a picker selection move for the highlight transition. When animations are enabled and
+    /// the move was a single adjacent step (not a wrap-around or multi-row jump) it starts a brief
+    /// cross-fade from `from` to `to`; otherwise the highlight jumps instantly (state cleared).
+    fn note_selection_move(&mut self, from: usize, to: usize) {
+        if self.animations_enabled() && from != to && from.abs_diff(to) == 1 {
+            self.selection_anim = Some(SelectionTransition {
+                from,
+                to,
+                start: Instant::now(),
+            });
+        } else {
+            self.selection_anim = None;
+        }
+    }
+
+    /// Whether a selection-highlight transition is currently playing (and therefore needs the fast
+    /// wake cadence). Always false under reduced motion and once the transition has elapsed.
+    #[must_use]
+    pub fn selection_transition_active(&self) -> bool {
+        self.animations_enabled()
+            && self
+                .selection_anim
+                .as_ref()
+                .is_some_and(|t| t.start.elapsed().as_millis() < SELECTION_TRANSITION_MS)
+    }
+
+    /// The resolved selection transition for the current frame, or `None` when the highlight is at
+    /// rest (or under reduced motion), in which case the selection renders instantly on its row.
+    #[must_use]
+    pub fn selection_anim_state(&self) -> Option<crate::modal::SelectionAnim> {
+        if !self.animations_enabled() {
+            return None;
+        }
+        let t = self.selection_anim.as_ref()?;
+        let elapsed = t.start.elapsed().as_millis();
+        if elapsed >= SELECTION_TRANSITION_MS {
+            return None;
+        }
+        let phase = (elapsed as f32 / SELECTION_TRANSITION_MS as f32).clamp(0.0, 1.0);
+        Some(crate::modal::SelectionAnim {
+            from: t.from,
+            to: t.to,
+            phase,
+        })
     }
 
     /// The event-loop poll timeout for the current state. The loop polls at the ~100ms animation
@@ -3878,6 +3943,7 @@ impl App {
         if dialog.kind != DialogKind::Variants {
             self.variant_rows.clear();
         }
+        self.selection_anim = None;
         self.dialog = Some(dialog);
     }
 
@@ -4132,6 +4198,7 @@ impl App {
     /// Close the open dialog, returning focus to the prompt.
     fn close_dialog(&mut self) {
         self.dialog = None;
+        self.selection_anim = None;
         self.session_entries.clear();
         self.timeline_entries.clear();
         self.model_rows.clear();
@@ -4198,6 +4265,7 @@ impl App {
 
     /// Move the dialog highlight to the next row (wrapping at the end).
     fn dialog_select_next(&mut self) {
+        let before = self.dialog.as_ref().map(Dialog::selected);
         if let Some(dialog) = self.dialog.as_mut() {
             let len = dialog.items.len();
             if len > 0 {
@@ -4215,11 +4283,16 @@ impl App {
                 }
             }
         }
+        let after = self.dialog.as_ref().map(Dialog::selected);
+        if let (Some(from), Some(to)) = (before, after) {
+            self.note_selection_move(from, to);
+        }
         self.sync_theme_preview();
     }
 
     /// Move the dialog highlight to the previous row (wrapping at the start).
     fn dialog_select_prev(&mut self) {
+        let before = self.dialog.as_ref().map(Dialog::selected);
         if let Some(dialog) = self.dialog.as_mut() {
             let len = dialog.items.len();
             if len > 0 {
@@ -4236,6 +4309,10 @@ impl App {
                     dialog.selected = (dialog.selected() + len - 1) % len;
                 }
             }
+        }
+        let after = self.dialog.as_ref().map(Dialog::selected);
+        if let (Some(from), Some(to)) = (before, after) {
+            self.note_selection_move(from, to);
         }
         self.sync_theme_preview();
     }
@@ -8428,6 +8505,37 @@ mod tests {
 
         a.set_reduced_motion(false);
         assert!(a.animations_enabled());
+    }
+
+    #[test]
+    fn selection_move_starts_a_highlight_transition_gated_by_animations() {
+        // VAL-FOUND-035: an adjacent selection move plays a brief highlight transition when
+        // animations are enabled (the loop wakes to advance it), and it resolves to a from→to
+        // cross-fade phase in [0,1). A wrap/multi-row jump and reduced motion are instant.
+        let mut a = app();
+        a.note_selection_move(2, 3);
+        assert!(
+            a.selection_transition_active(),
+            "an adjacent move starts a transition"
+        );
+        assert!(
+            a.animation_active(),
+            "the event loop wakes on the fast cadence to advance the transition"
+        );
+        let anim = a.selection_anim_state().expect("resolved transition state");
+        assert_eq!((anim.from, anim.to), (2, 3));
+        assert!(anim.phase >= 0.0 && anim.phase < 1.0, "phase in [0,1): {}", anim.phase);
+
+        // A wrap-around / multi-row jump snaps instantly (no transition to animate).
+        a.note_selection_move(9, 0);
+        assert!(!a.selection_transition_active());
+        assert!(a.selection_anim_state().is_none());
+
+        // Under reduced motion (`--no-anim`), even an adjacent move is instant (VAL-CROSS-030).
+        a.set_reduced_motion(true);
+        a.note_selection_move(1, 2);
+        assert!(a.selection_anim_state().is_none(), "no transition under --no-anim");
+        assert!(!a.selection_transition_active());
     }
 
     #[test]

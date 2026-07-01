@@ -13,7 +13,7 @@ use tui_components::style;
 use tui_components::toast::ToastLevel;
 
 use crate::app::{
-    App, AssistantTurn, Dialog, DialogKind, DiffViewMode, DiffViewerFocus, Entry,
+    App, AssistantTurn, DialogKind, DiffViewMode, DiffViewerFocus, Entry,
 };
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
@@ -107,6 +107,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     // The dedicated `/diff` viewer is a modal overlay for file-tree + hunk navigation and revert.
     draw_diff_viewer(frame, app, area, &theme);
+    // A modal picker/dialog floats over a dimmed session: fade the backdrop first, then draw it.
+    if app.dialog_open() {
+        dim_backdrop(frame, area, &theme);
+    }
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area, &theme);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
@@ -1868,44 +1872,6 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     }
 }
 
-/// Build a modal dialog's item rows: each selectable item with a `›` marker and bold name on the
-/// highlighted row, or a single italic empty-state row when the list is empty (e.g. the MCP
-/// "no servers configured" view).
-fn dialog_lines(dialog: &Dialog, theme: &style::ThemeColors) -> Vec<Line<'static>> {
-    if dialog.items.is_empty() {
-        let message = dialog
-            .empty
-            .clone()
-            .unwrap_or_else(|| "(nothing to show)".to_owned());
-        return vec![Line::from(Span::styled(
-            format!("  {message}"),
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::ITALIC),
-        ))];
-    }
-
-    let selected = dialog.selected();
-    let mut lines = Vec::with_capacity(dialog.items.len());
-    for (i, item) in dialog.items.iter().enumerate() {
-        let is_selected = i == selected;
-        let marker = row_marker(is_selected);
-        if is_selected {
-            let sel = selected_row_style(theme);
-            lines.push(Line::from(vec![
-                Span::styled(marker, sel),
-                Span::styled(item.clone(), sel),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(marker, Style::default().fg(theme.info)),
-                Span::styled(item.clone(), Style::default().fg(theme.text)),
-            ]));
-        }
-    }
-    lines
-}
-
 /// Render the `/diff` viewer overlay: a file tree on the left and a per-file diff pane on the
 /// right, with unified/split toggle, hunk navigation, and revert hinting.
 fn draw_diff_viewer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
@@ -2252,8 +2218,10 @@ fn prefix_split_text(text: &str, kind: crate::diff::DiffLineKind, left: bool) ->
     }
 }
 
-/// Render the open modal dialog as a centered bordered popup over the whole frame. The list scrolls
-/// to keep the highlighted row visible, and a footer hint reminds the user how to navigate/close.
+/// Render the open modal dialog through the shared rich modal renderer: a centered card over the
+/// dimmed session, a rounded dim-orange border with an AMBER title, an inverse selection bar with a
+/// `›` marker, a footer key-hint row, scrolling, and an explicit no-results state. Moving the
+/// selection plays a brief highlight transition when animations are enabled.
 fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some(dialog) = app.dialog() else {
         return;
@@ -2262,74 +2230,82 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         return;
     }
 
-    let rows = dialog_lines(dialog, theme);
-    let widest = rows.iter().map(Line::width).max().unwrap_or(0);
-    // The session picker, when renaming, shows the in-progress new title above the hint.
+    let rows: Vec<crate::modal::ModalRow> = dialog
+        .items
+        .iter()
+        .map(|item| crate::modal::ModalRow::new(item.clone()))
+        .collect();
+
+    // The session picker, when renaming, shows the in-progress new title as an in-frame input row.
     let rename = (dialog.kind == DialogKind::Sessions)
         .then(|| app.session_rename())
         .flatten();
-    let hint = dialog_hint(dialog.kind, rename.is_some());
-    let content_w = widest
-        .max(hint.chars().count() + 2)
-        .max(rename.map_or(0, |text| text.chars().count() + 12));
-    let max_w = (area.width as usize) * 9 / 10;
-    let width = (content_w + 4).clamp(24, max_w.max(24)) as u16;
+    let hints = parse_hints(dialog_hint(dialog.kind, rename.is_some()));
 
-    let row_budget = (area.height as usize)
-        .saturating_sub(4)
-        .clamp(1, MAX_DIALOG_ROWS);
-    let visible = rows.len().min(row_budget).max(1);
-    // Borders (2) + the hint row (1) on top of the visible item rows, plus the rename input row
-    // (1) while renaming.
-    let extra = u16::from(rename.is_some());
-    let height = (visible as u16).saturating_add(3).saturating_add(extra);
-
-    let popup = centered_rect(width, height, area);
-
-    let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focus))
-        .title(format!(" {} ", dialog.title))
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
-    let inner = block.inner(popup);
-
-    // Scroll so the highlighted row stays inside the visible window.
-    let selected = dialog.selected();
-    let offset = if selected < visible {
-        0
+    let empty = if dialog.items.is_empty() {
+        Some(
+            dialog
+                .empty
+                .clone()
+                .unwrap_or_else(|| "(nothing to show)".to_owned()),
+        )
     } else {
-        selected + 1 - visible
+        None
     };
-    let end = (offset + visible).min(rows.len());
-    let mut shown: Vec<Line<'static>> = rows[offset..end].to_vec();
-    if let Some(text) = rename {
-        // A text-input row reading as `Rename: <typed title>█`, with a block cursor.
-        shown.push(Line::from(vec![
-            Span::styled(
-                "  Rename: ",
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(text.to_owned(), Style::default().fg(theme.text)),
-            Span::styled("█", Style::default().fg(theme.info)),
-        ]));
-    }
-    shown.push(Line::from(Span::styled(
-        format!("  {hint}"),
-        Style::default().fg(theme.text_dim),
-    )));
 
-    frame.render_widget(Clear, popup);
-    frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
-        inner,
-    );
+    let widest = dialog
+        .items
+        .iter()
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(0);
+    let hint_w: usize = hints
+        .iter()
+        .map(|h| h.key.chars().count() + h.label.chars().count() + 4)
+        .sum();
+    let title_w = dialog.title.chars().count() + 4;
+    let rename_w = rename.map_or(0, |text| text.chars().count() + 12);
+    // Marker (2) + key + generous meta room, kept within the available width.
+    let content_w = (widest + 8).max(hint_w + 2).max(title_w).max(rename_w);
+    let width = (content_w as u16).min(area.width);
+
+    let input = rename.map(|text| crate::modal::ModalInput {
+        prefix: "Rename: ".to_owned(),
+        value: text.to_owned(),
+    });
+
+    let spec = crate::modal::ModalSpec {
+        title: dialog.title.clone(),
+        rows,
+        selected: dialog.selected(),
+        hints,
+        note: None,
+        search: None,
+        input,
+        empty,
+        width,
+        key_width: None,
+        key_color: theme.text,
+    };
+
+    crate::modal::render_modal(frame, area, &spec, theme, app.selection_anim_state());
+}
+
+/// Split a `key label · key label` hint string into structured [`crate::modal::ModalHint`] pairs
+/// (each segment's first token is the key glyph, the remainder is the action label).
+fn parse_hints(hint: &str) -> Vec<crate::modal::ModalHint> {
+    hint.split('·')
+        .filter_map(|segment| {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return None;
+            }
+            match segment.split_once(' ') {
+                Some((key, label)) => Some(crate::modal::ModalHint::new(key, label.trim())),
+                None => Some(crate::modal::ModalHint::new(segment, "")),
+            }
+        })
+        .collect()
 }
 
 /// Render the interactive permission prompt: a centered modal naming the ask-gated tool and its
@@ -2472,7 +2448,7 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
         }
         (DialogKind::Timeline, _) => "↑/↓ move · Enter select · f fork · Esc close",
         (DialogKind::Fork, _) => "↑/↓ move · Enter fork here · Esc close",
-        _ => "↑/↓ to move · Esc to close",
+        _ => "↑/↓ move · Enter select · Esc close",
     }
 }
 
@@ -2764,8 +2740,38 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect, theme: &style::Theme
     );
 }
 
+/// Fade every cell in `area` toward the page background so an open picker reads as a floating
+/// overlay over a dimmed session: the transcript, composer, and status bar stay visible but recede
+/// behind the modal. The modal itself is drawn afterwards (with `Clear`), so it is unaffected.
+fn dim_backdrop(frame: &mut Frame, area: Rect, theme: &style::ThemeColors) {
+    let bg = theme.background;
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.fg = dim_color(cell.fg, bg);
+                cell.bg = dim_color(cell.bg, bg);
+            }
+        }
+    }
+}
+
+/// Blend `color` most of the way toward the backdrop `bg` (keeping a faint trace visible).
+fn dim_color(color: Color, bg: Color) -> Color {
+    const FADE: f32 = 0.62;
+    match (color, bg) {
+        (Color::Rgb(cr, cg, cb), Color::Rgb(br, bgc, bb)) => {
+            let mix = |c: u8, b: u8| -> u8 {
+                (f32::from(c) + (f32::from(b) - f32::from(c)) * FADE).round() as u8
+            };
+            Color::Rgb(mix(cr, br), mix(cg, bgc), mix(cb, bb))
+        }
+        _ => color,
+    }
+}
+
 /// A rectangle of the given size centered within `area` (clamped to fit).
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+pub(crate) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     let x = area.x + area.width.saturating_sub(width) / 2;
@@ -2913,7 +2919,7 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
 
 /// Overwrite `cells` starting at column `start` with the characters of each styled segment, clipping
 /// at the right edge.
-fn place_segments(cells: &mut [(char, Style)], start: usize, segments: &[(String, Style)]) {
+pub(crate) fn place_segments(cells: &mut [(char, Style)], start: usize, segments: &[(String, Style)]) {
     let mut col = start;
     for (text, style) in segments {
         for ch in text.chars() {
@@ -2927,7 +2933,7 @@ fn place_segments(cells: &mut [(char, Style)], start: usize, segments: &[(String
 }
 
 /// Collapse a styled cell buffer into a [`Line`], grouping runs of equal style into single spans.
-fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
+pub(crate) fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_style: Option<Style> = None;
@@ -3531,18 +3537,36 @@ mod tests {
         assert_eq!(palette_rows[0].spans[0].style.fg, Some(theme.selection_fg));
         assert_eq!(palette_rows[0].spans[0].style.bg, Some(theme.selection_bg));
 
-        let dialog = Dialog {
-            kind: DialogKind::Models,
+        // The rich modal picker's selected row is the warm inverse bar (surface[3]) carrying an
+        // ORANGE `›` marker and BRIGHT key text; the other row has no marker and no fill.
+        let spec = crate::modal::ModalSpec {
             title: "Models".to_owned(),
-            items: vec!["alpha".to_owned(), "beta".to_owned()],
+            rows: vec![
+                crate::modal::ModalRow::new("alpha"),
+                crate::modal::ModalRow::new("beta"),
+            ],
             selected: 0,
+            hints: vec![crate::modal::ModalHint::new("esc", "close")],
+            note: None,
+            search: None,
+            input: None,
             empty: None,
+            width: 66,
+            key_width: None,
+            key_color: theme.text,
         };
-        let dialog_rows = dialog_lines(&dialog, &theme);
-        // The selected dialog row is the solid inverse pair; the other keeps the accent marker.
-        assert_eq!(dialog_rows[0].spans[0].style.fg, Some(theme.selection_fg));
-        assert_eq!(dialog_rows[0].spans[0].style.bg, Some(theme.selection_bg));
-        assert_eq!(dialog_rows[1].spans[0].style.fg, Some(theme.info));
+        let dialog_rows = crate::modal::build_interior_lines(&spec, 60, 2, None, &theme);
+        assert_eq!(dialog_rows[0].spans[0].content, crate::glyphs::SELECT_MARKER);
+        assert_eq!(dialog_rows[0].spans[0].style.fg, Some(theme.primary));
+        assert_eq!(dialog_rows[0].spans[0].style.bg, Some(theme.surface[3]));
+        assert!(
+            !dialog_rows[1]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                .contains(crate::glyphs::SELECT_MARKER)
+        );
     }
 
     #[test]
@@ -4880,50 +4904,81 @@ mod tests {
         );
     }
 
+    /// Render an open dialog through the modal system into a text snapshot (via `draw`).
+    fn dialog_screen(a: &App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
     #[test]
-    fn dialog_lines_list_items_and_highlight_the_selection() {
-        // VAL-TUI-035: the model picker lists models (incl. the default) with the active highlighted.
-        let dialog = Dialog {
-            kind: DialogKind::Models,
-            title: "Models".to_owned(),
-            items: vec![
-                "google/gemini-2.5-flash".to_owned(),
-                "anthropic/claude-sonnet-4".to_owned(),
-            ],
-            selected: 0,
-            empty: None,
-        };
-        let text = rendered(&dialog_lines(&dialog, &style::ThemeColors::dark()));
+    fn modal_lists_items_and_highlights_the_selection() {
+        // VAL-TUI-035 / VAL-PICK-004: the model picker lists models (incl. the default) with the
+        // active row carrying the inverse `›` selection marker.
+        let mut a = app();
+        for c in "/models".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.dialog_open(), "the model picker opened");
+        let text = dialog_screen(&a);
         assert!(
             text.contains("google/gemini-2.5-flash"),
             "default model listed:\n{text}"
         );
-        assert!(
-            text.contains("anthropic/claude-sonnet-4"),
-            "second model listed:\n{text}"
-        );
-        assert!(
-            text.contains("›"),
-            "selection marker on the highlight:\n{text}"
-        );
+        assert!(text.contains("›"), "selection marker on the highlight:\n{text}");
         assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
+        assert!(text.contains("Models"), "title-in-border drawn:\n{text}");
     }
 
     #[test]
-    fn dialog_lines_render_an_empty_state() {
-        // VAL-TUI-046: the MCP view opens to a clear empty state when no servers are configured.
-        let dialog = Dialog {
-            kind: DialogKind::Mcp,
+    fn modal_renders_an_empty_state() {
+        // VAL-TUI-046 / VAL-PICK-065: the MCP view opens to a clear empty state (no highlight) when
+        // no servers are configured.
+        let spec = crate::modal::ModalSpec {
             title: "MCP servers".to_owned(),
-            items: Vec::new(),
+            rows: Vec::new(),
             selected: 0,
+            hints: vec![crate::modal::ModalHint::new("esc", "close")],
+            note: None,
+            search: None,
+            input: None,
             empty: Some("No MCP servers configured.".to_owned()),
+            width: 66,
+            key_width: None,
+            key_color: style::ThemeColors::dark().text,
         };
-        let text = rendered(&dialog_lines(&dialog, &style::ThemeColors::dark()));
+        let lines = crate::modal::build_interior_lines(
+            &spec,
+            60,
+            3,
+            None,
+            &style::ThemeColors::dark(),
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
         assert!(
             text.contains("No MCP servers configured."),
             "empty state shown:\n{text}"
         );
+        assert!(!text.contains("›"), "no highlight marker when empty:\n{text}");
     }
 
     #[test]
