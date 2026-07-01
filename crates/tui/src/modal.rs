@@ -78,6 +78,10 @@ pub struct ModalSearch {
     pub query: String,
     /// The faint placeholder shown when `query` is empty (e.g. `type to filter…`).
     pub placeholder: String,
+    /// Whether the `▏` caret is shown even when `query` is empty. The command palette is a
+    /// text-entry surface first, so its caret is always present; the sessions/models pickers keep
+    /// the default (`false`) and show the placeholder until the user types.
+    pub caret_when_empty: bool,
 }
 
 /// One footer key-hint: the key glyph (dim orange) followed by its action label (faint grey).
@@ -391,7 +395,7 @@ fn search_line(search: &ModalSearch, interior_width: usize, theme: &ThemeColors)
             Style::default().fg(theme.primary).bg(bg),
         )],
     );
-    if search.query.is_empty() {
+    if search.query.is_empty() && !search.caret_when_empty {
         place_segments(
             &mut cells,
             2,
@@ -688,6 +692,7 @@ mod tests {
         s.search = Some(ModalSearch {
             query: "zzz".to_owned(),
             placeholder: "type to filter…".to_owned(),
+            caret_when_empty: false,
         });
         let lines = build_interior_lines(&s, 60, 3, None, &t);
         let joined: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
@@ -710,20 +715,43 @@ mod tests {
         s.search = Some(ModalSearch {
             query: String::new(),
             placeholder: "type to filter…".to_owned(),
+            caret_when_empty: false,
         });
         let lines = build_interior_lines(&s, 60, 1, None, &t);
         let search = line_text(&lines[0]);
         assert!(search.starts_with(glyphs::PROMPT), "search prompt: {search}");
         assert!(search.contains("type to filter…"));
+        assert!(!search.contains(glyphs::CURSOR), "no caret when empty: {search}");
         // Non-empty query → query + caret.
         s.search = Some(ModalSearch {
             query: "gem".to_owned(),
             placeholder: "type to filter…".to_owned(),
+            caret_when_empty: false,
         });
         let lines = build_interior_lines(&s, 60, 1, None, &t);
         let search = line_text(&lines[0]);
         assert!(search.contains("gem"));
         assert!(search.contains(glyphs::CURSOR), "caret present: {search}");
+    }
+
+    #[test]
+    fn search_caret_shows_when_empty_if_requested() {
+        // VAL-PICK-059: a text-entry-first surface (the command palette) shows the `▏` caret in the
+        // search row even before anything is typed, rather than a placeholder.
+        let t = theme();
+        let mut s = spec(plain_rows(&["a"]), 0);
+        s.search = Some(ModalSearch {
+            query: String::new(),
+            placeholder: String::new(),
+            caret_when_empty: true,
+        });
+        let lines = build_interior_lines(&s, 60, 1, None, &t);
+        let search = line_text(&lines[0]);
+        assert!(search.starts_with(glyphs::PROMPT), "search prompt: {search}");
+        assert!(
+            search.contains(glyphs::CURSOR),
+            "caret present when empty: {search}"
+        );
     }
 
     #[test]

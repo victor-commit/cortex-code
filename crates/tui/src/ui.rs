@@ -107,8 +107,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     // The dedicated `/diff` viewer is a modal overlay for file-tree + hunk navigation and revert.
     draw_diff_viewer(frame, app, area, &theme);
-    // A modal picker/dialog floats over a dimmed session: fade the backdrop first, then draw it.
-    if app.dialog_open() {
+    // A modal picker/dialog (or the command palette) floats over a dimmed session: fade the
+    // backdrop first, then draw the overlay.
+    if app.dialog_open() || app.palette_open() {
         dim_backdrop(frame, area, &theme);
     }
     // A modal dialog (picker/status view) overlays everything else when open.
@@ -1359,20 +1360,10 @@ fn row_marker(selected: bool) -> String {
     }
 }
 
-/// The style for a highlighted picker/list row: a solid inverse pair (an explicit `selection_fg`
-/// drawn on an explicit `selection_bg`), never `Modifier::REVERSED`, so a selection reads as a
-/// solid fill with a contrasting foreground in a snapshot.
-fn selected_row_style(theme: &style::ThemeColors) -> Style {
-    Style::default()
-        .fg(theme.selection_fg)
-        .bg(theme.selection_bg)
-        .add_modifier(Modifier::BOLD)
-}
-
 /// Background fill for a highlighted floating-palette row — the warm `SELBG(44,35,26)` inverse bar
 /// from the `/` and `@` reference mockups. This is the *subtle* selection (a warm tint that keeps
-/// the row text readable), distinct from [`selected_row_style`]'s strong solid-accent inverse used
-/// by modal/dialog lists; it is the theme's highest surface tone so it tracks every palette.
+/// the row text readable) used by the composer-anchored `/` and `@` dropdowns; it is the theme's
+/// highest surface tone so it tracks every palette.
 fn palette_selection_bg(theme: &style::ThemeColors) -> Color {
     theme.surface[3]
 }
@@ -2259,6 +2250,7 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         let search = (searchable && rename.is_none()).then(|| crate::modal::ModalSearch {
             query: app.picker_search_query().to_owned(),
             placeholder: "type to filter…".to_owned(),
+            caret_when_empty: false,
         });
         // Agents/variants/subagents use an AMBER key; the other rich pickers use BRIGHT keys.
         let key_color = match dialog.kind {
@@ -2587,158 +2579,107 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
     }
 }
 
-/// Build the command palette's command rows for the current query: each matching command as
-/// `/name  description` with the highlighted row marked, or a single graceful "no matching
-/// commands" row when the query matches nothing.
-fn palette_command_lines(app: &App) -> Vec<Line<'static>> {
-    let theme = style::ThemeColors::from_name(app.theme());
-    let matches = app.palette_matches();
-    if matches.is_empty() {
-        return vec![Line::from(Span::styled(
-            "  no matching commands",
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::ITALIC),
-        ))];
+/// The title embedded in the command palette's border for `scope`: `Commands` at the root, with a
+/// `· submenu` crumb for the model/skill/variant/subagent/queue submenus.
+fn palette_scope_title(scope: crate::app::PaletteScope) -> String {
+    use crate::app::PaletteScope;
+    match scope {
+        PaletteScope::Root => "Commands",
+        PaletteScope::Models => "Commands · Models",
+        PaletteScope::Skills => "Commands · Skills",
+        PaletteScope::Variants => "Commands · Variants",
+        PaletteScope::Subagents => "Commands · Subagents",
+        PaletteScope::QueuedPrompts => "Commands · Queued prompts",
     }
-    let selected = app.palette_selected();
-    let mut lines = Vec::with_capacity(matches.len());
-    for (i, command) in matches.iter().enumerate() {
-        let is_selected = i == selected;
-        let marker = row_marker(is_selected);
-        let disabled = command.disabled_reason.is_some();
-        let mut description = command.description.clone();
-        if let Some(reason) = &command.disabled_reason {
-            if !description.is_empty() {
-                description.push_str(" · ");
-            }
-            description.push_str(reason);
-        }
-        // A highlighted (and enabled) row reads as a solid inverse pair; disabled rows stay dim
-        // even when highlighted so they read as unavailable.
-        if is_selected && !disabled {
-            let sel = selected_row_style(&theme);
-            lines.push(Line::from(vec![
-                Span::styled(marker, sel),
-                Span::styled(command.label.clone(), sel),
-                Span::styled("  ", sel),
-                Span::styled(description, sel),
-            ]));
-        } else {
-            let name_style = if disabled {
-                Style::default()
-                    .fg(theme.text_dim)
-                    .add_modifier(Modifier::DIM)
-            } else {
-                Style::default().fg(theme.text)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(marker, Style::default().fg(theme.info)),
-                Span::styled(command.label.clone(), name_style),
-                Span::raw("  "),
-                Span::styled(description, Style::default().fg(theme.text_dim)),
-            ]));
-        }
-    }
-    lines
+    .to_owned()
 }
 
-/// Render the command palette as a centered bordered popup: a search line reflecting the typed
-/// query sits atop the filtered command list, which scrolls to keep the highlighted row visible.
+/// Build the command palette's [`crate::modal::ModalSpec`]: a `Commands` modal with a search row
+/// (`›` prompt + query + `▏` caret + underline rule), one `/name  description` row per matching
+/// builtin, the inverse selection bar, and the `↑↓ move · ↵ run · esc close` footer. Reused by the
+/// renderer and the rendering tests so both see the identical structure.
+fn palette_modal_spec(app: &App, theme: &style::ThemeColors) -> crate::modal::ModalSpec {
+    use crate::modal::{ModalHint, ModalRow, ModalSearch, ModalSpec};
+
+    let scope = app
+        .palette_scope()
+        .unwrap_or(crate::app::PaletteScope::Root);
+    let is_root = scope == crate::app::PaletteScope::Root;
+    let title = palette_scope_title(scope);
+
+    let rows: Vec<ModalRow> = app
+        .palette_matches()
+        .into_iter()
+        .map(|command| {
+            let mut desc = command.description;
+            if let Some(reason) = command.disabled_reason {
+                if !desc.is_empty() {
+                    desc.push_str(" · ");
+                }
+                desc.push_str(&reason);
+            }
+            ModalRow {
+                key: command.label,
+                desc: (!desc.is_empty()).then_some(desc),
+                meta: None,
+                meta_color: None,
+            }
+        })
+        .collect();
+
+    let hints = vec![
+        ModalHint::new(
+            format!("{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN),
+            "move",
+        ),
+        ModalHint::new(crate::glyphs::KEY_ENTER, "run"),
+        ModalHint::new("esc", if is_root { "close" } else { "back" }),
+    ];
+
+    let empty = rows
+        .is_empty()
+        .then(|| "no matching commands".to_owned());
+
+    let search = Some(ModalSearch {
+        query: app.palette_query().unwrap_or_default().to_owned(),
+        placeholder: String::new(),
+        caret_when_empty: true,
+    });
+
+    // Size to the widest row/footer/title but keep a reference-like floor so the modal stays a
+    // stable, comfortable width as the query filters the list (u16::MAX defers the area clamp to
+    // `render_modal`).
+    let content = dialog_width(&rows, None, &title, &hints, None, None, u16::MAX);
+    let width = content.max(60);
+
+    ModalSpec {
+        title,
+        rows,
+        selected: app.palette_selected(),
+        hints,
+        note: None,
+        search,
+        input: None,
+        empty,
+        width,
+        key_width: None,
+        key_color: theme.secondary,
+    }
+}
+
+/// Render the command palette as a centered rich modal over the dimmed session: a `Commands` frame
+/// with a searchable, fuzzy-filtered list of real builtin commands, an inverse selection bar, and a
+/// `↑↓ move · ↵ run · esc close` footer. Running a highlighted row executes the real command.
 fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    let Some(query) = app.palette_query() else {
+    if app.palette_query().is_none() {
         return;
-    };
+    }
     if area.width < 8 || area.height < 6 {
         return;
     }
 
-    let command_rows = palette_command_lines(app);
-    // The search line reads as a text input: the typed query followed by a block cursor.
-    let search_line = Line::from(vec![
-        Span::styled(
-            "› ",
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(query.to_owned(), Style::default().fg(theme.text)),
-        Span::styled("▏", Style::default().fg(theme.info)),
-    ]);
-    let hint = if app
-        .palette_scope()
-        .is_some_and(|scope| scope != crate::app::PaletteScope::Root)
-    {
-        "↑/↓ move · Enter run · Esc back"
-    } else {
-        "↑/↓ move · Enter run · Esc close"
-    };
-
-    let widest = command_rows
-        .iter()
-        .map(Line::width)
-        .max()
-        .unwrap_or(0)
-        .max(search_line.width())
-        .max(hint.chars().count() + 2);
-    let max_w = (area.width as usize) * 9 / 10;
-    let width = (widest + 4).clamp(28, max_w.max(28)) as u16;
-
-    let row_budget = (area.height as usize)
-        .saturating_sub(6)
-        .clamp(1, MAX_DIALOG_ROWS);
-    let visible = command_rows.len().min(row_budget).max(1);
-    // Borders (2) + the search line (1) + the hint row (1) on top of the visible command rows.
-    let height = (visible as u16).saturating_add(4);
-
-    let popup = centered_rect(width, height, area);
-
-    let scope_title = match app
-        .palette_scope()
-        .unwrap_or(crate::app::PaletteScope::Root)
-    {
-        crate::app::PaletteScope::Root => "Command Palette".to_owned(),
-        crate::app::PaletteScope::Models => "Command Palette · Models".to_owned(),
-        crate::app::PaletteScope::Skills => "Command Palette · Skills".to_owned(),
-        crate::app::PaletteScope::Variants => "Command Palette · Variants".to_owned(),
-        crate::app::PaletteScope::Subagents => "Command Palette · Subagents".to_owned(),
-        crate::app::PaletteScope::QueuedPrompts => "Command Palette · Queued prompts".to_owned(),
-    };
-
-    let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focus))
-        .title(format!(" {scope_title} "))
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
-    let inner = block.inner(popup);
-
-    // Scroll so the highlighted command stays inside the visible window.
-    let selected = app.palette_selected();
-    let offset = if selected < visible {
-        0
-    } else {
-        selected + 1 - visible
-    };
-    let end = (offset + visible).min(command_rows.len());
-
-    let mut shown: Vec<Line<'static>> = Vec::with_capacity(visible + 2);
-    shown.push(search_line);
-    shown.extend(command_rows[offset..end].iter().cloned());
-    shown.push(Line::from(Span::styled(
-        format!("  {hint}"),
-        Style::default().fg(theme.text_dim),
-    )));
-
-    frame.render_widget(Clear, popup);
-    frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
-        inner,
-    );
+    let spec = palette_modal_spec(app, theme);
+    crate::modal::render_modal(frame, area, &spec, theme, app.selection_anim_state());
 }
 
 /// Render the session sidebar: a bordered panel beside the main content listing the active session
@@ -3416,11 +3357,11 @@ mod tests {
         let mut a = app();
         a.set_theme("light".to_owned());
         a.transcript.push(Entry::User("hello".to_owned()));
-        // Open the command palette so the elevated overlay surface (PANEL) is exercised: the
-        // composer and the floating `/`+`@` palettes are flat on the CANVAS in the brand design, so
-        // the PANEL layer comes from the centered modal overlays.
+        // Open the sidebar so the elevated overlay surface (PANEL) is exercised: the composer and
+        // the centered modals are flat on the CANVAS/background in the brand design, so the PANEL
+        // layer comes from the sidebar panel (Ctrl+1 shows the context panel).
         a.on_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyCode::Char('1'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
 
@@ -3668,9 +3609,15 @@ mod tests {
             crossterm::event::KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
-        let palette_rows = palette_command_lines(&a);
-        assert_eq!(palette_rows[0].spans[0].style.fg, Some(theme.selection_fg));
-        assert_eq!(palette_rows[0].spans[0].style.bg, Some(theme.selection_bg));
+        // The command palette now renders through the shared rich modal: its selected row is the
+        // warm SELBG (surface[3]) inverse bar with an ORANGE `›` marker and BRIGHT key text.
+        let palette_spec = palette_modal_spec(&a, &theme);
+        let palette_rows = crate::modal::build_interior_lines(&palette_spec, 58, 6, None, &theme);
+        // rows[0] is the search line, rows[1] the underline rule, rows[2] the first command row.
+        let palette_sel = &palette_rows[2];
+        assert_eq!(palette_sel.spans[0].content, crate::glyphs::SELECT_MARKER);
+        assert_eq!(palette_sel.spans[0].style.fg, Some(theme.primary));
+        assert_eq!(palette_sel.spans[0].style.bg, Some(theme.surface[3]));
 
         // The rich modal picker's selected row is the warm inverse bar (surface[3]) carrying an
         // ORANGE `›` marker and BRIGHT key text; the other row has no marker and no fill.
@@ -5039,10 +4986,15 @@ mod tests {
             crossterm::event::KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
-        let palette_text = rendered(&palette_command_lines(&a));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let palette_keys = palette_modal_spec(&a, &theme)
+            .rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<Vec<_>>();
         assert!(
-            palette_text.contains("/models"),
-            "the palette lists the model-switching action:\n{palette_text}"
+            palette_keys.iter().any(|key| key == "/models"),
+            "the palette lists the model-switching action:\n{palette_keys:?}"
         );
     }
 
@@ -5366,46 +5318,200 @@ mod tests {
         );
     }
 
-    #[test]
-    fn palette_command_lines_list_commands_and_highlight_the_selection() {
-        // VAL-TUI-058: the palette lists command entries, with the highlighted row marked.
-        let mut a = app();
-        a.on_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('p'),
-            crossterm::event::KeyModifiers::CONTROL,
-        ));
-        let text = rendered(&palette_command_lines(&a));
-        assert!(text.contains("/help"), "a command entry is listed:\n{text}");
-        assert!(text.contains("/models"), "model command listed:\n{text}");
-        assert!(text.contains("›"), "the highlight marker is drawn:\n{text}");
-        assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
+    /// Open the command palette and return its interior lines (search, rule, rows, footer) rendered
+    /// through the shared rich-modal renderer.
+    fn palette_interior_lines(a: &App) -> Vec<Line<'static>> {
+        let theme = style::ThemeColors::from_name(a.theme());
+        let spec = palette_modal_spec(a, &theme);
+        crate::modal::build_interior_lines(&spec, 58, 14, None, &theme)
     }
 
     #[test]
-    fn palette_command_lines_filter_to_the_query() {
-        // VAL-TUI-059: typing narrows the rendered list to matching commands.
+    fn palette_lists_builtin_commands_with_descriptions() {
+        // VAL-PICK-060: the palette lists real builtin slash commands with their descriptions.
         let mut a = app();
         a.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
-        for c in "theme".chars() {
+        let theme = style::ThemeColors::from_name(a.theme());
+        let rows = palette_modal_spec(&a, &theme).rows;
+        let pair = |name: &str| -> (String, String) {
+            let row = rows
+                .iter()
+                .find(|row| row.key == name)
+                .unwrap_or_else(|| panic!("palette lists {name}: {rows:?}"));
+            (row.key.clone(), row.desc.clone().unwrap_or_default())
+        };
+        for (name, desc) in [
+            ("/new", "Start a fresh session"),
+            ("/sessions", "Open the session picker"),
+            ("/models", "Open the model picker"),
+            ("/agents", "Open the agent picker"),
+            ("/themes", "Open the theme picker"),
+            ("/status", "Open the status view"),
+            ("/diff", "Open the diff viewer"),
+            ("/compact", "Compact the conversation"),
+            ("/export", "Export the current session"),
+            ("/init", "Initialize the project (AGENTS.md)"),
+        ] {
+            assert_eq!(pair(name), (name.to_owned(), desc.to_owned()));
+        }
+    }
+
+    #[test]
+    fn palette_leads_with_the_reference_primary_commands() {
+        // VAL-PICK-060: the palette opens leading with the everyday commands in the reference order
+        // (pick_palette.png), with no alias duplicates (`/model`, `/theme`).
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let keys = palette_modal_spec(&a, &theme)
+            .rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys[..10],
+            [
+                "/new",
+                "/sessions",
+                "/models",
+                "/agents",
+                "/themes",
+                "/status",
+                "/diff",
+                "/compact",
+                "/export",
+                "/init",
+            ]
+        );
+        assert_eq!(keys.iter().filter(|k| *k == "/models").count(), 1);
+        assert!(!keys.iter().any(|k| k == "/model"), "no alias duplicate");
+        assert!(!keys.iter().any(|k| k == "/theme"), "no alias duplicate");
+    }
+
+    #[test]
+    fn palette_search_row_has_orange_prompt_query_and_caret() {
+        // VAL-PICK-059: the search row shows a `›` prompt in orange, the typed query, and a `▏`
+        // caret, followed by a faint underline rule.
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        for c in "dif".chars() {
             a.on_key(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
         }
-        let text = rendered(&palette_command_lines(&a));
-        assert!(text.contains("/themes"), "the match is listed:\n{text}");
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = palette_interior_lines(&a);
+        let search = &lines[0];
+        assert_eq!(search.spans[0].content, crate::glyphs::PROMPT);
+        assert_eq!(search.spans[0].style.fg, Some(theme.primary));
+        let text = rendered(&[search.clone()]);
+        assert!(text.contains("dif"), "typed query shown: {text}");
+        assert!(text.contains(crate::glyphs::CURSOR), "caret shown: {text}");
+        // The underline rule sits directly under the search row.
+        let rule = rendered(&[lines[1].clone()]);
         assert!(
-            !text.contains("/help"),
-            "non-matches are filtered out:\n{text}"
+            rule.chars().all(|c| c == '─' || c == ' '),
+            "faint underline rule under the search: {rule}"
         );
     }
 
     #[test]
+    fn palette_fuzzy_filters_and_clearing_restores_the_list() {
+        // VAL-PICK-061: typing narrows to fuzzy-matching commands; clearing restores the full list.
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let full = palette_modal_spec(&a, &theme).rows.len();
+        for c in "diff".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let keys = palette_modal_spec(&a, &theme)
+            .rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<Vec<_>>();
+        assert!(keys.iter().any(|k| k == "/diff"), "match kept: {keys:?}");
+        assert!(!keys.iter().any(|k| k == "/new"), "non-match hidden: {keys:?}");
+        assert!(keys.len() < full, "the list narrowed");
+        // Clearing the query restores the full list.
+        for _ in 0..4 {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Backspace,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        assert_eq!(palette_modal_spec(&a, &theme).rows.len(), full);
+    }
+
+    #[test]
+    fn palette_selected_row_is_the_inverse_bar_with_marker() {
+        // VAL-PICK-062: exactly one row carries the inverse selection bar (SELBG + `›` marker).
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = palette_interior_lines(&a);
+        // rows[0] search, rows[1] rule; the first command row (rows[2]) is the highlighted row.
+        let sel = &lines[2];
+        assert_eq!(sel.spans[0].content, crate::glyphs::SELECT_MARKER);
+        assert_eq!(sel.spans[0].style.fg, Some(theme.primary));
+        assert!(
+            sel.spans.iter().all(|sp| sp.style.bg == Some(theme.surface[3])),
+            "the selected row is a full-width inverse bar"
+        );
+        // No other command row carries the selection fill.
+        let bars = lines
+            .iter()
+            .skip(2)
+            .filter(|line| {
+                !line.spans.is_empty()
+                    && line.spans.iter().all(|sp| sp.style.bg == Some(theme.surface[3]))
+            })
+            .count();
+        assert_eq!(bars, 1, "exactly one highlighted row");
+    }
+
+    #[test]
+    fn palette_footer_advertises_move_run_and_close() {
+        // VAL-PICK-062: the footer advertises `↑↓ move`, `↵ run`, and `esc close`.
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let hints = palette_modal_spec(&a, &theme).hints;
+        let footer = hints
+            .iter()
+            .map(|h| format!("{} {}", h.key, h.label))
+            .collect::<Vec<_>>()
+            .join("  ");
+        assert!(footer.contains("↑↓ move"), "move hint: {footer}");
+        assert!(footer.contains("↵ run"), "run hint: {footer}");
+        assert!(footer.contains("esc close"), "close hint: {footer}");
+    }
+
+    #[test]
     fn opened_palette_renders_over_the_frame() {
-        // VAL-TUI-058: the palette, once opened, renders as a titled overlay listing commands.
+        // VAL-PICK-058: the palette, once opened, renders as a `Commands` modal listing commands.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -5426,13 +5532,14 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(
-            rendered.contains("Command Palette"),
+            rendered.contains("Commands"),
             "the palette title is drawn:\n{rendered}"
         );
         assert!(
-            rendered.contains("/help"),
+            rendered.contains("/new"),
             "command entries are drawn in the overlay"
         );
+        assert!(!rendered.contains("▸"), "no legacy thin triangle");
     }
 
     fn press(a: &mut App, code: crossterm::event::KeyCode) {

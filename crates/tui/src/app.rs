@@ -704,6 +704,17 @@ const COMPACTION_PROMPT: &str = "Summarize our conversation so far into a concis
 /// Built-in variant options surfaced by keybinds and palette flows.
 const VARIANT_OPTIONS: &[&str] = &["default", "fast", "balanced", "quality"];
 
+/// The primary commands the command palette lists first, in the reference order (pick_palette.png).
+/// The remaining builtins follow (aliases excluded), so the palette leads with the everyday
+/// commands while still exposing the full command set to fuzzy search.
+const PALETTE_PRIMARY_COMMANDS: &[&str] = &[
+    "new", "sessions", "models", "agents", "themes", "status", "diff", "compact", "export", "init",
+];
+
+/// Builtin command names the palette hides because they are pure aliases of a listed command
+/// (`/model` → `/models`, `/theme` → `/themes`), so the palette never shows a duplicate row.
+const PALETTE_ALIAS_COMMANDS: &[&str] = &["model", "theme"];
+
 /// Cumulative token/cost usage shown in the footer, accumulated across the session's turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UsageSummary {
@@ -2908,10 +2919,12 @@ impl App {
         if len == 0 {
             return;
         }
-        let next = (self.palette_selected() + 1) % len;
+        let from = self.palette_selected();
+        let next = (from + 1) % len;
         if let Some(palette) = self.palette.as_mut() {
             palette.selected = next;
         }
+        self.note_selection_move(from, next);
     }
 
     /// Move the palette highlight to the previous match (wrapping at the start).
@@ -2920,10 +2933,12 @@ impl App {
         if len == 0 {
             return;
         }
-        let prev = (self.palette_selected() + len - 1) % len;
+        let from = self.palette_selected();
+        let prev = (from + len - 1) % len;
         if let Some(palette) = self.palette.as_mut() {
             palette.selected = prev;
         }
+        self.note_selection_move(from, prev);
     }
 
     /// Append a character to the palette query, resetting the highlight to the top match so the
@@ -2957,6 +2972,20 @@ impl App {
         }
     }
 
+    /// Build a root palette entry for the builtin command `name`, dispatching the real command on
+    /// selection. `None` when no such builtin exists.
+    fn palette_builtin_item(name: &str) -> Option<PaletteItem> {
+        slash::BUILTINS
+            .iter()
+            .find(|command| command.name == name)
+            .map(|command| PaletteItem {
+                label: format!("/{}", command.name),
+                description: command.description.to_owned(),
+                action: PaletteAction::DispatchSlash(command.name.to_owned()),
+                disabled_reason: None,
+            })
+    }
+
     fn palette_items(&self) -> Vec<PaletteItem> {
         let Some(palette) = self.palette.as_ref() else {
             return Vec::new();
@@ -2973,13 +3002,23 @@ impl App {
         }
         match scope {
             PaletteScope::Root => {
+                // Lead with the everyday commands in the reference order so the palette opens
+                // looking like pick_palette.png, then append the rest of the registry (excluding
+                // aliases already represented) so every builtin stays reachable via fuzzy search.
+                for name in PALETTE_PRIMARY_COMMANDS {
+                    if let Some(item) = Self::palette_builtin_item(name) {
+                        items.push(item);
+                    }
+                }
                 for command in slash::BUILTINS {
-                    items.push(PaletteItem {
-                        label: format!("/{}", command.name),
-                        description: command.description.to_owned(),
-                        action: PaletteAction::DispatchSlash(command.name.to_owned()),
-                        disabled_reason: None,
-                    });
+                    if PALETTE_PRIMARY_COMMANDS.contains(&command.name)
+                        || PALETTE_ALIAS_COMMANDS.contains(&command.name)
+                    {
+                        continue;
+                    }
+                    if let Some(item) = Self::palette_builtin_item(command.name) {
+                        items.push(item);
+                    }
                 }
                 items.push(PaletteItem {
                     label: "Models…".to_owned(),
@@ -12129,6 +12168,40 @@ mod tests {
         );
         let dialog = a.dialog().expect("the selected command's dialog opened");
         assert_eq!(dialog.kind, DialogKind::Themes);
+    }
+
+    #[test]
+    fn palette_runs_models_command_and_opens_the_model_picker() {
+        // VAL-PICK-063: Enter on a highlighted command dispatches the real command (here `/models`
+        // opens the model picker), confirming the palette runs commands rather than inserting text.
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "models");
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.palette_open(), "the palette closes after running the command");
+        let dialog = a.dialog().expect("the model picker opened");
+        assert_eq!(dialog.kind, DialogKind::Models);
+    }
+
+    #[test]
+    fn palette_root_leads_with_primary_commands_and_hides_aliases() {
+        // VAL-PICK-060: the palette leads with the reference primary commands (in order) and never
+        // shows the `/model` / `/theme` alias duplicates.
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        let labels = a
+            .palette_matches()
+            .into_iter()
+            .map(|m| m.label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels[..5],
+            ["/new", "/sessions", "/models", "/agents", "/themes"]
+        );
+        assert!(!labels.iter().any(|l| l == "/model"), "no /model alias: {labels:?}");
+        assert!(!labels.iter().any(|l| l == "/theme"), "no /theme alias: {labels:?}");
+        // Advanced commands stay reachable through the palette's fuzzy search.
+        assert!(labels.iter().any(|l| l == "/help"), "help still listed: {labels:?}");
     }
 
     #[test]
