@@ -30,6 +30,9 @@ const MAX_PROMPT_ROWS: usize = 8;
 /// Maximum number of output lines shown inside an expanded tool card before truncation.
 const MAX_TOOL_DETAIL_LINES: usize = 40;
 
+/// Maximum number of diff rows shown inside an expanded diff card before truncation.
+const MAX_DIFF_BODY_ROWS: usize = 40;
+
 /// Width (in columns) of the session sidebar panel when shown.
 const SIDEBAR_WIDTH: u16 = 30;
 
@@ -570,9 +573,27 @@ fn push_tool(
     let meta_start = w.saturating_sub(CONTENT_MARGIN + meta_w);
     place_segments(&mut cells, meta_start, &meta);
 
+    // A card carrying a diff renders a `▶`/`▼` disclosure gutter at the content margin (AMBER),
+    // shifting the `●` dot + verb + target one slot right (to CX+2). The header is otherwise
+    // identical whether collapsed or expanded, so the two forms round-trip with a stable header.
+    let content_shift = if card.diff.is_some() { 2 } else { 0 };
+    if card.diff.is_some() {
+        let disclosure = if expanded {
+            crate::glyphs::DISCLOSURE_EXPANDED
+        } else {
+            crate::glyphs::DISCLOSURE_COLLAPSED
+        };
+        place_segments(
+            &mut cells,
+            CONTENT_MARGIN,
+            &[(format!("{disclosure} "), Style::default().fg(theme.secondary))],
+        );
+    }
+    let content_start = CONTENT_MARGIN + content_shift;
+
     let verb_len = verb.chars().count();
-    // margin + "● " (2) + verb, then a space before the target.
-    let target_col = CONTENT_MARGIN + 2 + verb_len + 1;
+    // content_start + "● " (2) + verb, then a space before the target.
+    let target_col = content_start + 2 + verb_len + 1;
     let target_room = meta_start.saturating_sub(target_col + 2);
     let target = clip_text(&card.summary, target_room);
     let left: Vec<(String, Style)> = vec![
@@ -587,11 +608,11 @@ fn push_tool(
             target_style,
         ),
     ];
-    place_segments(&mut cells, CONTENT_MARGIN, &left);
+    place_segments(&mut cells, content_start, &left);
     lines.push(cells_to_line(&cells));
 
     // Connector row: `  └ <result>` in FAINT (the error message in the error accent when failed).
-    let connector_indent = CONTENT_MARGIN + 2;
+    let connector_indent = content_start + 2;
     let result_room = w.saturating_sub(connector_indent + 2 + CONTENT_MARGIN).max(1);
     let result = clip_text(&tool_result_summary(card), result_room);
     let result_style = if matches!(card.status, ToolStatus::Failed) {
@@ -605,33 +626,179 @@ fn push_tool(
         Span::styled(result, result_style),
     ]));
 
-    // Expanded (Ctrl+O): reveal the full output indented under the header so the detail is legible.
-    if expanded && !card.output.is_empty() {
-        let body_indent = CONTENT_MARGIN + 4;
-        let body_style = match card.status {
-            ToolStatus::Failed => Style::default().fg(theme.error),
-            _ => Style::default().fg(theme.text),
-        };
-        let out_lines: Vec<&str> = card.output.lines().collect();
-        let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
-        for line in &out_lines[..shown] {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(body_indent)),
-                Span::styled((*line).to_owned(), body_style),
-            ]));
-        }
-        if out_lines.len() > shown {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(body_indent)),
-                Span::styled(
-                    format!("{} ({} more lines)", crate::glyphs::ELLIPSIS, out_lines.len() - shown),
-                    faint,
-                ),
-            ]));
+    // Expanded (Ctrl+O): a diff card unfolds a boxed, line-numbered red/green diff titled with the
+    // target file; any other card reveals its full output indented under the header.
+    if expanded {
+        if let Some(diff) = card.diff.as_deref() {
+            push_diff_box(lines, diff, w, theme);
+        } else if !card.output.is_empty() {
+            let body_indent = CONTENT_MARGIN + 4;
+            let body_style = match card.status {
+                ToolStatus::Failed => Style::default().fg(theme.error),
+                _ => Style::default().fg(theme.text),
+            };
+            let out_lines: Vec<&str> = card.output.lines().collect();
+            let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
+            for line in &out_lines[..shown] {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(body_indent)),
+                    Span::styled((*line).to_owned(), body_style),
+                ]));
+            }
+            if out_lines.len() > shown {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(body_indent)),
+                    Span::styled(
+                        format!("{} ({} more lines)", crate::glyphs::ELLIPSIS, out_lines.len() - shown),
+                        faint,
+                    ),
+                ]));
+            }
         }
     }
 
     lines.push(Line::from(""));
+}
+
+/// Render the boxed body of an expanded diff card: a rounded `ORANGE_D` frame whose top border
+/// embeds the target filename as an AMBER title, then one line-numbered row per diff line. Each row
+/// is a cell buffer so the per-line background (`ADD_BG`/`DEL_BG` for additions/deletions, none for
+/// context) fills the whole box interior; the right-justified line number sits in `LNUM`, the
+/// `+`/`-`/space sign at a fixed sign column, and the code text at a fixed code column.
+fn push_diff_box(
+    lines: &mut Vec<Line<'static>>,
+    diff: &FileDiff,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    // The box is inset under the header (`bx = CX + 4`) and stops a content margin short of the
+    // right edge, matching the diff-expanded reference geometry.
+    let bx = CONTENT_MARGIN + 4;
+    let right = width.saturating_sub(CONTENT_MARGIN);
+    if right <= bx + 4 {
+        return;
+    }
+    let bw = right - bx;
+    let inner_w = bw - 2;
+    let base = Style::default().bg(theme.background);
+    let border_style = Style::default().fg(theme.border).bg(theme.background);
+    let title = &diff.path;
+
+    // Top border with the filename embedded as a title: `╭─ <path> ─────╮`.
+    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
+    top[bx] = (
+        crate::glyphs::BOX_TOP_LEFT.chars().next().unwrap(),
+        border_style,
+    );
+    top[bx + bw - 1] = (
+        crate::glyphs::BOX_TOP_RIGHT.chars().next().unwrap(),
+        border_style,
+    );
+    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (
+            crate::glyphs::BOX_HORIZONTAL.chars().next().unwrap(),
+            border_style,
+        );
+    }
+    let title_text = format!(" {} ", clip_text(title, inner_w.saturating_sub(4)));
+    place_segments(
+        &mut top,
+        bx + 2,
+        &[(title_text, Style::default().fg(theme.secondary).bg(theme.background))],
+    );
+    lines.push(cells_to_line(&top));
+
+    // Diff rows, numbered sequentially from each hunk's new-file start line.
+    let mut shown = 0usize;
+    let mut truncated = false;
+    'outer: for hunk in &diff.hunks {
+        let start = if hunk.new_len > 0 {
+            hunk.new_start
+        } else {
+            hunk.old_start
+        };
+        for (i, dline) in hunk.lines.iter().enumerate() {
+            if shown >= MAX_DIFF_BODY_ROWS {
+                truncated = true;
+                break 'outer;
+            }
+            let (sign, fg, row_bg) = match dline.kind {
+                crate::diff::DiffLineKind::Added => {
+                    ('+', style::ADD_FG, Some(style::ADD_BG))
+                }
+                crate::diff::DiffLineKind::Removed => {
+                    ('-', style::DEL_FG, Some(style::DEL_BG))
+                }
+                // Header lines never reach a hunk body; treat them as context defensively.
+                crate::diff::DiffLineKind::Context | crate::diff::DiffLineKind::Header => {
+                    (' ', theme.text_dim, None)
+                }
+            };
+            let row_bg_color = row_bg.unwrap_or(theme.background);
+            let row_style = Style::default().fg(fg).bg(row_bg_color);
+            let mut cells: Vec<(char, Style)> = vec![(' ', base); width];
+            // Fill the box interior with the row background so the color spans the full inner width.
+            for cell in cells.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+                *cell = (' ', row_style);
+            }
+            cells[bx] = (
+                crate::glyphs::BOX_VERTICAL.chars().next().unwrap(),
+                border_style,
+            );
+            cells[bx + bw - 1] = (
+                crate::glyphs::BOX_VERTICAL.chars().next().unwrap(),
+                border_style,
+            );
+            // Content origin one space in from the border; line number rjust(3), sign at +6, code
+            // at +8 (see design-system §2.8).
+            let origin = bx + 2;
+            let lnum = format!("{:>3}", start + i);
+            place_segments(
+                &mut cells,
+                origin,
+                &[(lnum, Style::default().fg(style::LNUM).bg(row_bg_color))],
+            );
+            place_segments(
+                &mut cells,
+                origin + 6,
+                &[(sign.to_string(), row_style)],
+            );
+            let code_col = origin + 8;
+            let code_room = (bx + bw - 1).saturating_sub(code_col + 1);
+            let code = clip_text(&dline.content, code_room);
+            place_segments(&mut cells, code_col, &[(code, row_style)]);
+            lines.push(cells_to_line(&cells));
+            shown += 1;
+        }
+    }
+
+    // Bottom border: `╰────────╯`.
+    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
+    bottom[bx] = (
+        crate::glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(),
+        border_style,
+    );
+    bottom[bx + bw - 1] = (
+        crate::glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(),
+        border_style,
+    );
+    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (
+            crate::glyphs::BOX_HORIZONTAL.chars().next().unwrap(),
+            border_style,
+        );
+    }
+    lines.push(cells_to_line(&bottom));
+
+    if truncated {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(bx + 2)),
+            Span::styled(
+                format!("{} more diff lines", crate::glyphs::ELLIPSIS),
+                Style::default().fg(theme.text_muted),
+            ),
+        ]));
+    }
 }
 
 /// The display verb for a tool card header (e.g. `read` → `Read`, `edit`/`apply_patch` → `Update`).
@@ -3740,6 +3907,190 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A completed `edit` card with a real diff attached (1 deletion, 2 additions), for the
+    /// expandable diff-card tests.
+    fn diff_card() -> ToolCard {
+        let before = "line1\nline2\nline3\nold_a\nline5\n";
+        let after = "line1\nline2\nline3\nnew_a\nnew_b\nline5\n";
+        let diff = crate::diff::compute_file_diff("stream_processor.rs", Some(before), Some(after))
+            .expect("a diff");
+        let mut card = tool_card(
+            "edit",
+            r#"{"path":"stream_processor.rs","oldString":"old_a","newString":"new_a\nnew_b"}"#,
+        );
+        card.complete(
+            &[protocol::ToolResultPart::text("edit: replaced 1 occurrence")],
+            false,
+        );
+        card.duration_ms = Some(22);
+        card.attach_diff(diff);
+        card
+    }
+
+    #[test]
+    fn collapsed_diff_card_shows_disclosure_summary_and_no_body() {
+        // VAL-CONV-043/044/045: collapsed shows a `▶` disclosure (never `▸`/`▾`) at the margin, the
+        // `●` dot shifted right + `Update <target>`, `+N -N · <N>ms` meta and a `└` summary, and
+        // renders NO boxed diff body.
+        let theme = style::ThemeColors::dark();
+        let card = diff_card();
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, None, &theme);
+
+        let header = plain(&lines[0]);
+        assert!(
+            header.contains(crate::glyphs::DISCLOSURE_COLLAPSED),
+            "collapsed disclosure `▶`:\n{header}"
+        );
+        assert!(
+            !header.contains(crate::glyphs::DISCLOSURE_EXPANDED),
+            "no `▼` while collapsed:\n{header}"
+        );
+        assert!(header.contains(crate::glyphs::DOT_FILLED), "`●` dot:\n{header}");
+        assert!(header.contains("Update"), "verb:\n{header}");
+        assert!(header.contains("stream_processor.rs"), "target:\n{header}");
+        assert!(header.contains("+2") && header.contains("-1"), "diff meta:\n{header}");
+        assert!(header.contains("22ms"), "duration meta:\n{header}");
+
+        // The disclosure glyph is AMBER (theme.secondary).
+        let disc = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains(crate::glyphs::DISCLOSURE_COLLAPSED))
+            .expect("a disclosure span");
+        assert_eq!(disc.style.fg, Some(theme.secondary), "disclosure is AMBER");
+
+        let text = rendered(&lines);
+        assert!(text.contains(crate::glyphs::TOOL_CONNECTOR), "connector `└`:\n{text}");
+        // No thin triangles anywhere.
+        assert!(!text.contains('▸') && !text.contains('▾'), "no thin triangles:\n{text}");
+        // No boxed body while collapsed: no box frame and no diff code content.
+        assert!(
+            !text.contains(crate::glyphs::BOX_TOP_LEFT),
+            "collapsed renders no diff box:\n{text}"
+        );
+        assert!(
+            !text.contains("new_a") && !text.contains("old_a"),
+            "collapsed hides the diff body:\n{text}"
+        );
+    }
+
+    #[test]
+    fn expanded_diff_card_unfolds_boxed_titled_diff() {
+        // VAL-CONV-046/047/048: expanded shows a `▼` disclosure, a rounded box titled with the
+        // filename, and rows with right-justified LNUM line numbers, a sign column, and code.
+        let theme = style::ThemeColors::dark();
+        let card = diff_card();
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, None, &theme);
+
+        let header = plain(&lines[0]);
+        assert!(
+            header.contains(crate::glyphs::DISCLOSURE_EXPANDED),
+            "expanded disclosure `▼`:\n{header}"
+        );
+        assert!(
+            !header.contains(crate::glyphs::DISCLOSURE_COLLAPSED),
+            "no `▶` while expanded:\n{header}"
+        );
+
+        let text = rendered(&lines);
+        assert!(text.contains(crate::glyphs::BOX_TOP_LEFT), "box top corner:\n{text}");
+        assert!(text.contains(crate::glyphs::BOX_BOTTOM_LEFT), "box bottom corner:\n{text}");
+        // The box top border embeds the filename as a title.
+        let title_line = lines
+            .iter()
+            .find(|l| plain(l).contains(crate::glyphs::BOX_TOP_LEFT))
+            .expect("a titled top border");
+        assert!(
+            plain(title_line).contains("stream_processor.rs"),
+            "filename title-in-border:\n{}",
+            plain(title_line)
+        );
+        // The diff code content is revealed.
+        assert!(text.contains("new_a") && text.contains("new_b"), "additions shown:\n{text}");
+        assert!(text.contains("old_a"), "deletion shown:\n{text}");
+
+        // At least one row carries a right-justified line number in the LNUM tone.
+        let has_lnum = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.fg == Some(style::LNUM) && s.content.trim().parse::<usize>().is_ok());
+        assert!(has_lnum, "a diff row shows a LNUM line number:\n{text}");
+    }
+
+    #[test]
+    fn expanded_diff_rows_use_red_and_green_backgrounds() {
+        // VAL-CONV-049/050: deletion rows use DEL_FG/DEL_BG, addition rows ADD_FG/ADD_BG, and
+        // context rows carry no diff background.
+        let theme = style::ThemeColors::dark();
+        let card = diff_card();
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, None, &theme);
+
+        let added = lines
+            .iter()
+            .find(|l| plain(l).contains("new_a"))
+            .expect("an addition row");
+        let added_code = added
+            .spans
+            .iter()
+            .find(|s| s.content.contains("new_a"))
+            .expect("added code span");
+        assert_eq!(added_code.style.fg, Some(style::ADD_FG), "addition text ADD_FG");
+        assert_eq!(added_code.style.bg, Some(style::ADD_BG), "addition bg ADD_BG");
+
+        let removed = lines
+            .iter()
+            .find(|l| plain(l).contains("old_a"))
+            .expect("a deletion row");
+        let removed_code = removed
+            .spans
+            .iter()
+            .find(|s| s.content.contains("old_a"))
+            .expect("removed code span");
+        assert_eq!(removed_code.style.fg, Some(style::DEL_FG), "deletion text DEL_FG");
+        assert_eq!(removed_code.style.bg, Some(style::DEL_BG), "deletion bg DEL_BG");
+
+        // A context row (e.g. `line1`) has no red/green background.
+        let context = lines
+            .iter()
+            .find(|l| plain(l).contains("line1"))
+            .expect("a context row");
+        for span in &context.spans {
+            assert_ne!(span.style.bg, Some(style::ADD_BG), "context has no ADD_BG");
+            assert_ne!(span.style.bg, Some(style::DEL_BG), "context has no DEL_BG");
+        }
+    }
+
+    #[test]
+    fn diff_card_header_is_stable_across_toggle() {
+        // VAL-CONV-052: toggling collapsed<->expanded keeps the header line identical apart from
+        // the disclosure glyph itself.
+        let theme = style::ThemeColors::dark();
+        let card = diff_card();
+        let mut collapsed = Vec::new();
+        push_tool(&mut collapsed, &card, 92, false, None, &theme);
+        let mut expanded = Vec::new();
+        push_tool(&mut expanded, &card, 92, true, None, &theme);
+
+        let collapsed_header =
+            plain(&collapsed[0]).replacen(crate::glyphs::DISCLOSURE_COLLAPSED, "", 1);
+        let expanded_header =
+            plain(&expanded[0]).replacen(crate::glyphs::DISCLOSURE_EXPANDED, "", 1);
+        assert_eq!(
+            collapsed_header, expanded_header,
+            "header text is stable across the toggle"
+        );
+        // The expanded form is strictly taller (it adds the boxed body).
+        assert!(
+            expanded.len() > collapsed.len(),
+            "expanded adds a diff body: {} vs {}",
+            expanded.len(),
+            collapsed.len()
+        );
     }
 
     #[test]

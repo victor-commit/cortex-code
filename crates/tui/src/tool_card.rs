@@ -44,6 +44,10 @@ pub struct ToolCard {
     /// For file-mutating tools (write/edit/apply_patch), the (additions, removals) line counts shown
     /// as the `+N -N` diff meta; `None` for tools without a diff shape.
     pub diff_stat: Option<(usize, usize)>,
+    /// The computed file diff for a file-mutating call, attached when the turn reports the change.
+    /// Its presence turns the card into an expandable diff card: a `▶`/`▼` disclosure gutter with a
+    /// boxed, line-numbered red/green diff revealed when the card is expanded.
+    pub diff: Option<Box<crate::diff::FileDiff>>,
     /// When the call started, used to measure [`ToolCard::duration_ms`] on completion.
     started: Instant,
 }
@@ -64,8 +68,17 @@ impl ToolCard {
             status: ToolStatus::Running,
             duration_ms: None,
             diff_stat,
+            diff: None,
             started: Instant::now(),
         }
+    }
+
+    /// Attach the computed file diff for a file-mutating call, upgrading the card to an expandable
+    /// diff card. The `+N -N` meta is refreshed to the diff's real line counts so the header matches
+    /// the boxed body revealed on expand.
+    pub fn attach_diff(&mut self, diff: crate::diff::FileDiff) {
+        self.diff_stat = Some((diff.additions, diff.removals));
+        self.diff = Some(Box::new(diff));
     }
 
     /// Transition a running card to its terminal state, recording the result text.

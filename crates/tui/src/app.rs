@@ -1745,11 +1745,22 @@ impl App {
         }
     }
 
-    /// Record a file-change diff in the transcript. A trailing empty in-progress assistant entry
-    /// (opened when the turn began but not yet written to) is dropped first, so the diff is not
-    /// preceded by an empty assistant block; any answer text that arrives after the tool call opens
-    /// a fresh assistant entry.
+    /// Record a file-change diff in the transcript.
+    ///
+    /// A file mutation surfaces as a `● Update <path>` tool card just before its diff arrives, so
+    /// the diff is attached to that card (the most recent mutating card without one yet), turning it
+    /// into a single expandable diff card (`▶`/`▼` disclosure + boxed red/green body) rather than a
+    /// second, detached block. When no such card exists (e.g. a diff pushed without a tool call) the
+    /// diff falls back to a standalone entry, dropping a trailing empty in-progress assistant entry
+    /// first so it is not preceded by an empty assistant block.
     fn push_diff(&mut self, diff: crate::diff::FileDiff) {
+        if let Some(card) = self.transcript.iter_mut().rev().find_map(|entry| match entry {
+            Entry::Tool(card) if card.diff.is_none() && is_mutating_tool(&card.name) => Some(card),
+            _ => None,
+        }) {
+            card.attach_diff(diff);
+            return;
+        }
         if let Some(Entry::Assistant(turn)) = self.transcript.last() {
             if turn.answer.is_empty() && turn.reasoning.is_empty() {
                 self.transcript.pop();
@@ -3873,7 +3884,12 @@ impl App {
         let mut files: Vec<crate::diff::FileDiff> = Vec::new();
         let mut seen_paths: BTreeSet<String> = BTreeSet::new();
         for entry in self.transcript.iter().rev() {
-            if let Entry::Diff(diff) = entry
+            let diff = match entry {
+                Entry::Diff(diff) => Some(diff),
+                Entry::Tool(card) => card.diff.as_deref(),
+                _ => None,
+            };
+            if let Some(diff) = diff
                 && seen_paths.insert(diff.path.clone())
             {
                 files.push(diff.clone());
@@ -6405,6 +6421,11 @@ fn env_non_empty(key: &str) -> Option<String> {
 /// route reflects it.
 const DIFF_REVERT_TURN_LABEL: &str = "tui-diff-revert";
 
+/// Whether a tool by name mutates a file (and so produces a diff attachable to its card).
+fn is_mutating_tool(name: &str) -> bool {
+    matches!(name, "edit" | "multiedit" | "write" | "apply_patch")
+}
+
 fn resolve_diff_path(path: &str) -> Result<PathBuf, String> {
     let rel = PathBuf::from(path);
     if rel.is_absolute() {
@@ -8584,6 +8605,41 @@ mod tests {
                 .any(|e| matches!(e, Entry::Assistant(t) if t.answer.is_empty() && t.reasoning.is_empty())),
             "no empty assistant block should precede the diff"
         );
+    }
+
+    #[test]
+    fn a_file_diff_attaches_to_the_matching_update_tool_card() {
+        // A file mutation opens an `● Update <path>` card just before its diff arrives; the diff
+        // attaches to that card (making it an expandable diff card) rather than becoming a second,
+        // detached block, and the card's `+N -N` meta is refreshed from the real diff.
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("edit the file".to_owned(), rx, flag());
+
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "call_1".to_owned(),
+            name: "edit".to_owned(),
+            arguments: r#"{"path":"src/main.rs","oldString":"a","newString":"B\nc"}"#.to_owned(),
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        let diff =
+            crate::diff::compute_file_diff("src/main.rs", Some("a\nb\nc\n"), Some("B\nc\n"))
+                .expect("a diff");
+        let (adds, dels) = (diff.additions, diff.removals);
+        tx.send(TurnMessage::FileDiff(Box::new(diff))).unwrap();
+        a.poll_turn();
+
+        // No standalone diff entry was created; the diff lives on the tool card.
+        assert!(
+            !a.transcript.iter().any(|e| matches!(e, Entry::Diff(_))),
+            "diff should attach to the card, not push a standalone entry"
+        );
+        let card = last_tool(&a);
+        let attached = card.diff.as_ref().expect("diff attached to the card");
+        assert_eq!(attached.path, "src/main.rs");
+        assert_eq!(card.diff_stat, Some((adds, dels)), "meta refreshed from the real diff");
     }
 
     fn tool_part(text: &str) -> protocol::ToolResultPart {
