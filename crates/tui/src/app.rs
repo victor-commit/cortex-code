@@ -6026,9 +6026,9 @@ impl App {
         }
 
         // While the `@`-file picker is open it owns vertical navigation, selection, and dismissal:
-        // the arrows move the highlight, Enter inserts the highlighted file as an `@path` token, and
-        // Esc closes the picker without inserting. Other keys fall through to ordinary editing, which
-        // re-filters (or closes) the picker.
+        // the arrows move the highlight, Tab (`⇥ insert`, the advertised key) and Enter both insert
+        // the highlighted file as an `@path` token, and Esc closes the picker without inserting.
+        // Other keys fall through to ordinary editing, which re-filters (or closes) the picker.
         if self.mention_open() {
             match key.code {
                 KeyCode::Up => {
@@ -6039,7 +6039,7 @@ impl App {
                     self.mention_select_next();
                     return;
                 }
-                KeyCode::Enter if !shift => {
+                KeyCode::Tab | KeyCode::Enter if !shift => {
                     self.accept_mention();
                     return;
                 }
@@ -7847,6 +7847,17 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.input_value(), "@crates/cli/src/main.rs");
         assert!(!a.mention_open(), "picker closed after selection");
+    }
+
+    #[test]
+    fn tab_inserts_the_highlighted_file_mention() {
+        // VAL-CONV-041: the `@` palette advertises `⇥ insert`, so Tab inserts the highlighted file.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('@')));
+        inject_mention_files(&mut a, &["crates/cli/src/main.rs"]);
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.input_value(), "@crates/cli/src/main.rs");
+        assert!(!a.mention_open(), "picker closed after Tab insertion");
     }
 
     #[test]

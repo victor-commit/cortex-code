@@ -1172,10 +1172,80 @@ fn selected_row_style(theme: &style::ThemeColors) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Build the slash-command menu's rows for the current query, or `None` when the menu is closed.
-/// Each row shows `/name  description`; the highlighted row carries a `›` marker and bold name.
-/// A non-empty query that matches nothing yields a single graceful "no matching commands" row.
-fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+/// Background fill for a highlighted floating-palette row — the warm `SELBG(44,35,26)` inverse bar
+/// from the `/` and `@` reference mockups. This is the *subtle* selection (a warm tint that keeps
+/// the row text readable), distinct from [`selected_row_style`]'s strong solid-accent inverse used
+/// by modal/dialog lists; it is the theme's highest surface tone so it tracks every palette.
+fn palette_selection_bg(theme: &style::ThemeColors) -> Color {
+    theme.surface[3]
+}
+
+/// Total display width (columns) of a row's spans.
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// Append a trailing run of spaces (carrying `fill`) so `spans` occupies exactly `width` columns —
+/// used to paint a full-width selection bar behind a palette row.
+fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, fill: Style) {
+    let used = spans_width(spans);
+    if width > used {
+        spans.push(Span::styled(" ".repeat(width - used), fill));
+    }
+}
+
+/// Truncate `s` to at most `max` columns, appending `…` when it is cut.
+fn clip_cols(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Lay out a palette row as `left` spans, a `fill` run, then a right-aligned `meta` span, occupying
+/// exactly `width` columns with a one-column right margin before the border. Used by the `@`-file
+/// palette so the `type · size` meta column is flush-right on every row (and on the selection bar).
+fn palette_meta_row(
+    mut left: Vec<Span<'static>>,
+    meta: Span<'static>,
+    width: usize,
+    fill: Style,
+) -> Line<'static> {
+    const MARGIN: usize = 1;
+    let reserved = spans_width(&left) + meta.width() + MARGIN;
+    let pad = width.saturating_sub(reserved).max(1);
+    left.push(Span::styled(" ".repeat(pad), fill));
+    left.push(meta);
+    left.push(Span::styled(" ".repeat(MARGIN), fill));
+    Line::from(left)
+}
+
+/// The `type · size` meta string for a file path: its real type label and on-disk size (resolved
+/// against the working directory), or just the type when the size cannot be read.
+fn mention_meta(path: &str) -> String {
+    let type_label = crate::mention::type_label(path);
+    let size = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| std::fs::metadata(cwd.join(path)).ok())
+        .map(|meta| crate::mention::format_size(meta.len()));
+    match size {
+        Some(size) => format!("{type_label} {} {size}", crate::glyphs::SEPARATOR),
+        None => type_label,
+    }
+}
+
+/// Build the `/` command-palette rows for the current query, laid out for an `width`-column inner
+/// area, or `None` when the menu is closed. Each row shows `/name  description` (command ORANGE,
+/// description FAINT); the highlighted row is a full-width warm `SELBG` bar with a `›` ORANGE marker
+/// and a BRIGHT command label. A non-empty query that matches nothing yields a single graceful
+/// "no matching commands" row.
+fn slash_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     let theme = style::ThemeColors::from_name(app.theme());
     let _ = app.slash_query()?;
     let matches = app.slash_matches();
@@ -1191,40 +1261,52 @@ fn slash_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let selected = app.slash_selected();
     let mut lines = Vec::with_capacity(matches.len());
     for (i, command) in matches.iter().enumerate() {
-        let is_selected = i == selected;
-        let marker = row_marker(is_selected);
-        if is_selected {
-            let sel = selected_row_style(&theme);
-            lines.push(Line::from(vec![
-                Span::styled(marker, sel),
-                Span::styled(format!("/{}", command.name), sel),
-                Span::styled("  ", sel),
-                Span::styled(command.description.to_owned(), sel),
-            ]));
+        let name = format!("/{}", command.name);
+        let desc = command.description.to_owned();
+        if i == selected {
+            let bg = palette_selection_bg(&theme);
+            let on_bar = Style::default().bg(bg);
+            let mut spans = vec![
+                Span::styled(
+                    format!("{} ", crate::glyphs::SELECT_MARKER),
+                    Style::default().fg(theme.primary).bg(bg),
+                ),
+                Span::styled(
+                    name,
+                    Style::default()
+                        .fg(theme.text_bright)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", on_bar),
+                Span::styled(desc, Style::default().fg(theme.text_muted).bg(bg)),
+            ];
+            pad_spans_to_width(&mut spans, width, on_bar);
+            lines.push(Line::from(spans));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(marker, Style::default().fg(theme.info)),
-                Span::styled(format!("/{}", command.name), Style::default().fg(theme.text)),
                 Span::raw("  "),
-                Span::styled(
-                    command.description.to_owned(),
-                    Style::default().fg(theme.text_dim),
-                ),
+                Span::styled(name, Style::default().fg(theme.primary)),
+                Span::raw("  "),
+                Span::styled(desc, Style::default().fg(theme.text_muted)),
             ]));
         }
     }
     Some(lines)
 }
 
-/// Render the slash-command autocomplete menu as a bordered popup floating directly above the
-/// prompt box. The view scrolls to keep the highlighted row visible when the match list is long.
+/// Render the `/` command palette as a floating rounded dropdown anchored directly above the
+/// composer, spanning the content width at the left content margin. The frame is the brand
+/// `ORANGE_D` border with an AMBER `Commands` title-in-border over the near-black canvas; the view
+/// scrolls to keep the highlighted row visible when the match list is long.
 fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
-    let Some(rows) = slash_menu_lines(app) else {
-        return;
-    };
-    if prompt_area.width == 0 {
+    if prompt_area.width < 2 {
         return;
     }
+    let inner_width = prompt_area.width.saturating_sub(2) as usize;
+    let Some(rows) = slash_menu_lines(app, inner_width) else {
+        return;
+    };
 
     // Keep the highlighted row inside the visible window.
     let selected = app.slash_selected();
@@ -1247,26 +1329,32 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &styl
     };
 
     let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
+        .style(Style::default().bg(theme.background))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.info))
-        .title(" / commands ")
-        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
+        .border_style(Style::default().fg(theme.border))
+        .title(" Commands ")
+        .title_style(
+            Style::default()
+                .fg(theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(
-        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.background)),
         inner,
     );
 }
 
-/// Build the `@`-file picker's rows for the current query, or `None` when the picker is closed.
-/// Each row shows a file path; the highlighted row carries a `›` marker and bold text. A query that
+/// Build the `@`-file palette rows for the current query, laid out for an `width`-column inner area,
+/// or `None` when the picker is closed. Each row shows a `▪` bullet (`ORANGE_D`, `AMBER` when
+/// selected) + the file path + a right-aligned `type · size` meta column (FAINT). The highlighted
+/// row is a full-width warm `SELBG` bar with a `›` ORANGE marker and a BRIGHT path. A query that
 /// matches no file yields a single graceful "no matching files" row.
-fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
+fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     let theme = style::ThemeColors::from_name(app.theme());
     if !app.mention_open() {
         return None;
@@ -1284,33 +1372,61 @@ fn mention_menu_lines(app: &App) -> Option<Vec<Line<'static>>> {
     let selected = app.mention_selected();
     let mut lines = Vec::with_capacity(matches.len());
     for (i, path) in matches.iter().enumerate() {
-        let is_selected = i == selected;
-        let marker = row_marker(is_selected);
-        if is_selected {
-            let sel = selected_row_style(&theme);
-            lines.push(Line::from(vec![
-                Span::styled(marker, sel),
-                Span::styled(path.clone(), sel),
-            ]));
+        let meta = mention_meta(path);
+        // Clip the path so the marker (2) + bullet (2) + a 2-col gap + meta + 1-col margin fit.
+        let path_budget = width
+            .saturating_sub(2 + 2 + meta.chars().count() + 2 + 1)
+            .max(4);
+        let path_text = clip_cols(path, path_budget);
+        if i == selected {
+            let bg = palette_selection_bg(&theme);
+            let on_bar = Style::default().bg(bg);
+            let left = vec![
+                Span::styled(
+                    format!("{} ", crate::glyphs::SELECT_MARKER),
+                    Style::default().fg(theme.primary).bg(bg),
+                ),
+                Span::styled(
+                    format!("{} ", crate::glyphs::BULLET_SQUARE),
+                    Style::default().fg(theme.secondary).bg(bg),
+                ),
+                Span::styled(
+                    path_text,
+                    Style::default()
+                        .fg(theme.text_bright)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            let meta_span = Span::styled(meta, Style::default().fg(theme.text_muted).bg(bg));
+            lines.push(palette_meta_row(left, meta_span, width, on_bar));
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(marker, Style::default().fg(theme.info)),
-                Span::styled(path.clone(), Style::default().fg(theme.text)),
-            ]));
+            let left = vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{} ", crate::glyphs::BULLET_SQUARE),
+                    Style::default().fg(theme.border),
+                ),
+                Span::styled(path_text, Style::default().fg(theme.text)),
+            ];
+            let meta_span = Span::styled(meta, Style::default().fg(theme.text_muted));
+            lines.push(palette_meta_row(left, meta_span, width, Style::default()));
         }
     }
     Some(lines)
 }
 
-/// Render the `@`-file picker as a bordered popup floating directly above the prompt box, scrolling
-/// to keep the highlighted row visible when the match list is long.
+/// Render the `@`-file palette as a floating rounded dropdown anchored directly above the composer
+/// (same anchor/width/border as the `/` palette) with an AMBER `Add files` title-in-border over the
+/// near-black canvas, scrolling to keep the highlighted row visible when the match list is long.
 fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
-    let Some(rows) = mention_menu_lines(app) else {
-        return;
-    };
-    if prompt_area.width == 0 {
+    if prompt_area.width < 2 {
         return;
     }
+    let inner_width = prompt_area.width.saturating_sub(2) as usize;
+    let Some(rows) = mention_menu_lines(app, inner_width) else {
+        return;
+    };
 
     let selected = app.mention_selected();
     let visible = rows.len().min(MAX_SLASH_ROWS);
@@ -1332,18 +1448,22 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &st
     };
 
     let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
+        .style(Style::default().bg(theme.background))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.info))
-        .title(" @ files ")
-        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
+        .border_style(Style::default().fg(theme.border))
+        .title(" Add files ")
+        .title_style(
+            Style::default()
+                .fg(theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(
-        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.background)),
         inner,
     );
 }
@@ -2962,9 +3082,13 @@ mod tests {
         let mut a = app();
         a.set_theme("light".to_owned());
         a.transcript.push(Entry::User("hello".to_owned()));
-        // Open the slash menu so the elevated overlay surface (PANEL) is exercised: the composer
-        // itself is flat on the CANVAS in the brand design, so the PANEL layer comes from overlays.
-        a.input.set_value("/");
+        // Open the command palette so the elevated overlay surface (PANEL) is exercised: the
+        // composer and the floating `/`+`@` palettes are flat on the CANVAS in the brand design, so
+        // the PANEL layer comes from the centered modal overlays.
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3192,15 +3316,19 @@ mod tests {
         let theme = style::ThemeColors::monokai();
 
         a.input.set_value("/");
-        let slash_rows = slash_menu_lines(&a).expect("slash menu open");
+        let slash_rows = slash_menu_lines(&a, 60).expect("slash menu open");
         assert!(slash_rows.len() > 1, "multiple slash commands match `/`");
-        // The highlighted (first) row is a solid inverse pair: explicit selection fg on bg, not a
-        // REVERSED swap (VAL-FOUND-017).
-        assert_eq!(slash_rows[0].spans[0].style.fg, Some(theme.selection_fg));
-        assert_eq!(slash_rows[0].spans[0].style.bg, Some(theme.selection_bg));
-        // A non-highlighted row keeps the themed accent marker and dim description.
-        assert_eq!(slash_rows[1].spans[0].style.fg, Some(theme.info));
-        assert_eq!(slash_rows[1].spans[3].style.fg, Some(theme.text_dim));
+        // The highlighted (first) row is the warm SELBG inverse bar (VAL-CONV-036): an explicit
+        // ORANGE `›` marker and a BRIGHT command label, all on the surface[3] selection background.
+        assert_eq!(slash_rows[0].spans[0].content, "› ");
+        assert_eq!(slash_rows[0].spans[0].style.fg, Some(theme.primary));
+        assert_eq!(slash_rows[0].spans[0].style.bg, Some(theme.surface[3]));
+        assert_eq!(slash_rows[0].spans[1].style.fg, Some(theme.text_bright));
+        assert_eq!(slash_rows[0].spans[1].style.bg, Some(theme.surface[3]));
+        // A non-highlighted row shows the ORANGE command and a FAINT description with no row fill.
+        assert_eq!(slash_rows[1].spans[1].style.fg, Some(theme.primary));
+        assert_eq!(slash_rows[1].spans[3].style.fg, Some(theme.text_muted));
+        assert_eq!(slash_rows[1].spans[1].style.bg, None);
 
         a.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('p'),
@@ -3872,7 +4000,7 @@ mod tests {
         // VAL-TUI-028: the open menu lists recognizable built-ins.
         let mut a = app();
         a.input.set_value("/");
-        let lines = slash_menu_lines(&a).expect("menu open");
+        let lines = slash_menu_lines(&a, 60).expect("menu open");
         let text = rendered(&lines);
         assert!(text.contains("/help"), "help listed:\n{text}");
         assert!(text.contains("/new"), "new listed:\n{text}");
@@ -3884,7 +4012,7 @@ mod tests {
         // VAL-TUI-029 / VAL-TUI-030: "/mod" narrows to /models, and the top match is highlighted.
         let mut a = app();
         a.input.set_value("/mod");
-        let lines = slash_menu_lines(&a).expect("menu open");
+        let lines = slash_menu_lines(&a, 60).expect("menu open");
         let text = rendered(&lines);
         assert!(text.contains("/models"), "models present:\n{text}");
         assert!(!text.contains("/help"), "help filtered out:\n{text}");
@@ -3898,7 +4026,7 @@ mod tests {
         // VAL-TUI-048: an unknown command renders a clear no-match state, not an empty/absent menu.
         let mut a = app();
         a.input.set_value("/zzznotreal");
-        let lines = slash_menu_lines(&a).expect("menu open even with no matches");
+        let lines = slash_menu_lines(&a, 60).expect("menu open even with no matches");
         let text = rendered(&lines);
         assert!(
             text.contains("no matching commands"),
@@ -3910,7 +4038,113 @@ mod tests {
     fn slash_menu_is_closed_for_plain_text() {
         let mut a = app();
         a.input.set_value("hello world");
-        assert!(slash_menu_lines(&a).is_none(), "no menu for a chat message");
+        assert!(
+            slash_menu_lines(&a, 60).is_none(),
+            "no menu for a chat message"
+        );
+    }
+
+    #[test]
+    fn slash_palette_selected_row_is_full_width_selbg_bar() {
+        // VAL-CONV-035/036: the command in ORANGE + FAINT description, and the selected row is a
+        // full-width SELBG bar with a `›` ORANGE marker and a BRIGHT command label.
+        let mut a = app();
+        let theme = style::ThemeColors::from_name(a.theme());
+        a.input.set_value("/");
+        let width = 80usize;
+        let rows = slash_menu_lines(&a, width).expect("slash palette open");
+        assert!(rows.len() > 1, "multiple commands listed");
+
+        let sel = &rows[0];
+        assert_eq!(sel.spans[0].content, "› ");
+        assert_eq!(sel.spans[0].style.fg, Some(theme.primary));
+        assert_eq!(sel.spans[0].style.bg, Some(theme.surface[3]));
+        assert_eq!(sel.spans[1].style.fg, Some(theme.text_bright));
+        assert_eq!(sel.width(), width, "selection bar spans the full inner width");
+        for span in &sel.spans {
+            assert_eq!(
+                span.style.bg,
+                Some(theme.surface[3]),
+                "selected-row span {:?} is painted on the SELBG bar",
+                span.content
+            );
+        }
+
+        // A non-selected row: ORANGE command, FAINT description, no row fill.
+        let other = &rows[1];
+        assert_eq!(other.spans[1].style.fg, Some(theme.primary));
+        assert_eq!(other.spans[1].style.bg, None);
+        assert_eq!(other.spans[3].style.fg, Some(theme.text_muted));
+    }
+
+    #[test]
+    fn mention_palette_rows_show_bullet_meta_and_selection_bar() {
+        // VAL-CONV-039/040: each row shows a `▪` bullet + path + right-aligned `type · size` meta;
+        // the selected row is a full-width SELBG bar with a `›` marker, AMBER bullet, and BRIGHT path.
+        let mut a = app();
+        let theme = style::ThemeColors::from_name(a.theme());
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('@'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let width = 80usize;
+        let rows = mention_menu_lines(&a, width).expect("file palette open");
+        assert!(!rows.is_empty(), "the @ palette lists real workspace files");
+
+        let sel = &rows[0];
+        assert_eq!(sel.spans[0].content, "› ");
+        assert_eq!(sel.spans[0].style.fg, Some(theme.primary));
+        assert_eq!(sel.spans[0].style.bg, Some(theme.surface[3]));
+        assert_eq!(sel.spans[1].content, "▪ ");
+        assert_eq!(sel.spans[1].style.fg, Some(theme.secondary), "selected bullet is AMBER");
+        assert_eq!(sel.spans[2].style.fg, Some(theme.text_bright), "selected path is BRIGHT");
+        assert_eq!(sel.width(), width, "selection bar spans the full inner width");
+        // The meta column (FAINT) sits just before the one-column right margin.
+        let meta = &sel.spans[sel.spans.len() - 2];
+        assert_eq!(meta.style.fg, Some(theme.text_muted));
+
+        if rows.len() > 1 {
+            let other = &rows[1];
+            assert_eq!(other.spans[1].content, "▪ ");
+            assert_eq!(other.spans[1].style.fg, Some(theme.border), "idle bullet is ORANGE_D");
+            assert_eq!(other.spans[1].style.bg, None);
+        }
+    }
+
+    #[test]
+    fn slash_palette_dropdown_renders_above_composer() {
+        // VAL-CONV-033/034/036/061: a floating Commands dropdown with an ORANGE_D rounded border,
+        // an AMBER title-in-border, and the SELBG selection bar, painted over the brand canvas.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let theme = style::ThemeColors::from_name(a.theme());
+        a.input.set_value("/");
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen.contains("Commands"), "Commands title-in-border present");
+        assert!(screen.contains("/help"), "real command rows listed");
+
+        assert!(
+            buffer.content().iter().any(|c| c.bg == theme.surface[3]),
+            "the selected row paints the SELBG inverse bar"
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|c| c.symbol() == "╭" && c.fg == theme.border),
+            "the dropdown has a rounded ORANGE_D border"
+        );
     }
 
     #[test]

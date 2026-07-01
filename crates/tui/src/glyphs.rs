@@ -70,6 +70,8 @@ pub const DOT_FILLED: &str = "●";
 pub const DOT_HOLLOW: &str = "○";
 /// Diamond severity/status marker.
 pub const DOT_DIAMOND: &str = "◆";
+/// Small-square bullet (the `@`-file palette row marker); ORANGE_D, AMBER when selected.
+pub const BULLET_SQUARE: &str = "▪";
 /// Done / ok mark (OKG green).
 pub const MARK_DONE: &str = "✓";
 /// Error mark (ERR red).
@@ -151,6 +153,7 @@ mod tests {
             DOT_FILLED,
             DOT_HOLLOW,
             DOT_DIAMOND,
+            BULLET_SQUARE,
             MARK_DONE,
             MARK_ERROR,
             MARK_RUNNING,

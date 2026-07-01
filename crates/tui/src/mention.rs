@@ -31,6 +31,69 @@ pub struct Mention {
     pub range: Option<(usize, usize)>,
 }
 
+/// A human-readable language/type label for a file path, derived from its extension.
+///
+/// Used as the left half of the `@`-file picker's `type · size` meta column (e.g. `rust`, `toml`).
+/// Common extensions map to a friendly language name; anything else falls back to the lowercased
+/// extension, or `file` when the path has no extension.
+#[must_use]
+pub fn type_label(path: &str) -> String {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let Some(ext) = ext else {
+        return "file".to_owned();
+    };
+    let friendly = match ext.as_str() {
+        "rs" => "rust",
+        "toml" => "toml",
+        "md" | "markdown" => "markdown",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "jsx" => "jsx",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "go" => "go",
+        "c" => "c",
+        "h" | "hpp" => "header",
+        "cc" | "cpp" | "cxx" => "c++",
+        "sh" | "bash" | "zsh" => "shell",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "lock" => "lock",
+        "txt" | "text" => "text",
+        "sql" => "sql",
+        "rb" => "ruby",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        _ => return ext,
+    };
+    friendly.to_owned()
+}
+
+/// Format a byte count as a compact human-readable size (e.g. `0.7 KB`, `6.2 KB`, `1.2 MB`).
+///
+/// Used as the right half of the `@`-file picker's `type · size` meta column. Sub-kilobyte files
+/// still read in `KB` (`0.x KB`) to match the mockup's size column, which never shows raw bytes.
+#[must_use]
+pub fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b < MB {
+        format!("{:.1} KB", b / KB)
+    } else if b < GB {
+        format!("{:.1} MB", b / MB)
+    } else {
+        format!("{:.1} GB", b / GB)
+    }
+}
+
 /// List the project's files relative to `cwd`, for the file picker.
 ///
 /// Backed by the real `rg --files` (ripgrep is a build precondition), so the list honors
@@ -451,6 +514,31 @@ mod tests {
         let dir = temp_dir("missing");
         let prompt = "look at @does-not-exist.rs";
         assert_eq!(expand(prompt, &dir), prompt);
+    }
+
+    #[test]
+    fn type_label_maps_common_extensions() {
+        // VAL-CONV-039: the `@`-picker meta shows a real type derived from the path.
+        assert_eq!(type_label("src/stream_processor.rs"), "rust");
+        assert_eq!(type_label("Cargo.toml"), "toml");
+        assert_eq!(type_label("README.md"), "markdown");
+        assert_eq!(type_label("script.py"), "python");
+    }
+
+    #[test]
+    fn type_label_falls_back_to_extension_then_file() {
+        // An unknown extension is shown verbatim (lowercased); a path with no extension reads `file`.
+        assert_eq!(type_label("data.xyz"), "xyz");
+        assert_eq!(type_label("Makefile"), "file");
+    }
+
+    #[test]
+    fn format_size_reads_in_kilobytes_and_up() {
+        // VAL-CONV-039: sizes match the mockup column (`6.2 KB`, `0.7 KB`), never raw bytes.
+        assert_eq!(format_size(6_320), "6.2 KB");
+        assert_eq!(format_size(717), "0.7 KB");
+        assert_eq!(format_size(2_100), "2.1 KB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
     }
 
     #[test]
