@@ -158,6 +158,30 @@ fn wait_for_contains(session: &str, needle: &str, timeout: Duration) -> bool {
     false
 }
 
+/// Whether a standalone provider *group header* row is present in a picker snapshot: the bare
+/// provider name alone on its row (no `/model` id, no meta). This distinguishes the ⇥-grouped view
+/// from the flat view, where a provider name only ever appears as the prefix of a full model id.
+fn is_group_header_present(snapshot: &str, provider: &str) -> bool {
+    snapshot
+        .lines()
+        .any(|line| line.trim().trim_matches('│').trim() == provider)
+}
+
+/// Poll the picker snapshot until a standalone `provider` group header row appears, returning the
+/// last snapshot observed so the caller can assert against it.
+fn wait_for_group_header(session: &str, provider: &str, timeout: Duration) -> String {
+    let started = Instant::now();
+    let mut screen = snapshot(session, &["--trim"]);
+    while started.elapsed() < timeout {
+        if is_group_header_present(&screen, provider) {
+            return screen;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        screen = snapshot(session, &["--trim"]);
+    }
+    screen
+}
+
 #[test]
 fn gap_tui_010_model_picker_fixture_surfaces_provider_grouping_and_metadata_labels() {
     if !tuistory_available() {
@@ -190,37 +214,39 @@ models = [{ id = "legacy/disabled-model", name = "Disabled Fixture Model", tool_
     assert!(tuistory(&session, &["type", "/models"]).status.success());
     assert!(tuistory(&session, &["press", "enter"]).status.success());
 
+    // The picker opens flat-by-default and surfaces the fixture model with honest metadata.
     assert!(
-        wait_for_contains(&session, "(openrouter)", Duration::from_secs(20)),
-        "model picker should include grouped provider headers"
+        wait_for_contains(&session, "fixture/free-model", Duration::from_secs(20)),
+        "model picker should list the fixture model in the flat default view"
+    );
+
+    let flat = snapshot(&session, &["--trim"]);
+    // Zero-cost model surfaces `free` in its ctx·price meta (honest metadata, not a `[free]` label).
+    assert!(
+        flat.contains("8K · free"),
+        "zero-cost fixture model should show `free` in its price meta:\n{flat}"
+    );
+    // The disabled provider's model is omitted entirely from the selectable list.
+    assert!(
+        !flat.contains("legacy/disabled-model"),
+        "disabled provider model should be excluded from the picker:\n{flat}"
+    );
+    // Provider grouping is hidden by default: no standalone provider header in the flat view.
+    assert!(
+        !is_group_header_present(&flat, "fixture"),
+        "provider grouping should stay hidden until the ⇥ toggle:\n{flat}"
+    );
+
+    // ⇥ reveals provider grouping: a `fixture` group header appears above its model.
+    assert!(tuistory(&session, &["press", "tab"]).status.success());
+    let grouped = wait_for_group_header(&session, "fixture", Duration::from_secs(20));
+    assert!(
+        is_group_header_present(&grouped, "fixture"),
+        "⇥ should reveal the provider group header:\n{grouped}"
     );
     assert!(
-        wait_for_contains(&session, "fixture (fixture)", Duration::from_secs(20)),
-        "fixture provider group should be visible in the picker"
-    );
-    assert!(
-        wait_for_contains(&session, "legacy (legacy)", Duration::from_secs(20)),
-        "disabled provider group should still be visible in the picker"
-    );
-    assert!(
-        wait_for_contains(&session, "[current]", Duration::from_secs(20)),
-        "picker should mark the currently selected model"
-    );
-    assert!(
-        wait_for_contains(
-            &session,
-            "fixture/free-model [free]",
-            Duration::from_secs(20)
-        ),
-        "fixture should expose a zero-cost model with the free marker"
-    );
-    assert!(
-        wait_for_contains(
-            &session,
-            "legacy/disabled-model [unavailable]",
-            Duration::from_secs(20)
-        ),
-        "disabled provider model should carry the unavailable label"
+        grouped.contains("fixture/free-model"),
+        "grouped view should still list the fixture model under its provider:\n{grouped}"
     );
 }
 
@@ -261,7 +287,8 @@ theme_files = ["./custom-theme.json"]
     );
 
     // Preview custom theme (dark -> dark_plus) and prove its custom magenta primary color appears.
-    assert!(tuistory(&session, &["press", "down"]).status.success());
+    // The custom theme is appended last, so wrap-around navigation reaches it in one `up` from dark.
+    assert!(tuistory(&session, &["press", "up"]).status.success());
     let preview_magenta = snapshot(&session, &["--fg", "#ff00ff", "--immediate", "--trim"]);
     assert!(
         has_visible_cells(&preview_magenta),
@@ -286,7 +313,7 @@ theme_files = ["./custom-theme.json"]
     // Re-open, select custom theme again, and accept to persist.
     assert!(tuistory(&session, &["type", "/themes"]).status.success());
     assert!(tuistory(&session, &["press", "enter"]).status.success());
-    assert!(tuistory(&session, &["press", "down"]).status.success());
+    assert!(tuistory(&session, &["press", "up"]).status.success());
     assert!(tuistory(&session, &["press", "enter"]).status.success());
     std::thread::sleep(Duration::from_millis(200));
     drop(_guard);
