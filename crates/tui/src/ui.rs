@@ -2230,19 +2230,47 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         return;
     }
 
-    let rows: Vec<crate::modal::ModalRow> = dialog
-        .items
-        .iter()
-        .map(|item| crate::modal::ModalRow::new(item.clone()))
-        .collect();
+    // Searchable pickers (session/model) render rich rows (key + desc + right-aligned meta) supplied
+    // by the app, a `›` search row that filters, and a fixed key column so descriptions line up.
+    let searchable = matches!(dialog.kind, DialogKind::Sessions | DialogKind::Models);
 
     // The session picker, when renaming, shows the in-progress new title as an in-frame input row.
     let rename = (dialog.kind == DialogKind::Sessions)
         .then(|| app.session_rename())
         .flatten();
-    let hints = parse_hints(dialog_hint(dialog.kind, rename.is_some()));
 
-    let empty = if dialog.items.is_empty() {
+    let (rows, search, key_width, key_color): (
+        Vec<crate::modal::ModalRow>,
+        Option<crate::modal::ModalSearch>,
+        Option<usize>,
+        Color,
+    ) = if searchable {
+        let search = (rename.is_none()).then(|| crate::modal::ModalSearch {
+            query: app.picker_search_query().to_owned(),
+            placeholder: "type to filter…".to_owned(),
+        });
+        (
+            app.picker_rows().to_vec(),
+            search,
+            app.picker_key_width(),
+            theme.text_bright,
+        )
+    } else {
+        (
+            dialog
+                .items
+                .iter()
+                .map(|item| crate::modal::ModalRow::new(item.clone()))
+                .collect(),
+            None,
+            None,
+            theme.text,
+        )
+    };
+
+    let hints = dialog_hints(dialog.kind, rename.is_some());
+
+    let empty = if rows.is_empty() {
         Some(
             dialog
                 .empty
@@ -2253,21 +2281,7 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         None
     };
 
-    let widest = dialog
-        .items
-        .iter()
-        .map(|s| s.chars().count())
-        .max()
-        .unwrap_or(0);
-    let hint_w: usize = hints
-        .iter()
-        .map(|h| h.key.chars().count() + h.label.chars().count() + 4)
-        .sum();
-    let title_w = dialog.title.chars().count() + 4;
-    let rename_w = rename.map_or(0, |text| text.chars().count() + 12);
-    // Marker (2) + key + generous meta room, kept within the available width.
-    let content_w = (widest + 8).max(hint_w + 2).max(title_w).max(rename_w);
-    let width = (content_w as u16).min(area.width);
+    let width = dialog_width(&rows, key_width, &dialog.title, &hints, rename, area.width);
 
     let input = rename.map(|text| crate::modal::ModalInput {
         prefix: "Rename: ".to_owned(),
@@ -2280,15 +2294,80 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         selected: dialog.selected(),
         hints,
         note: None,
-        search: None,
+        search,
         input,
         empty,
         width,
-        key_width: None,
-        key_color: theme.text,
+        key_width,
+        key_color,
     };
 
     crate::modal::render_modal(frame, area, &spec, theme, app.selection_anim_state());
+}
+
+/// The footer key-hints for a dialog: the searchable pickers advertise their real actions with safe
+/// key glyphs (`↵`, `⇥`, `⌫`), while every other dialog reuses its plain hint string.
+fn dialog_hints(kind: DialogKind, renaming: bool) -> Vec<crate::modal::ModalHint> {
+    use crate::modal::ModalHint;
+    if renaming {
+        return parse_hints(dialog_hint(kind, true));
+    }
+    match kind {
+        DialogKind::Sessions => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "open"),
+            ModalHint::new("^N", "new"),
+            ModalHint::new(crate::glyphs::KEY_DELETE, "delete"),
+            ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Models => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "select"),
+            ModalHint::new(crate::glyphs::KEY_TAB, "provider"),
+            ModalHint::new("/", "filter"),
+            ModalHint::new("esc", "close"),
+        ],
+        _ => parse_hints(dialog_hint(kind, false)),
+    }
+}
+
+/// The clamped modal width for a rich picker: room for the marker, fixed key column, description,
+/// and the right-aligned meta column, but never wider than the available area.
+fn dialog_width(
+    rows: &[crate::modal::ModalRow],
+    key_width: Option<usize>,
+    title: &str,
+    hints: &[crate::modal::ModalHint],
+    rename: Option<&str>,
+    area_width: u16,
+) -> u16 {
+    let key_col = key_width.unwrap_or_else(|| {
+        rows.iter()
+            .map(|row| row.key.chars().count())
+            .max()
+            .unwrap_or(0)
+    });
+    let max_desc = rows
+        .iter()
+        .filter_map(|row| row.desc.as_ref())
+        .map(|desc| desc.chars().count())
+        .max()
+        .unwrap_or(0);
+    let max_meta = rows
+        .iter()
+        .filter_map(|row| row.meta.as_ref())
+        .map(|meta| meta.chars().count())
+        .max()
+        .unwrap_or(0);
+    // marker(2) + key + gap(2) + desc + gap(2) + meta + right border gap(1).
+    let content = 2 + key_col + 2 + max_desc + 2 + max_meta + 1;
+    let hint_w: usize = hints
+        .iter()
+        .map(|hint| hint.key.chars().count() + hint.label.chars().count() + 4)
+        .sum();
+    let title_w = title.chars().count() + 4;
+    let rename_w = rename.map_or(0, |text| text.chars().count() + 12);
+    // +2 for the left/right borders.
+    let width = content.max(hint_w + 2).max(title_w).max(rename_w) + 2;
+    (width as u16).min(area_width)
 }
 
 /// Split a `key label · key label` hint string into structured [`crate::modal::ModalHint`] pairs
@@ -2958,7 +3037,7 @@ pub(crate) fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AssistantTurn, DialogKind, Status};
+    use crate::app::{App, AssistantTurn, Status};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
@@ -3567,6 +3646,92 @@ mod tests {
                 .collect::<String>()
                 .contains(crate::glyphs::SELECT_MARKER)
         );
+    }
+
+    /// Type a slash command into an empty prompt and dispatch it (open its picker/view).
+    fn open_via_slash(a: &mut App, command: &str) {
+        for c in command.chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    /// Render the full frame at 92×30 and flatten the buffer to a single string for text assertions.
+    fn rendered_frame(a: &App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn model_picker_renders_rich_columns_and_footer() {
+        // VAL-PICK-014..019/067: a titled rounded modal with a search row, real `provider/model`
+        // ids, a `ctx · price` column, and the select/provider/filter/close footer with safe glyphs.
+        let mut a = app();
+        open_via_slash(&mut a, "/models");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Models"), "titled modal:\n{text}");
+        assert!(text.contains("type to filter…"), "search row placeholder present");
+        assert!(
+            text.contains("google/gemini-2.5-flash"),
+            "real model id rendered:\n{text}"
+        );
+        assert!(text.contains('$'), "price column rendered");
+        assert!(
+            text.contains(crate::glyphs::KEY_ENTER) && text.contains("select"),
+            "select footer hint"
+        );
+        assert!(
+            text.contains(crate::glyphs::KEY_TAB) && text.contains("provider"),
+            "provider footer hint"
+        );
+        assert!(
+            text.contains("filter") && text.contains("close"),
+            "filter/close footer hints"
+        );
+        assert!(text.contains('╭') && text.contains('╯'), "rounded border");
+        assert!(
+            !crate::glyphs::contains_braille(&text),
+            "no braille anywhere in the model picker"
+        );
+    }
+
+    #[test]
+    fn session_picker_renders_search_and_footer_chrome() {
+        // VAL-PICK-006/008: a titled rounded modal with a `›` search row and the open/new/delete/
+        // close footer (safe `⌫` glyph). Real seeded rows are covered by the app-level tests.
+        let mut a = app();
+        open_via_slash(&mut a, "/sessions");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Sessions"), "titled modal:\n{text}");
+        assert!(text.contains("type to filter…"), "search row placeholder present");
+        assert!(
+            text.contains("open")
+                && text.contains("new")
+                && text.contains("delete")
+                && text.contains("close"),
+            "session footer hints present:\n{text}"
+        );
+        assert!(
+            text.contains(crate::glyphs::KEY_DELETE),
+            "delete advertised with the safe ⌫ glyph"
+        );
+        assert!(text.contains('╭') && text.contains('╯'), "rounded border");
     }
 
     #[test]

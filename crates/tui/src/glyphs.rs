@@ -34,6 +34,8 @@ pub const CURSOR: &str = "▏";
 pub const KEY_ENTER: &str = "↵";
 /// Tab / autocomplete key cap.
 pub const KEY_TAB: &str = "⇥";
+/// Delete / erase key cap (picker footer `⌫ delete` hint).
+pub const KEY_DELETE: &str = "⌫";
 
 // --- Box drawing (rounded only) ---
 
@@ -140,6 +142,7 @@ mod tests {
             CURSOR,
             KEY_ENTER,
             KEY_TAB,
+            KEY_DELETE,
             BOX_TOP_LEFT,
             BOX_TOP_RIGHT,
             BOX_BOTTOM_LEFT,

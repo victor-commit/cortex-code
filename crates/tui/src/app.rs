@@ -352,6 +352,38 @@ struct SessionEntry {
     title: Option<String>,
 }
 
+/// One row of the rich session picker: its display row (title + `agent · model` + `N msg · age`),
+/// the backing persisted id/title (for open/rename/delete), and the lowercased text the search row
+/// filters against. The full set is cached when the picker opens; the visible rows are this set
+/// filtered by the query, so filtering never re-reads the store.
+#[derive(Debug, Clone)]
+struct SessionPick {
+    /// The persisted session id, or `None` for the synthetic "current session" floor row.
+    id: Option<String>,
+    /// The persisted session's title (used to seed a rename), if any.
+    title: Option<String>,
+    /// The display row (key/desc/meta) handed to the modal renderer.
+    row: crate::modal::ModalRow,
+    /// Lowercased haystack (title + model) the search query matches against.
+    hay: String,
+}
+
+/// One row of the rich model picker: its display row (`provider/model` + description + `ctx · price`),
+/// the fully-qualified model id, the vendor prefix (for the `⇥` provider grouping), and the
+/// lowercased search haystack. The full set is cached when the picker opens; the flat/grouped views
+/// are derived from it filtered by the query.
+#[derive(Debug, Clone)]
+struct ModelPick {
+    /// The fully-qualified model id (e.g. `google/gemini-2.5-flash`).
+    id: String,
+    /// The vendor prefix before the first `/` (e.g. `google`), used to group by provider.
+    vendor: String,
+    /// The display row (key/desc/meta) handed to the modal renderer.
+    row: crate::modal::ModalRow,
+    /// Lowercased haystack (id + description) the search query matches against.
+    hay: String,
+}
+
 /// One timeline row in the `/timeline` and `/fork` dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TimelineEntry {
@@ -788,6 +820,22 @@ pub struct App {
     /// Model-picker row mapping: `Some(model_id)` for selectable model rows, `None` for provider
     /// headers/separators.
     model_rows: Vec<Option<String>>,
+    /// The search query typed into a searchable picker (session/model). Filters the visible rows;
+    /// reset when the picker opens or closes.
+    picker_query: String,
+    /// The filtered rich rows (key/desc/meta) for the open searchable picker, parallel to the
+    /// dialog's item rows and backing arrays. Empty for non-searchable dialogs.
+    picker_rows: Vec<crate::modal::ModalRow>,
+    /// The fixed key-column width for the open searchable picker so descriptions line up across
+    /// rows (`None` = per-row key length).
+    picker_key_width: Option<usize>,
+    /// The full session-picker set (unfiltered), cached when the session picker opens.
+    session_all: Vec<SessionPick>,
+    /// The full model-picker set (unfiltered flat list), cached when the model picker opens.
+    model_all: Vec<ModelPick>,
+    /// Whether the model picker groups rows under vendor headers (`⇥` toggles it); the default flat
+    /// view lists every model in one block.
+    model_group_by_provider: bool,
     /// Skill-picker row mapping: selected row -> skill name.
     skill_rows: Vec<String>,
     /// Variant-picker row mapping: selected row -> variant id.
@@ -934,6 +982,12 @@ impl App {
             session_entries: Vec::new(),
             timeline_entries: Vec::new(),
             model_rows: Vec::new(),
+            picker_query: String::new(),
+            picker_rows: Vec::new(),
+            picker_key_width: None,
+            session_all: Vec::new(),
+            model_all: Vec::new(),
+            model_group_by_provider: false,
             skill_rows: Vec::new(),
             variant_rows: Vec::new(),
             session_rename: None,
@@ -3253,21 +3307,31 @@ impl App {
         }
     }
 
-    /// Open the session picker (`/sessions`): the active (current) session followed by any
-    /// persisted sessions, newest-first. Listing the database is best-effort — if no database
-    /// exists yet or it cannot be read, only the current session is shown, so the picker always
-    /// opens with at least the current session listed.
+    /// Open the session picker (`/sessions`): the real persisted sessions (newest-first) as rich
+    /// rows (title + `agent · model` + `N msg · age`) under a searchable modal. Listing the database
+    /// is best-effort — when no session is persisted yet the synthetic "current session" floor row
+    /// is shown so the picker always opens with at least one row. The highlight starts on the first
+    /// actionable (persisted) row.
     fn open_sessions_dialog(&mut self) {
-        let (items, entries) = self.session_rows();
-        self.session_entries = entries;
         self.session_rename = None;
+        self.picker_query.clear();
+        self.session_all = self.build_session_picks();
         self.open_dialog(Dialog {
             kind: DialogKind::Sessions,
             title: "Sessions".to_owned(),
-            items,
+            items: Vec::new(),
             selected: 0,
-            empty: None,
+            empty: Some("No sessions yet.".to_owned()),
         });
+        self.rebuild_session_view();
+        let default = self
+            .session_entries
+            .iter()
+            .position(|entry| entry.id.is_some())
+            .unwrap_or(0);
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.selected = default;
+        }
     }
 
     /// Open the timeline view (`/timeline`): the current session's persisted message history with
@@ -3368,68 +3432,172 @@ impl App {
         Ok((items, entries))
     }
 
-    /// Open the model picker (`/models`): every model the OpenRouter catalogue serves, by id, with
-    /// grouped provider headers and per-model availability metadata.
+    /// Open the model picker (`/models`): the real catalogue models as rich rows (`provider/model` +
+    /// a metadata-derived descriptor + `ctx · price`) under a searchable modal, with the active
+    /// model pre-highlighted. Starts in the flat view; `⇥` regroups by vendor.
     fn open_models_dialog(&mut self) {
-        let mut items = Vec::new();
-        let mut rows = Vec::new();
-        let mut selected = 0;
+        self.picker_query.clear();
+        self.model_group_by_provider = false;
+        self.model_all = self.build_model_picks();
+        self.open_dialog(Dialog {
+            kind: DialogKind::Models,
+            title: "Models".to_owned(),
+            items: Vec::new(),
+            selected: 0,
+            empty: Some("No models in the catalogue.".to_owned()),
+        });
+        self.rebuild_model_view();
+        let active = self.status.model.clone();
+        self.select_model_row(&active);
+    }
 
+    /// Build the full model-picker set from the merged catalogue: every model an enabled provider
+    /// serves, as a rich row with real id/ctx/price and a metadata-derived descriptor. Sorted by id
+    /// so the list is deterministic and vendors group contiguously for the `⇥` view.
+    fn build_model_picks(&self) -> Vec<ModelPick> {
+        let theme = frame::style::ThemeColors::from_name(&self.theme);
+        let meta_color = theme.text;
+        let default_model = self.status.model.clone();
         let effective = effective_config();
         let provider_config = effective
             .as_ref()
             .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
-        let merged_catalogue = provider_config.as_ref().map_or_else(
+        let merged = provider_config.as_ref().map_or_else(
             || providers::Catalogue::embedded().clone(),
             |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
         );
-
-        for provider in merged_catalogue.providers() {
+        let mut picks: Vec<ModelPick> = Vec::new();
+        for provider in merged.providers() {
             let enabled = provider_config
                 .as_ref()
                 .is_none_or(|cfg| cfg.provider_enabled(&provider.id));
-
-            items.push(format!("{} ({})", provider.name, provider.id));
-            rows.push(None);
-
-            let mut models = provider.models.values().collect::<Vec<_>>();
-            models.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
-            for model in models {
-                let mut tags = Vec::new();
-                if model.id == self.status.model {
-                    tags.push("current");
-                    selected = items.len();
-                }
-                if model.cost.input == 0.0 && model.cost.output == 0.0 {
-                    tags.push("free");
-                }
-                if !enabled {
-                    tags.push("unavailable");
-                }
-                let suffix = if tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", tags.join(", "))
-                };
-                items.push(format!("{}{}", model.id, suffix));
-                rows.push(enabled.then_some(model.id.clone()));
+            if !enabled {
+                continue;
+            }
+            for model in provider.models.values() {
+                let is_default = model.id == default_model;
+                let vendor = model
+                    .id
+                    .split_once('/')
+                    .map_or_else(|| model.id.clone(), |(v, _)| v.to_owned());
+                let desc = model_descriptor(model, is_default);
+                let meta = format!(
+                    "{} · {}",
+                    format_context(model.limit.context),
+                    format_price(model.cost.input)
+                );
+                let hay = format!("{} {desc}", model.id).to_lowercase();
+                picks.push(ModelPick {
+                    id: model.id.clone(),
+                    vendor,
+                    row: crate::modal::ModalRow {
+                        key: model.id.clone(),
+                        desc: Some(desc),
+                        meta: Some(meta),
+                        meta_color: Some(meta_color),
+                    },
+                    hay,
+                });
             }
         }
+        picks.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+        picks
+    }
 
-        if rows.get(selected).is_none_or(Option::is_none)
-            && let Some(first) = rows.iter().position(Option::is_some)
-        {
-            selected = first;
+    /// Rebuild the model picker's visible rows (and the `model_rows` selection map) from the cached
+    /// full set filtered by the search query, in the flat or vendor-grouped layout. Grouped view
+    /// inserts a non-selectable vendor header before each vendor's block.
+    fn rebuild_model_view(&mut self) {
+        let query = self.picker_query.to_lowercase();
+        let grouped = self.model_group_by_provider;
+        let mut items = Vec::new();
+        let mut model_rows: Vec<Option<String>> = Vec::new();
+        let mut rows = Vec::new();
+        let mut key_width = 0usize;
+        let mut current_vendor: Option<String> = None;
+        for pick in &self.model_all {
+            if !query.is_empty() && !pick.hay.contains(&query) {
+                continue;
+            }
+            key_width = key_width.max(pick.id.chars().count());
+            if grouped && current_vendor.as_deref() != Some(pick.vendor.as_str()) {
+                current_vendor = Some(pick.vendor.clone());
+                items.push(pick.vendor.clone());
+                model_rows.push(None);
+                rows.push(crate::modal::ModalRow::new(pick.vendor.clone()));
+            }
+            items.push(pick.id.clone());
+            model_rows.push(Some(pick.id.clone()));
+            rows.push(pick.row.clone());
         }
+        self.picker_key_width = (key_width > 0).then_some(key_width);
+        self.model_rows = model_rows;
+        self.picker_rows = rows;
+        if let Some(dialog) = self.dialog.as_mut() {
+            let clamped = dialog.selected.min(items.len().saturating_sub(1));
+            dialog.items = items;
+            dialog.selected = clamped;
+        }
+        self.ensure_model_selection_selectable();
+    }
 
-        self.model_rows = rows;
-        self.open_dialog(Dialog {
-            kind: DialogKind::Models,
-            title: "Models".to_owned(),
-            items,
-            selected,
-            empty: Some("No models in the catalogue.".to_owned()),
-        });
+    /// Toggle the model picker between the flat and vendor-grouped views (`⇥`), keeping the same
+    /// model highlighted across the switch when it survives the current filter.
+    fn toggle_model_grouping(&mut self) {
+        let current = self
+            .dialog
+            .as_ref()
+            .and_then(|dialog| self.model_rows.get(dialog.selected()).cloned())
+            .flatten();
+        self.model_group_by_provider = !self.model_group_by_provider;
+        self.rebuild_model_view();
+        match current {
+            Some(id) => self.select_model_row(&id),
+            None => self.ensure_model_selection_selectable(),
+        }
+    }
+
+    /// Move the model-picker highlight to the row for `id`, or to the nearest selectable row when it
+    /// is not present in the current (filtered/grouped) view.
+    fn select_model_row(&mut self, id: &str) {
+        let pos = self
+            .model_rows
+            .iter()
+            .position(|row| row.as_deref() == Some(id));
+        match pos {
+            Some(pos) => {
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.selected = pos;
+                }
+            }
+            None => self.ensure_model_selection_selectable(),
+        }
+    }
+
+    /// Ensure the model-picker highlight sits on a selectable (non-header) row: if it currently
+    /// rests on a vendor header or out of range, snap it to the next selectable row (or the first).
+    fn ensure_model_selection_selectable(&mut self) {
+        if self.model_rows.is_empty() {
+            return;
+        }
+        let sel = self.dialog.as_ref().map_or(0, Dialog::selected);
+        if self.model_rows.get(sel).is_some_and(Option::is_some) {
+            return;
+        }
+        let target = self
+            .model_rows
+            .iter()
+            .enumerate()
+            .skip(sel)
+            .find_map(|(idx, row)| row.is_some().then_some(idx))
+            .or_else(|| {
+                self.model_rows
+                    .iter()
+                    .position(Option::is_some)
+            });
+        if let (Some(target), Some(dialog)) = (target, self.dialog.as_mut()) {
+            dialog.selected = target;
+        }
     }
 
     /// Open the agent picker (`/agents`): the built-in agent personas, with the active agent
@@ -4202,6 +4370,12 @@ impl App {
         self.session_entries.clear();
         self.timeline_entries.clear();
         self.model_rows.clear();
+        self.picker_query.clear();
+        self.picker_rows.clear();
+        self.picker_key_width = None;
+        self.session_all.clear();
+        self.model_all.clear();
+        self.model_group_by_provider = false;
         self.skill_rows.clear();
         self.variant_rows.clear();
         self.session_rename = None;
@@ -4210,9 +4384,11 @@ impl App {
     /// Handle a key while a modal dialog is open. The dialog is modal: it owns navigation and
     /// dismissal, and swallows other keys so the prompt is not edited beneath it. `Ctrl+C` still
     /// quits so the user is never trapped, and `Esc`/`Enter` close the dialog and return focus to
-    /// the prompt. The session picker adds in-place actions: `r` renames the highlighted session
-    /// (a sub-mode where typing edits the new title, `Enter` commits, `Esc` cancels the rename),
-    /// and `d`/`Delete` removes it.
+    /// the prompt. Searchable pickers (session/model) treat plain typing as a filter query and
+    /// `Backspace` as edit; the model picker toggles vendor grouping with `Tab`. The session picker
+    /// keeps its in-place actions on modifier keys so they do not collide with the filter: `Ctrl+N`
+    /// starts a new session, `Ctrl+R` renames the highlighted session (a sub-mode where typing edits
+    /// the new title, `Enter` commits, `Esc` cancels the rename), and `Ctrl+D`/`Delete` removes it.
     fn on_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
@@ -4240,25 +4416,74 @@ impl App {
             return;
         }
 
-        let is_sessions = matches!(
-            self.dialog.as_ref().map(|dialog| dialog.kind),
-            Some(DialogKind::Sessions)
-        );
-        let is_timeline = matches!(
-            self.dialog.as_ref().map(|dialog| dialog.kind),
-            Some(DialogKind::Timeline)
-        );
+        let kind = self.dialog.as_ref().map(|dialog| dialog.kind);
+        let is_sessions = kind == Some(DialogKind::Sessions);
+        let is_models = kind == Some(DialogKind::Models);
+        let is_timeline = kind == Some(DialogKind::Timeline);
+        let searchable = is_sessions || is_models;
         match key.code {
             KeyCode::Up => self.dialog_select_prev(),
             KeyCode::Down => self.dialog_select_next(),
             KeyCode::Enter => self.dialog_confirm(),
             KeyCode::Esc => self.dialog_cancel(),
-            KeyCode::Char('r') if is_sessions => self.begin_session_rename(),
-            KeyCode::Char('d') | KeyCode::Delete if is_sessions => self.delete_selected_session(),
+            KeyCode::Tab if is_models => self.toggle_model_grouping(),
+            KeyCode::Char('n') if ctrl && is_sessions => {
+                self.new_session();
+                self.close_dialog();
+            }
+            KeyCode::Char('r') if ctrl && is_sessions => self.begin_session_rename(),
+            KeyCode::Char('d') if ctrl && is_sessions => self.delete_selected_session(),
+            KeyCode::Delete if is_sessions => self.delete_selected_session(),
             KeyCode::Char('f') if is_timeline => {
                 let selected = self.dialog.as_ref().map(Dialog::selected);
                 self.open_fork_dialog_with_selected(selected);
             }
+            KeyCode::Backspace if searchable => self.picker_search_pop(),
+            KeyCode::Char(c) if searchable && !ctrl => self.picker_search_push(c),
+            _ => {}
+        }
+    }
+
+    /// Whether the open dialog is a searchable picker (session/model) whose typed query filters its
+    /// rows in place.
+    fn picker_is_searchable(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|dialog| dialog.kind),
+            Some(DialogKind::Sessions | DialogKind::Models)
+        )
+    }
+
+    /// Append a character to the open picker's search query and re-filter its rows (resetting the
+    /// highlight to the top of the narrowed list).
+    fn picker_search_push(&mut self, c: char) {
+        if !self.picker_is_searchable() {
+            return;
+        }
+        self.picker_query.push(c);
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.selected = 0;
+        }
+        self.rebuild_picker_view();
+    }
+
+    /// Remove the last character from the open picker's search query and re-filter its rows; an
+    /// emptied query restores the full list.
+    fn picker_search_pop(&mut self) {
+        if !self.picker_is_searchable() {
+            return;
+        }
+        self.picker_query.pop();
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.selected = 0;
+        }
+        self.rebuild_picker_view();
+    }
+
+    /// Re-filter the open searchable picker's rows for the current query.
+    fn rebuild_picker_view(&mut self) {
+        match self.dialog.as_ref().map(|dialog| dialog.kind) {
+            Some(DialogKind::Sessions) => self.rebuild_session_view(),
+            Some(DialogKind::Models) => self.rebuild_model_view(),
             _ => {}
         }
     }
@@ -4523,22 +4748,104 @@ impl App {
         }
     }
 
-    /// Build the session picker's rows and their backing metadata in lockstep: the synthetic
-    /// "current session" row (no persisted id) followed by every persisted session, newest-first.
-    fn session_rows(&self) -> (Vec<String>, Vec<SessionEntry>) {
-        let mut items = vec![format!("● current — {} session", self.status.session)];
-        let mut entries = vec![SessionEntry {
-            id: None,
-            title: None,
-        }];
-        for session in self.persisted_sessions() {
-            items.push(session_picker_label(&session));
-            entries.push(SessionEntry {
-                id: Some(session.id.clone()),
-                title: session.title.clone(),
-            });
+    /// The number of persisted messages under a session (best-effort; `0` when unreadable). Read
+    /// once per session when the picker opens, so search filtering never re-hits the store.
+    fn session_message_count(&self, id: &str) -> usize {
+        self.open_store()
+            .and_then(|db| db.messages().list_for_session(id).ok())
+            .map_or(0, |messages| messages.len())
+    }
+
+    /// Build the full session-picker set: every persisted session (newest-first), each as a rich
+    /// row (`title` + `agent · model` + `N msg · age`) with its backing id/title. When no sessions
+    /// are persisted yet, fall back to the synthetic "current session" floor row so the picker is
+    /// never empty (its `id` is `None`, so it is non-actionable).
+    fn build_session_picks(&self) -> Vec<SessionPick> {
+        let theme = frame::style::ThemeColors::from_name(&self.theme);
+        let meta_color = theme.text;
+        let agent = self.status.agent.clone();
+        let persisted = self.persisted_sessions();
+        if persisted.is_empty() {
+            let key = format!("current — {} session", self.status.session);
+            let desc = format!("{agent} · {}", short_model(&self.status.model));
+            return vec![SessionPick {
+                id: None,
+                title: None,
+                row: crate::modal::ModalRow {
+                    key: key.clone(),
+                    desc: Some(desc),
+                    meta: None,
+                    meta_color: None,
+                },
+                hay: key.to_lowercase(),
+            }];
         }
-        (items, entries)
+        let now = current_epoch_secs();
+        persisted
+            .into_iter()
+            .map(|session| {
+                let title = session
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| session.id.clone());
+                let model = short_model(session.model.as_deref().unwrap_or(&self.status.model));
+                let count = self.session_message_count(&session.id);
+                let age = relative_age(&session.updated_at, now);
+                let meta = if age.is_empty() {
+                    format!("{count} msg")
+                } else {
+                    format!("{count} msg · {age}")
+                };
+                let hay = format!("{title} {model}").to_lowercase();
+                SessionPick {
+                    id: Some(session.id.clone()),
+                    title: session.title.clone(),
+                    row: crate::modal::ModalRow {
+                        key: title,
+                        desc: Some(format!("{agent} · {model}")),
+                        meta: Some(meta),
+                        meta_color: Some(meta_color),
+                    },
+                    hay,
+                }
+            })
+            .collect()
+    }
+
+    /// Rebuild the session picker's visible rows (and their backing arrays) from the cached full set
+    /// filtered by the current search query, keeping the highlight on a valid row. Case-insensitive
+    /// substring match over each row's title + model; an empty query shows the full list.
+    fn rebuild_session_view(&mut self) {
+        let query = self.picker_query.to_lowercase();
+        let mut items = Vec::new();
+        let mut entries = Vec::new();
+        let mut rows = Vec::new();
+        for pick in &self.session_all {
+            if !query.is_empty() && !pick.hay.contains(&query) {
+                continue;
+            }
+            items.push(pick.row.key.clone());
+            entries.push(SessionEntry {
+                id: pick.id.clone(),
+                title: pick.title.clone(),
+            });
+            rows.push(pick.row.clone());
+        }
+        self.picker_key_width = rows
+            .iter()
+            .map(|row| row.key.chars().count())
+            .max()
+            .map(|w| w.min(44));
+        self.session_entries = entries;
+        self.picker_rows = rows;
+        if let Some(dialog) = self.dialog.as_mut() {
+            let clamped = dialog
+                .selected
+                .min(items.len().saturating_sub(1));
+            dialog.items = items;
+            dialog.selected = clamped;
+        }
     }
 
     /// Load a persisted session, its messages, and its todos by id from the bound store, or `None`
@@ -4837,8 +5144,9 @@ impl App {
         }
     }
 
-    /// Rebuild the open session picker's rows from the store (after a rename/delete), keeping the
-    /// highlight on a valid row. A no-op unless the session picker is open.
+    /// Rebuild the open session picker's rows from the store (after a rename/delete), re-applying the
+    /// active search filter and keeping the highlight on a valid row. A no-op unless the session
+    /// picker is open.
     fn refresh_sessions_dialog(&mut self) {
         if !matches!(
             self.dialog.as_ref().map(|dialog| dialog.kind),
@@ -4846,20 +5154,33 @@ impl App {
         ) {
             return;
         }
-        let (items, entries) = self.session_rows();
-        let new_len = items.len();
-        self.session_entries = entries;
-        if let Some(dialog) = self.dialog.as_mut() {
-            let clamped = dialog.selected.min(new_len.saturating_sub(1));
-            dialog.items = items;
-            dialog.selected = clamped;
-        }
+        self.session_all = self.build_session_picks();
+        self.rebuild_session_view();
     }
 
     /// The in-progress session-rename text, when the session picker is in rename mode (for the UI).
     #[must_use]
     pub fn session_rename(&self) -> Option<&str> {
         self.session_rename.as_deref()
+    }
+
+    /// The filtered rich rows (key/desc/meta) for the open searchable picker (session/model), for
+    /// the renderer. Empty for non-searchable dialogs.
+    #[must_use]
+    pub fn picker_rows(&self) -> &[crate::modal::ModalRow] {
+        &self.picker_rows
+    }
+
+    /// The current search query typed into the open searchable picker (session/model).
+    #[must_use]
+    pub fn picker_search_query(&self) -> &str {
+        &self.picker_query
+    }
+
+    /// The fixed key-column width for the open searchable picker so descriptions line up.
+    #[must_use]
+    pub fn picker_key_width(&self) -> Option<usize> {
+        self.picker_key_width
     }
 
     /// Take the `/editor` request (if any), clearing it so the editor opens exactly once.
@@ -5480,21 +5801,24 @@ impl App {
     /// Open the session picker and enter rename mode on the first persisted session row.
     fn rename_session_command(&mut self) {
         self.open_sessions_dialog();
-        let has_persisted_rows = self
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.items.len() > 1);
-        if !has_persisted_rows {
-            self.close_dialog();
-            self.transcript
-                .push(Entry::Notice("No persisted sessions to rename.".to_owned()));
-            self.push_toast(ToastLevel::Info, "No session to rename");
-            return;
+        let first_persisted = self
+            .session_entries
+            .iter()
+            .position(|entry| entry.id.is_some());
+        match first_persisted {
+            Some(index) => {
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.selected = index;
+                }
+                self.begin_session_rename();
+            }
+            None => {
+                self.close_dialog();
+                self.transcript
+                    .push(Entry::Notice("No persisted sessions to rename.".to_owned()));
+                self.push_toast(ToastLevel::Info, "No session to rename");
+            }
         }
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.selected = 1;
-        }
-        self.begin_session_rename();
     }
 
     /// Reset transcript navigation back to the pinned-bottom, nothing-selected, find-closed state
@@ -6772,6 +7096,121 @@ fn first_line(text: &str) -> String {
     } else {
         let kept: String = line.chars().take(87).collect();
         format!("{kept}…")
+    }
+}
+
+/// The model id without its vendor prefix (`google/gemini-2.5-flash` -> `gemini-2.5-flash`), for the
+/// compact `agent · model` descriptor on session rows. Ids without a `/` are returned unchanged.
+fn short_model(model: &str) -> String {
+    model
+        .rsplit_once('/')
+        .map_or_else(|| model.to_owned(), |(_, tail)| tail.to_owned())
+}
+
+/// Humanize a token context window as the picker's `ctx` cell: `1048576 -> 1M`, `200000 -> 200K`.
+fn format_context(context: u64) -> String {
+    if context == 0 {
+        "—".to_owned()
+    } else if context >= 1_000_000 {
+        let millions = context as f64 / 1_000_000.0;
+        if (millions.round() - millions).abs() < 0.05 {
+            format!("{}M", millions.round() as u64)
+        } else {
+            format!("{millions:.1}M")
+        }
+    } else if context >= 1_000 {
+        format!("{}K", (context as f64 / 1_000.0).round() as u64)
+    } else {
+        context.to_string()
+    }
+}
+
+/// Format a per-million-token input price as the picker's `price` cell: integers drop the decimals
+/// (`$15`), fractional prices keep two (`$0.30`); a zero/unknown price shows `free`.
+fn format_price(input_cost: f64) -> String {
+    if input_cost <= 0.0 {
+        "free".to_owned()
+    } else if (input_cost.round() - input_cost).abs() < f64::EPSILON {
+        format!("${}", input_cost.round() as u64)
+    } else {
+        format!("${input_cost:.2}")
+    }
+}
+
+/// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
+/// mockup label): the default model reads `default · fast`, reasoning models read `reasoning`, free
+/// models read `free`, and the rest fall back to a capability word.
+fn model_descriptor(model: &providers::ModelInfo, is_default: bool) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if is_default {
+        parts.push("default");
+    }
+    if model.reasoning {
+        parts.push("reasoning");
+    } else if is_default {
+        parts.push("fast");
+    }
+    if parts.is_empty() {
+        if model.cost.input <= 0.0 {
+            parts.push("free");
+        } else if model.attachment {
+            parts.push("multimodal");
+        } else {
+            parts.push("chat");
+        }
+    }
+    parts.join(" · ")
+}
+
+/// The current wall-clock time as whole seconds since the Unix epoch (UTC).
+fn current_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Days from the Unix epoch (1970-01-01) for a proleptic-Gregorian `y-m-d` (Howard Hinnant's
+/// `days_from_civil`), so a stored UTC timestamp can be diffed against `now` without a date crate.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parse a stored `YYYY-MM-DD HH:MM:SS` UTC timestamp into whole seconds since the Unix epoch, or
+/// `None` when it is not in that shape.
+fn parse_epoch_secs(timestamp: &str) -> Option<i64> {
+    let (date, time) = timestamp.split_once(' ')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    let mut time_parts = time.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts.next().unwrap_or("0").parse().ok()?;
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// A compact relative age for a session's last-update timestamp against `now` (epoch secs): `just
+/// now`, `5m`, `2h`, `3d`. Returns an empty string when the timestamp cannot be parsed.
+fn relative_age(timestamp: &str, now: i64) -> String {
+    let Some(then) = parse_epoch_secs(timestamp) else {
+        return String::new();
+    };
+    let secs = (now - then).max(0);
+    if secs < 60 {
+        "just now".to_owned()
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
     }
 }
 
@@ -10406,6 +10845,191 @@ mod tests {
     }
 
     #[test]
+    fn picker_data_helpers_format_authentic_values() {
+        // The rich pickers humanize real catalogue/DB values; these are the exact cell strings.
+        assert_eq!(format_context(1_048_576), "1M");
+        assert_eq!(format_context(1_000_000), "1M");
+        assert_eq!(format_context(400_000), "400K");
+        assert_eq!(format_context(200_000), "200K");
+        assert_eq!(format_context(163_840), "164K");
+        assert_eq!(format_context(0), "—");
+        assert_eq!(format_price(0.30), "$0.30");
+        assert_eq!(format_price(1.25), "$1.25");
+        assert_eq!(format_price(15.0), "$15");
+        assert_eq!(format_price(3.0), "$3");
+        assert_eq!(format_price(0.0), "free");
+        assert_eq!(short_model("google/gemini-2.5-flash"), "gemini-2.5-flash");
+        assert_eq!(short_model("noprovider"), "noprovider");
+        let now = parse_epoch_secs("2026-01-02 00:00:00").expect("valid timestamp");
+        assert_eq!(relative_age("2026-01-01 00:00:00", now), "1d");
+        assert_eq!(relative_age("2026-01-01 22:00:00", now), "2h");
+        assert_eq!(relative_age("2026-01-01 23:55:00", now), "5m");
+        assert_eq!(relative_age("2026-01-01 23:59:30", now), "just now");
+        assert_eq!(relative_age("not-a-timestamp", now), "");
+    }
+
+    #[test]
+    fn session_picker_rows_carry_title_agent_model_and_metric_meta() {
+        // VAL-PICK-007: each real session row shows title + `agent · model` + `N msg · <age>`.
+        let path = session_store_path("rich-session-rows");
+        let sid = {
+            let db = db::Database::open(&path).expect("open seed");
+            let session = db
+                .sessions()
+                .create(Some("streaming buffer fix"))
+                .expect("session");
+            db.messages().create(&session.id, "user", "hi").expect("m1");
+            db.messages()
+                .create(&session.id, "assistant", "yo")
+                .expect("m2");
+            session.id
+        };
+        let mut a = app();
+        a.set_session_store(Some(path));
+        dispatch(&mut a, "sessions");
+        let dialog = a.dialog().expect("session picker open");
+        assert_eq!(dialog.kind, DialogKind::Sessions);
+        // A real persisted row is pre-highlighted (not the synthetic floor row).
+        assert!(a.selected_session_id().is_some(), "a real session is highlighted");
+        let picks = a.build_session_picks();
+        let pick = picks
+            .iter()
+            .find(|pick| pick.id.as_deref() == Some(sid.as_str()))
+            .expect("seeded session present");
+        assert_eq!(pick.row.key, "streaming buffer fix", "title is the row key");
+        let desc = pick.row.desc.as_deref().unwrap_or_default();
+        assert!(
+            desc.starts_with("build · ") && desc.contains("gemini-2.5-flash"),
+            "agent · model descriptor: {desc}"
+        );
+        let meta = pick.row.meta.as_deref().unwrap_or_default();
+        assert!(meta.starts_with("2 msg"), "N msg · age metric: {meta}");
+    }
+
+    #[test]
+    fn session_search_narrows_then_restores_the_list() {
+        // VAL-PICK-008/009: typing into the search row filters by title; clearing restores it.
+        let path = session_store_path("session-search");
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions().create(Some("alpha buffer")).expect("s1");
+            db.sessions().create(Some("beta cards")).expect("s2");
+        }
+        let mut a = app();
+        a.set_session_store(Some(path));
+        dispatch(&mut a, "sessions");
+        let full = a.dialog().expect("open").items.len();
+        assert!(full >= 2, "both seeded sessions listed: {full}");
+        type_str(&mut a, "beta");
+        let filtered = a.dialog().expect("open").items.clone();
+        assert!(
+            !filtered.is_empty() && filtered.iter().all(|item| item.to_lowercase().contains("beta")),
+            "filtered to matching sessions: {filtered:?}"
+        );
+        for _ in 0.."beta".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            a.dialog().expect("open").items.len(),
+            full,
+            "clearing the query restores the full list"
+        );
+    }
+
+    #[test]
+    fn model_picker_rows_are_real_ids_with_ctx_price_and_aligned_keys() {
+        // VAL-PICK-015/016/017: real provider/model ids, a fixed key column so descriptions align,
+        // and a right-aligned `ctx · price` meta derived from the real catalogue.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        assert!(a.picker_key_width().is_some(), "fixed key column for alignment");
+        let picks = a.build_model_picks();
+        assert!(
+            picks.iter().any(|pick| pick.id == "google/gemini-2.5-flash"),
+            "real default id present"
+        );
+        assert!(
+            picks.iter().any(|pick| pick.id == "anthropic/claude-opus-4.1"),
+            "real anthropic id present"
+        );
+        let flash = picks
+            .iter()
+            .find(|pick| pick.id == "google/gemini-2.5-flash")
+            .expect("default model row");
+        let meta = flash.row.meta.as_deref().unwrap_or_default();
+        assert!(
+            meta.starts_with("1M · $"),
+            "ctx · price meta from real catalogue: {meta}"
+        );
+        // The descriptor is derived from real catalogue metadata (the default model is flagged
+        // `default`), never a hardcoded mockup label.
+        let desc = flash.row.desc.as_deref().unwrap_or_default();
+        assert!(
+            desc.starts_with("default"),
+            "the default model's descriptor is derived from real metadata: {desc}"
+        );
+    }
+
+    #[test]
+    fn model_search_narrows_the_list() {
+        // VAL-PICK-018: typing filters the model list to fuzzy id/description matches.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let full = a.dialog().expect("open").items.len();
+        type_str(&mut a, "opus");
+        let filtered = a.dialog().expect("open").items.clone();
+        assert!(
+            !filtered.is_empty() && filtered.iter().all(|item| item.to_lowercase().contains("opus")),
+            "filtered to matching models: {filtered:?}"
+        );
+        for _ in 0.."opus".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            a.dialog().expect("open").items.len(),
+            full,
+            "clearing the query restores the full list"
+        );
+    }
+
+    #[test]
+    fn tab_toggles_model_provider_grouping() {
+        // VAL-PICK-067: `⇥` regroups the model list by vendor (headers appear) and toggles back.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let flat = a.dialog().expect("open").items.clone();
+        assert!(
+            a.model_rows.iter().all(Option::is_some),
+            "flat view has only selectable rows"
+        );
+        a.on_key(key(KeyCode::Tab));
+        let grouped = a.dialog().expect("open").items.clone();
+        assert!(
+            grouped.len() > flat.len(),
+            "grouped view adds vendor header rows: flat={} grouped={}",
+            flat.len(),
+            grouped.len()
+        );
+        assert!(
+            grouped.iter().any(|item| item == "google"),
+            "a vendor header appears: {grouped:?}"
+        );
+        assert!(
+            a.model_rows.iter().any(Option::is_none),
+            "grouped view has non-selectable header rows"
+        );
+        // The highlight stays on a selectable model row, never a header.
+        let sel = a.dialog().expect("open").selected();
+        assert!(a.model_rows[sel].is_some(), "highlight is on a selectable row");
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(
+            a.dialog().expect("open").items.len(),
+            flat.len(),
+            "toggling back returns to the flat list"
+        );
+    }
+
+    #[test]
     fn agent_picker_selection_updates_the_active_agent() {
         // VAL-TUI-075: selecting a different agent updates the active agent (rendered in the footer).
         let mut a = app();
@@ -10487,21 +11111,28 @@ mod tests {
         dispatch(&mut a, "sessions");
         let dialog = a.dialog().expect("the session picker opened");
 
+        // The visible rows show real session titles; the backing entries carry the persisted ids.
         assert!(
-            dialog
-                .items
-                .iter()
-                .any(|item| item.contains(&server_id) && item.contains("server api marker")),
+            dialog.items.iter().any(|item| item == "server api marker"),
             "server-created session should be present in picker rows: {:?}",
             dialog.items
         );
         assert!(
-            dialog
-                .items
-                .iter()
-                .any(|item| item.contains(&acp_id) && item.contains("acp stdio marker")),
+            dialog.items.iter().any(|item| item == "acp stdio marker"),
             "ACP-created session should be present in picker rows: {:?}",
             dialog.items
+        );
+        assert!(
+            a.session_entries
+                .iter()
+                .any(|entry| entry.id.as_deref() == Some(server_id.as_str())),
+            "server session id is tracked in the backing entries"
+        );
+        assert!(
+            a.session_entries
+                .iter()
+                .any(|entry| entry.id.as_deref() == Some(acp_id.as_str())),
+            "ACP session id is tracked in the backing entries"
         );
     }
 
@@ -10592,7 +11223,7 @@ mod tests {
         // backspace edit the in-progress name; Esc cancels back to navigation without closing.
         let mut a = app();
         sessions_dialog_with_one_persisted(&mut a);
-        a.on_key(key(KeyCode::Char('r')));
+        a.on_key(key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(
             a.session_rename(),
             Some("old title"),
@@ -10614,8 +11245,8 @@ mod tests {
     fn rename_mode_is_unavailable_for_the_current_row() {
         let mut a = app();
         dispatch(&mut a, "sessions");
-        // The current row (index 0) has no persisted id, so `r` does not enter rename mode.
-        a.on_key(key(KeyCode::Char('r')));
+        // The current row (index 0) has no persisted id, so Ctrl+R does not enter rename mode.
+        a.on_key(key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(
             a.session_rename(),
             None,
@@ -10628,11 +11259,11 @@ mod tests {
         // While renaming, typing edits the title rather than triggering navigation/delete.
         let mut a = app();
         sessions_dialog_with_one_persisted(&mut a);
-        a.on_key(key(KeyCode::Char('r')));
+        a.on_key(key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
         for _ in 0.."old title".len() {
             a.on_key(key(KeyCode::Backspace));
         }
-        // 'd' would delete outside rename mode; here it must be captured as a character.
+        // 'd' would filter outside rename mode; here it must be captured as a character.
         type_str(&mut a, "d");
         assert_eq!(a.session_rename(), Some("d"), "'d' is typed, not a delete");
         assert!(a.dialog_open(), "the picker remains open");
@@ -11685,10 +12316,11 @@ mod tests {
 
         let mut a = app();
         a.set_session_store(Some(path));
-        let (items, entries) = a.session_rows();
+        dispatch(&mut a, "sessions");
+        let items = a.dialog().expect("session picker").items.clone();
 
         assert!(
-            entries
+            a.session_entries
                 .iter()
                 .any(|entry| entry.id.as_deref() == Some(parent_id)),
             "parent session is listed: {items:?}"
@@ -12071,11 +12703,11 @@ mod tests {
             a.status.session, seeded,
             "footer/session status must keep the canonical durable id"
         );
-        let (rows, _entries) = a.session_rows();
+        let picks = a.build_session_picks();
         assert!(
-            rows.iter()
-                .any(|row| row == &format!("{seeded}  —  {title}")),
-            "session picker must continue showing the human title next to the id: {rows:?}"
+            picks.iter().any(|pick| pick.row.key == title),
+            "session picker must continue showing the human title: {:?}",
+            picks.iter().map(|pick| &pick.row.key).collect::<Vec<_>>()
         );
     }
 
