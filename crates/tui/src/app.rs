@@ -182,10 +182,6 @@ pub enum DialogKind {
     Themes,
     /// The subagent picker (`/subagents`).
     Subagents,
-    /// Runtime status details (`/status`).
-    Status,
-    /// The MCP status/list view (`/mcp`).
-    Mcp,
     /// Attachment file picker (`/attach`).
     Attachments,
     /// Fork picker (`/fork`) backed by timeline entries.
@@ -826,6 +822,10 @@ pub struct App {
     /// The open `/diff` viewer overlay, or `None` when closed. While set it is modal: keys drive
     /// file/hunk navigation, view-mode toggling, and targeted revert actions.
     diff_viewer: Option<DiffViewer>,
+    /// The open full-screen Wave-2 view (status/mcp/…), or `None` when the conversation is shown.
+    /// While set it takes over the whole frame with the shared view chrome and is modal: Esc closes
+    /// it back to the conversation. See [`crate::view`].
+    active_view: Option<crate::view::ViewKind>,
     /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
@@ -1031,6 +1031,7 @@ impl App {
             slash_selected: 0,
             dialog: None,
             diff_viewer: None,
+            active_view: None,
             mention: None,
             plugin_text_complete: None,
             pending_text_completion: None,
@@ -1745,7 +1746,8 @@ impl App {
 
         changed_servers.sort();
         changed_servers.dedup();
-        self.refresh_mcp_dialog();
+        // The full-screen `/mcp` view reads live server rows at render time, so no cached-row
+        // refresh is needed here; just surface the catalogue-change toasts.
         for server in changed_servers {
             self.push_toast(ToastLevel::Info, format!("MCP catalogue updated: {server}"));
         }
@@ -3354,7 +3356,7 @@ impl App {
             "help" => self.transcript.push(Entry::Help),
             "new" => self.new_session(),
             "export" => self.export_session(),
-            "status" => self.open_status_dialog(),
+            "status" => self.open_status_view(),
             "init" => self.start_flow(
                 "/init",
                 "/init — analyzing the repository to create AGENTS.md…",
@@ -3392,7 +3394,7 @@ impl App {
             "paste" => {
                 let _ = self.attach_from_clipboard_image();
             }
-            "mcp" => self.open_mcp_dialog(),
+            "mcp" => self.open_mcp_view(),
             "editor" => self.editor_requested = true,
             "share" => self.share_session(),
             "unshare" => self.unshare_session(),
@@ -4174,74 +4176,70 @@ impl App {
         }
     }
 
-    /// Open the MCP status/list view (`/mcp`): the configured MCP servers and their status. With no
-    /// servers configured the view opens to a clear empty state rather than failing.
-    fn open_mcp_dialog(&mut self) {
-        let items = self.mcp_rows();
-        self.open_dialog(Dialog {
-            kind: DialogKind::Mcp,
-            title: "MCP servers".to_owned(),
-            items,
-            selected: 0,
-            empty: Some("No MCP servers configured.".to_owned()),
-        });
+    /// Open the full-screen MCP servers view (`/mcp`) with the shared view chrome. The body reads
+    /// live server rows at render time; with no servers configured it shows a clear empty state.
+    fn open_mcp_view(&mut self) {
+        self.open_view(crate::view::ViewKind::Mcp);
     }
 
-    /// Open a status dialog (`/status`) with the active runtime state.
-    fn open_status_dialog(&mut self) {
-        let mut items = vec![
-            format!("Model: {}", self.status.model),
-            format!("Agent: {}", self.status.agent),
-            format!("Mode: {}", self.status.mode),
-            format!("Variant: {}", self.status.variant),
-            format!("Session: {}", self.status.session),
-            format!("Turn: {}", if self.is_busy() { "running" } else { "idle" }),
-            format!("Queued prompts: {}", self.queued_count()),
-            format!(
-                "Usage: ↑{} ↓{} total {}",
-                self.usage.input_tokens, self.usage.output_tokens, self.usage.total_tokens
-            ),
-        ];
-        if let Some(cost) = self.usage.cost {
-            items.push(format!("Cost: ${cost:.4}"));
-        }
-        if let Some(skill) = &self.selected_skill {
-            items.push(format!("Selected skill: {skill}"));
-        }
-        if let Some(hooks) = self.plugin_text_complete.as_ref() {
-            let command_slots = hooks.command_entries().len();
-            let skill_slots = hooks.skill_entries().len();
-            let catalog_slots = hooks.catalog_entries().len();
-            let theme_slots = hooks.theme_entries().len();
-            if command_slots + skill_slots + catalog_slots + theme_slots > 0 {
-                items.push(format!(
-                    "Plugin slots: commands {command_slots}, skills {skill_slots}, catalog {catalog_slots}, themes {theme_slots}"
-                ));
-            }
-        }
-        self.open_dialog(Dialog {
-            kind: DialogKind::Status,
-            title: "Status".to_owned(),
-            items,
-            selected: 0,
-            empty: Some("No status available.".to_owned()),
-        });
+    /// Open the full-screen session-status view (`/status`) with the shared view chrome. The body
+    /// reads the active runtime state (model/agent/mode/session/usage) at render time.
+    fn open_status_view(&mut self) {
+        self.open_view(crate::view::ViewKind::Status);
     }
 
-    /// Refresh an already-open MCP view from the live manager after a catalogue change event.
-    fn refresh_mcp_dialog(&mut self) {
-        let Some(dialog) = self.dialog.as_ref() else {
-            return;
-        };
-        if dialog.kind != DialogKind::Mcp {
+    /// Open a full-screen Wave-2 view, taking over the frame with the shared chrome. Any open
+    /// overlay (menu/dialog/diff viewer/palette) is dismissed first so the view is the sole surface.
+    fn open_view(&mut self, kind: crate::view::ViewKind) {
+        self.close_slash_menu();
+        self.close_mention();
+        if self.dialog.is_some() {
+            self.close_dialog();
+        }
+        if self.diff_viewer.is_some() {
+            self.close_diff_viewer();
+        }
+        if self.palette.is_some() {
+            self.close_palette();
+        }
+        self.active_view = Some(kind);
+    }
+
+    /// The open full-screen view, if any (for rendering).
+    #[must_use]
+    pub fn active_view(&self) -> Option<crate::view::ViewKind> {
+        self.active_view
+    }
+
+    /// Whether a full-screen view is currently open.
+    #[must_use]
+    pub fn active_view_open(&self) -> bool {
+        self.active_view.is_some()
+    }
+
+    /// Close the open full-screen view, returning to the conversation and its composer chrome.
+    fn close_active_view(&mut self) {
+        self.active_view = None;
+    }
+
+    /// Key handling for an open full-screen view. The view is modal: Esc closes it back to the
+    /// conversation and `Ctrl+C` still quits so the user is never trapped. Other keys are swallowed
+    /// (per-view navigation is added by each view's own feature).
+    fn on_view_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
             return;
         }
-        let selected = dialog.selected();
-        let items = self.mcp_rows();
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.items = items;
-            dialog.selected = selected.min(dialog.items.len().saturating_sub(1));
+        if key.code == KeyCode::Esc {
+            self.close_active_view();
         }
+    }
+
+    /// Live MCP servers view rows (server + status + tool count), or an empty vec when none are
+    /// configured (the view then renders its empty state).
+    #[must_use]
+    pub(crate) fn mcp_view_rows(&self) -> Vec<String> {
+        self.mcp_rows()
     }
 
     /// Current MCP view rows. A connected manager wins because it carries live status and tool ids;
@@ -6706,6 +6704,13 @@ impl App {
                     self.run_keybind_action(action);
                 }
             }
+            return;
+        }
+
+        // A full-screen Wave-2 view (status/mcp/…) takes over the frame while open: it is modal so
+        // the prompt is not edited beneath it. Esc closes it back to the conversation; Ctrl+C quits.
+        if self.active_view_open() {
+            self.on_view_key(key, ctrl);
             return;
         }
 
@@ -9969,13 +9974,13 @@ mod tests {
     #[test]
     fn status_variant_and_skills_commands_open_dialogs() {
         let mut a = app();
+        // `/status` now opens the full-screen status view (shared Wave-2 chrome), not a modal.
         type_str(&mut a, "/status");
         a.on_key(key(KeyCode::Enter));
-        assert_eq!(
-            a.dialog().map(|dialog| dialog.kind),
-            Some(DialogKind::Status)
-        );
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Status));
+        assert!(a.dialog().is_none(), "the status view is not a modal dialog");
         a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none(), "Esc dismisses the status view");
 
         type_str(&mut a, "/variant");
         a.on_key(key(KeyCode::Enter));
@@ -11084,15 +11089,15 @@ mod tests {
 
     #[test]
     fn dispatching_mcp_opens_the_status_view_with_an_empty_state() {
-        // VAL-TUI-046: `/mcp` opens the MCP view; with no servers it shows a clear empty state.
+        // VAL-TUI-046 / VAL-VIEW-054: `/mcp` opens the full-screen MCP view; with no servers its
+        // body is empty so the view renders its explicit empty state (never a blank panel).
         let mut a = app();
         dispatch(&mut a, "mcp");
-        let dialog = a.dialog().expect("the MCP view opened");
-        assert_eq!(dialog.kind, DialogKind::Mcp);
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Mcp));
+        assert!(a.dialog().is_none(), "the MCP view is not a modal dialog");
         assert!(
-            dialog.empty.as_deref() == Some("No MCP servers configured.")
-                || !dialog.items.is_empty(),
-            "an empty state or configured servers are shown"
+            a.mcp_view_rows().is_empty(),
+            "no servers are configured, so the view shows its empty state"
         );
     }
 
@@ -11876,7 +11881,7 @@ mod tests {
     #[test]
     fn closing_each_picker_returns_focus_to_the_prompt() {
         // VAL-TUI-076: dismissing any dialog with Esc returns focus to the prompt so typing resumes.
-        for command in ["sessions", "models", "agents", "themes", "mcp"] {
+        for command in ["sessions", "models", "agents", "themes"] {
             let mut a = app();
             dispatch(&mut a, command);
             assert!(a.dialog_open(), "{command} opened a dialog");
@@ -11889,6 +11894,19 @@ mod tests {
                 "typing reaches the prompt after closing the {command} dialog"
             );
         }
+
+        // `/mcp` opens the full-screen view rather than a dialog; Esc likewise returns to the prompt.
+        let mut a = app();
+        dispatch(&mut a, "mcp");
+        assert!(a.active_view_open(), "mcp opened the full-screen view");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.active_view_open(), "mcp view closed on Esc");
+        type_str(&mut a, "hello");
+        assert_eq!(
+            a.input_value(),
+            "hello",
+            "typing reaches the prompt after closing the mcp view"
+        );
     }
 
     #[test]

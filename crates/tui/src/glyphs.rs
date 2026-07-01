@@ -97,6 +97,13 @@ pub const SELECT_MARKER: &str = PROMPT;
 /// Progress-bar fill by eighths, ascending.
 pub const EIGHTHS: [&str; 8] = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
 
+// --- Full-cell progress bar (`pbar`: filled `█` fg + empty `░` GHOST) ---
+
+/// Filled cell of a full-cell progress bar (the `pbar` used by full-screen views).
+pub const PROGRESS_FULL: &str = "█";
+/// Empty cell of a full-cell progress bar (light shade, drawn in the GHOST tone).
+pub const PROGRESS_EMPTY: &str = "░";
+
 // --- Block-art helpers (safe blocks for mascot / heavy fills) ---
 
 /// Full block.
@@ -169,6 +176,8 @@ mod tests {
             SEPARATOR,
             ELLIPSIS,
             SELECT_MARKER,
+            PROGRESS_FULL,
+            PROGRESS_EMPTY,
             BLOCK_FULL,
             BLOCK_LOWER_HALF,
             BLOCK_UPPER_HALF,

@@ -27,6 +27,7 @@ mod tool_card;
 mod tooling;
 mod turn;
 mod ui;
+mod view;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, IsTerminal, Write};

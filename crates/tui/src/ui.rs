@@ -56,6 +56,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         area,
     );
 
+    // A full-screen Wave-2 view (status/mcp/…) takes over the whole frame with the shared view
+    // chrome; it fully replaces the conversation until dismissed (Esc), so nothing else is drawn.
+    if app.active_view().is_some() {
+        draw_full_screen_view(frame, app, area, &theme);
+        return;
+    }
+
     // Reserve a left column for the sidebar when it is shown, so the transcript/prompt reflow
     // beside it; otherwise the main column spans the full width.
     let (sidebar_area, main_area) = if app.sidebar_visible() && area.width > SIDEBAR_WIDTH + 8 {
@@ -1861,6 +1868,144 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
 
         y += 3;
     }
+}
+
+/// Draw an open full-screen Wave-2 view: the shared chrome (a `✦ Cortex Code · <crumb>` header, a
+/// rule, and the 3-zone status bar) wrapping a titled panel whose body is rendered per view kind.
+/// The chrome, crumb, status bar, and brand palette are shared across every view so the surfaces
+/// read consistently; a view opened with no data renders an explicit empty state, never a blank
+/// panel.
+fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    use crate::view::{self, ViewKind};
+    let Some(kind) = app.active_view() else {
+        return;
+    };
+    let body = view::render_chrome(frame, area, app, kind.crumb(), theme);
+    if body.width <= view::VIEW_MARGIN * 2 || body.height < 2 {
+        return;
+    }
+    let panel_area = Rect {
+        x: body.x + view::VIEW_MARGIN,
+        y: body.y,
+        width: body.width - view::VIEW_MARGIN * 2,
+        height: body.height,
+    };
+    let note = view_note(app, kind);
+    let inner = view::render_panel(frame, panel_area, kind.title(), note.as_deref(), theme);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    match kind {
+        ViewKind::Status => draw_status_view_body(frame, app, inner, theme),
+        ViewKind::Mcp => draw_mcp_view_body(frame, app, inner, theme),
+        _ => draw_view_placeholder(frame, inner, theme),
+    }
+}
+
+/// The top-right panel note for a view (e.g. the MCP server count), or `None` for views without a
+/// summary note.
+fn view_note(app: &App, kind: crate::view::ViewKind) -> Option<String> {
+    match kind {
+        crate::view::ViewKind::Mcp => {
+            let count = app.mcp_view_rows().len();
+            Some(format!(
+                "{count} server{}",
+                if count == 1 { "" } else { "s" }
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Left-inset the panel inner region by one column so body text does not abut the border.
+fn view_body_inset(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    }
+}
+
+/// The `/status` view body: aligned key/value rows of the live runtime state (session/agent/model/
+/// mode/variant/turn/queued/tokens/cost) via the shared [`crate::view::kv_line`] helper.
+fn draw_status_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    use crate::view::kv_line;
+    let lw = 10;
+    let bright = Style::default().fg(theme.text_bright);
+    let amber = Style::default().fg(theme.secondary);
+    let dim = Style::default().fg(theme.text_dim);
+
+    let queued = app.queued_count().to_string();
+    let tokens = format!(
+        "in {} · out {} · {} total",
+        app.usage.input_tokens, app.usage.output_tokens, app.usage.total_tokens
+    );
+    let mut lines: Vec<Line<'static>> = vec![
+        kv_line("session", &app.status.session, bright, lw, theme),
+        kv_line("agent", &app.status.agent, amber, lw, theme),
+        kv_line("model", &app.status.model, bright, lw, theme),
+        kv_line("mode", &app.status.mode, dim, lw, theme),
+        kv_line("variant", &app.status.variant, dim, lw, theme),
+        kv_line(
+            "turn",
+            if app.is_busy() { "running" } else { "idle" },
+            dim,
+            lw,
+            theme,
+        ),
+        kv_line("queued", &queued, dim, lw, theme),
+        kv_line("tokens", &tokens, dim, lw, theme),
+    ];
+    if let Some(cost) = app.usage.cost {
+        lines.push(kv_line("cost", &format!("${cost:.4}"), dim, lw, theme));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
+        view_body_inset(area),
+    );
+}
+
+/// The `/mcp` view body: one row per configured/connected server (an ORANGE `●` marker + the live
+/// status line), or the explicit empty state when no servers are configured.
+fn draw_mcp_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let rows = app.mcp_view_rows();
+    let lines: Vec<Line<'static>> = if rows.is_empty() {
+        vec![crate::view::empty_state_line(
+            "No MCP servers configured.",
+            theme,
+        )]
+    } else {
+        rows.into_iter()
+            .map(|row| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", crate::glyphs::DOT_FILLED),
+                        Style::default().fg(theme.primary),
+                    ),
+                    Span::styled(row, Style::default().fg(theme.text)),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
+        view_body_inset(area),
+    );
+}
+
+/// The default body for a view whose rich content is built by a later Wave-2 feature: an explicit
+/// placeholder so the shared chrome is still exercised without a blank panel.
+fn draw_view_placeholder(frame: &mut Frame, area: Rect, theme: &style::ThemeColors) {
+    frame.render_widget(
+        Paragraph::new(vec![crate::view::empty_state_line(
+            "Nothing to show yet.",
+            theme,
+        )])
+        .style(Style::default().fg(theme.text).bg(theme.background)),
+        view_body_inset(area),
+    );
 }
 
 /// Render the `/diff` viewer overlay: a file tree on the left and a per-file diff pane on the
