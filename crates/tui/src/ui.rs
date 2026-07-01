@@ -230,11 +230,27 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
     // (no transcript, empty composer) so the typing/conversation states show the card alone.
     let pristine_home = app.transcript.is_empty() && app.input_value().trim().is_empty();
     crate::motd::push_home(&mut lines, &app.status.model, width, &theme, pristine_home);
-    for entry in &app.transcript {
+    // The streaming caret trails the in-progress assistant reply: only while a turn is live and the
+    // last transcript entry is the growing answer (a running tool card supersedes it). Its blink is
+    // decided by the animation substrate (`cursor_blink_visible` is solid under reduced motion and
+    // toggles on the blink cadence during a live turn with animations on), so the caret is drawn
+    // only when that predicate is true and disappears once the turn completes.
+    let last_idx = app.transcript.len().saturating_sub(1);
+    let stream_caret = app.is_busy()
+        && matches!(app.transcript.last(), Some(Entry::Assistant(_)))
+        && app.cursor_blink_visible();
+    for (idx, entry) in app.transcript.iter().enumerate() {
         entry_starts.push(lines.len());
         match entry {
             Entry::User(text) => push_user(&mut lines, text, width, &theme),
-            Entry::Assistant(turn) => push_assistant(&mut lines, turn, width, app.theme(), &theme),
+            Entry::Assistant(turn) => push_assistant(
+                &mut lines,
+                turn,
+                width,
+                app.theme(),
+                &theme,
+                stream_caret && idx == last_idx,
+            ),
             Entry::Diff(diff) => push_diff(&mut lines, diff, &theme),
             Entry::Tool(card) => {
                 push_tool(
@@ -466,6 +482,7 @@ fn push_assistant(
     width: usize,
     theme_name: &str,
     theme: &style::ThemeColors,
+    caret: bool,
 ) {
     // Reasoning, when present, renders in a distinct dimmed/labeled region separate from the answer.
     // When absent, nothing is emitted (no empty-reasoning artifact).
@@ -516,6 +533,15 @@ fn push_assistant(
         }
         spans.extend(line.spans);
         lines.push(Line::from(spans));
+    }
+    // While the turn streams, a `▏` caret (ORANGE) trails the last line of the growing answer. The
+    // caller passes `caret` only for the in-progress reply and only when the blink state is visible,
+    // so it toggles during a live turn and is absent once the turn completes.
+    if caret && let Some(last) = lines.last_mut() {
+        last.spans.push(Span::styled(
+            crate::glyphs::CURSOR,
+            Style::default().fg(theme.primary),
+        ));
     }
     lines.push(Line::from(""));
 }
@@ -3648,6 +3674,7 @@ mod tests {
             80,
             "dark",
             &style::ThemeColors::dark(),
+            false,
         );
         let text = rendered(&lines);
         // Markers are consumed; structured elements render.
@@ -3679,6 +3706,7 @@ mod tests {
             80,
             "dark",
             &style::ThemeColors::dark(),
+            false,
         );
         let text = rendered(&lines);
         assert!(text.contains("reasoning"), "reasoning labeled:\n{text}");
@@ -3698,6 +3726,7 @@ mod tests {
             80,
             "dark",
             &style::ThemeColors::dark(),
+            false,
         );
         let text = rendered(&lines);
         assert!(
@@ -3705,6 +3734,117 @@ mod tests {
             "no empty reasoning region:\n{text}"
         );
         assert!(text.contains("just the answer"));
+    }
+
+    #[test]
+    fn streaming_reply_shows_blinking_tail_caret_while_busy() {
+        // VAL-CONV-054: while a live turn streams, a single `▏` caret (ORANGE) trails the tail of
+        // the latest assistant text. `begin_turn` opens the in-progress assistant entry; a delta
+        // grows it. At turn start elapsed≈0 so the blink is in its visible phase.
+        let mut a = app();
+        let (_tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        if let Some(Entry::Assistant(turn)) = a.transcript.last_mut() {
+            turn.answer.push_str("Reading the processor");
+        }
+        assert!(a.is_busy(), "the turn is streaming");
+        assert!(
+            a.cursor_blink_visible(),
+            "caret is in its visible phase at turn start"
+        );
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = transcript_lines(&a, 80);
+        let caret_lines: Vec<&Line> = lines.iter().filter(|l| plain(l).contains('▏')).collect();
+        assert_eq!(caret_lines.len(), 1, "exactly one streaming caret on screen");
+        let line = caret_lines[0];
+        assert!(
+            plain(line).contains("Reading the processor"),
+            "caret trails the assistant text: {:?}",
+            plain(line)
+        );
+        let caret = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "▏")
+            .expect("a caret span");
+        assert_eq!(caret.style.fg, Some(theme.primary), "caret is ORANGE");
+        // The span immediately before the caret is the tail of the streamed text (no gap).
+        let before = line
+            .spans
+            .iter()
+            .rev()
+            .nth(1)
+            .expect("a span before the caret");
+        assert!(
+            before.content.ends_with('r'),
+            "caret sits at the tail of the text: {:?}",
+            before.content
+        );
+    }
+
+    #[test]
+    fn completed_reply_has_no_tail_caret() {
+        // VAL-CONV-054 / VAL-CONV-058: the caret disappears once the turn completes (idle state).
+        let mut a = app();
+        a.transcript.push(Entry::User("q".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "All done.".to_owned(),
+        }));
+        assert!(!a.is_busy(), "no turn in progress");
+        let lines = transcript_lines(&a, 80);
+        assert!(
+            !rendered(&lines).contains('▏'),
+            "no streaming caret when the turn is complete"
+        );
+    }
+
+    #[test]
+    fn reduced_motion_streaming_caret_is_present_and_solid() {
+        // VAL-CONV-058 / VAL-FOUND-023: under --no-anim the tail caret is shown but solid (its
+        // blink state is always visible, so it never toggles off between frames).
+        let mut a = app();
+        a.set_reduced_motion(true);
+        let (_tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        if let Some(Entry::Assistant(turn)) = a.transcript.last_mut() {
+            turn.answer.push_str("streaming under no-anim");
+        }
+        assert!(a.is_busy());
+        assert!(
+            a.cursor_blink_visible(),
+            "the caret is always solid under reduced motion"
+        );
+        let lines = transcript_lines(&a, 80);
+        let carets = lines.iter().filter(|l| plain(l).contains('▏')).count();
+        assert_eq!(
+            carets, 1,
+            "a solid caret trails the streaming text under --no-anim"
+        );
+    }
+
+    #[test]
+    fn running_tool_card_supersedes_the_stream_caret() {
+        // When the in-progress turn is executing a tool (the last entry is a running tool card, not
+        // the assistant answer), the streaming caret is not drawn on the earlier assistant text.
+        let mut a = app();
+        let (_tx, rx) = channel();
+        a.begin_turn("q".to_owned(), rx, flag());
+        if let Some(Entry::Assistant(turn)) = a.transcript.last_mut() {
+            turn.answer.push_str("Let me read the file.");
+        }
+        a.transcript.push(Entry::Tool(crate::tool_card::ToolCard::new(
+            "t1".to_owned(),
+            "bash".to_owned(),
+            r#"{"command":"ls"}"#,
+        )));
+        assert!(a.is_busy());
+        let lines = transcript_lines(&a, 80);
+        assert!(
+            !rendered(&lines).contains('▏'),
+            "no stream caret while a running tool card is the transcript tail"
+        );
     }
 
     #[test]

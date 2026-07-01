@@ -465,7 +465,10 @@ fn env_pure_enabled() -> bool {
 
 /// Whether the `CORTEX_NO_ANIM` reduced-motion preference is set. Accepts `1`/`true` (any case) as
 /// truthy so the no-subcommand TUI launch can honor reduced-motion without the `--no-anim` flag.
-fn env_no_anim_enabled() -> bool {
+///
+/// This is the single source of truth for parsing the environment reduced-motion preference; the
+/// `--no-anim` flag OR-combines with it in the CLI dispatch (`crates/cli/src/main.rs`).
+pub fn env_no_anim_enabled() -> bool {
     std::env::var_os("CORTEX_NO_ANIM").is_some_and(|value| {
         let value = value.to_string_lossy().to_ascii_lowercase();
         matches!(value.as_str(), "1" | "true")

@@ -1369,13 +1369,17 @@ impl App {
         self.animations_enabled() && (self.is_busy() || self.has_toasts())
     }
 
-    /// The event-loop poll timeout for the current state. While a turn streams or a toast is on
-    /// screen the loop polls at the ~100ms animation cadence (so animation phase advances smoothly
-    /// and deltas/auto-dismiss are applied promptly); otherwise it blocks for the cheap idle
-    /// cadence so an idle TUI never busy-spins.
+    /// The event-loop poll timeout for the current state. The loop polls at the ~100ms animation
+    /// cadence when [`animation_active`](App::animation_active) requests a wakeup to advance an
+    /// animation phase, or when a turn is streaming / a toast is on screen so streamed deltas and
+    /// the auto-dismiss timer are applied promptly even under reduced motion (where
+    /// `animation_active` is false); otherwise it blocks for the cheap idle cadence so an idle TUI
+    /// never busy-spins. Routing the wake predicate through `animation_active` keeps the loop
+    /// waking for any idle-only animation that later extends that predicate, without hardcoding a
+    /// second timeout here.
     #[must_use]
     pub fn poll_timeout(&self) -> Duration {
-        if self.is_busy() || self.has_toasts() {
+        if self.animation_active() || self.is_busy() || self.has_toasts() {
             Duration::from_millis(ANIMATION_TICK_MS)
         } else {
             Duration::from_millis(IDLE_POLL_MS)
