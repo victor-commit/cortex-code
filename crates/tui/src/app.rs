@@ -384,6 +384,20 @@ struct ModelPick {
     hay: String,
 }
 
+/// One cached skill-picker entry: its name, description, and source label (`builtin`/`project`/
+/// `plugin`). Kept so the rich rows (with the enabled `✓` marker) can be rebuilt on each Space
+/// toggle without re-running discovery.
+#[derive(Debug, Clone)]
+struct SkillPick {
+    /// The skill's model-facing name (the picker key).
+    name: String,
+    /// The skill's short description.
+    desc: String,
+    /// Where the skill came from: `builtin` (global/config dirs), `project` (under the cwd), or
+    /// `plugin` (a plugin-provided slot).
+    source: String,
+}
+
 /// One timeline row in the `/timeline` and `/fork` dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TimelineEntry {
@@ -838,6 +852,14 @@ pub struct App {
     model_group_by_provider: bool,
     /// Skill-picker row mapping: selected row -> skill name.
     skill_rows: Vec<String>,
+    /// Skill-picker cached entries (name/desc/source), used to rebuild the rich rows with the
+    /// enabled `✓` marker on each Space toggle. Populated when the skill picker opens.
+    skill_picks: Vec<SkillPick>,
+    /// The committed set of enabled skills (VAL-PICK-035): applied when the skill picker confirms.
+    enabled_skills: BTreeSet<String>,
+    /// The working copy of the enabled-skill set while the skill picker is open: Space toggles it,
+    /// Enter commits it into `enabled_skills`, Esc discards it. `None` when the picker is closed.
+    skill_pending: Option<BTreeSet<String>>,
     /// Variant-picker row mapping: selected row -> variant id.
     variant_rows: Vec<String>,
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
@@ -989,6 +1011,9 @@ impl App {
             model_all: Vec::new(),
             model_group_by_provider: false,
             skill_rows: Vec::new(),
+            skill_picks: Vec::new(),
+            enabled_skills: BTreeSet::new(),
+            skill_pending: None,
             variant_rows: Vec::new(),
             session_rename: None,
             scroll: 0,
@@ -3600,17 +3625,35 @@ impl App {
         }
     }
 
-    /// Open the agent picker (`/agents`): the built-in agent personas, with the active agent
-    /// pre-highlighted.
+    /// Open the agent picker (`/agents`): the built-in agent personas as rich key + description
+    /// rows with a right-aligned, semantically-colored kind meta (`primary` AMBER / `subagent`
+    /// FAINT), the active agent pre-highlighted. No search row.
     fn open_agents_dialog(&mut self) {
-        let items: Vec<String> = Agent::ALL
-            .iter()
-            .map(|agent| format!("{}  —  {}", agent.name(), agent.description()))
-            .collect();
+        let theme = frame::style::ThemeColors::from_name(&self.theme);
+        let mut items = Vec::new();
+        let mut rows = Vec::new();
+        let mut key_width = 0usize;
+        for agent in Agent::ALL {
+            key_width = key_width.max(agent.name().chars().count());
+            let (meta, meta_color) = if agent.is_primary() {
+                ("primary".to_owned(), theme.secondary)
+            } else {
+                ("subagent".to_owned(), theme.text_muted)
+            };
+            items.push(agent.name().to_owned());
+            rows.push(crate::modal::ModalRow {
+                key: agent.name().to_owned(),
+                desc: Some(agent.description().to_owned()),
+                meta: Some(meta),
+                meta_color: Some(meta_color),
+            });
+        }
         let selected = Agent::ALL
             .iter()
             .position(|agent| agent.name() == self.status.agent)
             .unwrap_or(0);
+        self.picker_rows = rows;
+        self.picker_key_width = (key_width > 0).then_some(key_width);
         self.open_dialog(Dialog {
             kind: DialogKind::Agents,
             title: "Agents".to_owned(),
@@ -3620,17 +3663,25 @@ impl App {
         });
     }
 
-    /// Open the skill picker (`/skills`): every discovered skill, with a graceful empty state.
+    /// Open the skill picker (`/skills`): every discovered skill as a rich key + description row
+    /// with a right-aligned `builtin`/`project`/`plugin` source meta and a leading `✓` marker for
+    /// enabled skills. Space toggles the working set, Enter commits it, Esc discards it.
     fn open_skills_dialog(&mut self) {
+        let cwd = std::env::current_dir().ok();
         let discovery = settings::ConfigInputs::from_process(std::collections::BTreeMap::new())
             .ok()
             .map(|inputs| skills::discover(&inputs));
-        let mut rows = Vec::new();
-        let mut items = Vec::new();
+        let mut names = Vec::new();
+        let mut picks: Vec<SkillPick> = Vec::new();
         if let Some(discovery) = discovery {
             for skill in discovery.ordered_skills() {
-                rows.push(skill.name.clone());
-                items.push(format!("{}  —  {}", skill.name, skill.description));
+                let source = skill_source_label(&skill.source, cwd.as_deref());
+                names.push(skill.name.clone());
+                picks.push(SkillPick {
+                    name: skill.name.clone(),
+                    desc: skill.description.clone(),
+                    source,
+                });
             }
         }
         if let Some(hooks) = self.plugin_text_complete.as_ref() {
@@ -3643,24 +3694,32 @@ impl App {
                     skill.name
                 };
                 let name = name.trim();
-                if name.is_empty() || rows.iter().any(|existing| existing == name) {
+                if name.is_empty() || names.iter().any(|existing| existing == name) {
                     continue;
                 }
-                rows.push(name.to_owned());
                 let description = if skill.description.trim().is_empty() {
-                    "Plugin skill slot"
+                    "Plugin skill slot".to_owned()
                 } else {
-                    skill.description.trim()
+                    skill.description.trim().to_owned()
                 };
-                items.push(format!("{name}  —  {description} [plugin]"));
+                names.push(name.to_owned());
+                picks.push(SkillPick {
+                    name: name.to_owned(),
+                    desc: description,
+                    source: "plugin".to_owned(),
+                });
             }
         }
+        let items = names.clone();
         let selected = self
             .selected_skill
             .as_ref()
-            .and_then(|selected| rows.iter().position(|name| name == selected))
+            .and_then(|selected| names.iter().position(|name| name == selected))
             .unwrap_or(0);
-        self.skill_rows = rows;
+        self.skill_rows = names;
+        self.skill_picks = picks;
+        self.skill_pending = Some(self.enabled_skills.clone());
+        self.rebuild_skill_view();
         self.open_dialog(Dialog {
             kind: DialogKind::Skills,
             title: "Skills".to_owned(),
@@ -3670,26 +3729,83 @@ impl App {
         });
     }
 
-    /// Open the variant picker (`/variant`) with the active variant pre-highlighted.
+    /// Rebuild the skill picker's rich rows from the cached picks and the current working
+    /// (pending) enabled set: each row is `<✓|space> name` + description + source meta, with the
+    /// `✓` marker present only for enabled skills so the toggle state is visible.
+    fn rebuild_skill_view(&mut self) {
+        let pending = self.skill_pending.clone().unwrap_or_default();
+        let mut key_width = 0usize;
+        let mut rows = Vec::new();
+        for pick in &self.skill_picks {
+            let marker = if pending.contains(&pick.name) {
+                crate::glyphs::MARK_DONE
+            } else {
+                " "
+            };
+            let key = format!("{marker} {}", pick.name);
+            key_width = key_width.max(key.chars().count());
+            rows.push(crate::modal::ModalRow {
+                key,
+                desc: Some(pick.desc.clone()),
+                meta: Some(pick.source.clone()),
+                meta_color: None,
+            });
+        }
+        self.picker_key_width = (key_width > 0).then_some(key_width);
+        self.picker_rows = rows;
+    }
+
+    /// Toggle the enabled state of the highlighted skill in the working set, then rebuild the rows
+    /// so the `✓` marker reflects the change. A no-op unless the skill picker is open.
+    fn toggle_skill_enabled(&mut self) {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return;
+        };
+        if dialog.kind != DialogKind::Skills {
+            return;
+        }
+        let idx = dialog.selected();
+        let Some(name) = self.skill_picks.get(idx).map(|pick| pick.name.clone()) else {
+            return;
+        };
+        if let Some(pending) = self.skill_pending.as_mut() {
+            if !pending.remove(&name) {
+                pending.insert(name);
+            }
+        }
+        self.rebuild_skill_view();
+    }
+
+    /// Open the variant picker (`/variant`): the reasoning variants as key + description rows
+    /// (no search row, no meta column), with the active variant pre-highlighted.
     fn open_variants_dialog(&mut self) {
         let rows = VARIANT_OPTIONS
             .iter()
             .map(|variant| (*variant).to_owned())
             .collect::<Vec<_>>();
         let mut items = Vec::new();
+        let mut modal_rows = Vec::new();
         let mut selected = 0;
+        let mut key_width = 0usize;
         for (index, variant) in rows.iter().enumerate() {
-            let is_current = *variant == self.status.variant;
-            if is_current {
+            key_width = key_width.max(variant.chars().count());
+            if *variant == self.status.variant {
                 selected = index;
             }
-            let suffix = if is_current { " [current]" } else { "" };
-            items.push(format!("{variant}{suffix}"));
+            items.push(variant.clone());
+            modal_rows.push(crate::modal::ModalRow {
+                key: variant.clone(),
+                desc: Some(variant_description(variant).to_owned()),
+                meta: None,
+                meta_color: None,
+            });
         }
         self.variant_rows = rows;
+        self.picker_rows = modal_rows;
+        self.picker_key_width = (key_width > 0).then_some(key_width);
         self.open_dialog(Dialog {
             kind: DialogKind::Variants,
-            title: "Variants".to_owned(),
+            title: "Reasoning variant".to_owned(),
             items,
             selected,
             empty: None,
@@ -4377,6 +4493,8 @@ impl App {
         self.model_all.clear();
         self.model_group_by_provider = false;
         self.skill_rows.clear();
+        self.skill_picks.clear();
+        self.skill_pending = None;
         self.variant_rows.clear();
         self.session_rename = None;
     }
@@ -4420,12 +4538,14 @@ impl App {
         let is_sessions = kind == Some(DialogKind::Sessions);
         let is_models = kind == Some(DialogKind::Models);
         let is_timeline = kind == Some(DialogKind::Timeline);
+        let is_skills = kind == Some(DialogKind::Skills);
         let searchable = is_sessions || is_models;
         match key.code {
             KeyCode::Up => self.dialog_select_prev(),
             KeyCode::Down => self.dialog_select_next(),
             KeyCode::Enter => self.dialog_confirm(),
             KeyCode::Esc => self.dialog_cancel(),
+            KeyCode::Char(' ') if is_skills => self.toggle_skill_enabled(),
             KeyCode::Tab if is_models => self.toggle_model_grouping(),
             KeyCode::Char('n') if ctrl && is_sessions => {
                 self.new_session();
@@ -4584,12 +4704,7 @@ impl App {
                         .push(Entry::Notice(format!("Agent set to {agent}")));
                 }
             }
-            Some(DialogKind::Skills) => {
-                if let Some(skill) = self.select_skill() {
-                    self.transcript
-                        .push(Entry::Notice(format!("Skill selected: {skill}")));
-                }
-            }
+            Some(DialogKind::Skills) => self.commit_skill_toggles(),
             Some(DialogKind::Variants) => {
                 if let Some(variant) = self.select_variant() {
                     self.persist_config_string("variant", &variant);
@@ -4933,18 +5048,39 @@ impl App {
         Some(name)
     }
 
-    /// Select the highlighted skill row from the skill picker.
-    fn select_skill(&mut self) -> Option<String> {
-        let dialog = self.dialog.as_ref()?;
-        if dialog.kind != DialogKind::Skills {
-            return None;
+    /// Commit the skill picker's working (pending) enabled set as the active enabled-skill set,
+    /// surfacing a notice of the applied set when it changed. Also mirrors the highlighted skill
+    /// into `selected_skill` so the status view and next open stay consistent. A no-op unless the
+    /// skill picker is open.
+    fn commit_skill_toggles(&mut self) {
+        if self.dialog.as_ref().map(|dialog| dialog.kind) != Some(DialogKind::Skills) {
+            return;
         }
-        let skill = self.skill_rows.get(dialog.selected())?.clone();
-        if self.selected_skill.as_deref() == Some(skill.as_str()) {
-            return None;
+        if let Some(idx) = self.dialog.as_ref().map(Dialog::selected) {
+            if let Some(name) = self.skill_rows.get(idx).cloned() {
+                self.selected_skill = Some(name);
+            }
         }
-        self.selected_skill = Some(skill.clone());
-        Some(skill)
+        let Some(pending) = self.skill_pending.take() else {
+            return;
+        };
+        if pending == self.enabled_skills {
+            return;
+        }
+        self.enabled_skills = pending;
+        let notice = if self.enabled_skills.is_empty() {
+            "Skills: none enabled".to_owned()
+        } else {
+            format!(
+                "Skills enabled: {}",
+                self.enabled_skills
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        self.transcript.push(Entry::Notice(notice));
     }
 
     /// Select the highlighted variant row from the variant picker.
@@ -7135,6 +7271,26 @@ fn format_price(input_cost: f64) -> String {
     } else {
         format!("${input_cost:.2}")
     }
+}
+
+/// A short, honest description for a reasoning-variant option (the picker's description column).
+/// The keys are the real built-in variant ids; the text describes the reasoning tradeoff each one
+/// implies rather than a mockup marketing string.
+fn variant_description(variant: &str) -> &'static str {
+    match variant {
+        "default" => "default reasoning effort",
+        "fast" => "fastest, minimal reasoning",
+        "balanced" => "balanced latency / quality",
+        "quality" => "maximum reasoning effort",
+        _ => "reasoning variant",
+    }
+}
+
+/// Classify a discovered skill's source path as the picker's source meta: `project` when the file
+/// lives under the current working directory, otherwise `builtin` (global/config skill dirs).
+fn skill_source_label(source: &Path, cwd: Option<&Path>) -> String {
+    let is_project = cwd.is_some_and(|cwd| source.starts_with(cwd));
+    if is_project { "project" } else { "builtin" }.to_owned()
 }
 
 /// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
@@ -11048,6 +11204,157 @@ mod tests {
         assert!(
             a.select_agent().is_none(),
             "confirming the already-active agent reports no change"
+        );
+    }
+
+    #[test]
+    fn agent_picker_rows_are_real_personas_with_desc_and_kind_meta() {
+        // VAL-PICK-024/025/026: real agents with descriptions, a right-aligned kind meta colored
+        // by role (primary AMBER / subagent FAINT), no search row.
+        let mut a = app();
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        dispatch(&mut a, "agents");
+        let rows = a.picker_rows();
+        assert_eq!(rows.len(), 4, "build/plan/general/explore");
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["build", "plan", "general", "explore"]);
+        // build is the primary agent (AMBER meta); the rest are subagents (FAINT meta).
+        let build = &rows[0];
+        assert!(
+            build.desc.as_deref().unwrap_or_default().contains("coding"),
+            "real description carried: {:?}",
+            build.desc
+        );
+        assert_eq!(build.meta.as_deref(), Some("primary"));
+        assert_eq!(build.meta_color, Some(theme.secondary));
+        assert_eq!(rows[1].meta.as_deref(), Some("subagent"));
+        assert_eq!(rows[1].meta_color, Some(theme.text_muted));
+        // No search row: dispatching the agent picker leaves the search query empty and it is not
+        // treated as a searchable picker.
+        assert!(!a.picker_is_searchable(), "agent picker has no search row");
+    }
+
+    #[test]
+    fn variant_picker_titled_reasoning_variant_with_descriptions_no_meta() {
+        // VAL-PICK-037/038/039: titled `Reasoning variant`, key + description rows, no meta column
+        // and no search row.
+        let mut a = app();
+        dispatch(&mut a, "variant");
+        let dialog = a.dialog().expect("the variant picker opened");
+        assert_eq!(dialog.kind, DialogKind::Variants);
+        assert_eq!(dialog.title, "Reasoning variant");
+        let rows = a.picker_rows();
+        assert!(!rows.is_empty(), "variants listed");
+        for row in rows {
+            assert!(
+                row.desc.as_deref().is_some_and(|d| !d.is_empty()),
+                "each variant row has a description: {:?}",
+                row.key
+            );
+            assert!(row.meta.is_none(), "variant picker has no meta column");
+        }
+        assert!(!a.picker_is_searchable(), "variant picker has no search row");
+    }
+
+    #[test]
+    fn variant_picker_selection_updates_the_active_variant() {
+        // VAL-PICK-041: Enter on a highlighted variant applies it and closes the modal.
+        let mut a = app();
+        assert_eq!(a.status.variant, "default");
+        dispatch(&mut a, "variant");
+        a.on_key(key(KeyCode::Down)); // default -> fast
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.dialog_open(), "confirming closes the variant picker");
+        assert_eq!(a.status.variant, "fast", "the active variant updates");
+    }
+
+    #[test]
+    fn variant_picker_esc_leaves_the_active_variant_unchanged() {
+        // VAL-PICK-042: esc dismisses the variant picker without changing the active variant.
+        let mut a = app();
+        dispatch(&mut a, "variant");
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open());
+        assert_eq!(a.status.variant, "default", "esc leaves the variant unchanged");
+    }
+
+    #[test]
+    fn skill_picker_rows_carry_source_meta() {
+        // VAL-PICK-031/032: skills render as key + description with a right-aligned source meta.
+        let mut a = app();
+        dispatch(&mut a, "skills");
+        for row in a.picker_rows() {
+            let source = row.meta.as_deref().unwrap_or_default();
+            assert!(
+                matches!(source, "builtin" | "project" | "plugin"),
+                "skill source meta is builtin/project/plugin: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_picker_space_toggles_enabled_and_enter_commits_esc_discards() {
+        // VAL-PICK-034/035/036: Space toggles the highlighted skill's enabled marker without
+        // closing; Enter commits the set; Esc discards uncommitted toggles.
+        let mut a = app();
+        // Seed a discoverable project skill so the picker is non-empty regardless of the host env.
+        a.skill_picks = vec![
+            SkillPick {
+                name: "alpha".to_owned(),
+                desc: "first".to_owned(),
+                source: "project".to_owned(),
+            },
+            SkillPick {
+                name: "beta".to_owned(),
+                desc: "second".to_owned(),
+                source: "project".to_owned(),
+            },
+        ];
+        a.skill_rows = vec!["alpha".to_owned(), "beta".to_owned()];
+        a.skill_pending = Some(std::collections::BTreeSet::new());
+        a.rebuild_skill_view();
+        a.open_dialog(Dialog {
+            kind: DialogKind::Skills,
+            title: "Skills".to_owned(),
+            items: vec!["alpha".to_owned(), "beta".to_owned()],
+            selected: 0,
+            empty: None,
+        });
+        // Space enables the highlighted skill: the row gains the `✓` marker and the modal stays open.
+        a.on_key(key(KeyCode::Char(' ')));
+        assert!(a.dialog_open(), "space does not close the skill picker");
+        assert!(
+            a.picker_rows()[0].key.starts_with(crate::glyphs::MARK_DONE),
+            "enabled skill shows the ✓ marker: {:?}",
+            a.picker_rows()[0].key
+        );
+        // Esc discards the uncommitted toggle: the committed set stays empty.
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.enabled_skills.is_empty(), "esc discards uncommitted toggles");
+        // Re-open, toggle, and commit with Enter: the committed set now holds the skill.
+        a.skill_picks = vec![SkillPick {
+            name: "alpha".to_owned(),
+            desc: "first".to_owned(),
+            source: "project".to_owned(),
+        }];
+        a.skill_rows = vec!["alpha".to_owned()];
+        a.skill_pending = Some(std::collections::BTreeSet::new());
+        a.rebuild_skill_view();
+        a.open_dialog(Dialog {
+            kind: DialogKind::Skills,
+            title: "Skills".to_owned(),
+            items: vec!["alpha".to_owned()],
+            selected: 0,
+            empty: None,
+        });
+        a.on_key(key(KeyCode::Char(' ')));
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.dialog_open(), "enter closes the skill picker");
+        assert!(
+            a.enabled_skills.contains("alpha"),
+            "enter commits the toggled skill set: {:?}",
+            a.enabled_skills
         );
     }
 

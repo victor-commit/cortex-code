@@ -2230,8 +2230,17 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         return;
     }
 
-    // Searchable pickers (session/model) render rich rows (key + desc + right-aligned meta) supplied
-    // by the app, a `›` search row that filters, and a fixed key column so descriptions line up.
+    // Rich pickers (session/model/agent/skill/variant) render structured rows (key + desc +
+    // right-aligned meta) supplied by the app with a fixed key column so descriptions line up; only
+    // session/model add a `›` search row that filters in place.
+    let rich = matches!(
+        dialog.kind,
+        DialogKind::Sessions
+            | DialogKind::Models
+            | DialogKind::Agents
+            | DialogKind::Skills
+            | DialogKind::Variants
+    );
     let searchable = matches!(dialog.kind, DialogKind::Sessions | DialogKind::Models);
 
     // The session picker, when renaming, shows the in-progress new title as an in-frame input row.
@@ -2244,16 +2253,21 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         Option<crate::modal::ModalSearch>,
         Option<usize>,
         Color,
-    ) = if searchable {
-        let search = (rename.is_none()).then(|| crate::modal::ModalSearch {
+    ) = if rich {
+        let search = (searchable && rename.is_none()).then(|| crate::modal::ModalSearch {
             query: app.picker_search_query().to_owned(),
             placeholder: "type to filter…".to_owned(),
         });
+        // Agents/variants use an AMBER key; the other rich pickers use BRIGHT keys.
+        let key_color = match dialog.kind {
+            DialogKind::Agents | DialogKind::Variants => theme.secondary,
+            _ => theme.text_bright,
+        };
         (
             app.picker_rows().to_vec(),
             search,
             app.picker_key_width(),
-            theme.text_bright,
+            key_color,
         )
     } else {
         (
@@ -2323,6 +2337,19 @@ fn dialog_hints(kind: DialogKind, renaming: bool) -> Vec<crate::modal::ModalHint
             ModalHint::new(crate::glyphs::KEY_ENTER, "select"),
             ModalHint::new(crate::glyphs::KEY_TAB, "provider"),
             ModalHint::new("/", "filter"),
+            ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Agents => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "use"),
+            ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Skills => vec![
+            ModalHint::new("space", "toggle"),
+            ModalHint::new(crate::glyphs::KEY_ENTER, "apply"),
+            ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Variants => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "select"),
             ModalHint::new("esc", "close"),
         ],
         _ => parse_hints(dialog_hint(kind, false)),
@@ -3732,6 +3759,75 @@ mod tests {
             "delete advertised with the safe ⌫ glyph"
         );
         assert!(text.contains('╭') && text.contains('╯'), "rounded border");
+    }
+
+    #[test]
+    fn agent_picker_renders_personas_meta_and_footer() {
+        // VAL-PICK-023/024/025/026: titled `Agents` modal, real personas with descriptions, a
+        // `primary`/`subagent` kind meta, a `↵ use` / `esc close` footer, no search row, safe glyphs.
+        let mut a = app();
+        open_via_slash(&mut a, "/agents");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Agents"), "titled modal:\n{text}");
+        for persona in ["build", "plan", "general", "explore"] {
+            assert!(text.contains(persona), "agent {persona} listed:\n{text}");
+        }
+        assert!(text.contains("primary"), "primary kind meta present");
+        assert!(text.contains("subagent"), "subagent kind meta present");
+        assert!(
+            text.contains(crate::glyphs::KEY_ENTER) && text.contains("use"),
+            "↵ use footer hint:\n{text}"
+        );
+        assert!(text.contains("close"), "esc close footer hint");
+        assert!(
+            !text.contains("type to filter…"),
+            "agent picker has no search row"
+        );
+        assert!(text.contains('╭') && text.contains('╯'), "rounded border");
+        assert!(!crate::glyphs::contains_braille(&text), "no braille");
+    }
+
+    #[test]
+    fn variant_picker_renders_title_descriptions_and_footer() {
+        // VAL-PICK-037/038/039: titled `Reasoning variant`, key + description rows, no meta column,
+        // no search row, and a `↵ select` / `esc close` footer.
+        let mut a = app();
+        open_via_slash(&mut a, "/variant");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Reasoning variant"), "titled modal:\n{text}");
+        assert!(text.contains("reasoning"), "descriptions rendered:\n{text}");
+        assert!(
+            text.contains(crate::glyphs::KEY_ENTER) && text.contains("select"),
+            "↵ select footer hint:\n{text}"
+        );
+        assert!(
+            !text.contains("type to filter…"),
+            "variant picker has no search row"
+        );
+        assert!(!crate::glyphs::contains_braille(&text), "no braille");
+    }
+
+    #[test]
+    fn skill_picker_renders_source_meta_and_toggle_footer() {
+        // VAL-PICK-030/032/034/035: titled `Skills` modal with a `space toggle` / `↵ apply` /
+        // `esc close` footer and a source meta column; no search row.
+        let mut a = app();
+        open_via_slash(&mut a, "/skills");
+        let text = rendered_frame(&a);
+        assert!(text.contains("Skills"), "titled modal:\n{text}");
+        assert!(
+            text.contains("space") && text.contains("toggle"),
+            "space toggle footer hint:\n{text}"
+        );
+        assert!(
+            text.contains(crate::glyphs::KEY_ENTER) && text.contains("apply"),
+            "↵ apply footer hint:\n{text}"
+        );
+        assert!(
+            !text.contains("type to filter…"),
+            "skill picker has no search row"
+        );
+        assert!(!crate::glyphs::contains_braille(&text), "no braille");
     }
 
     #[test]
