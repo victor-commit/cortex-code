@@ -1900,8 +1900,25 @@ fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style
         ViewKind::Timeline => draw_timeline_view_body(frame, app, inner, theme),
         ViewKind::Mcp => draw_mcp_view_body(frame, app, inner, theme),
         ViewKind::Queue => draw_queue_view_body(frame, app, inner, theme),
+        ViewKind::Help => draw_help_view_body(frame, inner, theme),
         _ => draw_view_placeholder(frame, inner, theme),
     }
+}
+
+/// The `/help` view body: a two-column command-reference grid (Session/Model & agent/Views/Editing)
+/// listing real Cortex slash builtins + key affordances, rendered via the shared
+/// [`crate::view::help_body_lines`] helper (theme tokens + safe glyphs only).
+fn draw_help_view_body(frame: &mut Frame, area: Rect, theme: &style::ThemeColors) {
+    let target = view_body_inset(area);
+    if target.width == 0 || target.height == 0 {
+        return;
+    }
+    let lines =
+        crate::view::help_body_lines(target.width as usize, target.height as usize, theme);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
+        target,
+    );
 }
 
 /// The top-right panel note for a view (the MCP server/tool totals, the timeline event count, or

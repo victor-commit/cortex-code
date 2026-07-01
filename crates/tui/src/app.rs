@@ -3380,7 +3380,7 @@ impl App {
     fn dispatch_builtin_command(&mut self, name: &str, description: &str) {
         match name {
             "exit" => self.should_quit = true,
-            "help" => self.transcript.push(Entry::Help),
+            "help" => self.open_help_view(),
             "new" => self.new_session(),
             "export" => self.export_session(),
             "status" => self.open_status_view(),
@@ -4233,6 +4233,14 @@ impl App {
         self.open_view(crate::view::ViewKind::Mcp);
     }
 
+    /// Open the full-screen command-reference view (`/help`) with the shared view chrome: the
+    /// two-column command grid (Session/Model & agent/Views/Editing) of real slash builtins + key
+    /// affordances. This is the view the global `?` affordance opens (VAL-FOUND-033) as well as the
+    /// `/help` command; Esc closes it back to the conversation.
+    fn open_help_view(&mut self) {
+        self.open_view(crate::view::ViewKind::Help);
+    }
+
     /// Open the full-screen session-status view (`/status`) with the shared view chrome. The runtime
     /// state (session/model/usage/git/workspace) is snapshotted when the view opens so a redraw
     /// never re-runs the git subprocess or re-reads the store.
@@ -4297,6 +4305,12 @@ impl App {
         }
         if key.code == KeyCode::Esc {
             self.close_active_view();
+            return;
+        }
+        // The global `?` affordance opens the help/command reference from any full-screen view too,
+        // so the affordance behaves identically across screens (VAL-FOUND-033).
+        if !ctrl && key.code == KeyCode::Char('?') {
+            self.open_help_view();
             return;
         }
         // The `/queue` view is navigable: arrow keys move the highlighted (selection-bar) row.
@@ -7114,6 +7128,12 @@ impl App {
             // not literal text); typed elsewhere it is ordinary text handled by the arm below.
             KeyCode::Char('!') if !ctrl && !alt && self.input.value().is_empty() => {
                 self.shell_mode = true;
+            }
+            // `?` on an empty composer (not a text-entry mode) opens the help/command reference —
+            // the global affordance the status bar advertises (VAL-FOUND-033). Typed into non-empty
+            // text it is an ordinary character handled by the general arm below.
+            KeyCode::Char('?') if !ctrl && !alt && self.input.value().is_empty() => {
+                self.open_help_view();
             }
             KeyCode::Char('\t')
                 if !ctrl && !alt && !self.slash_menu_open() && !self.mention_open() =>
@@ -10854,8 +10874,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatching_help_shows_a_help_entry() {
-        // VAL-TUI-032: `/help` shows a help / command reference.
+    fn dispatching_help_opens_the_full_screen_help_view() {
+        // VAL-TUI-032 / VAL-VIEW-028: `/help` opens the full-screen command-reference view (not a
+        // model turn), titled `Commands & shortcuts` with the `/help` crumb.
         let mut a = app();
         type_str(&mut a, "/help");
         a.on_key(key(KeyCode::Enter));
@@ -10863,10 +10884,52 @@ mod tests {
             a.take_pending_prompt().is_none(),
             "help is not a model turn"
         );
-        assert!(
-            matches!(a.transcript.last(), Some(Entry::Help)),
-            "a help entry is shown: {:?}",
-            a.transcript.last()
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::Help),
+            "the full-screen help view is open"
+        );
+        // Esc closes it back to the conversation.
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none(), "Esc dismisses the help view");
+    }
+
+    #[test]
+    fn question_mark_opens_help_on_an_empty_composer() {
+        // VAL-FOUND-033: pressing `?` with the composer empty opens the help/command reference.
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('?')));
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::Help),
+            "`?` on an empty composer opens the help view"
+        );
+    }
+
+    #[test]
+    fn question_mark_is_literal_text_in_a_non_empty_composer() {
+        // VAL-FOUND-033: `?` is only the help affordance when the composer is empty; while typing it
+        // is an ordinary character (so a user can type `why?`), not a help trigger.
+        let mut a = app();
+        type_str(&mut a, "why");
+        a.on_key(key(KeyCode::Char('?')));
+        assert!(a.active_view().is_none(), "`?` in text does not open help");
+        assert_eq!(a.input_value(), "why?", "`?` is inserted as literal text");
+    }
+
+    #[test]
+    fn question_mark_opens_help_from_a_full_screen_view() {
+        // VAL-FOUND-033: the `?` affordance behaves identically from a full-screen view — pressing
+        // `?` while (e.g.) the status view is open switches to the help reference.
+        let mut a = app();
+        type_str(&mut a, "/status");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Status));
+        a.on_key(key(KeyCode::Char('?')));
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::Help),
+            "`?` from a full-screen view opens the help reference"
         );
     }
 

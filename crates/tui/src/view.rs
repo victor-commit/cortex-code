@@ -835,6 +835,156 @@ pub fn footer_hint_line(
     cells_to_line(&cells)
 }
 
+/// One section of the `/help` command reference: an uppercase title and its `(key, description)`
+/// entries. The `key` is a real Cortex slash builtin or key affordance (no invented labels) and the
+/// `description` is the terse gloss shown beside it in the grid.
+struct HelpSection {
+    /// The uppercase section heading (ORANGE + rule).
+    title: &'static str,
+    /// The `(key, description)` rows, in display order.
+    entries: &'static [(&'static str, &'static str)],
+}
+
+/// The four `/help` sections laid out as a 2×2 grid: `Session`/`Views` down the left column and
+/// `Model & agent`/`Editing` down the right. Every key is a real slash builtin (see
+/// [`crate::slash::BUILTINS`]) or a real key affordance (`⇥` cycle agent, `@path`, `!cmd`, `^R`,
+/// `^C`, `?`); no mockup-only labels are invented.
+const HELP_SECTIONS: [HelpSection; 4] = [
+    HelpSection {
+        title: "SESSION",
+        entries: &[
+            ("/new", "fresh session"),
+            ("/sessions", "session picker"),
+            ("/fork", "branch from a msg"),
+            ("/rename", "rename session"),
+            ("/compact", "shrink context"),
+            ("/export", "save transcript"),
+        ],
+    },
+    HelpSection {
+        title: "MODEL & AGENT",
+        entries: &[
+            ("/models", "switch model"),
+            ("/agents", "switch agent"),
+            ("/variant", "reasoning effort"),
+            ("/subagents", "running tasks"),
+            (glyphs::KEY_TAB, "cycle agent"),
+            ("/skills", "toggle skills"),
+        ],
+    },
+    HelpSection {
+        title: "VIEWS",
+        entries: &[
+            ("/status", "session status"),
+            ("/timeline", "event timeline"),
+            ("/diff", "review changes"),
+            ("/queue", "prompt queue"),
+            ("/mcp", "MCP servers"),
+            ("/review", "code review"),
+        ],
+    },
+    HelpSection {
+        title: "EDITING",
+        entries: &[
+            ("@path", "add file to ctx"),
+            ("!cmd", "run shell"),
+            ("/init", "write AGENTS.md"),
+            ("^R", "resume"),
+            ("^C", "cancel turn"),
+            ("?", "this help"),
+        ],
+    },
+];
+
+/// The blank gap column between the two help columns.
+const HELP_COL_GAP: usize = 2;
+/// The fixed offset (in cells) from a section's left edge to its description column, so every key is
+/// left-aligned in an amber block and every description begins at the same column.
+const HELP_DESC_COL: usize = 12;
+/// The body-relative row of the top section titles (a one-row top margin under the panel border).
+const HELP_TOP_TITLE_ROW: usize = 1;
+/// Sections are spaced 12 rows apart, so the bottom section titles sit this far below the top ones.
+const HELP_SECTION_STRIDE: usize = 12;
+
+/// Draw one help section into `grid` at column `x`, with its title on `title_row`: the uppercase
+/// title in ORANGE, a `─` rule spanning `colw` on the next row, then one `(key, description)` row
+/// per entry with the key AMBER at `x` and the description DIM at `x + HELP_DESC_COL`.
+fn place_help_section(
+    grid: &mut [Vec<(char, Style)>],
+    x: usize,
+    title_row: usize,
+    colw: usize,
+    section: &HelpSection,
+    theme: &ThemeColors,
+) {
+    let orange = Style::default().fg(theme.primary);
+    let amber = Style::default().fg(theme.secondary);
+    let dim = Style::default().fg(theme.text_dim);
+    let ghost = Style::default().fg(theme.ghost);
+
+    if let Some(row) = grid.get_mut(title_row) {
+        place_segments(row, x, &[(section.title.to_owned(), orange)]);
+    }
+    if let Some(row) = grid.get_mut(title_row + 1) {
+        place_segments(row, x, &[(glyphs::BOX_HORIZONTAL.repeat(colw), ghost)]);
+    }
+    let entry_start = title_row + 2;
+    for (i, (key, desc)) in section.entries.iter().enumerate() {
+        let Some(row) = grid.get_mut(entry_start + i) else {
+            break;
+        };
+        place_segments(row, x, &[((*key).to_owned(), amber)]);
+        place_segments(row, x + HELP_DESC_COL, &[((*desc).to_owned(), dim)]);
+    }
+}
+
+/// Build the `/help` body: a two-column command-reference grid ([`HELP_SECTIONS`]) where each column
+/// is ~half the inner width, `Session`/`Views` stack down the left and `Model & agent`/`Editing`
+/// down the right, each section introduced by an ORANGE uppercase title + rule with AMBER keys and
+/// DIM descriptions. A right-aligned `press esc to close` hint is pinned to the last body row.
+///
+/// Colors come only from the theme tokens and glyphs only from [`crate::glyphs`], so the reference
+/// grid stays brand-pure and tofu-free.
+#[must_use]
+pub fn help_body_lines(width: usize, height: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    if height == 0 {
+        return Vec::new();
+    }
+    let colw = width.saturating_sub(HELP_COL_GAP) / 2;
+    let left_x = 0;
+    let right_x = colw + HELP_COL_GAP;
+
+    let base = Style::default().fg(theme.text);
+    let mut grid: Vec<Vec<(char, Style)>> = vec![vec![(' ', base); width]; height];
+
+    let bottom_title_row = HELP_TOP_TITLE_ROW + HELP_SECTION_STRIDE;
+    let anchors = [
+        (left_x, HELP_TOP_TITLE_ROW, &HELP_SECTIONS[0]),
+        (right_x, HELP_TOP_TITLE_ROW, &HELP_SECTIONS[1]),
+        (left_x, bottom_title_row, &HELP_SECTIONS[2]),
+        (right_x, bottom_title_row, &HELP_SECTIONS[3]),
+    ];
+    for (x, title_row, section) in anchors {
+        place_help_section(&mut grid, x, title_row, colw, section, theme);
+    }
+
+    // Pin a right-aligned `press esc to close` hint to the last body row (dim-orange, brand-pure).
+    let hint = "press esc to close";
+    let hint_len = hint.chars().count();
+    if let Some(row) = grid.last_mut() {
+        if width > hint_len + 1 {
+            place_segments(
+                row,
+                width - hint_len - 1,
+                &[(hint.to_owned(), Style::default().fg(theme.border))],
+            );
+        }
+    }
+
+    grid.iter().map(|row| cells_to_line(row)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1449,5 +1599,108 @@ mod tests {
         assert_eq!(cell_fg(&buf, "↵"), Some(theme.border), "key glyph dim-orange");
         assert_eq!(cell_fg(&buf, "edit"), Some(theme.text_muted), "label FAINT");
         assert_eq!(cell_fg(&buf, "esc"), Some(theme.border), "esc key dim-orange");
+    }
+
+    #[test]
+    fn help_body_lays_out_two_columns_of_sections() {
+        // VAL-VIEW-029/030: a two-column grid (each ~half the inner width) with the four section
+        // titles — Session/Model & agent down the top and Views/Editing below — vertically aligned.
+        let theme = ThemeColors::from_name("dark");
+        let width = 84usize;
+        let lines = help_body_lines(width, 24, &theme);
+        let buf = render_lines(lines, width as u16, 24);
+
+        let row_text = |y: u16| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<Vec<_>>()
+                .concat()
+        };
+        let colw = (width - HELP_COL_GAP) / 2;
+        let right_x = colw + HELP_COL_GAP;
+
+        // The top titles share one row: SESSION at the left edge, MODEL & AGENT at the right column.
+        let top = row_text(HELP_TOP_TITLE_ROW as u16);
+        assert!(top.starts_with("SESSION"), "left title at col 0:\n{top}");
+        assert_eq!(
+            top.chars().skip(right_x).take(13).collect::<String>(),
+            "MODEL & AGENT",
+            "right title at the right column start:\n{top}"
+        );
+        // The bottom titles share the row 12 rows below: VIEWS / EDITING.
+        let bottom = row_text((HELP_TOP_TITLE_ROW + HELP_SECTION_STRIDE) as u16);
+        assert!(bottom.starts_with("VIEWS"), "left bottom title:\n{bottom}");
+        assert_eq!(
+            bottom.chars().skip(right_x).take(7).collect::<String>(),
+            "EDITING",
+            "right bottom title:\n{bottom}"
+        );
+        // Each title is underlined by a `─` rule on the next row.
+        assert!(
+            row_text((HELP_TOP_TITLE_ROW + 1) as u16).contains('─'),
+            "a rule sits under the top section titles"
+        );
+    }
+
+    #[test]
+    fn help_body_lists_real_commands_with_amber_keys_and_dim_desc() {
+        // VAL-VIEW-031: keys are real Cortex slash builtins (no invented labels) in AMBER at the
+        // column start with DIM descriptions at the fixed offset.
+        let theme = ThemeColors::from_name("dark");
+        let lines = help_body_lines(84, 24, &theme);
+        let buf = render_lines(lines, 84, 24);
+        let text = buffer_text(&buf);
+
+        for cmd in [
+            "/new", "/sessions", "/fork", "/rename", "/compact", "/export", "/models", "/agents",
+            "/variant", "/subagents", "/skills", "/status", "/timeline", "/diff", "/queue", "/mcp",
+            "/review", "/init",
+        ] {
+            assert!(text.contains(cmd), "help lists the real builtin {cmd}:\n{text}");
+        }
+        // The key column is AMBER (secondary) and the description column is DIM.
+        assert_eq!(cell_fg(&buf, "/new"), Some(theme.secondary), "key AMBER");
+        assert_eq!(cell_fg(&buf, "fresh session"), Some(theme.text_dim), "desc DIM");
+        // The section titles are ORANGE (primary).
+        assert_eq!(cell_fg(&buf, "SESSION"), Some(theme.primary), "section title ORANGE");
+    }
+
+    #[test]
+    fn help_body_keeps_the_key_column_aligned() {
+        // VAL-VIEW-031: within a section every description begins at the same fixed column.
+        let theme = ThemeColors::from_name("dark");
+        let lines = help_body_lines(84, 24, &theme);
+        let buf = render_lines(lines, 84, 24);
+        let row_text = |y: u16| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<Vec<_>>()
+                .concat()
+        };
+        // The SESSION entries start at HELP_TOP_TITLE_ROW + 2; each description begins at
+        // HELP_DESC_COL, so the description column text starts there for every row.
+        let first_entry = (HELP_TOP_TITLE_ROW + 2) as u16;
+        let row = row_text(first_entry);
+        assert!(row.starts_with("/new"), "first key at col 0:\n{row}");
+        assert_eq!(
+            row.chars().skip(HELP_DESC_COL).take(13).collect::<String>(),
+            "fresh session",
+            "description begins at the fixed offset:\n{row}"
+        );
+    }
+
+    #[test]
+    fn help_body_uses_only_safe_glyphs() {
+        // VAL-VIEW-050: no braille, thin triangles, curly quotes, or `>_` in the help grid.
+        let theme = ThemeColors::from_name("dark");
+        let lines = help_body_lines(84, 24, &theme);
+        let text = buffer_text(&render_lines(lines, 84, 24));
+        assert!(!glyphs::contains_braille(&text), "no braille in the help grid");
+        for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
+            assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
+        }
+        assert!(!text.contains(">_"), "no `>_` cliché");
+        // The `⇥ cycle agent` affordance renders the safe tab glyph.
+        assert!(text.contains('⇥'), "the tab affordance uses the safe `⇥` glyph");
     }
 }
