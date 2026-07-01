@@ -88,6 +88,9 @@ pub const MARK_RUNNING: &str = "⚙";
 pub const SEPARATOR: &str = "·";
 /// Ellipsis.
 pub const ELLIPSIS: &str = "…";
+/// Em dash — the "not applicable" placeholder (e.g. an MCP server with no tool count) and the
+/// inline detail separator used by the MCP catalog rows.
+pub const EM_DASH: &str = "—";
 
 /// Selection bar marker (alias of [`PROMPT`]); rendered on an inverse selection bar.
 pub const SELECT_MARKER: &str = PROMPT;
@@ -175,6 +178,7 @@ mod tests {
             MARK_RUNNING,
             SEPARATOR,
             ELLIPSIS,
+            EM_DASH,
             SELECT_MARKER,
             PROGRESS_FULL,
             PROGRESS_EMPTY,

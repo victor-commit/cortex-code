@@ -830,6 +830,12 @@ pub struct App {
     /// The `/timeline` view's event rail, snapshotted from the persisted session when the view
     /// opens. Rebuilt on each `/timeline` open.
     timeline_snapshot: Vec<crate::view::TimelineEvent>,
+    /// The `/queue` view's prompt rows, snapshotted from the live queue when the view opens (so the
+    /// view is stable while it is open). Rebuilt on each `/queue` open.
+    queue_snapshot: Vec<String>,
+    /// The highlighted row in the open `/queue` view (arrow-key navigation), clamped to the queue
+    /// length.
+    queue_selection: usize,
     /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
@@ -1038,6 +1044,8 @@ impl App {
             active_view: None,
             status_snapshot: None,
             timeline_snapshot: Vec::new(),
+            queue_snapshot: Vec::new(),
+            queue_selection: 0,
             mention: None,
             plugin_text_complete: None,
             pending_text_completion: None,
@@ -3379,7 +3387,7 @@ impl App {
             "timeline" => self.open_timeline_view(),
             "fork" => self.open_fork_dialog(),
             "subagents" => self.open_subagents_dialog(),
-            "queue" => self.open_palette_scope(PaletteScope::QueuedPrompts),
+            "queue" => self.open_queue_view(),
             "sidebar-toggle" => self.toggle_sidebar(),
             "sidebar-context" => self.set_sidebar_panel(SidebarPanel::Context),
             "sidebar-files" => self.set_sidebar_panel(SidebarPanel::Files),
@@ -3446,6 +3454,47 @@ impl App {
     fn open_timeline_view(&mut self) {
         self.timeline_snapshot = self.build_timeline_events();
         self.open_view(crate::view::ViewKind::Timeline);
+    }
+
+    /// Open the full-screen prompt-queue view (`/queue`) with the shared view chrome. The queued
+    /// prompts (submitted mid-stream and waiting to run) are snapshotted when the view opens so it
+    /// stays stable while open; with nothing queued it renders an explicit empty state. The
+    /// mid-stream queue manager submenu remains reachable via the command palette / keybind.
+    fn open_queue_view(&mut self) {
+        self.queue_snapshot = self.build_queue_rows();
+        self.queue_selection = 0;
+        self.open_view(crate::view::ViewKind::Queue);
+    }
+
+    /// The queued prompts as single-line rows (the `@`-expansion header when present, else the sent
+    /// prompt), for the `/queue` view snapshot.
+    fn build_queue_rows(&self) -> Vec<String> {
+        self.queued_prompts
+            .iter()
+            .map(|queued| {
+                queued
+                    .header
+                    .as_deref()
+                    .unwrap_or(&queued.prompt)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// The snapshotted `/queue` prompt rows (captured when the view opened), for rendering.
+    #[must_use]
+    pub fn queue_snapshot(&self) -> &[String] {
+        &self.queue_snapshot
+    }
+
+    /// The highlighted row in the open `/queue` view, for rendering the selection bar.
+    #[must_use]
+    pub fn queue_selection(&self) -> usize {
+        self.queue_selection
     }
 
     /// Open the fork picker (`/fork`) backed by the current session timeline.
@@ -4235,14 +4284,41 @@ impl App {
         }
         if key.code == KeyCode::Esc {
             self.close_active_view();
+            return;
+        }
+        // The `/queue` view is navigable: arrow keys move the highlighted (selection-bar) row.
+        if self.active_view == Some(crate::view::ViewKind::Queue) {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.queue_selection = self.queue_selection.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let len = self.queue_snapshot.len();
+                    if len > 0 {
+                        self.queue_selection = (self.queue_selection + 1).min(len - 1);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
-    /// Live MCP servers view rows (server + status + tool count), or an empty vec when none are
-    /// configured (the view then renders its empty state).
+    /// Structured `/mcp` view rows (server name + status tone/word + tool count + exposed
+    /// capabilities), or an empty vec when none are configured (the view then renders its empty
+    /// state). A connected manager wins because it carries live status/tools; otherwise the view
+    /// falls back to the configured server names so `/mcp` remains useful before connect.
     #[must_use]
-    pub(crate) fn mcp_view_rows(&self) -> Vec<String> {
-        self.mcp_rows()
+    pub(crate) fn mcp_view_rows(&self) -> Vec<crate::view::McpServerRow> {
+        if let Some(manager) = &self.mcp_manager {
+            mcp_server_rows(
+                manager.statuses(),
+                manager.tools(),
+                manager.resources(),
+                manager.prompts(),
+            )
+        } else {
+            configured_mcp_server_rows()
+        }
     }
 
     /// Current MCP view rows. A connected manager wins because it carries live status and tool ids;
@@ -7505,6 +7581,97 @@ fn configured_mcp_servers() -> Vec<String> {
     table
         .keys()
         .map(|name| format!("{name}  —  configured"))
+        .collect()
+}
+
+/// The status word + tone shown in the `/mcp` view for a connection state (`ready`→green,
+/// `needs auth`→amber, `error`→red, `disabled`→neutral).
+fn mcp_state_display(state: mcp::ConnectionState) -> (&'static str, crate::view::McpStatusTone) {
+    use crate::view::McpStatusTone;
+    match state {
+        mcp::ConnectionState::Connected => ("ready", McpStatusTone::Ready),
+        mcp::ConnectionState::NeedsAuth => ("needs auth", McpStatusTone::Degraded),
+        mcp::ConnectionState::Failed => ("error", McpStatusTone::Error),
+        mcp::ConnectionState::Disabled => ("disabled", McpStatusTone::Neutral),
+    }
+}
+
+/// Build the structured `/mcp` view rows from live manager state: per server, the status tone/word,
+/// the tool count (only when connected), and the comma-joined exposed capabilities (tools, then
+/// resources by URI, then prompts by name — so the view's catalog matches `cortex mcp list`), or the
+/// connection error detail when the server failed / needs auth.
+fn mcp_server_rows(
+    statuses: &[mcp::ServerStatus],
+    tools: Vec<mcp::McpTool>,
+    resources: Vec<mcp::McpResource>,
+    prompts: Vec<mcp::McpPrompt>,
+) -> Vec<crate::view::McpServerRow> {
+    statuses
+        .iter()
+        .map(|status| {
+            let (word, tone) = mcp_state_display(status.state);
+            let connected = status.state == mcp::ConnectionState::Connected;
+            let server_tools = tools
+                .iter()
+                .filter(|tool| tool.server == status.name)
+                .map(|tool| tool.tool.clone())
+                .collect::<Vec<_>>();
+            let tool_count = connected.then_some(server_tools.len());
+
+            let exposes = match status
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+            {
+                Some(error) => error.trim().to_owned(),
+                None => {
+                    let mut caps = server_tools;
+                    caps.extend(
+                        resources
+                            .iter()
+                            .filter(|resource| resource.server == status.name)
+                            .map(|resource| resource.uri.clone()),
+                    );
+                    caps.extend(
+                        prompts
+                            .iter()
+                            .filter(|prompt| prompt.server == status.name)
+                            .map(|prompt| prompt.name.clone()),
+                    );
+                    caps.join(", ")
+                }
+            };
+
+            crate::view::McpServerRow {
+                name: status.name.clone(),
+                status_word: word.to_owned(),
+                tone,
+                tool_count,
+                exposes,
+            }
+        })
+        .collect()
+}
+
+/// The configured MCP servers as structured `/mcp` view rows before a manager connects: each server
+/// is shown with a neutral `configured` status and no tool count, from the effective config's
+/// `[mcp]` table. Empty when no servers are configured.
+fn configured_mcp_server_rows() -> Vec<crate::view::McpServerRow> {
+    let Some(config) = effective_config() else {
+        return Vec::new();
+    };
+    let Some(table) = config.get("mcp").and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+    table
+        .keys()
+        .map(|name| crate::view::McpServerRow {
+            name: name.clone(),
+            status_word: "configured".to_owned(),
+            tone: crate::view::McpStatusTone::Neutral,
+            tool_count: None,
+            exposes: String::new(),
+        })
         .collect()
 }
 
@@ -11250,6 +11417,133 @@ mod tests {
             a.mcp_view_rows().is_empty(),
             "no servers are configured, so the view shows its empty state"
         );
+    }
+
+    #[test]
+    fn mcp_server_rows_map_states_and_expose_capabilities() {
+        // VAL-VIEW-020/021: connected servers carry a `ready` tone + tool count + capability list;
+        // a failed server carries an `error` tone with no tool count and its error detail as the
+        // exposes text. Resources (by URI) and prompts (by name) join the exposed capabilities.
+        let statuses = vec![
+            mcp::ServerStatus {
+                name: "context7".to_owned(),
+                state: mcp::ConnectionState::Connected,
+                pid: Some(1),
+                error: None,
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
+            mcp::ServerStatus {
+                name: "github".to_owned(),
+                state: mcp::ConnectionState::Failed,
+                pid: None,
+                error: Some("auth failed — run: cortex auth login".to_owned()),
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
+        ];
+        let tools = vec![
+            mcp::McpTool {
+                id: "context7_resolve".to_owned(),
+                server: "context7".to_owned(),
+                tool: "resolve-library-id".to_owned(),
+                description: None,
+                input_schema: serde_json::json!({"type":"object"}),
+            },
+            mcp::McpTool {
+                id: "context7_query".to_owned(),
+                server: "context7".to_owned(),
+                tool: "query-docs".to_owned(),
+                description: None,
+                input_schema: serde_json::json!({"type":"object"}),
+            },
+        ];
+        let resources = vec![mcp::McpResource {
+            id: "context7_notes".to_owned(),
+            server: "context7".to_owned(),
+            uri: "notes://c7".to_owned(),
+            name: "notes".to_owned(),
+            title: None,
+            description: None,
+            mime_type: None,
+        }];
+        let prompts = vec![mcp::McpPrompt {
+            id: "context7_greet".to_owned(),
+            server: "context7".to_owned(),
+            name: "greet".to_owned(),
+            title: None,
+            description: None,
+            arguments: Vec::new(),
+        }];
+
+        let rows = mcp_server_rows(&statuses, tools, resources, prompts);
+        assert_eq!(rows.len(), 2);
+
+        let ready = &rows[0];
+        assert_eq!(ready.name, "context7");
+        assert_eq!(ready.status_word, "ready");
+        assert_eq!(ready.tone, crate::view::McpStatusTone::Ready);
+        assert_eq!(ready.tool_count, Some(2), "connected server counts its tools");
+        assert!(ready.exposes.contains("resolve-library-id"), "tool name in exposes");
+        assert!(ready.exposes.contains("notes://c7"), "resource URI in exposes");
+        assert!(ready.exposes.contains("greet"), "prompt name in exposes");
+
+        let failed = &rows[1];
+        assert_eq!(failed.status_word, "error");
+        assert_eq!(failed.tone, crate::view::McpStatusTone::Error);
+        assert_eq!(failed.tool_count, None, "a failed server has no tool count");
+        assert!(failed.exposes.contains("auth failed"), "error detail is the exposes text");
+    }
+
+    #[test]
+    fn dispatching_queue_opens_the_full_screen_queue_view() {
+        // VAL-VIEW-015/016: `/queue` opens the full-screen prompt-queue view (not a modal), and the
+        // queued prompts are snapshotted as its rows with the head of the queue selected.
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        type_str(&mut a, "add unit tests for the buffer cap");
+        a.on_key(key(KeyCode::Enter));
+        type_str(&mut a, "update CHANGELOG.md for v0.4.3");
+        a.on_key(key(KeyCode::Enter));
+
+        dispatch(&mut a, "queue");
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Queue));
+        assert!(a.dialog().is_none(), "the queue view is not a modal dialog");
+        assert_eq!(a.queue_snapshot().len(), 2, "both queued prompts are snapshotted");
+        assert_eq!(
+            a.queue_snapshot()[0],
+            "add unit tests for the buffer cap",
+            "the head of the queue is the first-submitted prompt"
+        );
+        assert_eq!(a.queue_selection(), 0, "the head of the queue is selected on open");
+    }
+
+    #[test]
+    fn queue_view_arrow_keys_move_and_clamp_the_selection() {
+        // VAL-VIEW-018: arrow keys move the highlighted (selection-bar) row within the queue.
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        for prompt in ["first queued", "second queued", "third queued"] {
+            type_str(&mut a, prompt);
+            a.on_key(key(KeyCode::Enter));
+        }
+        dispatch(&mut a, "queue");
+        assert_eq!(a.queue_selection(), 0);
+
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.queue_selection(), 1, "Down moves the selection down one row");
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.queue_selection(), 2, "selection clamps at the last row");
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.queue_selection(), 1, "Up moves the selection back up");
+
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none(), "Esc dismisses the queue view");
     }
 
     #[test]

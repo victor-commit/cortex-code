@@ -388,6 +388,53 @@ pub enum TimelineDot {
     Diamond,
 }
 
+/// The color tone of an MCP server's status dot + word in the `/mcp` view, chosen by connection
+/// state. The only non-orange hues in the view live here (green/amber/red status), so brand purity
+/// holds elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpStatusTone {
+    /// The server is connected and serving (`ready`) — OKG success green.
+    Ready,
+    /// The server is starting up or needs attention (`needs auth`) — AMBER.
+    Degraded,
+    /// The server failed to connect (`error`) — ERR red.
+    Error,
+    /// A neutral state (`disabled`/`configured`) — FAINT, none of the status hues.
+    Neutral,
+}
+
+impl McpStatusTone {
+    /// The theme color for this tone's status dot and word.
+    #[must_use]
+    fn color(self, theme: &ThemeColors) -> ratatui::style::Color {
+        match self {
+            McpStatusTone::Ready => theme.success,
+            McpStatusTone::Degraded => theme.secondary,
+            McpStatusTone::Error => theme.error,
+            McpStatusTone::Neutral => theme.text_muted,
+        }
+    }
+}
+
+/// One server row in the `/mcp` view: the server name, a status dot + word colored by
+/// [`McpStatusTone`], the tool count (`None` renders as `—` for a server that is not serving), and
+/// the comma-joined list of exposed capabilities (or an error detail). Colors are applied by
+/// [`mcp_body_lines`]; this carries only the data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerRow {
+    /// The configured server name.
+    pub name: String,
+    /// The status word (`ready`/`needs auth`/`error`/`disabled`/`configured`).
+    pub status_word: String,
+    /// The status tone driving the dot + word color.
+    pub tone: McpStatusTone,
+    /// The number of tools the server exposes (`None` for a server that is not serving).
+    pub tool_count: Option<usize>,
+    /// The comma-joined exposed capabilities (tools/resources/prompts), or an error detail; clipped
+    /// with a trailing `…` to fit the panel.
+    pub exposes: String,
+}
+
 /// Format `n` with thousands separators (`42318` -> `42,318`) for the context token counts.
 #[must_use]
 pub fn format_thousands(n: u64) -> String {
@@ -587,6 +634,205 @@ pub fn timeline_body_lines(
         lines.push(cells_to_line(&cells));
     }
     lines
+}
+
+/// Clip `s` to at most `max` columns, appending an `…` when it is cut (so a truncated column always
+/// signals the elision). `max == 0` yields an empty string.
+#[must_use]
+fn clip(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str(glyphs::ELLIPSIS);
+    out
+}
+
+// `/mcp` table column offsets within the panel body (server / status / tools / exposes).
+const MCP_NAME_COL: usize = 0;
+const MCP_STATUS_COL: usize = 16;
+const MCP_TOOLS_COL: usize = 30;
+const MCP_EXPOSES_COL: usize = 38;
+
+/// Build the `/mcp` body: a faint column-header row (`server`/`status`/`tools`/`exposes`) + a rule,
+/// then one aligned row per server. Each server row shows the name (BRIGHT), a `●` status dot + word
+/// colored by state (ready→green, degraded→amber, error→red, else FAINT), the tool count (or `—`),
+/// and the DIM exposed-capabilities list clipped with `…` so it keeps a ≥2-col gap before the border.
+///
+/// With no servers it returns the explicit empty state so `/mcp` never renders a blank panel.
+#[must_use]
+pub fn mcp_body_lines(rows: &[McpServerRow], width: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return vec![empty_state_line("No MCP servers configured.", theme)];
+    }
+    let width = width.max(1);
+    let faint = Style::default().fg(theme.text_muted);
+
+    let mut header = vec![(' ', Style::default().fg(theme.text)); width];
+    place_segments(&mut header, MCP_NAME_COL, &[("server".to_owned(), faint)]);
+    place_segments(&mut header, MCP_STATUS_COL, &[("status".to_owned(), faint)]);
+    place_segments(&mut header, MCP_TOOLS_COL, &[("tools".to_owned(), faint)]);
+    place_segments(&mut header, MCP_EXPOSES_COL, &[("exposes".to_owned(), faint)]);
+
+    let mut lines = Vec::with_capacity(rows.len() + 2);
+    lines.push(cells_to_line(&header));
+    lines.push(rule_line(width, theme));
+
+    let bright = Style::default().fg(theme.text_bright);
+    let txt = Style::default().fg(theme.text);
+    let dim = Style::default().fg(theme.text_dim);
+
+    for row in rows {
+        let mut cells = vec![(' ', Style::default().fg(theme.text)); width];
+
+        let name = clip(&row.name, MCP_STATUS_COL.saturating_sub(MCP_NAME_COL + 1));
+        place_segments(&mut cells, MCP_NAME_COL, &[(name, bright)]);
+
+        let tone = Style::default().fg(row.tone.color(theme));
+        place_segments(
+            &mut cells,
+            MCP_STATUS_COL,
+            &[
+                (format!("{} ", glyphs::DOT_FILLED), tone),
+                (clip(&row.status_word, MCP_TOOLS_COL.saturating_sub(MCP_STATUS_COL + 3)), tone),
+            ],
+        );
+
+        let tools = match row.tool_count {
+            Some(n) => n.to_string(),
+            None => glyphs::EM_DASH.to_owned(),
+        };
+        place_segments(&mut cells, MCP_TOOLS_COL, &[(tools, txt)]);
+
+        if MCP_EXPOSES_COL + 2 < width {
+            let avail = width - MCP_EXPOSES_COL - 2;
+            place_segments(&mut cells, MCP_EXPOSES_COL, &[(clip(&row.exposes, avail), dim)]);
+        }
+
+        lines.push(cells_to_line(&cells));
+    }
+    lines
+}
+
+// `/queue` row column offsets within the panel body (number / prompt text).
+const QUEUE_NUM_COL: usize = 1;
+const QUEUE_TEXT_COL: usize = 5;
+/// The run-next badge shown on the head-of-queue row.
+const QUEUE_NEXT_BADGE: &str = "next";
+
+/// Build the `/queue` body: an intro line noting the queue runs automatically after the current
+/// turn, then one numbered row per queued prompt. The head-of-queue row carries a right-aligned
+/// `next` badge (AMBER); the leading number is ORANGE on the selected/next row and dim-orange
+/// otherwise; the prompt text is BRIGHT on the selected row and normal text elsewhere. The selected
+/// row is painted as a full-width warm `SELBG` selection bar.
+///
+/// With nothing queued it returns the intro + explicit empty state so `/queue` never renders a blank
+/// panel.
+#[must_use]
+pub fn queue_body_lines(
+    prompts: &[String],
+    selected: usize,
+    width: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let intro = Line::from(Span::styled(
+        "runs automatically after the current turn finishes".to_owned(),
+        Style::default().fg(theme.text_dim),
+    ));
+    if prompts.is_empty() {
+        return vec![
+            intro,
+            Line::from(""),
+            empty_state_line("No queued prompts.", theme),
+        ];
+    }
+
+    let mut lines = vec![intro, Line::from("")];
+    let badge_len = QUEUE_NEXT_BADGE.chars().count();
+    for (i, text) in prompts.iter().enumerate() {
+        let is_selected = i == selected;
+        let is_next = i == 0;
+        let row_bg = if is_selected {
+            theme.surface[3]
+        } else {
+            theme.background
+        };
+        let mut cells = vec![(' ', Style::default().fg(theme.text).bg(row_bg)); width];
+
+        let num_color = if is_selected || is_next {
+            theme.primary
+        } else {
+            theme.border
+        };
+        place_segments(
+            &mut cells,
+            QUEUE_NUM_COL,
+            &[(
+                format!("{:>2}", i + 1),
+                Style::default().fg(num_color).bg(row_bg),
+            )],
+        );
+
+        let text_color = if is_selected {
+            theme.text_bright
+        } else {
+            theme.text
+        };
+        let reserved = if is_next { badge_len + 2 } else { 0 };
+        let avail = width
+            .saturating_sub(QUEUE_TEXT_COL + 2 + reserved)
+            .max(1);
+        place_segments(
+            &mut cells,
+            QUEUE_TEXT_COL,
+            &[(clip(text, avail), Style::default().fg(text_color).bg(row_bg))],
+        );
+
+        if is_next && width > badge_len + 2 {
+            let start = width - badge_len - 2;
+            place_segments(
+                &mut cells,
+                start,
+                &[(
+                    QUEUE_NEXT_BADGE.to_owned(),
+                    Style::default().fg(theme.secondary).bg(row_bg),
+                )],
+            );
+        }
+
+        lines.push(cells_to_line(&cells));
+    }
+    lines
+}
+
+/// A footer key-hint row for a full-screen view: `key label   key label …` with each key glyph in
+/// the dim-orange border tone and each label in the FAINT tone (spaced apart), matching the picker
+/// modal footer style. Used inside the bottom of the `/queue` panel.
+#[must_use]
+pub fn footer_hint_line(
+    hints: &[(String, String)],
+    width: usize,
+    theme: &ThemeColors,
+) -> Line<'static> {
+    let mut cells = vec![(' ', Style::default().fg(theme.text)); width.max(1)];
+    let key_style = Style::default().fg(theme.border);
+    let label_style = Style::default().fg(theme.text_muted);
+    let mut segments: Vec<(String, Style)> = Vec::new();
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            segments.push(("   ".to_owned(), label_style));
+        }
+        segments.push((key.clone(), key_style));
+        segments.push((" ".to_owned(), label_style));
+        segments.push((label.clone(), label_style));
+    }
+    place_segments(&mut cells, 0, &segments);
+    cells_to_line(&cells)
 }
 
 #[cfg(test)]
@@ -998,5 +1244,210 @@ mod tests {
         let lines = timeline_body_lines(&[], 80, 24, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].style.fg, Some(theme.text_muted));
+    }
+
+    fn mcp_fixture() -> Vec<McpServerRow> {
+        vec![
+            McpServerRow {
+                name: "context7".to_owned(),
+                status_word: "ready".to_owned(),
+                tone: McpStatusTone::Ready,
+                tool_count: Some(2),
+                exposes: "resolve-library-id, query-docs".to_owned(),
+            },
+            McpServerRow {
+                name: "playwright".to_owned(),
+                status_word: "needs auth".to_owned(),
+                tone: McpStatusTone::Degraded,
+                tool_count: None,
+                exposes: "connecting to browser".to_owned(),
+            },
+            McpServerRow {
+                name: "github".to_owned(),
+                status_word: "error".to_owned(),
+                tone: McpStatusTone::Error,
+                tool_count: None,
+                exposes: "auth failed — run: cortex auth login".to_owned(),
+            },
+        ]
+    }
+
+    #[test]
+    fn mcp_body_has_a_header_rule_and_aligned_columns() {
+        // VAL-VIEW-020: a faint column-header row + rule, then server rows aligned into fixed
+        // server/status/tools/exposes columns.
+        let theme = ThemeColors::from_name("dark");
+        let rows = mcp_fixture();
+        let lines = mcp_body_lines(&rows, 84, &theme);
+        let buf = render_lines(lines, 84, 12);
+
+        let header = row_text(&buf, 0);
+        for label in ["server", "status", "tools", "exposes"] {
+            assert!(header.contains(label), "header has {label}:\n{header}");
+        }
+        // The header labels sit at their fixed columns.
+        assert!(header[..].starts_with("server"), "server column at col 0");
+        assert_eq!(
+            header.chars().skip(MCP_STATUS_COL).take(6).collect::<String>(),
+            "status",
+            "status column at +16"
+        );
+        // Row 1 is a full-width rule.
+        assert!(
+            row_text(&buf, 1).chars().filter(|&c| c == '─').count() >= 80,
+            "row 1 is a rule"
+        );
+        // The first server row aligns its name at col 0 and tools value at the tools column.
+        let row = row_text(&buf, 2);
+        assert!(row.starts_with("context7"), "server name at col 0:\n{row}");
+        assert_eq!(
+            row.chars().skip(MCP_TOOLS_COL).take(1).collect::<String>(),
+            "2",
+            "tool count at the tools column"
+        );
+        assert!(
+            row.chars().skip(MCP_EXPOSES_COL).collect::<String>().starts_with("resolve-library-id"),
+            "exposes at +38:\n{row}"
+        );
+    }
+
+    #[test]
+    fn mcp_status_dots_are_colored_by_state() {
+        // VAL-VIEW-021: ready → OKG green, degraded → AMBER, error → ERR red status dot + word.
+        let theme = ThemeColors::from_name("dark");
+        let rows = mcp_fixture();
+        let lines = mcp_body_lines(&rows, 84, &theme);
+        let buf = render_lines(lines, 84, 12);
+
+        // The status dot sits at MCP_STATUS_COL of each server row (rows start at buffer row 2).
+        assert_eq!(buf[(MCP_STATUS_COL as u16, 2)].symbol(), "●", "ready dot present");
+        assert_eq!(buf[(MCP_STATUS_COL as u16, 2)].fg, theme.success, "ready dot OKG green");
+        assert_eq!(buf[(MCP_STATUS_COL as u16, 3)].fg, theme.secondary, "degraded dot AMBER");
+        assert_eq!(buf[(MCP_STATUS_COL as u16, 4)].fg, theme.error, "error dot ERR red");
+        // The status word carries the same tone.
+        assert_eq!(cell_fg(&buf, "ready"), Some(theme.success), "ready word OKG");
+        assert_eq!(cell_fg(&buf, "error"), Some(theme.error), "error word ERR");
+    }
+
+    #[test]
+    fn mcp_tool_count_falls_back_to_em_dash_and_exposes_clips() {
+        // A server that is not serving shows `—` for its tool count; a long exposes column is
+        // clipped with a trailing `…` (VAL-VIEW-022) keeping a ≥2-col gap before the border.
+        let theme = ThemeColors::from_name("dark");
+        let rows = vec![McpServerRow {
+            name: "firecrawl".to_owned(),
+            status_word: "ready".to_owned(),
+            tone: McpStatusTone::Ready,
+            tool_count: None,
+            exposes: "scrape, search, crawl, map, extract, batch, deep-research, watch, monitor, act"
+                .to_owned(),
+        }];
+        let width = 60usize;
+        let lines = mcp_body_lines(&rows, width, &theme);
+        let buf = render_lines(lines, width as u16, 4);
+        let row = row_text(&buf, 2);
+        assert_eq!(
+            row.chars().skip(MCP_TOOLS_COL).take(1).collect::<String>(),
+            "—",
+            "no tool count renders an em dash:\n{row}"
+        );
+        assert!(row.contains('…'), "long exposes is clipped with an ellipsis:\n{row}");
+        // The clipped exposes keeps at least a 2-col gap before the (border) right edge.
+        let exposes: String = row.chars().skip(MCP_EXPOSES_COL).collect();
+        assert!(exposes.trim_end().chars().count() <= width - MCP_EXPOSES_COL - 2, "≥2-col gap kept");
+    }
+
+    #[test]
+    fn mcp_body_empty_state() {
+        // VAL-VIEW-054: no servers → the explicit faint empty state, never a blank panel.
+        let theme = ThemeColors::from_name("dark");
+        let lines = mcp_body_lines(&[], 80, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme.text_muted));
+    }
+
+    fn queue_fixture() -> Vec<String> {
+        vec![
+            "add unit tests for the buffer cap".to_owned(),
+            "update CHANGELOG.md for v0.4.3".to_owned(),
+            "run the full workspace test suite".to_owned(),
+            "open a PR titled \"cap streaming buffer\"".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn queue_body_numbers_rows_and_badges_the_next_prompt() {
+        // VAL-VIEW-016/017: numbered rows with an orange next/selected number and a right-aligned
+        // AMBER `next` badge on the head-of-queue prompt.
+        let theme = ThemeColors::from_name("dark");
+        let prompts = queue_fixture();
+        let lines = queue_body_lines(&prompts, 0, 84, &theme);
+        let buf = render_lines(lines, 84, 12);
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("runs automatically after the current turn finishes"), "intro line");
+        for prompt in &prompts {
+            let head: String = prompt.chars().take(10).collect();
+            assert!(text.contains(&head), "prompt {head:?} present");
+        }
+        // The numbers 1..=4 are rendered.
+        for n in ["1", "2", "3", "4"] {
+            assert!(text.contains(n), "row number {n} present");
+        }
+        // The `next` badge is present and AMBER.
+        assert!(text.contains("next"), "run-next badge present");
+        assert_eq!(cell_fg(&buf, "next"), Some(theme.secondary), "next badge AMBER");
+        // The head-of-queue number is ORANGE (selected + next).
+        assert_eq!(cell_fg(&buf, "1"), Some(theme.primary), "row 1 number ORANGE");
+    }
+
+    #[test]
+    fn queue_selected_row_is_a_full_width_selection_bar() {
+        // VAL-VIEW-018: the selected row is a solid warm SELBG bar; the number is ORANGE and the
+        // text BRIGHT on that row; a non-selected row has no fill.
+        let theme = ThemeColors::from_name("dark");
+        let prompts = queue_fixture();
+        // Select row index 1 (not the head) so selection and next differ.
+        let lines = queue_body_lines(&prompts, 1, 84, &theme);
+        let buf = render_lines(lines, 84, 12);
+
+        // Rows start at buffer row 2 (intro + blank precede them); the selected row is index 1 → row 3.
+        let selected_y = 3u16;
+        for x in 0..84u16 {
+            assert_eq!(
+                buf[(x, selected_y)].bg,
+                theme.surface[3],
+                "selected row cell ({x}) carries the SELBG fill"
+            );
+        }
+        // A non-selected row (row 2) is not filled with SELBG.
+        assert_ne!(buf[(10u16, 2u16)].bg, theme.surface[3], "unselected row has no SELBG fill");
+        // The selected prompt text is BRIGHT.
+        assert_eq!(cell_fg(&buf, "update CHANGELOG"), Some(theme.text_bright), "selected text BRIGHT");
+    }
+
+    #[test]
+    fn queue_body_empty_state() {
+        let theme = ThemeColors::from_name("dark");
+        let lines = queue_body_lines(&[], 0, 80, &theme);
+        // intro + blank + empty-state placeholder.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme.text_muted));
+        assert_eq!(lines[2].spans[0].content.as_ref(), "No queued prompts.");
+    }
+
+    #[test]
+    fn footer_hint_line_colors_keys_and_labels() {
+        // VAL-VIEW-018: footer hints render keys in the dim-orange border tone and labels in FAINT.
+        let theme = ThemeColors::from_name("dark");
+        let hints = vec![
+            ("↵".to_owned(), "edit".to_owned()),
+            ("esc".to_owned(), "close".to_owned()),
+        ];
+        let line = footer_hint_line(&hints, 60, &theme);
+        let buf = render_lines(vec![line], 60, 1);
+        assert_eq!(cell_fg(&buf, "↵"), Some(theme.border), "key glyph dim-orange");
+        assert_eq!(cell_fg(&buf, "edit"), Some(theme.text_muted), "label FAINT");
+        assert_eq!(cell_fg(&buf, "esc"), Some(theme.border), "esc key dim-orange");
     }
 }

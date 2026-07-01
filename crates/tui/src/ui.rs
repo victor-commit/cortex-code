@@ -1899,24 +1899,32 @@ fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style
         ViewKind::Status => draw_status_view_body(frame, app, inner, theme),
         ViewKind::Timeline => draw_timeline_view_body(frame, app, inner, theme),
         ViewKind::Mcp => draw_mcp_view_body(frame, app, inner, theme),
+        ViewKind::Queue => draw_queue_view_body(frame, app, inner, theme),
         _ => draw_view_placeholder(frame, inner, theme),
     }
 }
 
-/// The top-right panel note for a view (e.g. the MCP server count), or `None` for views without a
-/// summary note.
+/// The top-right panel note for a view (the MCP server/tool totals, the timeline event count, or
+/// the queued-prompt count), or `None` for views without a summary note.
 fn view_note(app: &App, kind: crate::view::ViewKind) -> Option<String> {
     match kind {
         crate::view::ViewKind::Mcp => {
-            let count = app.mcp_view_rows().len();
+            let rows = app.mcp_view_rows();
+            let servers = rows.len();
+            let tools: usize = rows.iter().filter_map(|row| row.tool_count).sum();
             Some(format!(
-                "{count} server{}",
-                if count == 1 { "" } else { "s" }
+                "{servers} server{} · {tools} tool{}",
+                if servers == 1 { "" } else { "s" },
+                if tools == 1 { "" } else { "s" }
             ))
         }
         crate::view::ViewKind::Timeline => {
             let count = app.timeline_snapshot().len();
             Some(format!("{count} event{}", if count == 1 { "" } else { "s" }))
+        }
+        crate::view::ViewKind::Queue => {
+            let count = app.queue_snapshot().len();
+            Some(format!("{count} queued"))
         }
         _ => None,
     }
@@ -1964,32 +1972,68 @@ fn draw_timeline_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &sty
     );
 }
 
-/// The `/mcp` view body: one row per configured/connected server (an ORANGE `●` marker + the live
-/// status line), or the explicit empty state when no servers are configured.
+/// The `/mcp` view body: a faint `server/status/tools/exposes` column header + rule, then one
+/// aligned row per configured/connected server (name, `●` status dot + word colored by state, tool
+/// count, and the clipped exposed-capabilities list), or the explicit empty state when no servers
+/// are configured. Rendered via the shared [`crate::view::mcp_body_lines`] helper (theme tokens only).
 fn draw_mcp_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let target = view_body_inset(area);
     let rows = app.mcp_view_rows();
-    let lines: Vec<Line<'static>> = if rows.is_empty() {
-        vec![crate::view::empty_state_line(
-            "No MCP servers configured.",
-            theme,
-        )]
-    } else {
-        rows.into_iter()
-            .map(|row| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("{} ", crate::glyphs::DOT_FILLED),
-                        Style::default().fg(theme.primary),
-                    ),
-                    Span::styled(row, Style::default().fg(theme.text)),
-                ])
-            })
-            .collect()
-    };
+    let lines = crate::view::mcp_body_lines(&rows, target.width as usize, theme);
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
-        view_body_inset(area),
+        target,
     );
+}
+
+/// The `/queue` view body: an intro line, the numbered queued-prompt rows (selection bar + AMBER
+/// `next` badge on the head of the queue), and a footer key-hint row pinned to the bottom of the
+/// panel. Rendered via the shared [`crate::view::queue_body_lines`] / [`crate::view::footer_hint_line`]
+/// helpers (theme tokens + safe glyphs only).
+fn draw_queue_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let target = view_body_inset(area);
+    if target.width == 0 || target.height == 0 {
+        return;
+    }
+    let base = Style::default().fg(theme.text).bg(theme.background);
+
+    // Reserve the bottom row for the footer hints when there is room for a body above it.
+    let footer_rows = u16::from(target.height >= 3);
+    let body_area = Rect {
+        height: target.height - footer_rows,
+        ..target
+    };
+    let lines = crate::view::queue_body_lines(
+        app.queue_snapshot(),
+        app.queue_selection(),
+        target.width as usize,
+        theme,
+    );
+    frame.render_widget(Paragraph::new(lines).style(base), body_area);
+
+    if footer_rows == 1 {
+        let footer_area = Rect {
+            y: target.y + target.height - 1,
+            height: 1,
+            ..target
+        };
+        let reorder_key = format!("^{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN);
+        let hints = vec![
+            (crate::glyphs::KEY_ENTER.to_owned(), "edit".to_owned()),
+            (reorder_key, "reorder".to_owned()),
+            ("dd".to_owned(), "remove".to_owned()),
+            ("esc".to_owned(), "close".to_owned()),
+        ];
+        frame.render_widget(
+            Paragraph::new(crate::view::footer_hint_line(
+                &hints,
+                target.width as usize,
+                theme,
+            ))
+            .style(base),
+            footer_area,
+        );
+    }
 }
 
 /// The default body for a view whose rich content is built by a later Wave-2 feature: an explicit
