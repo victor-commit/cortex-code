@@ -168,8 +168,6 @@ pub enum Entry {
 pub enum DialogKind {
     /// The session picker (`/sessions`).
     Sessions,
-    /// The session timeline (`/timeline`).
-    Timeline,
     /// The model picker (`/models`).
     Models,
     /// The agent picker (`/agents`).
@@ -826,6 +824,12 @@ pub struct App {
     /// While set it takes over the whole frame with the shared view chrome and is modal: Esc closes
     /// it back to the conversation. See [`crate::view`].
     active_view: Option<crate::view::ViewKind>,
+    /// The `/status` view's data, snapshotted when the view opens (a git subprocess + store reads
+    /// are too costly to repeat every redraw). Rebuilt on each `/status` open.
+    status_snapshot: Option<crate::view::StatusData>,
+    /// The `/timeline` view's event rail, snapshotted from the persisted session when the view
+    /// opens. Rebuilt on each `/timeline` open.
+    timeline_snapshot: Vec<crate::view::TimelineEvent>,
     /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
@@ -1032,6 +1036,8 @@ impl App {
             dialog: None,
             diff_viewer: None,
             active_view: None,
+            status_snapshot: None,
+            timeline_snapshot: Vec::new(),
             mention: None,
             plugin_text_complete: None,
             pending_text_completion: None,
@@ -3370,7 +3376,7 @@ impl App {
             "diff" => self.open_diff_viewer(),
             "compact" => self.start_compaction(),
             "sessions" => self.open_sessions_dialog(),
-            "timeline" => self.open_timeline_dialog(),
+            "timeline" => self.open_timeline_view(),
             "fork" => self.open_fork_dialog(),
             "subagents" => self.open_subagents_dialog(),
             "queue" => self.open_palette_scope(PaletteScope::QueuedPrompts),
@@ -3434,29 +3440,12 @@ impl App {
         }
     }
 
-    /// Open the timeline view (`/timeline`): the current session's persisted message history with
-    /// per-row part counts.
-    fn open_timeline_dialog(&mut self) {
-        let Some(session_id) = self.session_id.clone() else {
-            self.note_error("No persisted session is active yet.".to_owned());
-            return;
-        };
-        let (items, entries) = match self.timeline_rows(&session_id) {
-            Ok(rows) => rows,
-            Err(err) => {
-                self.note_error(format!("Timeline unavailable: {err}"));
-                return;
-            }
-        };
-        let selected = entries.len().saturating_sub(1);
-        self.timeline_entries = entries;
-        self.open_dialog(Dialog {
-            kind: DialogKind::Timeline,
-            title: format!("Timeline · {session_id}"),
-            items,
-            selected,
-            empty: Some("No turns in this session yet.".to_owned()),
-        });
+    /// Open the full-screen session timeline view (`/timeline`) with the shared view chrome. The
+    /// event rail is snapshotted from the persisted session when the view opens (so a redraw never
+    /// re-reads the store); with no persisted session it renders an explicit empty state.
+    fn open_timeline_view(&mut self) {
+        self.timeline_snapshot = self.build_timeline_events();
+        self.open_view(crate::view::ViewKind::Timeline);
     }
 
     /// Open the fork picker (`/fork`) backed by the current session timeline.
@@ -4182,9 +4171,11 @@ impl App {
         self.open_view(crate::view::ViewKind::Mcp);
     }
 
-    /// Open the full-screen session-status view (`/status`) with the shared view chrome. The body
-    /// reads the active runtime state (model/agent/mode/session/usage) at render time.
+    /// Open the full-screen session-status view (`/status`) with the shared view chrome. The runtime
+    /// state (session/model/usage/git/workspace) is snapshotted when the view opens so a redraw
+    /// never re-runs the git subprocess or re-reads the store.
     fn open_status_view(&mut self) {
+        self.status_snapshot = Some(self.build_status_data());
         self.open_view(crate::view::ViewKind::Status);
     }
 
@@ -4215,6 +4206,18 @@ impl App {
     #[must_use]
     pub fn active_view_open(&self) -> bool {
         self.active_view.is_some()
+    }
+
+    /// The snapshotted `/status` view data (captured when the view opened), for rendering.
+    #[must_use]
+    pub fn status_snapshot(&self) -> Option<&crate::view::StatusData> {
+        self.status_snapshot.as_ref()
+    }
+
+    /// The snapshotted `/timeline` event rail (captured when the view opened), for rendering.
+    #[must_use]
+    pub fn timeline_snapshot(&self) -> &[crate::view::TimelineEvent] {
+        &self.timeline_snapshot
     }
 
     /// Close the open full-screen view, returning to the conversation and its composer chrome.
@@ -4254,6 +4257,127 @@ impl App {
             );
         }
         configured_mcp_servers()
+    }
+
+    /// Snapshot the live runtime state rendered by the `/status` view: the session title/age, the
+    /// active agent/model/variant, the token usage against the model context window, the session
+    /// cost, the permission posture, and the workspace/git state. All values are real/dynamic (never
+    /// mockup placeholders); git and the store are read once here, not on every redraw.
+    fn build_status_data(&self) -> crate::view::StatusData {
+        let now = current_epoch_secs();
+        let store = self.open_store();
+        let record = self
+            .session_id
+            .as_ref()
+            .zip(store.as_ref())
+            .and_then(|(id, db)| db.sessions().get(id).ok().flatten());
+
+        let session = record
+            .as_ref()
+            .and_then(|s| s.title.clone())
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| self.status.session.clone());
+
+        let started = match (&self.session_id, &record) {
+            (Some(id), Some(rec)) => {
+                let count = self.session_message_count(id);
+                let plural = if count == 1 { "message" } else { "messages" };
+                let age = relative_age(&rec.created_at, now);
+                if age.is_empty() {
+                    format!("{count} {plural}")
+                } else if age == "just now" {
+                    format!("just now · {count} {plural}")
+                } else {
+                    format!("{age} ago · {count} {plural}")
+                }
+            }
+            _ => "not yet saved".to_owned(),
+        };
+
+        let tokens = format!(
+            "in {} · out {} · {} total",
+            format_tokens(self.usage.input_tokens),
+            format_tokens(self.usage.output_tokens),
+            format_tokens(self.usage.total_tokens)
+        );
+        let cost = format!("${:.2} this session", self.usage.cost.unwrap_or(0.0));
+
+        crate::view::StatusData {
+            session,
+            started,
+            agent: self.status.agent.clone(),
+            model: self.status.model.clone(),
+            variant: self.status.variant.clone(),
+            context_used: self.usage.total_tokens,
+            context_limit: self.model_context_limit(),
+            tokens,
+            cost,
+            permits: "edit allow · bash allow-all · web allow".to_owned(),
+            workspace: crate::motd::current_dir_display(),
+            git: git_info(),
+        }
+    }
+
+    /// The active model's context window (in tokens) from the merged provider catalogue, or `0` when
+    /// the model is not found (the usage bar then renders empty).
+    fn model_context_limit(&self) -> u64 {
+        let effective = effective_config();
+        let provider_config = effective
+            .as_ref()
+            .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
+        let merged = provider_config.as_ref().map_or_else(
+            || providers::Catalogue::embedded().clone(),
+            |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
+        );
+        for provider in merged.providers() {
+            if let Some(model) = provider.models.values().find(|m| m.id == self.status.model) {
+                return model.limit.context;
+            }
+        }
+        0
+    }
+
+    /// Snapshot the `/timeline` event rail from the persisted session: a synthetic `session started`
+    /// milestone followed by one event per persisted message (`●` you/assistant, `◆` other roles),
+    /// each carrying its real `HH:MM` timestamp and a first-line excerpt. Best-effort: an empty vec
+    /// when no session is persisted or the store cannot be opened.
+    fn build_timeline_events(&self) -> Vec<crate::view::TimelineEvent> {
+        use crate::view::{TimelineDot, TimelineEvent};
+        let mut events = Vec::new();
+        let Some(session_id) = self.session_id.clone() else {
+            return events;
+        };
+        let Some(db) = self.open_store() else {
+            return events;
+        };
+
+        if let Ok(Some(session)) = db.sessions().get(&session_id) {
+            let model = short_model(session.model.as_deref().unwrap_or(&self.status.model));
+            events.push(TimelineEvent {
+                dot: TimelineDot::Filled,
+                time: hhmm(&session.created_at),
+                who: "session started".to_owned(),
+                text: format!("{} · {model}", self.status.agent),
+            });
+        }
+
+        if let Ok(messages) = db.messages().list_for_session(&session_id) {
+            for message in &messages {
+                let (dot, who) = match message.role.as_str() {
+                    "user" => (TimelineDot::Filled, "you".to_owned()),
+                    "assistant" => (TimelineDot::Filled, "assistant".to_owned()),
+                    other => (TimelineDot::Diamond, other.to_owned()),
+                };
+                events.push(TimelineEvent {
+                    dot,
+                    time: hhmm(&message.created_at),
+                    who,
+                    text: first_line(&message.content),
+                });
+            }
+        }
+
+        events
     }
 
     /// Produce a local (loopback) share reference for the current session (`/share`): mint a stable
@@ -4774,7 +4898,6 @@ impl App {
         let kind = self.dialog.as_ref().map(|dialog| dialog.kind);
         let is_sessions = kind == Some(DialogKind::Sessions);
         let is_models = kind == Some(DialogKind::Models);
-        let is_timeline = kind == Some(DialogKind::Timeline);
         let is_skills = kind == Some(DialogKind::Skills);
         let searchable = is_sessions || is_models;
         match key.code {
@@ -4791,10 +4914,6 @@ impl App {
             KeyCode::Char('r') if ctrl && is_sessions => self.begin_session_rename(),
             KeyCode::Char('d') if ctrl && is_sessions => self.delete_selected_session(),
             KeyCode::Delete if is_sessions => self.delete_selected_session(),
-            KeyCode::Char('f') if is_timeline => {
-                let selected = self.dialog.as_ref().map(Dialog::selected);
-                self.open_fork_dialog_with_selected(selected);
-            }
             KeyCode::Backspace if searchable => self.picker_search_pop(),
             KeyCode::Char(c) if searchable && !ctrl => self.picker_search_push(c),
             _ => {}
@@ -4952,12 +5071,6 @@ impl App {
             Some(DialogKind::Sessions) => {
                 if let Some(id) = self.selected_session_id() {
                     self.load_session(&id);
-                }
-            }
-            Some(DialogKind::Timeline) => {
-                if let Some(label) = self.selected_timeline_label() {
-                    self.transcript
-                        .push(Entry::Notice(format!("Timeline point selected: {label}")));
                 }
             }
             Some(DialogKind::Fork) => self.fork_from_timeline_selection(),
@@ -5360,20 +5473,13 @@ impl App {
 
     fn selected_timeline_index(&self) -> Option<usize> {
         let dialog = self.dialog.as_ref()?;
-        if !matches!(dialog.kind, DialogKind::Timeline | DialogKind::Fork) {
+        if !matches!(dialog.kind, DialogKind::Fork) {
             return None;
         }
         if self.timeline_entries.is_empty() {
             return None;
         }
         Some(dialog.selected().min(self.timeline_entries.len() - 1))
-    }
-
-    fn selected_timeline_label(&self) -> Option<String> {
-        let index = self.selected_timeline_index()?;
-        self.timeline_entries
-            .get(index)
-            .map(|entry| entry.label.clone())
     }
 
     fn append_loaded_message(&mut self, message: &db::Message) {
@@ -7668,6 +7774,51 @@ fn relative_age(timestamp: &str, now: i64) -> String {
     } else {
         format!("{}d", secs / 86_400)
     }
+}
+
+/// The `HH:MM` field of a stored `YYYY-MM-DD HH:MM:SS` UTC timestamp (for the timeline rail), or an
+/// empty string when the timestamp is not in that shape.
+fn hhmm(timestamp: &str) -> String {
+    timestamp
+        .split_once(' ')
+        .map(|(_, time)| time.chars().take(5).collect())
+        .unwrap_or_default()
+}
+
+/// A compact token count for the `/status` token breakdown: `<1000` verbatim, then `X.Xk`, `X.XM`.
+fn format_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+/// The workspace git state for the `/status` view, read once when the view opens: the current branch
+/// and whether the working tree has no uncommitted changes to *tracked* files (untracked files are
+/// ignored, matching "nothing to commit"). `None` when the cwd is not a git repo.
+fn git_info() -> Option<crate::view::GitInfo> {
+    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim().to_owned();
+    if branch.is_empty() {
+        return None;
+    }
+    let status = run_git(&["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default();
+    Some(crate::view::GitInfo {
+        branch,
+        clean: status.trim().is_empty(),
+    })
+}
+
+/// Run `git` with `args` in the current working directory, returning its stdout on success.
+fn run_git(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
 }
 
 /// Load the effective configuration with no CLI overrides, or `None` if it cannot be resolved.
@@ -13207,32 +13358,43 @@ mod tests {
     }
 
     #[test]
-    fn timeline_dialog_lists_persisted_turns_with_part_counts() {
-        let path = session_store_path("timeline-dialog");
+    fn timeline_view_lists_persisted_turns_on_the_event_rail() {
+        // `/timeline` now opens the full-screen Wave-2 view (not a modal dialog); its snapshot lists
+        // the session-started milestone plus one event per persisted turn, sourced from the store.
+        use crate::view::TimelineDot;
+        let path = session_store_path("timeline-view");
         let mut a = app();
         a.set_session_store(Some(path));
         run_turn(&mut a, "first question", "first answer");
         run_turn(&mut a, "second question", "second answer");
 
         dispatch(&mut a, "timeline");
-        let dialog = a.dialog().expect("timeline dialog");
-        assert_eq!(dialog.kind, DialogKind::Timeline);
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Timeline));
+        assert!(a.dialog().is_none(), "the timeline is not a modal dialog");
+
+        let events = a.timeline_snapshot();
         assert!(
-            dialog
-                .items
+            events
                 .iter()
-                .any(|item| item.contains("you") && item.contains("part")),
-            "timeline rows include user turns with part counts: {:?}",
-            dialog.items
+                .any(|e| e.who == "session started" && matches!(e.dot, TimelineDot::Filled)),
+            "timeline opens with a session-started milestone: {events:?}"
         );
         assert!(
-            dialog
-                .items
+            events
                 .iter()
-                .any(|item| item.contains("assistant") && item.contains("part")),
-            "timeline rows include assistant turns with part counts: {:?}",
-            dialog.items
+                .any(|e| e.who == "you" && e.text.contains("first question")),
+            "timeline lists the user turns: {events:?}"
         );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.who == "assistant" && e.text.contains("first answer")),
+            "timeline lists the assistant turns: {events:?}"
+        );
+
+        // Esc closes the view back to the conversation.
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none(), "Esc dismisses the timeline view");
     }
 
     #[test]

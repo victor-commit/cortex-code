@@ -285,10 +285,8 @@ pub fn kv_line(
 /// `█` and the empty remainder in the GHOST tone using `░`. `frac` is clamped to `0.0..=1.0`.
 ///
 /// This is the shared `pbar` helper for the Wave-2 views. Its first in-app consumer is the status
-/// view's context-usage bar (`view-status-timeline`), which supplies the real context fraction; it
-/// is defined and locked here (with unit coverage) as part of the shared chrome foundation.
+/// view's context-usage bar (`view-status-timeline`), which supplies the real context fraction.
 #[must_use]
-#[allow(dead_code)]
 pub fn pbar_spans(width: usize, frac: f32, theme: &ThemeColors) -> Vec<Span<'static>> {
     let frac = frac.clamp(0.0, 1.0);
     let filled = ((frac * width as f32).round() as usize).min(width);
@@ -320,6 +318,275 @@ pub fn empty_state_line(text: &str, theme: &ThemeColors) -> Line<'static> {
             .fg(theme.text_muted)
             .add_modifier(Modifier::ITALIC),
     ))
+}
+
+/// The fixed left column width (in cells) for the label of every `/status` key/value row, so the
+/// values all begin at the same column.
+const STATUS_LABEL_WIDTH: usize = 12;
+
+/// The git branch/dirty state shown on the `/status` workspace row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitInfo {
+    /// The current branch name (e.g. `main`).
+    pub branch: String,
+    /// Whether the working tree has no uncommitted changes to tracked files.
+    pub clean: bool,
+}
+
+/// The real runtime state rendered by the `/status` view, gathered once when the view opens (see
+/// [`crate::app::App`]). Colors are applied by [`status_body_lines`]; this carries only the data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusData {
+    /// The session title (or its id / `new` when it has no title).
+    pub session: String,
+    /// A human age plus message count (e.g. `2h ago · 12 messages`).
+    pub started: String,
+    /// The active agent name.
+    pub agent: String,
+    /// The active model id.
+    pub model: String,
+    /// The active reasoning variant, shown as a dim-orange tag on the model row.
+    pub variant: String,
+    /// Tokens consumed against the model context window (for the usage bar + count).
+    pub context_used: u64,
+    /// The active model's context window (0 when unknown; the bar then reads empty).
+    pub context_limit: u64,
+    /// The pre-formatted token breakdown (e.g. `in 38.2k · out 4.1k · 42.3k total`).
+    pub tokens: String,
+    /// The pre-formatted session cost (e.g. `$0.84 this session`).
+    pub cost: String,
+    /// The permission posture summary (e.g. `edit allow · bash allow-all · web allow`).
+    pub permits: String,
+    /// The working directory, home-relative when under `$HOME`.
+    pub workspace: String,
+    /// The git branch/clean state, or `None` when the workspace is not a git repo.
+    pub git: Option<GitInfo>,
+}
+
+/// One event row in the `/timeline` view: a status dot, a timestamp, an author/who label, and a
+/// description. Colors are applied by [`timeline_body_lines`]; this carries only the data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineEvent {
+    /// The status dot glyph selecting shape + color.
+    pub dot: TimelineDot,
+    /// The `HH:MM` timestamp.
+    pub time: String,
+    /// The author/who label (`you`, `assistant`, `session started`, a tool/role name…).
+    pub who: String,
+    /// The description text, clipped to the panel width.
+    pub text: String,
+}
+
+/// The three safe timeline status dots (`●`/`○`/`◆`); no braille or tofu is ever used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineDot {
+    /// A completed/user/system milestone event (`●`).
+    Filled,
+    /// An in-progress event (`○`).
+    Hollow,
+    /// A tool/action event (`◆`, amber).
+    Diamond,
+}
+
+/// Format `n` with thousands separators (`42318` -> `42,318`) for the context token counts.
+#[must_use]
+pub fn format_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// A `/status` key/value row: the `label` FAINT and padded to [`STATUS_LABEL_WIDTH`], then the
+/// value spans so every value begins at the same column.
+fn status_row(label: &str, value: Vec<Span<'static>>, theme: &ThemeColors) -> Line<'static> {
+    let label_cells = label.chars().count();
+    let padded = if label_cells >= STATUS_LABEL_WIDTH {
+        format!("{label} ")
+    } else {
+        format!("{label}{}", " ".repeat(STATUS_LABEL_WIDTH - label_cells))
+    };
+    let mut spans = vec![Span::styled(padded, Style::default().fg(theme.text_muted))];
+    spans.extend(value);
+    Line::from(spans)
+}
+
+/// A faint full-width group separator rule (`─` in the ghost tone).
+fn rule_line(width: usize, theme: &ThemeColors) -> Line<'static> {
+    Line::from(Span::styled(
+        glyphs::BOX_HORIZONTAL.repeat(width.max(1)),
+        Style::default().fg(theme.ghost),
+    ))
+}
+
+/// Build the `/status` body: aligned key/value rows (session/started/agent/model), a context-usage
+/// bar, token/cost rows, and the permits/workspace rows, grouped by faint separator rules. `width`
+/// is the render width (used for the rules and to size the usage bar).
+///
+/// Colors come only from the theme tokens: labels FAINT, the agent value AMBER, the model's variant
+/// tag dim-orange (`theme.border`), the usage-bar percentage AMBER, and a clean git marker (`✓
+/// clean`) in the OKG success green — every other value is a neutral text tone (brand-pure; no
+/// numeric value is ever green).
+#[must_use]
+pub fn status_body_lines(data: &StatusData, width: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+    let bright = Style::default().fg(theme.text_bright);
+    let txt = Style::default().fg(theme.text);
+    let dim = Style::default().fg(theme.text_dim);
+    let amber = Style::default().fg(theme.secondary);
+    let orange_d = Style::default().fg(theme.border);
+    let okg = Style::default().fg(theme.success);
+
+    let bar_width = 40.min(width.saturating_sub(STATUS_LABEL_WIDTH + 6)).max(1);
+
+    let mut model_value = vec![Span::styled(data.model.clone(), bright)];
+    if !data.variant.trim().is_empty() {
+        model_value.push(Span::styled(format!("   {}", data.variant), orange_d));
+    }
+
+    let frac = if data.context_limit > 0 {
+        data.context_used as f32 / data.context_limit as f32
+    } else {
+        0.0
+    };
+    let pct = (frac.clamp(0.0, 1.0) * 100.0).round() as u64;
+    let context_value = if data.context_limit > 0 {
+        format!(
+            "{} / {} tokens",
+            format_thousands(data.context_used),
+            format_thousands(data.context_limit)
+        )
+    } else {
+        format!("{} tokens", format_thousands(data.context_used))
+    };
+    let mut bar_spans = vec![Span::raw(" ".repeat(STATUS_LABEL_WIDTH))];
+    bar_spans.extend(pbar_spans(bar_width, frac, theme));
+    bar_spans.push(Span::raw(" "));
+    bar_spans.push(Span::styled(format!("{pct}%"), amber));
+
+    let mut workspace_value = vec![Span::styled(data.workspace.clone(), txt)];
+    if let Some(git) = &data.git {
+        workspace_value.push(Span::styled(format!("   git: {} ", git.branch), dim));
+        if git.clean {
+            workspace_value.push(Span::styled(format!("{} clean", glyphs::MARK_DONE), okg));
+        } else {
+            workspace_value.push(Span::styled(
+                format!("{} uncommitted", glyphs::DOT_FILLED),
+                amber,
+            ));
+        }
+    }
+
+    vec![
+        Line::from(""),
+        kv_line("session", &data.session, bright, STATUS_LABEL_WIDTH, theme),
+        kv_line("started", &data.started, txt, STATUS_LABEL_WIDTH, theme),
+        kv_line("agent", &data.agent, amber, STATUS_LABEL_WIDTH, theme),
+        status_row("model", model_value, theme),
+        Line::from(""),
+        rule_line(width, theme),
+        Line::from(""),
+        kv_line("context", &context_value, txt, STATUS_LABEL_WIDTH, theme),
+        Line::from(bar_spans),
+        Line::from(""),
+        kv_line("tokens", &data.tokens, dim, STATUS_LABEL_WIDTH, theme),
+        kv_line("cost", &data.cost, dim, STATUS_LABEL_WIDTH, theme),
+        Line::from(""),
+        rule_line(width, theme),
+        Line::from(""),
+        kv_line("permits", &data.permits, dim, STATUS_LABEL_WIDTH, theme),
+        status_row("workspace", workspace_value, theme),
+    ]
+}
+
+/// Build the `/timeline` body: a rail of status dots (`●`/`○`/`◆`) linked by `│` connectors, each
+/// event on its own row with a faint fixed timestamp column, a colored author column (AMBER for a
+/// `◆` tool event, BRIGHT for `you`, else normal text), and a dim description clipped to `width`.
+///
+/// Events are laid out at 2-row spacing (a connector row above every event after the first). When
+/// there are more events than fit in `max_rows`, only the most recent that fit are rendered so no
+/// row overflows the panel border.
+#[must_use]
+pub fn timeline_body_lines(
+    events: &[TimelineEvent],
+    width: usize,
+    max_rows: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
+    if events.is_empty() {
+        return vec![empty_state_line("No events in this session yet.", theme)];
+    }
+
+    // Glyph column, then the timestamp at +3 and the author at +9 (per the layout spec).
+    const GLYPH_COL: usize = 1;
+    const TIME_COL: usize = GLYPH_COL + 3;
+    const WHO_COL: usize = GLYPH_COL + 9;
+
+    // 2-row spacing: 1 row for the first event, then a connector + event row for each subsequent
+    // one (2n-1 rows total). Keep the latest events that fit so nothing overflows the border.
+    let capacity = max_rows.div_ceil(2).max(1);
+    let start = events.len().saturating_sub(capacity);
+    let shown = &events[start..];
+
+    let base = Style::default().fg(theme.text);
+    let ghost = Style::default().fg(theme.ghost);
+    let faint = Style::default().fg(theme.text_muted);
+    let dim = Style::default().fg(theme.text_dim);
+
+    let mut lines = Vec::with_capacity(shown.len() * 2);
+    for (idx, event) in shown.iter().enumerate() {
+        if idx > 0 {
+            let mut connector = vec![(' ', base); width.max(1)];
+            place_segments(
+                &mut connector,
+                GLYPH_COL,
+                &[(glyphs::BOX_VERTICAL.to_owned(), ghost)],
+            );
+            lines.push(cells_to_line(&connector));
+        }
+
+        let (glyph, dot_style) = match event.dot {
+            TimelineDot::Diamond => (glyphs::DOT_DIAMOND, Style::default().fg(theme.secondary)),
+            TimelineDot::Hollow => (glyphs::DOT_HOLLOW, faint),
+            TimelineDot::Filled => {
+                let color = if matches!(event.who.as_str(), "you" | "assistant") {
+                    theme.text
+                } else {
+                    theme.primary
+                };
+                (glyphs::DOT_FILLED, Style::default().fg(color))
+            }
+        };
+        let who_style = if matches!(event.dot, TimelineDot::Diamond) {
+            Style::default().fg(theme.secondary)
+        } else if event.who == "you" {
+            Style::default().fg(theme.text_bright)
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        let mut cells = vec![(' ', base); width.max(1)];
+        place_segments(&mut cells, GLYPH_COL, &[(glyph.to_owned(), dot_style)]);
+        place_segments(&mut cells, TIME_COL, &[(event.time.clone(), faint)]);
+        place_segments(&mut cells, WHO_COL, &[(event.who.clone(), who_style)]);
+        let text_col = WHO_COL + event.who.chars().count() + 2;
+        if text_col < width {
+            let avail = width - text_col;
+            let text: String = if event.text.chars().count() > avail {
+                event.text.chars().take(avail.saturating_sub(1)).collect::<String>() + glyphs::ELLIPSIS
+            } else {
+                event.text.clone()
+            };
+            place_segments(&mut cells, text_col, &[(text, dim)]);
+        }
+        lines.push(cells_to_line(&cells));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -567,5 +834,169 @@ mod tests {
             assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
         }
         assert!(!text.contains(">_"), "no `>_` cliché");
+    }
+
+    fn render_lines(lines: Vec<Line<'static>>, w: u16, h: u16) -> Buffer {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(lines), frame.area());
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn status_fixture() -> StatusData {
+        StatusData {
+            session: "fix streaming buffer limit".to_owned(),
+            started: "2h ago · 12 messages".to_owned(),
+            agent: "build".to_owned(),
+            model: "google/gemini-2.5-flash".to_owned(),
+            variant: "default".to_owned(),
+            context_used: 42_318,
+            context_limit: 200_000,
+            tokens: "in 38.2k · out 4.1k · 42.3k total".to_owned(),
+            cost: "$0.84 this session".to_owned(),
+            permits: "edit allow · bash allow-all · web allow".to_owned(),
+            workspace: "/projects/cortex-code".to_owned(),
+            git: Some(GitInfo { branch: "main".to_owned(), clean: true }),
+        }
+    }
+
+    fn cell_fg(buf: &Buffer, needle: &str) -> Option<ratatui::style::Color> {
+        // Find the first cell of the first row whose text run starts `needle`, return its fg.
+        for y in 0..buf.area.height {
+            let row = row_text(buf, y);
+            if let Some(byte_idx) = row.find(needle) {
+                let col = row[..byte_idx].chars().count() as u16;
+                return buf[(col, y)].fg.into();
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn format_thousands_groups_by_threes() {
+        assert_eq!(format_thousands(0), "0");
+        assert_eq!(format_thousands(42_318), "42,318");
+        assert_eq!(format_thousands(200_000), "200,000");
+        assert_eq!(format_thousands(1_048_576), "1,048,576");
+    }
+
+    #[test]
+    fn status_body_aligns_rows_and_marks_git_clean() {
+        // VAL-VIEW-002/004/005: aligned label/value rows with an amber agent, brand-pure token/cost
+        // rows, and a `✓ clean` git marker in the OKG success green.
+        let theme = ThemeColors::from_name("dark");
+        let data = status_fixture();
+        let lines = status_body_lines(&data, 84, &theme);
+        let buf = render_lines(lines, 84, 24);
+        let text = buffer_text(&buf);
+
+        for label in ["session", "started", "agent", "model", "context", "tokens", "cost", "permits", "workspace"] {
+            assert!(text.contains(label), "status row {label} present");
+        }
+        assert!(text.contains("fix streaming buffer limit"), "real session title");
+        assert!(text.contains("google/gemini-2.5-flash"), "real model id");
+        assert!(text.contains("42,318 / 200,000 tokens"), "context counts");
+        assert!(text.contains("✓ clean"), "git-clean marker present");
+
+        // The agent value is AMBER (secondary).
+        assert_eq!(cell_fg(&buf, "build"), Some(theme.secondary), "agent value AMBER");
+        // The clean marker is the OKG success green — the only status green.
+        assert_eq!(cell_fg(&buf, "✓ clean"), Some(theme.success), "clean marker OKG");
+        // No numeric value is green (brand purity): the token/cost/context values are neutral.
+        assert_ne!(cell_fg(&buf, "42,318"), Some(theme.success), "context number not green");
+        assert_ne!(cell_fg(&buf, "$0.84"), Some(theme.success), "cost not green");
+    }
+
+    #[test]
+    fn status_body_draws_a_context_usage_bar_with_percent() {
+        // VAL-VIEW-003: a `█`/`░` usage bar whose filled proportion matches an AMBER percentage.
+        let theme = ThemeColors::from_name("dark");
+        let data = status_fixture();
+        let lines = status_body_lines(&data, 84, &theme);
+        let buf = render_lines(lines, 84, 24);
+        let text = buffer_text(&buf);
+        assert!(text.contains('█'), "usage bar has filled cells");
+        assert!(text.contains('░'), "usage bar has empty cells");
+        assert!(text.contains("21%"), "percentage label (42318/200000 ≈ 21%)");
+        assert_eq!(cell_fg(&buf, "21%"), Some(theme.secondary), "percentage AMBER");
+        assert_eq!(cell_fg(&buf, "█"), Some(theme.primary), "filled cells ORANGE");
+    }
+
+    #[test]
+    fn status_body_model_row_carries_a_dim_orange_variant_tag() {
+        // VAL-VIEW-002: the model row carries the reasoning-variant tag in dim-orange.
+        let theme = ThemeColors::from_name("dark");
+        let data = status_fixture();
+        let lines = status_body_lines(&data, 84, &theme);
+        let buf = render_lines(lines, 84, 24);
+        assert_eq!(cell_fg(&buf, "default"), Some(theme.border), "variant tag dim-orange");
+    }
+
+    #[test]
+    fn timeline_body_renders_dots_connectors_and_columns() {
+        // VAL-VIEW-008/009/010: a `●/○/◆` rail linked by `│` connectors, a faint timestamp, a
+        // colored author column, and dim clipped text — all within the panel.
+        let theme = ThemeColors::from_name("dark");
+        let events = vec![
+            TimelineEvent { dot: TimelineDot::Filled, time: "10:02".to_owned(), who: "session started".to_owned(), text: "build · gemini-2.5-flash".to_owned() },
+            TimelineEvent { dot: TimelineDot::Filled, time: "10:03".to_owned(), who: "you".to_owned(), text: "cap the streaming buffer".to_owned() },
+            TimelineEvent { dot: TimelineDot::Hollow, time: "10:03".to_owned(), who: "assistant".to_owned(), text: "planning the change".to_owned() },
+            TimelineEvent { dot: TimelineDot::Diamond, time: "10:04".to_owned(), who: "read".to_owned(), text: "stream_processor.rs".to_owned() },
+        ];
+        let lines = timeline_body_lines(&events, 80, 24, &theme);
+        let buf = render_lines(lines, 80, 24);
+        let text = buffer_text(&buf);
+
+        assert!(text.contains('●'), "filled dot present");
+        assert!(text.contains('○'), "hollow dot present");
+        assert!(text.contains('◆'), "diamond dot present");
+        assert!(text.contains('│'), "vertical connectors present");
+        assert!(text.contains("10:02") && text.contains("session started"), "ts + who present");
+        assert!(!glyphs::contains_braille(&text), "no braille in the rail");
+
+        // Author coloring: AMBER for a ◆ event, BRIGHT for `you`, else normal text.
+        assert_eq!(cell_fg(&buf, "read"), Some(theme.secondary), "◆ author AMBER");
+        assert_eq!(cell_fg(&buf, "you"), Some(theme.text_bright), "you author BRIGHT");
+        assert_eq!(cell_fg(&buf, "assistant"), Some(theme.text), "assistant author TXT");
+        // The timestamp column is faint.
+        assert_eq!(cell_fg(&buf, "10:02"), Some(theme.text_muted), "timestamp FAINT");
+        // The connector is drawn in the ghost tone.
+        assert_eq!(cell_fg(&buf, "│"), Some(theme.ghost), "connector GHOST");
+    }
+
+    #[test]
+    fn timeline_body_clips_to_fit_without_overflowing() {
+        // VAL-VIEW-010: with more events than rows, only the latest that fit are rendered (no
+        // overflow past the panel border).
+        let theme = ThemeColors::from_name("dark");
+        let events: Vec<TimelineEvent> = (0..20)
+            .map(|i| TimelineEvent {
+                dot: TimelineDot::Filled,
+                time: format!("10:{i:02}"),
+                who: "you".to_owned(),
+                text: format!("event {i}"),
+            })
+            .collect();
+        // 6 rows fit at most (6+1)/2 = 3 events (event, connector, event, connector, event = 5 rows).
+        let lines = timeline_body_lines(&events, 80, 6, &theme);
+        assert!(lines.len() <= 6, "rendered rows fit within max_rows: {}", lines.len());
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.clone()))
+            .collect();
+        assert!(text.contains("event 19"), "keeps the latest event");
+        assert!(!text.contains("event 0 "), "drops the oldest events");
+    }
+
+    #[test]
+    fn timeline_body_empty_state() {
+        let theme = ThemeColors::from_name("dark");
+        let lines = timeline_body_lines(&[], 80, 24, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme.text_muted));
     }
 }

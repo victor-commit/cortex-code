@@ -1897,6 +1897,7 @@ fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style
     }
     match kind {
         ViewKind::Status => draw_status_view_body(frame, app, inner, theme),
+        ViewKind::Timeline => draw_timeline_view_body(frame, app, inner, theme),
         ViewKind::Mcp => draw_mcp_view_body(frame, app, inner, theme),
         _ => draw_view_placeholder(frame, inner, theme),
     }
@@ -1913,6 +1914,10 @@ fn view_note(app: &App, kind: crate::view::ViewKind) -> Option<String> {
                 if count == 1 { "" } else { "s" }
             ))
         }
+        crate::view::ViewKind::Timeline => {
+            let count = app.timeline_snapshot().len();
+            Some(format!("{count} event{}", if count == 1 { "" } else { "s" }))
+        }
         _ => None,
     }
 }
@@ -1927,43 +1932,35 @@ fn view_body_inset(area: Rect) -> Rect {
     }
 }
 
-/// The `/status` view body: aligned key/value rows of the live runtime state (session/agent/model/
-/// mode/variant/turn/queued/tokens/cost) via the shared [`crate::view::kv_line`] helper.
+/// The `/status` view body: aligned key/value rows (session/started/agent/model), a context-usage
+/// bar, token/cost rows, and permits/workspace rows, from the snapshot captured when the view
+/// opened. Rendered via the shared [`crate::view::status_body_lines`] helper (theme tokens only).
 fn draw_status_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    use crate::view::kv_line;
-    let lw = 10;
-    let bright = Style::default().fg(theme.text_bright);
-    let amber = Style::default().fg(theme.secondary);
-    let dim = Style::default().fg(theme.text_dim);
-
-    let queued = app.queued_count().to_string();
-    let tokens = format!(
-        "in {} · out {} · {} total",
-        app.usage.input_tokens, app.usage.output_tokens, app.usage.total_tokens
-    );
-    let mut lines: Vec<Line<'static>> = vec![
-        kv_line("session", &app.status.session, bright, lw, theme),
-        kv_line("agent", &app.status.agent, amber, lw, theme),
-        kv_line("model", &app.status.model, bright, lw, theme),
-        kv_line("mode", &app.status.mode, dim, lw, theme),
-        kv_line("variant", &app.status.variant, dim, lw, theme),
-        kv_line(
-            "turn",
-            if app.is_busy() { "running" } else { "idle" },
-            dim,
-            lw,
-            theme,
-        ),
-        kv_line("queued", &queued, dim, lw, theme),
-        kv_line("tokens", &tokens, dim, lw, theme),
-    ];
-    if let Some(cost) = app.usage.cost {
-        lines.push(kv_line("cost", &format!("${cost:.4}"), dim, lw, theme));
-    }
-
+    let target = view_body_inset(area);
+    let lines = match app.status_snapshot() {
+        Some(data) => crate::view::status_body_lines(data, target.width as usize, theme),
+        None => vec![crate::view::empty_state_line("Session status unavailable.", theme)],
+    };
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
-        view_body_inset(area),
+        target,
+    );
+}
+
+/// The `/timeline` view body: the persisted session's event rail (`●/○/◆` dots linked by `│`
+/// connectors, a faint timestamp column, a colored author column, and a dim description) from the
+/// snapshot captured when the view opened. Rendered via [`crate::view::timeline_body_lines`].
+fn draw_timeline_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let target = view_body_inset(area);
+    let lines = crate::view::timeline_body_lines(
+        app.timeline_snapshot(),
+        target.width as usize,
+        target.height as usize,
+        theme,
+    );
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme.text).bg(theme.background)),
+        target,
     );
 }
 
@@ -2718,7 +2715,6 @@ fn dialog_hint(kind: DialogKind, renaming: bool) -> &'static str {
         (DialogKind::Sessions, false) => {
             "↑/↓ move · Enter switch · r rename · d delete · Esc close"
         }
-        (DialogKind::Timeline, _) => "↑/↓ move · Enter select · f fork · Esc close",
         (DialogKind::Fork, _) => "↑/↓ move · Enter fork here · Esc close",
         _ => "↑/↓ move · Enter select · Esc close",
     }
