@@ -435,6 +435,198 @@ pub struct McpServerRow {
     pub exposes: String,
 }
 
+/// The severity level of a `/review` finding, selecting the color of its `●` dot + severity word.
+/// These four hues are the only non-orange marks in the review view, so brand purity holds
+/// elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// A likely bug / correctness risk — RED (most severe, sorts first).
+    High,
+    /// A quality/robustness concern — AMBER.
+    Medium,
+    /// A minor / stylistic note — dim-orange (ORANGE_D).
+    Low,
+    /// An informational suggestion — FAINT (least severe, sorts last).
+    Info,
+}
+
+impl Severity {
+    /// The abbreviated severity word shown in a finding row (`high`/`med`/`low`/`info`).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Severity::High => "high",
+            Severity::Medium => "med",
+            Severity::Low => "low",
+            Severity::Info => "info",
+        }
+    }
+
+    /// The full severity noun used in the summary line (`high`/`medium`/`low`/`info`).
+    #[must_use]
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Severity::High => "high",
+            Severity::Medium => "medium",
+            Severity::Low => "low",
+            Severity::Info => "info",
+        }
+    }
+
+    /// The theme color for this severity's dot + word (high→RED, medium→AMBER, low→ORANGE_D,
+    /// info→FAINT).
+    #[must_use]
+    fn color(self, theme: &ThemeColors) -> ratatui::style::Color {
+        match self {
+            Severity::High => theme.error,
+            Severity::Medium => theme.secondary,
+            Severity::Low => theme.border,
+            Severity::Info => theme.text_muted,
+        }
+    }
+}
+
+/// One `/review` finding row: a severity, a `file:line` location (AMBER), and the finding text.
+/// Colors are applied by [`review_body_lines`]; this carries only the data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFinding {
+    /// The finding's severity, driving its dot + word color.
+    pub severity: Severity,
+    /// The `file:line` location shown in the AMBER location column.
+    pub location: String,
+    /// The finding description, clipped to the panel inner width.
+    pub text: String,
+}
+
+/// The real/dynamic data rendered by the `/review` view, gathered once when the view opens: the
+/// base branch the working tree was reviewed against, the number of changed files, and the ordered
+/// findings. Colors are applied by [`review_body_lines`]; this carries only the data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewData {
+    /// The base branch the working tree was reviewed against (e.g. `main`).
+    pub branch: String,
+    /// The number of changed files in the working tree.
+    pub files: usize,
+    /// The findings, ordered by severity (high first).
+    pub findings: Vec<ReviewFinding>,
+}
+
+impl ReviewData {
+    /// The panel note summarizing file/finding totals (`N files · N findings`).
+    #[must_use]
+    pub fn note(&self) -> String {
+        let f = self.files;
+        let n = self.findings.len();
+        format!(
+            "{f} file{} · {n} finding{}",
+            if f == 1 { "" } else { "s" },
+            if n == 1 { "" } else { "s" }
+        )
+    }
+
+    /// The summary line grouping the finding counts by severity (`1 high · 2 medium · 1 low · 1
+    /// info`), listing only the severities that occur.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for sev in [
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+            Severity::Info,
+        ] {
+            let count = self.findings.iter().filter(|f| f.severity == sev).count();
+            if count > 0 {
+                parts.push(format!("{count} {}", sev.noun()));
+            }
+        }
+        parts.join(&format!(" {} ", glyphs::SEPARATOR))
+    }
+}
+
+// `/review` finding row column offsets within the panel body (dot / severity word / location /
+// text), matching the layout spec (`●` dot at the margin, loc AMBER at +8, text at +8+26).
+const REVIEW_DOT_COL: usize = 1;
+const REVIEW_SEV_COL: usize = 3;
+const REVIEW_LOC_COL: usize = 8;
+const REVIEW_TEXT_COL: usize = REVIEW_LOC_COL + 26;
+
+/// Build the `/review` body: an intro line noting the reviewed branch, then one finding row per
+/// [`ReviewFinding`] at 2-row spacing (a `●` severity dot + severity word colored by level, an
+/// AMBER `file:line` location at a fixed column, and the finding text at a fixed column, clipped to
+/// the panel width), then a faint rule and a severity-count summary line.
+///
+/// Severity dots/words are the only non-orange marks: high→RED, medium→AMBER, low→ORANGE_D,
+/// info→FAINT. With no findings it returns the explicit empty state so `/review` never renders a
+/// blank panel.
+#[must_use]
+pub fn review_body_lines(
+    data: &ReviewData,
+    width: usize,
+    max_rows: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let base = Style::default().fg(theme.text);
+    let dim = Style::default().fg(theme.text_dim);
+    let amber = Style::default().fg(theme.secondary);
+    let faint = Style::default().fg(theme.text_muted);
+
+    let intro = Line::from(Span::styled(
+        format!("reviewed the working tree against {}", data.branch),
+        faint,
+    ));
+
+    if data.findings.is_empty() {
+        return vec![
+            intro,
+            Line::from(""),
+            empty_state_line("No findings — the working tree is clean.", theme),
+        ];
+    }
+
+    // Reserve rows for the intro (+ blank) at the top and the rule + summary (+ blank) at the
+    // bottom, then lay out as many findings as fit at 2-row spacing (finding, blank, finding …).
+    let reserved = 5usize;
+    let finding_budget = max_rows.saturating_sub(reserved).max(1);
+    let capacity = finding_budget.div_ceil(2).max(1);
+    let shown = &data.findings[..data.findings.len().min(capacity)];
+
+    let mut lines = vec![intro, Line::from("")];
+    for (idx, finding) in shown.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::from(""));
+        }
+        let mut cells = vec![(' ', base); width];
+        let sev_style = Style::default().fg(finding.severity.color(theme));
+        place_segments(
+            &mut cells,
+            REVIEW_DOT_COL,
+            &[(glyphs::DOT_FILLED.to_owned(), sev_style)],
+        );
+        place_segments(
+            &mut cells,
+            REVIEW_SEV_COL,
+            &[(finding.severity.word().to_owned(), sev_style)],
+        );
+        let loc = clip(
+            &finding.location,
+            REVIEW_TEXT_COL.saturating_sub(REVIEW_LOC_COL + 2),
+        );
+        place_segments(&mut cells, REVIEW_LOC_COL, &[(loc, amber)]);
+        if REVIEW_TEXT_COL + 1 < width {
+            let avail = width - REVIEW_TEXT_COL - 1;
+            place_segments(&mut cells, REVIEW_TEXT_COL, &[(clip(&finding.text, avail), dim)]);
+        }
+        lines.push(cells_to_line(&cells));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(rule_line(width, theme));
+    lines.push(Line::from(Span::styled(data.summary(), Style::default().fg(theme.text))));
+    lines
+}
+
 /// Format `n` with thousands separators (`42318` -> `42,318`) for the context token counts.
 #[must_use]
 pub fn format_thousands(n: u64) -> String {
@@ -1702,5 +1894,170 @@ mod tests {
         assert!(!text.contains(">_"), "no `>_` cliché");
         // The `⇥ cycle agent` affordance renders the safe tab glyph.
         assert!(text.contains('⇥'), "the tab affordance uses the safe `⇥` glyph");
+    }
+
+    fn review_fixture() -> ReviewData {
+        ReviewData {
+            branch: "main".to_owned(),
+            files: 3,
+            findings: vec![
+                ReviewFinding {
+                    severity: Severity::High,
+                    location: "buffer.rs:42".to_owned(),
+                    text: "unbounded growth when cap == 0".to_owned(),
+                },
+                ReviewFinding {
+                    severity: Severity::Medium,
+                    location: "mod.rs:18".to_owned(),
+                    text: "parse error dropped without context".to_owned(),
+                },
+                ReviewFinding {
+                    severity: Severity::Medium,
+                    location: "stream_processor.rs:39".to_owned(),
+                    text: "magic number 64*1024 - name it".to_owned(),
+                },
+                ReviewFinding {
+                    severity: Severity::Low,
+                    location: "lib.rs:90".to_owned(),
+                    text: "redundant .clone() on &str".to_owned(),
+                },
+                ReviewFinding {
+                    severity: Severity::Info,
+                    location: "tests/buffer.rs:1".to_owned(),
+                    text: "consider a proptest for the cap".to_owned(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn review_note_and_summary_report_real_totals() {
+        // VAL-VIEW-044/047: the note states file/finding totals and the summary groups by severity.
+        let data = review_fixture();
+        assert_eq!(data.note(), "3 files · 5 findings");
+        assert_eq!(data.summary(), "1 high · 2 medium · 1 low · 1 info");
+    }
+
+    #[test]
+    fn review_body_renders_findings_dots_columns_and_summary() {
+        // VAL-VIEW-045/046/047: each finding is a `●` dot + severity word, an AMBER location at the
+        // fixed column and dim text at the fixed column, followed by a rule + summary line.
+        let theme = ThemeColors::from_name("dark");
+        let data = review_fixture();
+        let lines = review_body_lines(&data, 84, 24, &theme);
+        let buf = render_lines(lines, 84, 24);
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("reviewed the working tree against main"), "intro line");
+        assert!(text.contains('●'), "severity dots present");
+        assert!(!glyphs::contains_braille(&text), "no braille in the findings rail");
+        for loc in ["buffer.rs:42", "mod.rs:18", "lib.rs:90"] {
+            assert!(text.contains(loc), "location {loc} present");
+        }
+        assert!(text.contains("1 high · 2 medium · 1 low · 1 info"), "summary line present");
+
+        // Severity dot colors: high→RED, medium→AMBER, low→ORANGE_D, info→FAINT.
+        assert_eq!(cell_fg(&buf, "high"), Some(theme.error), "high word RED");
+        assert_eq!(cell_fg(&buf, "med"), Some(theme.secondary), "med word AMBER");
+        assert_eq!(cell_fg(&buf, "low"), Some(theme.border), "low word ORANGE_D");
+        assert_eq!(cell_fg(&buf, "info"), Some(theme.text_muted), "info word FAINT");
+        // The location column is AMBER.
+        assert_eq!(cell_fg(&buf, "buffer.rs:42"), Some(theme.secondary), "location AMBER");
+
+        // The first finding row aligns its dot/severity/location/text at the fixed columns.
+        let first = row_text(&buf, 2);
+        assert_eq!(
+            first.chars().nth(REVIEW_DOT_COL),
+            Some('●'),
+            "dot at the fixed dot column:\n{first}"
+        );
+        assert_eq!(
+            first.chars().skip(REVIEW_SEV_COL).take(4).collect::<String>(),
+            "high",
+            "severity word at the fixed column:\n{first}"
+        );
+        assert!(
+            first.chars().skip(REVIEW_LOC_COL).collect::<String>().starts_with("buffer.rs:42"),
+            "location at the fixed column:\n{first}"
+        );
+        assert!(
+            first
+                .chars()
+                .skip(REVIEW_TEXT_COL)
+                .collect::<String>()
+                .starts_with("unbounded"),
+            "finding text at the fixed column:\n{first}"
+        );
+    }
+
+    #[test]
+    fn review_body_is_the_only_non_orange_view() {
+        // VAL-VIEW-046: only the severity dots/words carry the semantic hues; the intro/location/
+        // text/rule are orange-family or neutral tokens (no stray green/blue).
+        let theme = ThemeColors::from_name("dark");
+        let data = review_fixture();
+        let lines = review_body_lines(&data, 84, 24, &theme);
+        let buf = render_lines(lines, 84, 24);
+        // The finding text is neutral (DIM), never a severity hue.
+        assert_eq!(cell_fg(&buf, "unbounded"), Some(theme.text_dim), "text DIM");
+        // No cell is green (brand purity: review has no success-green).
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                assert_ne!(buf[(x, y)].fg, theme.success, "no green in the review view");
+            }
+        }
+    }
+
+    #[test]
+    fn review_body_clips_text_to_the_panel_width() {
+        // VAL-VIEW-047: an overlong finding text is clipped with `…` so it never overruns the border.
+        let theme = ThemeColors::from_name("dark");
+        let data = ReviewData {
+            branch: "main".to_owned(),
+            files: 1,
+            findings: vec![ReviewFinding {
+                severity: Severity::High,
+                location: "buffer.rs:42".to_owned(),
+                text: "a very long finding description that would otherwise overrun the panel border many times over"
+                    .to_owned(),
+            }],
+        };
+        let width = 60usize;
+        let lines = review_body_lines(&data, width, 24, &theme);
+        let buf = render_lines(lines, width as u16, 24);
+        let row = row_text(&buf, 2);
+        assert!(row.contains('…'), "overlong text is clipped with an ellipsis:\n{row}");
+        assert!(
+            row.trim_end().chars().count() <= width,
+            "the finding row never overruns the width:\n{row}"
+        );
+    }
+
+    #[test]
+    fn review_body_empty_state() {
+        // VAL-VIEW-044/054: no findings → the explicit faint empty state, never a blank panel.
+        let theme = ThemeColors::from_name("dark");
+        let data = ReviewData {
+            branch: "main".to_owned(),
+            files: 0,
+            findings: Vec::new(),
+        };
+        let lines = review_body_lines(&data, 80, 24, &theme);
+        // intro + blank + empty-state placeholder.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme.text_muted));
+    }
+
+    #[test]
+    fn review_body_uses_only_safe_glyphs() {
+        // VAL-VIEW-050: no braille, thin triangles, curly quotes, or `>_` in the review body.
+        let theme = ThemeColors::from_name("dark");
+        let data = review_fixture();
+        let text = buffer_text(&render_lines(review_body_lines(&data, 84, 24, &theme), 84, 24));
+        assert!(!glyphs::contains_braille(&text), "no braille in the review body");
+        for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
+            assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
+        }
+        assert!(!text.contains(">_"), "no `>_` cliché");
     }
 }

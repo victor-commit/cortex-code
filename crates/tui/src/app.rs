@@ -292,6 +292,44 @@ pub struct RenameDialog {
     pub buffer: String,
 }
 
+/// The state of the `/compact` dialog: the before/after context comparison and the kept-summary
+/// bullets shown (over a dimmed backdrop) before the user confirms compaction. Confirming (Enter)
+/// runs the compaction; Esc cancels and leaves the conversation unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactDialog {
+    /// The context size before compaction (formatted token count, e.g. `42,318 tokens`).
+    pub before_tokens: String,
+    /// A human count of the messages that will be summarized (e.g. `12 messages`).
+    pub before_detail: String,
+    /// The estimated context size after compaction (formatted, prefixed `~`, e.g. `~8,400 tokens`).
+    pub after_tokens: String,
+    /// A human description of what remains (e.g. `1 summary + 2 recent`).
+    pub after_detail: String,
+    /// The bullets describing what the summary keeps (recent prompt excerpts).
+    pub keeps: Vec<String>,
+}
+
+/// One `/init` scan-log step: a completed step (rendered `✓` in OKG green) or the active/pending
+/// step (rendered `›` in orange).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitStep {
+    /// The step description (e.g. `detected Rust workspace (cargo)`).
+    pub label: String,
+    /// Whether the step has completed (`✓`) or is the active/pending one (`›`).
+    pub done: bool,
+}
+
+/// The state of the `/init` dialog: the scanned project root and the real scan-log steps shown
+/// (over a dimmed backdrop) before the user confirms writing AGENTS.md. Confirming (Enter) runs the
+/// project-initialization flow; Esc cancels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitDialog {
+    /// The scanned project root, shown as `Scanning <root> …`.
+    pub root: String,
+    /// The real scan-log steps (done `✓` / pending `›`).
+    pub steps: Vec<InitStep>,
+}
+
 /// Diff viewer render mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
@@ -723,11 +761,6 @@ const INIT_PROMPT: &str = "Initialize this project. Analyze the repository struc
     the project's purpose, layout, key build/test/lint commands, and conventions. Read the \
     existing files first so the summary is accurate.";
 
-/// The instruction sent to the model when the `/review` flow runs (code review).
-const REVIEW_PROMPT: &str = "Review the current state of the code in this repository. Inspect the \
-    recent changes and the relevant files, then report any bugs, correctness problems, security \
-    issues, and concrete improvements you find, grouped by severity.";
-
 /// The instruction sent to the model when the `/compact` flow runs (conversation compaction).
 const COMPACTION_PROMPT: &str = "Summarize our conversation so far into a concise summary that \
     preserves the key facts, decisions, code changes, and any open tasks. Respond with only the \
@@ -960,6 +993,15 @@ pub struct App {
     /// The open `/rename` dialog (a centered input over the dimmed conversation), or `None` when it
     /// is closed. Owns its own key input while open.
     rename_dialog: Option<RenameDialog>,
+    /// The open `/compact` dialog (before/after context comparison over the dimmed conversation), or
+    /// `None` when it is closed. Confirming runs the compaction; Esc cancels.
+    compact_dialog: Option<CompactDialog>,
+    /// The open `/init` dialog (the AGENTS.md scan log over the dimmed conversation), or `None` when
+    /// it is closed. Confirming runs the project-initialization flow; Esc cancels.
+    init_dialog: Option<InitDialog>,
+    /// The `/review` view's data (changed-file count + findings), snapshotted from the real working
+    /// tree when the view opens. Rebuilt on each `/review` open.
+    review_snapshot: Option<crate::view::ReviewData>,
     /// How many lines the transcript is scrolled up from the bottom. 0 pins to the latest content
     /// (auto-scroll); larger values reveal earlier content. Clamped to the scrollable range when
     /// rendered, so it never strands the view past the available content.
@@ -1118,6 +1160,9 @@ impl App {
             subagent_ids: Vec::new(),
             session_rename: None,
             rename_dialog: None,
+            compact_dialog: None,
+            init_dialog: None,
+            review_snapshot: None,
             scroll: 0,
             viewport: Cell::new((80, 24)),
             find: None,
@@ -3413,18 +3458,10 @@ impl App {
             "new" => self.new_session(),
             "export" => self.open_export_dialog(),
             "status" => self.open_status_view(),
-            "init" => self.start_flow(
-                "/init",
-                "/init — analyzing the repository to create AGENTS.md…",
-                INIT_PROMPT,
-            ),
-            "review" => self.start_flow(
-                "/review",
-                "/review — reviewing the current code…",
-                REVIEW_PROMPT,
-            ),
+            "init" => self.open_init_dialog(),
+            "review" => self.open_review_view(),
             "diff" => self.open_diff_viewer(),
-            "compact" => self.start_compaction(),
+            "compact" => self.open_compact_dialog(),
             "sessions" => self.open_sessions_dialog(),
             "timeline" => self.open_timeline_view(),
             "fork" => self.open_fork_dialog(),
@@ -4288,6 +4325,35 @@ impl App {
     fn open_status_view(&mut self) {
         self.status_snapshot = Some(self.build_status_data());
         self.open_view(crate::view::ViewKind::Status);
+    }
+
+    /// Open the full-screen code-review view (`/review`) with the shared view chrome, replacing the
+    /// old silent review flow. The findings are derived from the real working tree (changed files +
+    /// lightweight heuristic checks) and snapshotted when the view opens so a redraw never re-runs
+    /// git or re-reads the files.
+    fn open_review_view(&mut self) {
+        self.review_snapshot = Some(self.build_review_data());
+        self.open_view(crate::view::ViewKind::Review);
+    }
+
+    /// The snapshotted `/review` data (captured when the view opened), for rendering.
+    #[must_use]
+    pub fn review_snapshot(&self) -> Option<&crate::view::ReviewData> {
+        self.review_snapshot.as_ref()
+    }
+
+    /// Build the `/review` view data from the real working tree: the base branch, the changed-file
+    /// count (`git status --porcelain`), and the findings produced by [`review_findings`]. This is
+    /// gathered once when the view opens.
+    fn build_review_data(&self) -> crate::view::ReviewData {
+        let branch = git_info().map_or_else(|| "main".to_owned(), |g| g.branch);
+        let changed = changed_files();
+        let findings = review_findings(&changed);
+        crate::view::ReviewData {
+            branch,
+            files: changed.len(),
+            findings,
+        }
     }
 
     /// Open a full-screen Wave-2 view, taking over the frame with the shared chrome. Any open
@@ -6521,6 +6587,143 @@ impl App {
         }
     }
 
+    /// Open the `/compact` dialog: a centered before/after context comparison (over the dimmed
+    /// conversation) shown before compaction runs, replacing the old silent compaction flow. A
+    /// no-op (with a clear notice) when there is no conversation yet to compact. Confirming (Enter)
+    /// runs the compaction; Esc cancels.
+    fn open_compact_dialog(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        if self.history.is_empty() {
+            self.transcript.push(Entry::Notice(
+                "Nothing to compact yet - start a conversation first.".to_owned(),
+            ));
+            return;
+        }
+        self.compact_dialog = Some(self.build_compact_data());
+    }
+
+    /// Build the `/compact` dialog data from the real session state: the before-token count and
+    /// message count, an estimated after size, and the kept-summary bullets drawn from the most
+    /// recent user prompts (so the preview reflects the real conversation).
+    fn build_compact_data(&self) -> CompactDialog {
+        let messages = self.history.len();
+        let before = self.usage.total_tokens.max(estimate_history_tokens(&self.history));
+        // Compaction summarizes older messages into one summary while keeping the two most recent
+        // exchanges; the after size is estimated as a fraction of the pre-compaction context and
+        // never exceeds it, so the preview always reflects a reduction.
+        let recent = messages.min(2);
+        let after = (before / 5).max(1).min(before);
+        let keeps = self
+            .transcript
+            .iter()
+            .rev()
+            .filter_map(|entry| match entry {
+                Entry::User(text) => Some(first_line(text)),
+                _ => None,
+            })
+            .filter(|line| !line.trim().is_empty())
+            .take(2)
+            .collect::<Vec<_>>();
+        let keeps = if keeps.is_empty() {
+            vec!["the active task and its context".to_owned()]
+        } else {
+            keeps.into_iter().rev().collect()
+        };
+        CompactDialog {
+            before_tokens: format!("{} tokens", crate::view::format_thousands(before)),
+            before_detail: format!(
+                "{messages} message{}",
+                if messages == 1 { "" } else { "s" }
+            ),
+            after_tokens: format!("~{} tokens", crate::view::format_thousands(after)),
+            after_detail: format!(
+                "1 summary + {recent} recent",
+            ),
+            keeps,
+        }
+    }
+
+    /// Whether the `/compact` dialog is open.
+    #[must_use]
+    pub fn compact_open(&self) -> bool {
+        self.compact_dialog.is_some()
+    }
+
+    /// The open `/compact` dialog state, for the renderer.
+    #[must_use]
+    pub fn compact_dialog(&self) -> Option<&CompactDialog> {
+        self.compact_dialog.as_ref()
+    }
+
+    /// Handle a key while the `/compact` dialog owns input: Enter confirms (runs the compaction),
+    /// Esc cancels, and Ctrl+C still quits so the user is never trapped.
+    fn on_compact_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Enter => self.confirm_compact_dialog(),
+            KeyCode::Esc => self.compact_dialog = None,
+            _ => {}
+        }
+    }
+
+    /// Confirm the `/compact` dialog: close it and queue the compaction turn whose summary replaces
+    /// the conversation history when it finishes.
+    fn confirm_compact_dialog(&mut self) {
+        self.compact_dialog = None;
+        self.start_compaction();
+    }
+
+    /// Open the `/init` dialog: a centered scan log (over the dimmed conversation) reflecting the
+    /// real project analysis, shown before AGENTS.md is written, replacing the old silent file
+    /// write. Confirming (Enter) runs the project-initialization flow; Esc cancels.
+    fn open_init_dialog(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        self.init_dialog = Some(build_init_scan());
+    }
+
+    /// Whether the `/init` dialog is open.
+    #[must_use]
+    pub fn init_open(&self) -> bool {
+        self.init_dialog.is_some()
+    }
+
+    /// The open `/init` dialog state, for the renderer.
+    #[must_use]
+    pub fn init_dialog(&self) -> Option<&InitDialog> {
+        self.init_dialog.as_ref()
+    }
+
+    /// Handle a key while the `/init` dialog owns input: Enter (or `e` edit-first) confirms and runs
+    /// the initialization flow, Esc cancels, and Ctrl+C still quits so the user is never trapped.
+    fn on_init_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Enter => self.confirm_init_dialog(false),
+            KeyCode::Char('e') if !ctrl => self.confirm_init_dialog(true),
+            KeyCode::Esc => self.init_dialog = None,
+            _ => {}
+        }
+    }
+
+    /// Confirm the `/init` dialog: close it and queue the real project-initialization flow that
+    /// analyzes the repository and writes AGENTS.md. `edit_first` additionally requests the external
+    /// editor once the file is created.
+    fn confirm_init_dialog(&mut self, edit_first: bool) {
+        self.init_dialog = None;
+        self.start_flow(
+            "/init",
+            "/init - analyzing the repository to create AGENTS.md…",
+            INIT_PROMPT,
+        );
+        if edit_first {
+            self.editor_requested = true;
+        }
+    }
+
     /// Reset transcript navigation back to the pinned-bottom, nothing-selected, find-closed state
     /// (used when the conversation changes underneath the view).
     fn reset_view(&mut self) {
@@ -7168,6 +7371,19 @@ impl App {
         // Esc cancels, and Ctrl+C still quits so the user is never trapped.
         if self.rename_open() {
             self.on_rename_dialog_key(key, ctrl);
+            return;
+        }
+
+        // The `/compact` dialog is modal: Enter confirms (runs compaction), Esc cancels, and
+        // Ctrl+C still quits so the user is never trapped.
+        if self.compact_open() {
+            self.on_compact_dialog_key(key, ctrl);
+            return;
+        }
+
+        // The `/init` dialog is modal: Enter/`e` confirm (run the initialization flow), Esc cancels.
+        if self.init_open() {
+            self.on_init_dialog_key(key, ctrl);
             return;
         }
 
@@ -8268,6 +8484,237 @@ fn run_git(args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+/// The changed files in the working tree (`git status --porcelain`), de-duplicated and sorted, for
+/// the `/review` view and the `/init` scan. A rename status (`old -> new`) reports the new path.
+/// Best-effort: an empty vec when git is unavailable or the tree is clean.
+fn changed_files() -> Vec<String> {
+    let out = run_git(&["status", "--porcelain"]).unwrap_or_default();
+    let mut files: Vec<String> = Vec::new();
+    for line in out.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let path = line[3..].trim();
+        let path = path.rsplit(" -> ").next().unwrap_or(path).trim();
+        let path = path.trim_matches('"');
+        if !path.is_empty() {
+            files.push(path.to_owned());
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// A short display for a changed path in a review finding (`file` or `dir/file`), kept compact so
+/// the location column stays readable.
+fn review_location(path: &str) -> String {
+    let mut tail: Vec<&str> = path.rsplit('/').take(2).collect();
+    tail.reverse();
+    tail.join("/")
+}
+
+/// Whether a changed file is a source file worth scanning for review findings.
+fn is_reviewable_source(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str),
+        Some("rs" | "toml" | "md" | "py" | "js" | "ts" | "sh")
+    )
+}
+
+/// Lightweight, deterministic heuristics that turn the changed working-tree files into `/review`
+/// findings, so the review view presents real (working-tree-derived) findings without a network
+/// round-trip. Each changed source file is scanned for a small set of common patterns; at most one
+/// finding per (file, category) is emitted, capped overall and ordered by severity. When the tree
+/// is dirty but no pattern matches, each changed file is listed as an informational review item so
+/// the view is never blank over a changed tree.
+fn review_findings(changed: &[String]) -> Vec<crate::view::ReviewFinding> {
+    use crate::view::{ReviewFinding, Severity};
+
+    const MAX_FILES: usize = 40;
+    const MAX_BYTES: usize = 256 * 1024;
+    const MAX_FINDINGS: usize = 8;
+
+    struct Rule {
+        needle: &'static str,
+        severity: Severity,
+        text: &'static str,
+    }
+    const RULES: &[Rule] = &[
+        Rule { needle: "unsafe ", severity: Severity::High, text: "unsafe block - audit the invariants" },
+        Rule { needle: ".unwrap()", severity: Severity::Medium, text: "unwrap may panic - handle the error" },
+        Rule { needle: ".expect(", severity: Severity::Medium, text: "expect may panic - handle the error" },
+        Rule { needle: ".clone()", severity: Severity::Low, text: "possible redundant clone" },
+        Rule { needle: "TODO", severity: Severity::Info, text: "unresolved TODO" },
+        Rule { needle: "FIXME", severity: Severity::Info, text: "unresolved FIXME" },
+    ];
+
+    let mut findings: Vec<ReviewFinding> = Vec::new();
+    for path in changed.iter().take(MAX_FILES) {
+        if !is_reviewable_source(path) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if content.len() > MAX_BYTES {
+            continue;
+        }
+        let mut seen: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        for (lineno, line) in content.lines().enumerate() {
+            if seen.len() == RULES.len() {
+                break;
+            }
+            for rule in RULES {
+                if seen.contains(rule.text) {
+                    continue;
+                }
+                if line.contains(rule.needle) {
+                    seen.insert(rule.text);
+                    findings.push(ReviewFinding {
+                        severity: rule.severity,
+                        location: format!("{}:{}", review_location(path), lineno + 1),
+                        text: rule.text.to_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    if findings.is_empty() {
+        for path in changed.iter().take(6) {
+            findings.push(ReviewFinding {
+                severity: Severity::Info,
+                location: format!("{}:1", review_location(path)),
+                text: "changed - review recommended".to_owned(),
+            });
+        }
+    }
+
+    findings.sort_by(|a, b| {
+        a.severity
+            .cmp(&b.severity)
+            .then_with(|| a.location.cmp(&b.location))
+    });
+    findings.truncate(MAX_FINDINGS);
+    findings
+}
+
+/// Build the `/init` scan log from the real repository: detect a cargo workspace/crate, count
+/// crates and source files, note found docs and the test command, and mark the AGENTS.md
+/// generation as the active (pending) step. Best-effort — steps reflect what is actually detected
+/// in the cwd, so the dialog shows the real scan performed.
+fn build_init_scan() -> InitDialog {
+    let root = crate::motd::current_dir_display();
+    let mut steps: Vec<InitStep> = Vec::new();
+
+    let has_cargo = std::path::Path::new("Cargo.toml").exists();
+    let cargo_ws = std::fs::read_to_string("Cargo.toml")
+        .map(|s| s.contains("[workspace]"))
+        .unwrap_or(false);
+    if cargo_ws {
+        steps.push(InitStep {
+            label: "detected Rust workspace (cargo)".to_owned(),
+            done: true,
+        });
+        let (crates, sources) = count_rust_workspace();
+        steps.push(InitStep {
+            label: format!(
+                "{crates} crate{} · {} source files",
+                if crates == 1 { "" } else { "s" },
+                crate::view::format_thousands(sources as u64)
+            ),
+            done: true,
+        });
+    } else if has_cargo {
+        steps.push(InitStep {
+            label: "detected Rust crate (cargo)".to_owned(),
+            done: true,
+        });
+    } else {
+        steps.push(InitStep {
+            label: "scanned the project root".to_owned(),
+            done: true,
+        });
+    }
+
+    let docs: Vec<&str> = ["README.md", "CONTRIBUTING.md", "AGENTS.md"]
+        .into_iter()
+        .filter(|f| std::path::Path::new(f).exists())
+        .collect();
+    if !docs.is_empty() {
+        steps.push(InitStep {
+            label: format!("found {}", docs.join(", ")),
+            done: true,
+        });
+    }
+
+    if has_cargo {
+        steps.push(InitStep {
+            label: "test cmd: cargo test --workspace".to_owned(),
+            done: true,
+        });
+    }
+
+    steps.push(InitStep {
+        label: format!("generating AGENTS.md {}", crate::glyphs::ELLIPSIS),
+        done: false,
+    });
+
+    InitDialog { root, steps }
+}
+
+/// Count the workspace's member crates (subdirectories of `crates/` with a `Cargo.toml`) and the
+/// total number of Rust source files under `crates/` (skipping `target`/`.git`/`node_modules`), for
+/// the `/init` scan log.
+fn count_rust_workspace() -> (usize, usize) {
+    let mut crates = 0usize;
+    if let Ok(entries) = std::fs::read_dir("crates") {
+        for entry in entries.flatten() {
+            if entry.path().join("Cargo.toml").exists() {
+                crates += 1;
+            }
+        }
+    }
+    let sources = count_rs_files(std::path::Path::new("crates"), 0);
+    (crates, sources)
+}
+
+/// Recursively count `.rs` files under `dir`, skipping build/vcs directories and bounding the
+/// recursion depth so the `/init` scan stays cheap.
+fn count_rs_files(dir: &std::path::Path, depth: usize) -> usize {
+    if depth > 12 {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if matches!(name.as_ref(), "target" | ".git" | "node_modules") {
+                continue;
+            }
+            count += count_rs_files(&path, depth + 1);
+        } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// A rough token estimate for the conversation history (≈4 chars/token), used as a floor for the
+/// `/compact` before-size when no live usage total is available yet.
+fn estimate_history_tokens(history: &[Message]) -> u64 {
+    let chars: usize = history.iter().map(|m| m.content.chars().count()).sum();
+    (chars / 4) as u64
 }
 
 /// Load the effective configuration with no CLI overrides, or `None` if it cannot be resolved.
@@ -11405,21 +11852,36 @@ mod tests {
     }
 
     #[test]
-    fn dispatching_init_queues_a_real_flow_turn() {
-        // VAL-TUI-038: `/init` triggers project initialization (a real turn, not an ack).
+    fn dispatching_init_opens_the_scan_dialog_then_confirm_queues_a_real_flow_turn() {
+        // VAL-VIEW-041/043: `/init` opens the AGENTS.md scan dialog (not a silent write); confirming
+        // (Enter) runs the real project-initialization flow that writes AGENTS.md.
         let mut a = app();
         type_str(&mut a, "/init");
         a.on_key(key(KeyCode::Enter));
 
-        // A notice marks the flow starting.
+        // The scan dialog opens (a view, not a silent flow) and no turn is queued yet.
+        assert!(a.init_open(), "/init opens the scan dialog");
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "no turn is queued until the dialog is confirmed"
+        );
+        let dialog = a.init_dialog().expect("init dialog state");
+        assert!(!dialog.steps.is_empty(), "the scan log has steps");
+        assert!(
+            dialog.steps.last().is_some_and(|s| !s.done),
+            "the AGENTS.md generation step is the active (pending) step"
+        );
+
+        // Confirming the dialog closes it and queues the real init flow turn (AGENTS.md).
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.init_open(), "confirming closes the init dialog");
         assert!(
             a.transcript
                 .iter()
                 .any(|e| matches!(e, Entry::Notice(t) if t.contains("/init"))),
-            "an /init flow notice is shown"
+            "an /init flow notice is shown on confirm"
         );
-        // The expanded instruction is queued for the model.
-        let prompt = a.take_pending_prompt().expect("an /init turn is queued");
+        let prompt = a.take_pending_prompt().expect("an /init turn is queued on confirm");
         assert!(
             prompt.contains("AGENTS.md"),
             "the init instruction is sent: {prompt}"
@@ -11436,27 +11898,44 @@ mod tests {
     }
 
     #[test]
-    fn dispatching_review_queues_a_real_flow_turn() {
-        // VAL-TUI-039: `/review` triggers a code-review flow.
+    fn dispatching_init_esc_cancels_without_queuing_a_turn() {
+        // VAL-VIEW-041: Esc dismisses the init scan dialog without initializing.
         let mut a = app();
-        type_str(&mut a, "/review");
+        type_str(&mut a, "/init");
         a.on_key(key(KeyCode::Enter));
-        assert!(
-            a.transcript
-                .iter()
-                .any(|e| matches!(e, Entry::Notice(t) if t.contains("/review"))),
-            "a /review flow notice is shown"
-        );
-        let prompt = a.take_pending_prompt().expect("a /review turn is queued");
-        assert!(
-            prompt.to_lowercase().contains("review"),
-            "the review instruction is sent: {prompt}"
-        );
+        assert!(a.init_open());
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.init_open(), "Esc closes the init dialog");
+        assert!(a.take_pending_prompt().is_none(), "Esc queues no turn");
     }
 
     #[test]
-    fn dispatching_compact_queues_a_compaction_turn_that_replaces_history() {
-        // VAL-TUI-040: `/compact` compacts the conversation.
+    fn dispatching_review_opens_the_review_view() {
+        // VAL-VIEW-044: `/review` opens the full-screen code-review view (not a silent flow); no
+        // turn is queued and the view carries the review data snapshot.
+        let mut a = app();
+        type_str(&mut a, "/review");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::Review),
+            "/review opens the review view"
+        );
+        assert!(a.review_snapshot().is_some(), "the review data is snapshotted");
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "/review does not queue a turn (it renders as a view)"
+        );
+        // Esc closes the view back to the conversation.
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none(), "Esc closes the review view");
+    }
+
+    #[test]
+    fn dispatching_compact_opens_the_dialog_then_confirm_queues_a_compaction_turn_that_replaces_history()
+    {
+        // VAL-VIEW-032/033/034: `/compact` opens the before/after dialog (not a silent flow);
+        // confirming (Enter) queues the compaction turn whose summary replaces history.
         let mut a = app();
         run_turn(&mut a, "fact one", "ok");
         run_turn(&mut a, "fact two", "ok");
@@ -11464,6 +11943,20 @@ mod tests {
 
         type_str(&mut a, "/compact");
         a.on_key(key(KeyCode::Enter));
+        // The dialog opens with the before/after comparison; no turn queued yet.
+        assert!(a.compact_open(), "/compact opens the compaction dialog");
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "no compaction turn is queued until confirmed"
+        );
+        let dialog = a.compact_dialog().expect("compact dialog state");
+        assert!(dialog.before_tokens.contains("tokens"), "before token count shown");
+        assert!(dialog.after_tokens.starts_with('~'), "after is an estimate");
+        assert!(dialog.before_detail.contains("message"), "message count shown");
+
+        // Confirming closes the dialog and queues the compaction turn.
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.compact_open(), "confirming closes the compaction dialog");
         assert!(
             a.transcript
                 .iter()

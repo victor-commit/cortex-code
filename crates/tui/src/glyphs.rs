@@ -78,6 +78,8 @@ pub const DOT_HOLLOW: &str = "○";
 pub const DOT_DIAMOND: &str = "◆";
 /// Small-square bullet (the `@`-file palette row marker); ORANGE_D, AMBER when selected.
 pub const BULLET_SQUARE: &str = "▪";
+/// Round list bullet (kept-summary bullets in the `/compact` dialog, plan-mode bullets).
+pub const BULLET: &str = "•";
 /// Done / ok mark (OKG green).
 pub const MARK_DONE: &str = "✓";
 /// Error mark (ERR red).
@@ -173,6 +175,7 @@ mod tests {
             DOT_HOLLOW,
             DOT_DIAMOND,
             BULLET_SQUARE,
+            BULLET,
             MARK_DONE,
             MARK_ERROR,
             MARK_RUNNING,

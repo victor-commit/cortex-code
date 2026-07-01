@@ -116,13 +116,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_diff_viewer(frame, app, area, &theme);
     // A modal picker/dialog (or the command palette) floats over a dimmed session: fade the
     // backdrop first, then draw the overlay.
-    if app.dialog_open() || app.palette_open() || app.rename_open() {
+    if app.dialog_open()
+        || app.palette_open()
+        || app.rename_open()
+        || app.compact_open()
+        || app.init_open()
+    {
         dim_backdrop(frame, area, &theme);
     }
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area, &theme);
     // The `/rename` dialog (centered input over the dimmed conversation) overlays when open.
     draw_rename(frame, app, area, &theme);
+    // The `/compact` and `/init` dialogs (centered over the dimmed conversation) overlay when open.
+    draw_compact(frame, app, area, &theme);
+    draw_init(frame, app, area, &theme);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
     draw_palette(frame, app, area, &theme);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
@@ -1903,6 +1911,7 @@ fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style
         ViewKind::Mcp => draw_mcp_view_body(frame, app, inner, theme),
         ViewKind::Queue => draw_queue_view_body(frame, app, inner, theme),
         ViewKind::Help => draw_help_view_body(frame, inner, theme),
+        ViewKind::Review => draw_review_view_body(frame, app, inner, theme),
         _ => draw_view_placeholder(frame, inner, theme),
     }
 }
@@ -1945,6 +1954,7 @@ fn view_note(app: &App, kind: crate::view::ViewKind) -> Option<String> {
             let count = app.queue_snapshot().len();
             Some(format!("{count} queued"))
         }
+        crate::view::ViewKind::Review => app.review_snapshot().map(crate::view::ReviewData::note),
         _ => None,
     }
 }
@@ -2041,6 +2051,61 @@ fn draw_queue_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style:
             (crate::glyphs::KEY_ENTER.to_owned(), "edit".to_owned()),
             (reorder_key, "reorder".to_owned()),
             ("dd".to_owned(), "remove".to_owned()),
+            ("esc".to_owned(), "close".to_owned()),
+        ];
+        frame.render_widget(
+            Paragraph::new(crate::view::footer_hint_line(
+                &hints,
+                target.width as usize,
+                theme,
+            ))
+            .style(base),
+            footer_area,
+        );
+    }
+}
+
+/// The `/review` view body: an intro line, the code-review findings (`●` severity dot + severity
+/// word colored by level, an AMBER `file:line` location, and the finding text) at 2-row spacing, a
+/// rule, and a severity-count summary line, with a footer key-hint row pinned to the bottom of the
+/// panel. Rendered via the shared [`crate::view::review_body_lines`] / [`crate::view::footer_hint_line`]
+/// helpers (theme tokens + safe glyphs only), from the snapshot captured when the view opened.
+fn draw_review_view_body(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let target = view_body_inset(area);
+    if target.width == 0 || target.height == 0 {
+        return;
+    }
+    let base = Style::default().fg(theme.text).bg(theme.background);
+
+    // Reserve the bottom row for the footer hints when there is room for a body above it.
+    let footer_rows = u16::from(target.height >= 3);
+    let body_area = Rect {
+        height: target.height - footer_rows,
+        ..target
+    };
+    let lines = match app.review_snapshot() {
+        Some(data) => crate::view::review_body_lines(
+            data,
+            target.width as usize,
+            body_area.height as usize,
+            theme,
+        ),
+        None => vec![crate::view::empty_state_line(
+            "No review data available.",
+            theme,
+        )],
+    };
+    frame.render_widget(Paragraph::new(lines).style(base), body_area);
+
+    if footer_rows == 1 {
+        let footer_area = Rect {
+            y: target.y + target.height - 1,
+            height: 1,
+            ..target
+        };
+        let hints = vec![
+            (crate::glyphs::KEY_ENTER.to_owned(), "open finding".to_owned()),
+            ("f".to_owned(), "fix with agent".to_owned()),
             ("esc".to_owned(), "close".to_owned()),
         ];
         frame.render_widget(
@@ -2646,6 +2711,237 @@ fn draw_rename(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         Rect {
             x: content_x,
             y: popup.y + 7,
+            width: content_w,
+            height: 1,
+        },
+    );
+}
+
+/// Draw a note on the top border of a centered dialog, right-aligned in the dim-orange border tone,
+/// matching the title-in-border note style of the shared full-screen view panels.
+fn dialog_note(frame: &mut Frame, popup: Rect, note: &str, theme: &style::ThemeColors) {
+    let text = format!(" {note} ");
+    let len = text.chars().count() as u16;
+    let max = popup.width.saturating_sub(2);
+    if len == 0 || len > max {
+        return;
+    }
+    let note_area = Rect {
+        x: popup.x + popup.width - 1 - len,
+        y: popup.y,
+        width: len,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.border).bg(theme.background),
+        ))),
+        note_area,
+    );
+}
+
+/// The `/compact` dialog: a centered rounded card (over the dimmed conversation) titled `Compact
+/// conversation` with a `frees context` note in the top border, showing the before/after context
+/// comparison as key/value rows and the kept-summary bullets, with a `↵ compact   esc cancel`
+/// footer. All colors come from theme tokens and glyphs from [`crate::glyphs`].
+fn draw_compact(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let Some(dialog) = app.compact_dialog() else {
+        return;
+    };
+    if area.width < 24 || area.height < 12 {
+        return;
+    }
+    let width = 64u16.min(area.width.saturating_sub(2)).max(44);
+    let height = 14u16.min(area.height.saturating_sub(2)).max(12);
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Compact conversation ")
+        .title_style(
+            Style::default()
+                .fg(theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    dialog_note(frame, popup, "frees context", theme);
+
+    let content_x = popup.x + 2;
+    let content_w = width.saturating_sub(4);
+    let label_w = 10usize;
+    let dim = Style::default().fg(theme.text_dim);
+    let faint = Style::default().fg(theme.text_muted);
+    let bright = Style::default().fg(theme.text_bright);
+    let amber = Style::default().fg(theme.secondary);
+    let txt = Style::default().fg(theme.text);
+    let orange_d = Style::default().fg(theme.border);
+
+    let kv = |label: &str, value: Vec<Span<'static>>| -> Line<'static> {
+        let pad = label_w.saturating_sub(label.chars().count());
+        let mut out = vec![Span::styled(format!("{label}{}", " ".repeat(pad)), faint)];
+        out.extend(value);
+        Line::from(out)
+    };
+    let sep = || Span::styled(format!("  {}  ", crate::glyphs::SEPARATOR), faint);
+
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "Summarize older messages to reclaim context window.",
+            dim,
+        )),
+        Line::from(""),
+        kv(
+            "before",
+            vec![
+                Span::styled(dialog.before_tokens.clone(), bright),
+                sep(),
+                Span::styled(dialog.before_detail.clone(), dim),
+            ],
+        ),
+        kv(
+            "after",
+            vec![
+                Span::styled(dialog.after_tokens.clone(), amber),
+                sep(),
+                Span::styled(dialog.after_detail.clone(), dim),
+            ],
+        ),
+        Line::from(""),
+    ];
+    for (i, keep) in dialog.keeps.iter().enumerate() {
+        let label = if i == 0 { "keeps" } else { "" };
+        lines.push(kv(
+            label,
+            vec![
+                Span::styled(format!("{} ", crate::glyphs::BULLET), orange_d),
+                Span::styled(keep.clone(), txt),
+            ],
+        ));
+    }
+
+    let body_area = Rect {
+        x: content_x,
+        y: popup.y + 1,
+        width: content_w,
+        height: height.saturating_sub(3),
+    };
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.background)),
+        body_area,
+    );
+
+    let footer = Line::from(vec![
+        Span::styled(crate::glyphs::KEY_ENTER, orange_d),
+        Span::styled(" compact", faint),
+        Span::styled("   ", faint),
+        Span::styled("esc", orange_d),
+        Span::styled(" cancel", faint),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme.background)),
+        Rect {
+            x: content_x,
+            y: popup.y + height - 2,
+            width: content_w,
+            height: 1,
+        },
+    );
+}
+
+/// The `/init` dialog: a centered rounded card (over the dimmed conversation) titled `Initialize
+/// project` with an `AGENTS.md` note in the top border, showing the real project scan log — done
+/// steps marked `✓` in OKG green, the active/pending step marked `›` in orange — with a `↵ create
+/// e edit first   esc cancel` footer. Colors come from theme tokens and glyphs from [`crate::glyphs`].
+fn draw_init(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let Some(dialog) = app.init_dialog() else {
+        return;
+    };
+    if area.width < 24 || area.height < 12 {
+        return;
+    }
+    let width = 66u16.min(area.width.saturating_sub(2)).max(44);
+    let height = 16u16.min(area.height.saturating_sub(2)).max(12);
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Initialize project ")
+        .title_style(
+            Style::default()
+                .fg(theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    dialog_note(frame, popup, "AGENTS.md", theme);
+
+    let content_x = popup.x + 2;
+    let content_w = width.saturating_sub(4);
+    let dim = Style::default().fg(theme.text_dim);
+    let faint = Style::default().fg(theme.text_muted);
+    let txt = Style::default().fg(theme.text);
+    let okg = Style::default().fg(theme.success);
+    let orange = Style::default().fg(theme.primary);
+    let orange_d = Style::default().fg(theme.border);
+
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            format!("Scanning {} {}", dialog.root, crate::glyphs::ELLIPSIS),
+            dim,
+        )),
+        Line::from(""),
+    ];
+    for step in &dialog.steps {
+        let (glyph, glyph_style) = if step.done {
+            (crate::glyphs::MARK_DONE, okg)
+        } else {
+            (crate::glyphs::PROMPT, orange)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(step.label.clone(), txt),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Writes build/test commands & conventions for the agent.",
+        dim,
+    )));
+
+    let body_area = Rect {
+        x: content_x,
+        y: popup.y + 1,
+        width: content_w,
+        height: height.saturating_sub(3),
+    };
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.background)),
+        body_area,
+    );
+
+    let footer = Line::from(vec![
+        Span::styled(crate::glyphs::KEY_ENTER, orange_d),
+        Span::styled(" create", faint),
+        Span::styled("   ", faint),
+        Span::styled("e", orange_d),
+        Span::styled(" edit first", faint),
+        Span::styled("   ", faint),
+        Span::styled("esc", orange_d),
+        Span::styled(" cancel", faint),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme.background)),
+        Rect {
+            x: content_x,
+            y: popup.y + height - 2,
             width: content_w,
             height: 1,
         },
