@@ -957,7 +957,7 @@ fn push_notice(
     width: usize,
     theme: &style::ThemeColors,
 ) {
-    let style = Style::default().fg(theme.info);
+    let style = Style::default().fg(theme.text_dim);
     let body: Vec<String> = wrap(message, width.saturating_sub(2).max(1));
     let mut first = true;
     for wrapped in body {
@@ -4545,6 +4545,47 @@ mod tests {
         assert!(text.contains("/models"), "notice text shown:\n{text}");
         assert!(text.contains("›"), "notice marker shown:\n{text}");
         assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
+    }
+
+    #[test]
+    fn notice_line_has_no_info_blue_foreground() {
+        // VAL-CONV-060 (brand purity): a system notice ("Model set to ...") is brand-safe chrome.
+        // It must never render in the info-blue token; its foreground is the neutral-grey text_dim.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript
+            .push(Entry::Notice("Model set to google/gemini-2.5-flash".to_owned()));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let notice_row = (0..30)
+            .find(|&y| {
+                (0..92)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<Vec<_>>()
+                    .concat()
+                    .contains("Model set to")
+            })
+            .expect("the notice row is on screen");
+
+        let notice_cells: Vec<_> = (0..92).map(|x| buffer[(x, notice_row)].clone()).collect();
+        assert!(
+            notice_cells
+                .iter()
+                .all(|c| c.fg != theme.info),
+            "notice chrome must carry no info-blue foreground (VAL-CONV-060)"
+        );
+        assert!(
+            notice_cells
+                .iter()
+                .any(|c| c.symbol() != " " && c.fg == theme.text_dim),
+            "notice chrome renders in the neutral-grey text_dim token"
+        );
     }
 
     #[test]
