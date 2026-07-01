@@ -184,7 +184,19 @@ pub enum DialogKind {
     Attachments,
     /// Fork picker (`/fork`) backed by timeline entries.
     Fork,
+    /// Export format picker (`/export`).
+    Export,
 }
+
+/// The session-export formats offered by the `/export` modal: a display name, a one-line
+/// description, and the file extension written on confirm. The first entry is the default format
+/// (it carries the `default` badge in the picker).
+const EXPORT_FORMATS: &[(&str, &str, &str)] = &[
+    ("Markdown", "readable .md — headings + code", "md"),
+    ("JSON", "structured messages (.json)", "json"),
+    ("HTML", "styled, shareable (.html)", "html"),
+    ("Patch", "git-applyable diff (.patch)", "patch"),
+];
 
 /// Sidebar panel tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +277,19 @@ impl Dialog {
             self.selected.min(self.items.len() - 1)
         }
     }
+}
+
+/// The state of the `/rename` dialog: the session being renamed, its current title (quoted in the
+/// prompt), and the in-progress new title (edited by typing, committed with Enter, cancelled with
+/// Esc).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameDialog {
+    /// The persisted id of the session being renamed.
+    pub session_id: String,
+    /// The session's current title, shown quoted in the prompt (`None` when it is untitled).
+    pub current_title: Option<String>,
+    /// The in-progress new title text.
+    pub buffer: String,
 }
 
 /// Diff viewer render mode.
@@ -932,6 +957,9 @@ pub struct App {
     /// While renaming a session in the picker, the in-progress new title text. `None` when not
     /// renaming. Entered with `r`, edited by typing, committed with Enter, cancelled with Esc.
     session_rename: Option<String>,
+    /// The open `/rename` dialog (a centered input over the dimmed conversation), or `None` when it
+    /// is closed. Owns its own key input while open.
+    rename_dialog: Option<RenameDialog>,
     /// How many lines the transcript is scrolled up from the bottom. 0 pins to the latest content
     /// (auto-scroll); larger values reveal earlier content. Clamped to the scrollable range when
     /// rendered, so it never strands the view past the available content.
@@ -1089,6 +1117,7 @@ impl App {
             variant_rows: Vec::new(),
             subagent_ids: Vec::new(),
             session_rename: None,
+            rename_dialog: None,
             scroll: 0,
             viewport: Cell::new((80, 24)),
             find: None,
@@ -3382,7 +3411,7 @@ impl App {
             "exit" => self.should_quit = true,
             "help" => self.open_help_view(),
             "new" => self.new_session(),
-            "export" => self.export_session(),
+            "export" => self.open_export_dialog(),
             "status" => self.open_status_view(),
             "init" => self.start_flow(
                 "/init",
@@ -3409,7 +3438,7 @@ impl App {
             "sidebar-todo" => self.set_sidebar_panel(SidebarPanel::Todo),
             "sidebar-subagents" => self.set_sidebar_panel(SidebarPanel::Subagents),
             "sidebar-queue" => self.set_sidebar_panel(SidebarPanel::Queue),
-            "rename" => self.rename_session_command(),
+            "rename" => self.open_rename_dialog(),
             "models" => self.open_models_dialog(),
             "model" => self.open_models_dialog(),
             "agents" => self.open_agents_dialog(),
@@ -3524,27 +3553,37 @@ impl App {
             self.push_toast(ToastLevel::Info, "Cannot fork while a turn is running");
             return;
         }
-        let (items, entries) = match self.timeline_rows(&session_id) {
+        let (rows, entries, key_width) = match self.timeline_rows(&session_id) {
             Ok(rows) => rows,
             Err(err) => {
                 self.note_error(format!("Fork unavailable: {err}"));
                 return;
             }
         };
+        let items: Vec<String> = entries.iter().map(|entry| entry.label.clone()).collect();
         let selected = preferred_selected
             .unwrap_or_else(|| entries.len().saturating_sub(1))
             .min(entries.len().saturating_sub(1));
         self.timeline_entries = entries;
+        self.picker_rows = rows;
+        self.picker_key_width = (key_width > 0).then_some(key_width);
         self.open_dialog(Dialog {
             kind: DialogKind::Fork,
-            title: format!("Fork from timeline · {session_id}"),
+            title: "Fork from message".to_owned(),
             items,
             selected,
             empty: Some("No turns available to fork.".to_owned()),
         });
     }
 
-    fn timeline_rows(&self, session_id: &str) -> Result<(Vec<String>, Vec<TimelineEntry>), String> {
+    /// Build the fork picker's rich message rows from the persisted session timeline: each row's key
+    /// is `HH:MM  who` (real message timestamp + author, rendered AMBER) and its description is the
+    /// message's first-line excerpt, so a branch point can be chosen by message. Returns the modal
+    /// rows, their backing timeline entries, and the widest key (so the excerpts line up).
+    fn timeline_rows(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<crate::modal::ModalRow>, Vec<TimelineEntry>, usize), String> {
         let db = self
             .open_store()
             .ok_or_else(|| "no session store is available".to_owned())?;
@@ -3552,35 +3591,37 @@ impl App {
             .messages()
             .list_for_session(session_id)
             .map_err(|err| err.to_string())?;
-        if messages.is_empty() {
-            return Ok((vec!["No turns in this session yet.".to_owned()], Vec::new()));
-        }
-        let mut items = Vec::with_capacity(messages.len());
+        let mut rows = Vec::with_capacity(messages.len());
         let mut entries = Vec::with_capacity(messages.len());
-        for (index, message) in messages.iter().enumerate() {
-            let who = if message.role == "assistant" {
-                "assistant"
-            } else if message.role == "user" {
-                "you"
-            } else {
-                message.role.as_str()
+        let mut key_width = 0usize;
+        for message in &messages {
+            let who = match message.role.as_str() {
+                "assistant" => "assistant",
+                "user" => "you",
+                other => other,
             };
+            let time = hhmm(&message.created_at);
             let excerpt = first_line(&message.content);
-            let part_count = message.parts.len();
-            let label = format!(
-                "{:>2}. {who} · {} part{} · {excerpt}",
-                index + 1,
-                part_count,
-                if part_count == 1 { "" } else { "s" }
-            );
-            items.push(label.clone());
+            let key = if time.is_empty() {
+                who.to_owned()
+            } else {
+                format!("{time}  {who}")
+            };
+            key_width = key_width.max(key.chars().count());
+            let label = format!("{key} · {excerpt}");
+            rows.push(crate::modal::ModalRow {
+                key,
+                desc: Some(excerpt),
+                meta: None,
+                meta_color: None,
+            });
             entries.push(TimelineEntry {
                 session_id: session_id.to_owned(),
                 message_id: message.id.clone(),
                 label,
             });
         }
-        Ok((items, entries))
+        Ok((rows, entries, key_width))
     }
 
     /// Open the model picker (`/models`): the real catalogue models as rich rows (`provider/model` +
@@ -5186,6 +5227,7 @@ impl App {
                 }
             }
             Some(DialogKind::Fork) => self.fork_from_timeline_selection(),
+            Some(DialogKind::Export) => self.perform_export(),
             Some(DialogKind::Subagents) => {
                 if let Some(id) = self
                     .dialog
@@ -6401,26 +6443,81 @@ impl App {
         )));
     }
 
-    /// Open the session picker and enter rename mode on the first persisted session row.
-    fn rename_session_command(&mut self) {
-        self.open_sessions_dialog();
-        let first_persisted = self
-            .session_entries
-            .iter()
-            .position(|entry| entry.id.is_some());
-        match first_persisted {
-            Some(index) => {
-                if let Some(dialog) = self.dialog.as_mut() {
-                    dialog.selected = index;
+    /// Open the `/rename` dialog for the active session: a centered input pre-filled with the
+    /// session's current title (quoted in the prompt), so the user can edit and save a new title.
+    /// Surfaces a clear notice when no persisted session is active yet.
+    fn open_rename_dialog(&mut self) {
+        let Some(session_id) = self.session_id.clone() else {
+            self.transcript
+                .push(Entry::Notice("No persisted session to rename yet.".to_owned()));
+            self.push_toast(ToastLevel::Info, "No session to rename");
+            return;
+        };
+        let current_title = self
+            .open_store()
+            .and_then(|db| db.sessions().get(&session_id).ok().flatten())
+            .and_then(|session| session.title)
+            .filter(|title| !title.trim().is_empty());
+        // The input starts empty (the current title is shown for reference on its own line), so the
+        // user types the new title fresh — matching the reference dialog.
+        self.rename_dialog = Some(RenameDialog {
+            session_id,
+            current_title,
+            buffer: String::new(),
+        });
+    }
+
+    /// Whether the `/rename` dialog is open.
+    #[must_use]
+    pub fn rename_open(&self) -> bool {
+        self.rename_dialog.is_some()
+    }
+
+    /// The open `/rename` dialog state, for the renderer.
+    #[must_use]
+    pub fn rename_dialog(&self) -> Option<&RenameDialog> {
+        self.rename_dialog.as_ref()
+    }
+
+    /// Handle a key while the `/rename` dialog owns input: typing edits the new title, Enter commits
+    /// the rename, Esc cancels, Backspace erases, and Ctrl+C still quits so the user is never trapped.
+    fn on_rename_dialog_key(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Enter => self.commit_rename_dialog(),
+            KeyCode::Esc => self.rename_dialog = None,
+            KeyCode::Backspace => {
+                if let Some(dialog) = self.rename_dialog.as_mut() {
+                    dialog.buffer.pop();
                 }
-                self.begin_session_rename();
             }
-            None => {
-                self.close_dialog();
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(dialog) = self.rename_dialog.as_mut() {
+                    dialog.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit the `/rename` dialog: persist the typed title to the active session (an empty title
+    /// clears it, falling back to the session id as the label), confirm with a notice, and close.
+    fn commit_rename_dialog(&mut self) {
+        let Some(dialog) = self.rename_dialog.take() else {
+            return;
+        };
+        let trimmed = dialog.buffer.trim();
+        let title = (!trimmed.is_empty()).then_some(trimmed);
+        match self.rename_persisted_session(&dialog.session_id, title) {
+            Ok(()) => {
+                let shown = title
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| dialog.session_id.clone());
                 self.transcript
-                    .push(Entry::Notice("No persisted sessions to rename.".to_owned()));
-                self.push_toast(ToastLevel::Info, "No session to rename");
+                    .push(Entry::Notice(format!("Renamed session to {shown}")));
+                self.push_toast(ToastLevel::Success, "Session renamed");
             }
+            Err(err) => self.note_error(format!("Rename failed: {err}")),
         }
     }
 
@@ -6794,21 +6891,149 @@ impl App {
         self.pending_compaction = true;
     }
 
-    /// Export the current session (`/export`): render the transcript to Markdown, write it to a
-    /// file under the data directory's `exports/` folder, and confirm with the path. A write
-    /// failure surfaces a clear error instead of crashing.
-    fn export_session(&mut self) {
-        let markdown = self.render_session_markdown();
-        match write_export(&markdown) {
+    /// Open the export format picker (`/export`): a centered modal listing the available formats
+    /// (Markdown/JSON/HTML/Patch) as selectable rows with the default format badged, rather than
+    /// silently writing a file. The chosen format is written on confirm (see [`Self::perform_export`]).
+    fn open_export_dialog(&mut self) {
+        let theme = frame::style::ThemeColors::from_name(&self.theme);
+        let mut items = Vec::with_capacity(EXPORT_FORMATS.len());
+        let mut rows = Vec::with_capacity(EXPORT_FORMATS.len());
+        let mut key_width = 0usize;
+        for (index, (name, desc, _ext)) in EXPORT_FORMATS.iter().enumerate() {
+            key_width = key_width.max(name.chars().count());
+            let (meta, meta_color) = if index == 0 {
+                (Some("default".to_owned()), Some(theme.secondary))
+            } else {
+                (None, None)
+            };
+            items.push((*name).to_owned());
+            rows.push(crate::modal::ModalRow {
+                key: (*name).to_owned(),
+                desc: Some((*desc).to_owned()),
+                meta,
+                meta_color,
+            });
+        }
+        self.picker_rows = rows;
+        self.picker_key_width = (key_width > 0).then_some(key_width);
+        self.open_dialog(Dialog {
+            kind: DialogKind::Export,
+            title: "Export session".to_owned(),
+            items,
+            selected: 0,
+            empty: None,
+        });
+    }
+
+    /// Export the current session in the highlighted format of the open export modal: render the
+    /// transcript to that format, write it under the data directory's `exports/` folder, and confirm
+    /// with the path. A write failure surfaces a clear error instead of crashing.
+    fn perform_export(&mut self) {
+        let index = self.dialog.as_ref().map_or(0, Dialog::selected);
+        let (name, _desc, ext) = EXPORT_FORMATS.get(index).copied().unwrap_or(EXPORT_FORMATS[0]);
+        let content = match ext {
+            "json" => self.render_session_json(),
+            "html" => self.render_session_html(),
+            "patch" => self.render_session_patch(),
+            _ => self.render_session_markdown(),
+        };
+        match write_export(&content, ext) {
             Ok(path) => {
                 self.transcript.push(Entry::Notice(format!(
-                    "Exported session to {}",
+                    "Exported session ({name}) to {}",
                     path.display()
                 )));
                 self.push_toast(ToastLevel::Success, "Session exported");
             }
             Err(err) => self.note_error(format!("Export failed: {err}")),
         }
+    }
+
+    /// Render the current transcript to a structured JSON document for `/export` (role + content
+    /// per message), mirroring the headless `cortex export` message shape.
+    fn render_session_json(&self) -> String {
+        let messages: Vec<serde_json::Value> = self
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::User(text) => Some(serde_json::json!({"role": "user", "content": text})),
+                Entry::Assistant(turn) => {
+                    Some(serde_json::json!({"role": "assistant", "content": turn.answer}))
+                }
+                _ => None,
+            })
+            .collect();
+        let document = serde_json::json!({
+            "session": self.session_id,
+            "messages": messages,
+        });
+        serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_owned())
+    }
+
+    /// Render the current transcript to a self-contained HTML document for `/export`.
+    fn render_session_html(&self) -> String {
+        let mut body = String::new();
+        for entry in &self.transcript {
+            match entry {
+                Entry::User(text) => body.push_str(&format!(
+                    "<section class=\"user\"><h2>You</h2><pre>{}</pre></section>\n",
+                    html_escape(text)
+                )),
+                Entry::Assistant(turn) => body.push_str(&format!(
+                    "<section class=\"assistant\"><h2>Cortex</h2><pre>{}</pre></section>\n",
+                    html_escape(turn.answer.trim())
+                )),
+                _ => {}
+            }
+        }
+        format!(
+            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>Cortex Code session export</title>\n</head>\n<body>\n{body}</body>\n</html>\n"
+        )
+    }
+
+    /// Render the current transcript's file changes to a git-applyable unified patch for `/export`.
+    fn render_session_patch(&self) -> String {
+        let mut out = String::new();
+        for file in self.collect_session_diffs() {
+            let header_path = &file.path;
+            out.push_str(&format!("--- a/{header_path}\n+++ b/{header_path}\n"));
+            for hunk in &file.hunks {
+                out.push_str(&hunk.header());
+                out.push('\n');
+                for line in &hunk.lines {
+                    let marker = match line.kind {
+                        crate::diff::DiffLineKind::Added => '+',
+                        crate::diff::DiffLineKind::Removed => '-',
+                        _ => ' ',
+                    };
+                    out.push(marker);
+                    out.push_str(&line.content);
+                    out.push('\n');
+                }
+            }
+        }
+        out
+    }
+
+    /// Collect the current transcript's file diffs (one per path, latest change wins), matching the
+    /// `/diff` viewer's collection, for the patch export.
+    fn collect_session_diffs(&self) -> Vec<crate::diff::FileDiff> {
+        let mut files: Vec<crate::diff::FileDiff> = Vec::new();
+        let mut seen_paths: BTreeSet<String> = BTreeSet::new();
+        for entry in self.transcript.iter().rev() {
+            let diff = match entry {
+                Entry::Diff(diff) => Some(diff),
+                Entry::Tool(card) => card.diff.as_deref(),
+                _ => None,
+            };
+            if let Some(diff) = diff
+                && seen_paths.insert(diff.path.clone())
+            {
+                files.push(diff.clone());
+            }
+        }
+        files.reverse();
+        files
     }
 
     /// Render the current transcript to a self-contained Markdown document for `/export`.
@@ -6936,6 +7161,13 @@ impl App {
         // targeted revert actions. Keys are swallowed so the prompt is never edited beneath it.
         if self.diff_viewer_open() {
             self.on_diff_viewer_key(key, ctrl);
+            return;
+        }
+
+        // The `/rename` dialog is modal: it owns typing (editing the new title), Enter commits,
+        // Esc cancels, and Ctrl+C still quits so the user is never trapped.
+        if self.rename_open() {
+            self.on_rename_dialog_key(key, ctrl);
             return;
         }
 
@@ -7401,16 +7633,24 @@ fn entry_copy_text(entry: &Entry) -> String {
 
 /// Write a session export Markdown document to a timestamped file under the data directory's
 /// `exports/` folder, returning the path written. The directory is created if needed.
-fn write_export(markdown: &str) -> std::io::Result<PathBuf> {
+fn write_export(content: &str, ext: &str) -> std::io::Result<PathBuf> {
     let dir = export_dir();
     std::fs::create_dir_all(&dir)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    let path = dir.join(format!("cortex-session-{nanos}.md"));
-    std::fs::write(&path, markdown)?;
+    let path = dir.join(format!("cortex-session-{nanos}.{ext}"));
+    std::fs::write(&path, content)?;
     Ok(path)
+}
+
+/// Escape the HTML metacharacters in `text` so exported transcript content renders as literal text
+/// rather than markup.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Resolve the export directory, mirroring the data-directory precedence used elsewhere:
@@ -10359,23 +10599,235 @@ mod tests {
     }
 
     #[test]
-    fn rename_command_enters_session_rename_mode() {
+    fn rename_command_opens_rename_dialog_and_commits_new_title() {
+        // VAL-VIEW-038/039/040: `/rename` opens the standalone rename dialog for the active session
+        // (not the session picker); typing edits the new title live and Enter commits + persists it.
         let path = session_store_path("rename-command");
         let mut a = app();
         a.set_session_store(Some(path.clone()));
         run_turn(&mut a, "hello", "hi");
+        let session_id = a.session_id.clone().expect("active session");
 
         type_str(&mut a, "/rename");
         a.on_key(key(KeyCode::Enter));
 
-        assert_eq!(
-            a.dialog().map(|dialog| dialog.kind),
-            Some(DialogKind::Sessions)
+        assert!(
+            a.rename_open(),
+            "/rename opens the standalone rename dialog for the active session"
         );
         assert!(
-            a.session_rename().is_some(),
-            "rename mode should be active for a persisted session"
+            a.dialog().is_none(),
+            "the rename dialog is not the session picker"
         );
+
+        // Typing edits the in-progress new title live.
+        type_str(&mut a, "fresh session title");
+        assert!(
+            a.rename_dialog()
+                .is_some_and(|dialog| dialog.buffer.ends_with("fresh session title")),
+            "typing appends to the rename buffer"
+        );
+
+        // Enter commits and closes; the new title is persisted to the store.
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.rename_open(), "Enter closes the rename dialog");
+        let db = db::Database::open(&path).expect("reopen store");
+        let session = db.sessions().get(&session_id).expect("get").expect("session");
+        assert_eq!(session.title.as_deref(), Some("fresh session title"));
+    }
+
+    #[test]
+    fn rename_dialog_esc_cancels_without_persisting() {
+        let path = session_store_path("rename-cancel");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "hello", "hi");
+        let session_id = a.session_id.clone().expect("active session");
+
+        dispatch(&mut a, "rename");
+        assert!(a.rename_open());
+        type_str(&mut a, "discarded");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.rename_open(), "Esc closes the rename dialog");
+        let db = db::Database::open(&path).expect("reopen store");
+        let session = db.sessions().get(&session_id).expect("get").expect("session");
+        assert!(
+            session.title.is_none(),
+            "Esc discards the typed title without persisting a rename"
+        );
+    }
+
+    #[test]
+    fn fork_dialog_uses_rich_message_rows_titled_fork_from_message() {
+        // VAL-VIEW-011/012: `/fork` opens a modal titled `Fork from message` listing the session's
+        // past messages as rich rows (a key column + excerpt), one row per persisted message.
+        let path = session_store_path("fork-rows");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "first question", "first answer");
+        run_turn(&mut a, "second question", "second answer");
+
+        dispatch(&mut a, "fork");
+        let dialog = a.dialog().expect("fork dialog open");
+        assert_eq!(dialog.kind, DialogKind::Fork);
+        assert_eq!(dialog.title, "Fork from message");
+        assert_eq!(a.picker_rows().len(), 4, "one rich row per persisted message");
+        // Each row carries a `who` (you/assistant) in its key and an excerpt in its description.
+        let first = &a.picker_rows()[0];
+        assert!(first.key.contains("you"), "first row is the user turn: {first:?}");
+        assert_eq!(first.desc.as_deref(), Some("first question"));
+    }
+
+    #[test]
+    fn export_dialog_lists_formats_with_default_badge() {
+        // VAL-VIEW-035/036: `/export` opens a modal titled `Export session` listing the formats as
+        // selectable rows, with the default (Markdown) row carrying a `default` badge as meta.
+        let mut a = app();
+        dispatch(&mut a, "export");
+        let dialog = a.dialog().expect("export dialog open");
+        assert_eq!(dialog.kind, DialogKind::Export);
+        assert_eq!(dialog.title, "Export session");
+        let rows = a.picker_rows();
+        assert_eq!(rows.len(), 4, "Markdown/JSON/HTML/Patch");
+        assert_eq!(rows[0].key, "Markdown");
+        assert_eq!(
+            rows[0].meta.as_deref(),
+            Some("default"),
+            "the default format is badged"
+        );
+        assert!(
+            rows[1..].iter().all(|row| row.meta.is_none()),
+            "only the default format carries a badge"
+        );
+        // Selection starts on the default and moves with Down.
+        assert_eq!(dialog.selected(), 0);
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.dialog().expect("still open").selected(), 1);
+        // Esc dismisses without exporting.
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open(), "Esc closes the export dialog");
+    }
+
+    #[test]
+    fn export_format_renderers_produce_expected_shapes() {
+        // The chosen export format renders the transcript into that format (JSON messages, HTML
+        // sections, unified patch) so Enter writes the selected format's content.
+        let mut a = app();
+        a.transcript.push(Entry::User("ping".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "pong".to_owned(),
+        }));
+
+        let json = a.render_session_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON export");
+        let messages = parsed["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "ping");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"], "pong");
+
+        let html = a.render_session_html();
+        assert!(html.starts_with("<!doctype html>"), "html export: {html}");
+        assert!(html.contains("<pre>ping</pre>"));
+        assert!(html.contains("<pre>pong</pre>"));
+
+        // HTML metacharacters in content are escaped.
+        let mut b = app();
+        b.transcript.push(Entry::User("a < b && c > d".to_owned()));
+        let escaped = b.render_session_html();
+        assert!(escaped.contains("a &lt; b &amp;&amp; c &gt; d"), "escaped: {escaped}");
+    }
+
+    fn render_screen(a: &App, width: u16, height: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| crate::ui::draw(frame, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn export_dialog_renders_default_badge_and_destination_note() {
+        // VAL-VIEW-035/036: the export modal renders its title, all format rows, the `default`
+        // badge, and the `→ ~/cortex/exports` destination note.
+        let mut a = app();
+        dispatch(&mut a, "export");
+        let screen = render_screen(&a, 92, 30);
+        for needle in [
+            "Export session",
+            "Markdown",
+            "JSON",
+            "HTML",
+            "Patch",
+            "default",
+            "→ ~/cortex/exports",
+        ] {
+            assert!(screen.contains(needle), "export modal shows `{needle}`:\n{screen}");
+        }
+        // Safe glyphs only: no tofu, no braille, no thin triangles.
+        assert!(!screen.contains('▸') && !screen.contains('▾'));
+    }
+
+    #[test]
+    fn fork_dialog_renders_title_and_new_branch_note() {
+        // VAL-VIEW-011/012: the fork modal renders `Fork from message` and the `new branch` note.
+        let path = session_store_path("fork-render");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "cap the streaming buffer", "added a 64KB cap");
+        dispatch(&mut a, "fork");
+        let screen = render_screen(&a, 92, 30);
+        assert!(screen.contains("Fork from message"), "fork title:\n{screen}");
+        assert!(screen.contains("new branch"), "branch note:\n{screen}");
+        // The user turn's excerpt is listed.
+        assert!(
+            screen.contains("cap the streaming buffer"),
+            "message excerpt listed:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn rename_dialog_renders_current_title_input_and_footer() {
+        // VAL-VIEW-038/039: the rename dialog quotes the current title (straight quotes), shows the
+        // input with a `▏` caret, and offers save/cancel.
+        let path = session_store_path("rename-render");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "hello", "hi");
+        let id = a.session_id.clone().expect("session id");
+        {
+            let db = db::Database::open(&path).expect("open store");
+            db.sessions()
+                .set_title(&id, Some("fix streaming buffer limit"))
+                .expect("seed title");
+        }
+        dispatch(&mut a, "rename");
+        assert!(a.rename_open(), "rename dialog open");
+        let screen = render_screen(&a, 92, 30);
+        assert!(screen.contains("Rename session"), "title:\n{screen}");
+        assert!(
+            screen.contains("fix streaming buffer limit"),
+            "current title quoted:\n{screen}"
+        );
+        assert!(screen.contains('"'), "straight quotes around the current title");
+        assert!(screen.contains('▏'), "the input caret renders:\n{screen}");
+        assert!(
+            screen.contains("save") && screen.contains("cancel"),
+            "save/cancel hints:\n{screen}"
+        );
+        // No curly/smart quotes.
+        for curly in ['“', '”', '‘', '’'] {
+            assert!(!screen.contains(curly), "no curly quote {curly:?}");
+        }
     }
 
     #[test]
@@ -11066,16 +11518,25 @@ mod tests {
 
     #[test]
     fn dispatching_export_confirms_with_a_path() {
-        // VAL-TUI-041: `/export` exports the current session and confirms with a path.
+        // VAL-TUI-041 / VAL-VIEW-035/037: `/export` opens the format modal; confirming (Enter)
+        // exports the highlighted (default Markdown) format and confirms with a path.
         let mut a = app();
         run_turn(&mut a, "hello", "hi there");
         type_str(&mut a, "/export");
         a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.dialog().map(|dialog| dialog.kind),
+            Some(DialogKind::Export),
+            "/export opens the export format modal (not a silent write)"
+        );
+        // Confirm the highlighted format; the modal closes and the export is confirmed with a path.
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.dialog_open(), "confirming closes the export modal");
         match a.transcript.last() {
             Some(Entry::Notice(text)) => {
                 assert!(
-                    text.contains("Exported session to"),
-                    "an export confirmation with a path: {text}"
+                    text.contains("Exported session") && text.contains("Markdown"),
+                    "an export confirmation with the format + path: {text}"
                 );
             }
             other => panic!("expected an export confirmation notice, got {other:?}"),

@@ -116,11 +116,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_diff_viewer(frame, app, area, &theme);
     // A modal picker/dialog (or the command palette) floats over a dimmed session: fade the
     // backdrop first, then draw the overlay.
-    if app.dialog_open() || app.palette_open() {
+    if app.dialog_open() || app.palette_open() || app.rename_open() {
         dim_backdrop(frame, area, &theme);
     }
     // A modal dialog (picker/status view) overlays everything else when open.
     draw_dialog(frame, app, area, &theme);
+    // The `/rename` dialog (centered input over the dimmed conversation) overlays when open.
+    draw_rename(frame, app, area, &theme);
     // The command palette overlays everything when open (mutually exclusive with a dialog).
     draw_palette(frame, app, area, &theme);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
@@ -2440,6 +2442,8 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             | DialogKind::Variants
             | DialogKind::Themes
             | DialogKind::Subagents
+            | DialogKind::Fork
+            | DialogKind::Export
     );
     let searchable = matches!(dialog.kind, DialogKind::Sessions | DialogKind::Models);
 
@@ -2459,9 +2463,14 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             placeholder: "type to filter…".to_owned(),
             caret_when_empty: false,
         });
-        // Agents/variants/subagents use an AMBER key; the other rich pickers use BRIGHT keys.
+        // Agents/variants/subagents/fork/export use an AMBER key; the other rich pickers use
+        // BRIGHT keys.
         let key_color = match dialog.kind {
-            DialogKind::Agents | DialogKind::Variants | DialogKind::Subagents => theme.secondary,
+            DialogKind::Agents
+            | DialogKind::Variants
+            | DialogKind::Subagents
+            | DialogKind::Fork
+            | DialogKind::Export => theme.secondary,
             _ => theme.text_bright,
         };
         (
@@ -2496,8 +2505,14 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         None
     };
 
-    // The theme picker advertises its live-preview behavior with a right-aligned footer note.
-    let note = (dialog.kind == DialogKind::Themes).then(|| "live preview".to_owned());
+    // Some dialogs carry a right-aligned footer note: the theme picker advertises its live preview,
+    // the fork dialog notes it creates a new branch, and the export dialog shows its destination.
+    let note = match dialog.kind {
+        DialogKind::Themes => Some("live preview".to_owned()),
+        DialogKind::Fork => Some("new branch".to_owned()),
+        DialogKind::Export => Some("→ ~/cortex/exports".to_owned()),
+        _ => None,
+    };
 
     let width = dialog_width(
         &rows,
@@ -2529,6 +2544,112 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     };
 
     crate::modal::render_modal(frame, area, &spec, theme, app.selection_anim_state());
+}
+
+/// Render the `/rename` dialog: a centered card (rounded `ORANGE_D` border + AMBER title) over the
+/// dimmed conversation, showing the current session title in straight quotes, an ORANGE-bordered
+/// input box holding the new title with a `▏` caret, and a `↵ save   esc cancel` footer.
+fn draw_rename(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
+    let Some(dialog) = app.rename_dialog() else {
+        return;
+    };
+    if area.width < 12 || area.height < 9 {
+        return;
+    }
+
+    let width = 60u16.min(area.width.saturating_sub(2)).max(30);
+    let height = 9u16;
+    let popup = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Rename session ")
+        .title_style(
+            Style::default()
+                .fg(theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let content_x = popup.x + 2;
+    let content_w = width.saturating_sub(4);
+
+    // The `current "title"` prompt line (straight quotes only).
+    let current_line = match &dialog.current_title {
+        Some(title) => Line::from(vec![
+            Span::styled("current ", Style::default().fg(theme.text_dim)),
+            Span::styled(format!("\"{title}\""), Style::default().fg(theme.text)),
+        ]),
+        None => Line::from(vec![
+            Span::styled("current ", Style::default().fg(theme.text_dim)),
+            Span::styled("(untitled)", Style::default().fg(theme.text_muted)),
+        ]),
+    };
+    frame.render_widget(
+        Paragraph::new(current_line).style(Style::default().bg(theme.background)),
+        Rect {
+            x: content_x,
+            y: popup.y + 2,
+            width: content_w,
+            height: 1,
+        },
+    );
+
+    // The ORANGE-bordered input box holding the new title with a trailing `▏` caret.
+    let input_rect = Rect {
+        x: content_x,
+        y: popup.y + 4,
+        width: content_w,
+        height: 3,
+    };
+    let input_block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.primary));
+    let input_inner = input_block.inner(input_rect);
+    frame.render_widget(input_block, input_rect);
+
+    let field_width = input_inner.width.saturating_sub(1) as usize;
+    let shown: String = {
+        let chars: Vec<char> = dialog.buffer.chars().collect();
+        if chars.len() > field_width {
+            chars[chars.len() - field_width..].iter().collect()
+        } else {
+            dialog.buffer.clone()
+        }
+    };
+    let input_line = Line::from(vec![
+        Span::styled(shown, Style::default().fg(theme.text_bright)),
+        Span::styled(crate::glyphs::CURSOR, Style::default().fg(theme.primary)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(input_line).style(Style::default().bg(theme.background)),
+        input_inner,
+    );
+
+    // The footer key-hint row: keys in dim orange, labels in faint grey.
+    let footer = Line::from(vec![
+        Span::styled(crate::glyphs::KEY_ENTER, Style::default().fg(theme.border)),
+        Span::styled(" save", Style::default().fg(theme.text_muted)),
+        Span::styled("   ", Style::default().fg(theme.text_muted)),
+        Span::styled("esc", Style::default().fg(theme.border)),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme.background)),
+        Rect {
+            x: content_x,
+            y: popup.y + 7,
+            width: content_w,
+            height: 1,
+        },
+    );
 }
 
 /// The footer key-hints for a dialog: the searchable pickers advertise their real actions with safe
@@ -2576,6 +2697,22 @@ fn dialog_hints(kind: DialogKind, renaming: bool) -> Vec<crate::modal::ModalHint
             ModalHint::new(crate::glyphs::KEY_ENTER, "view"),
             ModalHint::new("^C", "cancel"),
             ModalHint::new("esc", "close"),
+        ],
+        DialogKind::Fork => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "fork here"),
+            ModalHint::new(
+                format!("{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN),
+                "pick",
+            ),
+            ModalHint::new("esc", "cancel"),
+        ],
+        DialogKind::Export => vec![
+            ModalHint::new(crate::glyphs::KEY_ENTER, "export"),
+            ModalHint::new(
+                format!("{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN),
+                "format",
+            ),
+            ModalHint::new("esc", "cancel"),
         ],
         _ => parse_hints(dialog_hint(kind, false)),
     }
