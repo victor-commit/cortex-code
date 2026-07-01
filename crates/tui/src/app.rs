@@ -298,22 +298,35 @@ pub struct DiffViewer {
     pub mode: DiffViewMode,
     /// Active keyboard focus pane.
     pub focus: DiffViewerFocus,
+    /// Per-file disclosure state: `expanded[i]` is whether file `i`'s hunk body is shown. Parallel
+    /// to `files`, so it is kept in sync whenever a file is removed (after a revert).
+    pub expanded: Vec<bool>,
 }
 
 impl DiffViewer {
     fn new(files: Vec<crate::diff::FileDiff>) -> Self {
+        // The first changed file opens expanded (its hunks visible); the rest start collapsed,
+        // matching the diff-viewer reference (one open file above collapsed `▶` file rows).
+        let expanded = (0..files.len()).map(|i| i == 0).collect();
         Self {
             files,
             selected_file: 0,
             selected_hunk: 0,
             mode: DiffViewMode::Unified,
             focus: DiffViewerFocus::Files,
+            expanded,
         }
     }
 
     #[must_use]
     pub fn selected_file(&self) -> Option<&crate::diff::FileDiff> {
         self.files.get(self.selected_file)
+    }
+
+    /// Whether file `index`'s hunk body is currently disclosed (`▼`) rather than collapsed (`▶`).
+    #[must_use]
+    pub fn is_expanded(&self, index: usize) -> bool {
+        self.expanded.get(index).copied().unwrap_or(false)
     }
 
     fn clamp_selection(&mut self) {
@@ -4768,6 +4781,16 @@ impl App {
         }
     }
 
+    /// Toggle the selected file's disclosure (expand/collapse its hunk body) in the `/diff` viewer.
+    fn diff_toggle_expanded(&mut self) {
+        if let Some(viewer) = self.diff_viewer.as_mut() {
+            let index = viewer.selected_file;
+            if let Some(state) = viewer.expanded.get_mut(index) {
+                *state = !*state;
+            }
+        }
+    }
+
     /// Revert the selected file or hunk from the open `/diff` viewer. Selection scope follows the
     /// active focus pane: file-tree focus reverts the whole file diff, hunk focus reverts only the
     /// selected hunk. The write is conflict-checked against the viewer's expected post-edit content.
@@ -4852,6 +4875,9 @@ impl App {
             viewer.clamp_selection();
         } else {
             viewer.files.remove(index);
+            if index < viewer.expanded.len() {
+                viewer.expanded.remove(index);
+            }
             viewer.clamp_selection();
             if viewer.files.is_empty() {
                 self.close_diff_viewer();
@@ -4878,11 +4904,7 @@ impl App {
             KeyCode::Char('v') if !ctrl => self.diff_toggle_mode(),
             KeyCode::Char('r') if !ctrl => self.revert_diff_selection(),
             KeyCode::Char('u') if !ctrl => self.undo(),
-            KeyCode::Enter => {
-                if focus == DiffViewerFocus::Files {
-                    self.diff_toggle_focus();
-                }
-            }
+            KeyCode::Enter => self.diff_toggle_expanded(),
             KeyCode::Up => match focus {
                 DiffViewerFocus::Files => self.diff_select_prev_file(),
                 DiffViewerFocus::Hunks => self.diff_select_prev_hunk(),
@@ -11724,6 +11746,39 @@ mod tests {
             viewer.mode,
             DiffViewMode::Unified,
             "unified is the default mode"
+        );
+        assert!(
+            viewer.is_expanded(0),
+            "the first file opens expanded (its hunk body visible)"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn diff_viewer_enter_toggles_the_selected_file_disclosure() {
+        // VAL-VIEW-053: activating a file row's disclosure toggles it between expanded (hunks shown)
+        // and collapsed (hunks hidden) and back.
+        let before = "alpha\nbeta\ngamma\n";
+        let after = "alpha\nBETA\ngamma\n";
+        let (rel, path) = temp_relative_diff_file(before, after);
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(before), Some(after)).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+        dispatch(&mut a, "diff");
+        assert!(a.diff_viewer_open());
+        assert!(a.diff_viewer().unwrap().is_expanded(0), "opens expanded");
+
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            !a.diff_viewer().unwrap().is_expanded(0),
+            "Enter collapses the open file"
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.diff_viewer().unwrap().is_expanded(0),
+            "Enter re-expands the file"
         );
 
         let _ = std::fs::remove_file(path);

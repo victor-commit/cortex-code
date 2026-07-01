@@ -12,9 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use tui_components::style;
 use tui_components::toast::ToastLevel;
 
-use crate::app::{
-    App, AssistantTurn, DialogKind, DiffViewMode, DiffViewerFocus, Entry,
-};
+use crate::app::{App, AssistantTurn, DialogKind, DiffViewMode, Entry};
 use crate::diff::FileDiff;
 use crate::tool_card::{ToolCard, ToolStatus};
 
@@ -43,8 +41,9 @@ const CONTENT_MARGIN: usize = 2;
 
 /// Maximum number of toasts drawn at once in the overlay (matches the app's retention cap).
 const MAX_VISIBLE_TOASTS: usize = 4;
-/// Width of the left file-tree pane in the `/diff` viewer.
-const DIFF_TREE_WIDTH: u16 = 32;
+/// Left indent (columns) of a hunk row's content within the `/diff` viewer accordion: the line
+/// number sits at this origin, the `+`/`-`/space sign at origin+6, and the code at origin+8.
+const DIFF_HUNK_ORIGIN: usize = 3;
 
 /// Renders the whole frame for the current [`App`] state.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -112,7 +111,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(sidebar) = sidebar_area {
         draw_sidebar(frame, app, sidebar, &theme);
     }
-    // The dedicated `/diff` viewer is a modal overlay for file-tree + hunk navigation and revert.
+    // The dedicated `/diff` viewer is a full-screen Wave-2 view (shared chrome + `Changes`
+    // accordion) that fully repaints the frame, so it overlays the conversation beneath it.
     draw_diff_viewer(frame, app, area, &theme);
     // A modal picker/dialog (or the command palette) floats over a dimmed session: fade the
     // backdrop first, then draw the overlay.
@@ -2049,350 +2049,354 @@ fn draw_view_placeholder(frame: &mut Frame, area: Rect, theme: &style::ThemeColo
     );
 }
 
-/// Render the `/diff` viewer overlay: a file tree on the left and a per-file diff pane on the
-/// right, with unified/split toggle, hunk navigation, and revert hinting.
+/// Render the `/diff` viewer as a full-screen Wave-2 view: the shared chrome (`✦ Cortex Code ·
+/// /diff` header + rule + 3-zone status bar) wrapping a titled `Changes` panel. The panel body is a
+/// multi-file diff accordion — one disclosure row per changed file (`▼` open / `▶` collapsed) with
+/// the open file's hunk body unfolded inline (line-numbered red/green rows reusing the wave0
+/// conv-diff-card tokens). The selected file row carries the shared inverse selection bar.
 fn draw_diff_viewer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some(viewer) = app.diff_viewer() else {
         return;
     };
-    if area.width < 20 || area.height < 10 {
-        return;
-    }
-
-    let width = (((area.width as usize) * 94) / 100).clamp(60, area.width as usize) as u16;
-    let height = (((area.height as usize) * 88) / 100).clamp(14, area.height as usize) as u16;
-    let popup = centered_rect(width, height, area);
-    let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focus))
-        .title(" Diff viewer ")
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
-    let inner = block.inner(popup);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(block, popup);
-    if inner.width < 8 || inner.height < 4 {
-        return;
-    }
-
-    let tree_width = DIFF_TREE_WIDTH.min(inner.width.saturating_sub(8)).max(20);
-    let cols =
-        Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(1)]).split(inner);
-
-    draw_diff_file_tree(frame, viewer, cols[0], theme);
-    draw_diff_file_pane(frame, viewer, cols[1], theme);
-}
-
-fn draw_diff_file_tree(
-    frame: &mut Frame,
-    viewer: &crate::app::DiffViewer,
-    area: Rect,
-    theme: &style::ThemeColors,
-) {
-    if area.width < 4 || area.height < 3 {
-        return;
-    }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Files ");
-    let inner = block.inner(area);
-
-    let mut rows: Vec<Line<'static>> = if viewer.files.is_empty() {
-        vec![Line::from(Span::styled(
-            "  (no file diffs)",
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::ITALIC),
-        ))]
-    } else {
-        viewer
-            .files
-            .iter()
-            .enumerate()
-            .map(|(index, file)| {
-                let marker = row_marker(index == viewer.selected_file);
-                let label = format!(
-                    "{} (+{} -{}, {} hunk{})",
-                    file.path,
-                    file.additions,
-                    file.removals,
-                    file.hunks.len(),
-                    if file.hunks.len() == 1 { "" } else { "s" }
-                );
-                let active_focus =
-                    viewer.focus == DiffViewerFocus::Files && index == viewer.selected_file;
-                let style = if index == viewer.selected_file {
-                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                let row_style = if active_focus {
-                    style.bg(theme.surface[2])
-                } else {
-                    style
-                };
-                Line::from(vec![
-                    Span::styled(marker, Style::default().fg(theme.info)),
-                    Span::styled(label, row_style),
-                ])
-            })
-            .collect()
-    };
-
-    let budget = inner.height.saturating_sub(1) as usize;
-    let visible = budget.max(1).min(rows.len().max(1));
-    let selected = viewer.selected_file.min(rows.len().saturating_sub(1));
-    let offset = selected.saturating_sub(visible.saturating_sub(1));
-    let end = (offset + visible).min(rows.len());
-    rows = rows[offset..end].to_vec();
-    rows.push(Line::from(Span::styled(
-        "  ↑↓ file · Tab focus",
-        Style::default().fg(theme.text_dim),
-    )));
-
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(rows).style(Style::default().fg(theme.text).bg(theme.surface[1])),
-        inner,
+    let body = crate::view::render_chrome(
+        frame,
+        area,
+        app,
+        crate::view::ViewKind::Diff.crumb(),
+        theme,
     );
-}
-
-fn draw_diff_file_pane(
-    frame: &mut Frame,
-    viewer: &crate::app::DiffViewer,
-    area: Rect,
-    theme: &style::ThemeColors,
-) {
-    if area.width < 6 || area.height < 4 {
+    if body.width <= crate::view::VIEW_MARGIN * 2 || body.height < 2 {
         return;
     }
-    let Some(file) = viewer.selected_file() else {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Diff ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        frame.render_widget(
-            Paragraph::new("No selected diff").style(Style::default().fg(theme.text_dim)),
-            inner,
-        );
+    let panel_area = Rect {
+        x: body.x + crate::view::VIEW_MARGIN,
+        y: body.y,
+        width: body.width - crate::view::VIEW_MARGIN * 2,
+        height: body.height,
+    };
+    let note = diff_view_note(viewer);
+    let inner = crate::view::render_panel(
+        frame,
+        panel_area,
+        crate::view::ViewKind::Diff.title(),
+        Some(&note),
+        theme,
+    );
+    let target = view_body_inset(inner);
+    if target.width == 0 || target.height == 0 {
         return;
-    };
-
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
-    let mode = match viewer.mode {
-        DiffViewMode::Unified => "Unified",
-        DiffViewMode::Split => "Split",
-    };
-    let hunk_count = file.hunks.len();
-    let hunk_label = if hunk_count == 0 {
-        "No hunks".to_owned()
-    } else {
-        format!("Hunk {}/{}", viewer.selected_hunk + 1, hunk_count)
-    };
-    let focus_label = match viewer.focus {
-        DiffViewerFocus::Files => "Files",
-        DiffViewerFocus::Hunks => "Hunks",
-    };
-    let status = format!(
-        "{mode} · {hunk_label} · focus {focus_label} · ↑↓ navigate · Tab switch · v mode · r revert · Esc close"
-    );
-    frame.render_widget(
-        Paragraph::new(status).style(
-            Style::default()
-                .fg(theme.text_dim)
-                .bg(theme.surface[1])
-                .add_modifier(Modifier::ITALIC),
-        ),
-        rows[0],
-    );
-
-    match viewer.mode {
-        DiffViewMode::Unified => draw_unified_diff_pane(frame, viewer, file, rows[1], theme),
-        DiffViewMode::Split => draw_split_diff_pane(frame, viewer, file, rows[1], theme),
     }
-}
+    let base = Style::default().fg(theme.text).bg(theme.background);
 
-fn draw_unified_diff_pane(
-    frame: &mut Frame,
-    viewer: &crate::app::DiffViewer,
-    file: &FileDiff,
-    area: Rect,
-    theme: &style::ThemeColors,
-) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(format!(" {} ", file.path));
-    let inner = block.inner(area);
-    let mut lines = file.render_with_theme(theme);
-    let ranges = file.hunk_line_ranges();
-    let selected_start = ranges
-        .get(viewer.selected_hunk)
-        .map_or(0, |range| range.start);
-    if let Some(range) = ranges.get(viewer.selected_hunk) {
-        let highlight = if viewer.focus == DiffViewerFocus::Hunks {
-            theme.surface[2]
-        } else {
-            theme.surface[1]
-        };
-        for index in range.clone() {
-            if let Some(line) = lines.get(index).cloned() {
-                lines[index] =
-                    apply_row_bg(&line, highlight, inner.width.saturating_sub(1) as usize);
-            }
-        }
-    }
-    let budget = inner.height as usize;
-    let visible = budget.max(1).min(lines.len().max(1));
-    let offset = selected_start.saturating_sub(visible.saturating_sub(1));
+    // Reserve the bottom row for the footer key-hints when there is room for a body above it.
+    let footer_rows = u16::from(target.height >= 3);
+    let body_area = Rect {
+        height: target.height - footer_rows,
+        ..target
+    };
+
+    let (lines, selected_row) = diff_accordion_lines(viewer, target.width as usize, theme);
+    // Scroll so the selected file's disclosure row (and the hunk body below it) stays in view; the
+    // body is rebuilt every frame, so the offset is derived, not stored.
+    let visible = (body_area.height as usize).max(1);
+    let max_offset = lines.len().saturating_sub(visible);
+    let offset = selected_row.min(max_offset);
     let end = (offset + visible).min(lines.len());
     let shown: Vec<Line<'static>> = lines[offset..end].to_vec();
+    frame.render_widget(Paragraph::new(shown).style(base), body_area);
 
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.surface[1])),
-        inner,
-    );
+    if footer_rows == 1 {
+        let footer_area = Rect {
+            y: target.y + target.height - 1,
+            height: 1,
+            ..target
+        };
+        let hints = vec![
+            (crate::glyphs::KEY_ENTER.to_owned(), "toggle file".to_owned()),
+            (
+                format!("{}{}", crate::glyphs::KEY_UP, crate::glyphs::KEY_DOWN),
+                "file".to_owned(),
+            ),
+            (crate::glyphs::KEY_TAB.to_owned(), "hunks".to_owned()),
+            ("v".to_owned(), "split".to_owned()),
+            ("r".to_owned(), "revert".to_owned()),
+            ("esc".to_owned(), "close".to_owned()),
+        ];
+        frame.render_widget(
+            Paragraph::new(crate::view::footer_hint_line(
+                &hints,
+                target.width as usize,
+                theme,
+            ))
+            .style(base),
+            footer_area,
+        );
+    }
 }
 
-fn draw_split_diff_pane(
-    frame: &mut Frame,
+/// The `Changes` panel note summarizing the diff totals: `N files  +A -R` across every changed file.
+fn diff_view_note(viewer: &crate::app::DiffViewer) -> String {
+    let files = viewer.files.len();
+    let additions: usize = viewer.files.iter().map(|file| file.additions).sum();
+    let removals: usize = viewer.files.iter().map(|file| file.removals).sum();
+    format!(
+        "{files} file{}  +{additions} -{removals}",
+        if files == 1 { "" } else { "s" }
+    )
+}
+
+/// Build the `/diff` accordion body: one disclosure row per changed file, with the hunk body of each
+/// expanded file unfolded inline beneath it. Returns the lines plus the row index of the selected
+/// file's header (so the caller can scroll it into view).
+fn diff_accordion_lines(
     viewer: &crate::app::DiffViewer,
+    width: usize,
+    theme: &style::ThemeColors,
+) -> (Vec<Line<'static>>, usize) {
+    if viewer.files.is_empty() {
+        return (
+            vec![crate::view::empty_state_line("No file changes to show.", theme)],
+            0,
+        );
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_row = 0usize;
+    for (index, file) in viewer.files.iter().enumerate() {
+        let expanded = viewer.is_expanded(index);
+        if index == viewer.selected_file {
+            selected_row = lines.len();
+        }
+        lines.push(diff_file_row(
+            file,
+            expanded,
+            index == viewer.selected_file,
+            width,
+            theme,
+        ));
+        if expanded {
+            lines.extend(diff_hunk_lines(file, viewer.mode, width, theme));
+            lines.push(Line::from(""));
+        }
+    }
+    (lines, selected_row)
+}
+
+/// One diff-viewer file row: a `▼`/`▶` disclosure at the row start, the file path, and a
+/// right-aligned `+A -R` count (AMBER for the open/expanded file, DIM for a collapsed file). The
+/// selected file is drawn as the shared inverse selection bar (`surface[3]` fill + BRIGHT path),
+/// matching the slash/dialog/palette selection rows (not the old ad-hoc `info`+`surface[2]`).
+fn diff_file_row(
     file: &FileDiff,
-    area: Rect,
+    expanded: bool,
+    selected: bool,
+    width: usize,
+    theme: &style::ThemeColors,
+) -> Line<'static> {
+    let width = width.max(1);
+    let row_bg = if selected {
+        theme.surface[3]
+    } else {
+        theme.background
+    };
+    let mut cells: Vec<(char, Style)> =
+        vec![(' ', Style::default().fg(theme.text).bg(row_bg)); width];
+
+    let disclosure = if expanded {
+        crate::glyphs::DISCLOSURE_EXPANDED
+    } else {
+        crate::glyphs::DISCLOSURE_COLLAPSED
+    };
+    let disclosure_color = if expanded {
+        theme.secondary
+    } else {
+        theme.border
+    };
+    let path_style = Style::default()
+        .fg(if expanded || selected {
+            theme.text_bright
+        } else {
+            theme.text
+        })
+        .bg(row_bg);
+
+    // Per VAL-VIEW-024 the `+N -N` count is a single amber (open) / dim (collapsed) meta, and per
+    // VAL-VIEW-026 the ONLY green/red cells in the view are the hunk insert/delete rows — so the meta
+    // is deliberately NOT the success/error pair the inline card uses.
+    let meta = format!("+{} -{}", file.additions, file.removals);
+    let meta_len = meta.chars().count();
+    let meta_color = if expanded {
+        theme.secondary
+    } else {
+        theme.text_dim
+    };
+    let path_room = width.saturating_sub(meta_len + 4).max(1);
+    let path = clip_text(&file.path, path_room);
+    place_segments(
+        &mut cells,
+        0,
+        &[
+            (
+                format!("{disclosure} "),
+                Style::default().fg(disclosure_color).bg(row_bg),
+            ),
+            (path, path_style),
+        ],
+    );
+    if width > meta_len + 1 {
+        place_segments(
+            &mut cells,
+            width - meta_len - 1,
+            &[(meta, Style::default().fg(meta_color).bg(row_bg))],
+        );
+    }
+    cells_to_line(&cells)
+}
+
+/// The hunk body for an expanded diff-viewer file, in the active render mode.
+fn diff_hunk_lines(
+    file: &FileDiff,
+    mode: DiffViewMode,
+    width: usize,
+    theme: &style::ThemeColors,
+) -> Vec<Line<'static>> {
+    match mode {
+        DiffViewMode::Unified => diff_unified_hunk_lines(file, width, theme),
+        DiffViewMode::Split => diff_split_hunk_lines(file, width, theme),
+    }
+}
+
+/// The unified hunk body for an expanded diff-viewer file: one line-numbered row per diff line,
+/// reusing the EXACT wave0 conv-diff-card tokens — additions in `ADD_FG` on `ADD_BG`, deletions in
+/// `DEL_FG` on `DEL_BG`, context neutral — with the line number (`LNUM`) at the origin, the
+/// `+`/`-`/space sign at origin+6, and the code at origin+8 (the shared diff row geometry).
+fn diff_unified_hunk_lines(
+    file: &FileDiff,
+    width: usize,
+    theme: &style::ThemeColors,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let base = Style::default().bg(theme.background);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut shown = 0usize;
+    for hunk in &file.hunks {
+        let start = if hunk.new_len > 0 {
+            hunk.new_start
+        } else {
+            hunk.old_start
+        };
+        for (i, dline) in hunk.lines.iter().enumerate() {
+            if shown >= MAX_DIFF_BODY_ROWS {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(DIFF_HUNK_ORIGIN)),
+                    Span::styled(
+                        format!("{} more diff lines", crate::glyphs::ELLIPSIS),
+                        Style::default().fg(theme.text_muted),
+                    ),
+                ]));
+                return lines;
+            }
+            let (sign, fg, row_bg) = match dline.kind {
+                crate::diff::DiffLineKind::Added => ('+', style::ADD_FG, Some(style::ADD_BG)),
+                crate::diff::DiffLineKind::Removed => ('-', style::DEL_FG, Some(style::DEL_BG)),
+                crate::diff::DiffLineKind::Context | crate::diff::DiffLineKind::Header => {
+                    (' ', theme.text_dim, None)
+                }
+            };
+            let row_bg_color = row_bg.unwrap_or(theme.background);
+            let row_style = Style::default().fg(fg).bg(row_bg_color);
+            let mut cells: Vec<(char, Style)> = vec![(' ', base); width];
+            if row_bg.is_some() {
+                // Paint the whole row background so the add/delete bar spans the panel width.
+                for cell in cells.iter_mut() {
+                    *cell = (' ', row_style);
+                }
+            }
+            let origin = DIFF_HUNK_ORIGIN;
+            let lnum = format!("{:>3}", start + i);
+            place_segments(
+                &mut cells,
+                origin,
+                &[(lnum, Style::default().fg(style::LNUM).bg(row_bg_color))],
+            );
+            place_segments(&mut cells, origin + 6, &[(sign.to_string(), row_style)]);
+            let code_col = origin + 8;
+            let code_room = width.saturating_sub(code_col + 1).max(1);
+            let code = clip_text(&dline.content, code_room);
+            place_segments(&mut cells, code_col, &[(code, row_style)]);
+            lines.push(cells_to_line(&cells));
+            shown += 1;
+        }
+    }
+    lines
+}
+
+/// The split (before | after) hunk body for an expanded diff-viewer file: the old side (context +
+/// deletions in `DEL_FG`/`DEL_BG`) in the left half and the new side (context + additions in
+/// `ADD_FG`/`ADD_BG`) in the right half, reusing the same diff tokens as the unified body. Falls
+/// back to the unified body when the panel is too narrow to split.
+fn diff_split_hunk_lines(
+    file: &FileDiff,
+    width: usize,
+    theme: &style::ThemeColors,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let origin = DIFF_HUNK_ORIGIN;
+    let half = width.saturating_sub(origin).saturating_sub(1) / 2;
+    if half < 6 {
+        return diff_unified_hunk_lines(file, width, theme);
+    }
+    let left_x = origin;
+    let right_x = origin + half + 1;
+    let base = Style::default().bg(theme.background);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut shown = 0usize;
+    for row in file.split_rows() {
+        if row.kind == crate::diff::DiffLineKind::Header {
+            continue;
+        }
+        if shown >= MAX_DIFF_BODY_ROWS {
+            break;
+        }
+        let mut cells: Vec<(char, Style)> = vec![(' ', base); width];
+        paint_split_half(&mut cells, left_x, half, &row.left, row.kind, true, theme);
+        paint_split_half(&mut cells, right_x, half, &row.right, row.kind, false, theme);
+        lines.push(cells_to_line(&cells));
+        shown += 1;
+    }
+    lines
+}
+
+/// Paint one half of a split diff row: fill `[x, x+half)` with the side's diff background (DEL for a
+/// deletion on the left, ADD for an addition on the right, none for context) and place the
+/// `+`/`-`/space sign + clipped code text on it, reusing the wave0 diff tokens.
+fn paint_split_half(
+    cells: &mut [(char, Style)],
+    x: usize,
+    half: usize,
+    text: &str,
+    kind: crate::diff::DiffLineKind,
+    left: bool,
     theme: &style::ThemeColors,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(format!(" {} ", file.path));
-    let inner = block.inner(area);
-    let panes =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
-
-    let rows = file.split_rows();
-    let ranges = file.split_hunk_row_ranges();
-    let selected_start = ranges
-        .get(viewer.selected_hunk)
-        .map_or(0, |range| range.start);
-    let budget = panes[0].height as usize;
-    let visible = budget.max(1).min(rows.len().max(1));
-    let offset = selected_start.saturating_sub(visible.saturating_sub(1));
-    let end = (offset + visible).min(rows.len());
-    let focus_highlight = if viewer.focus == DiffViewerFocus::Hunks {
-        theme.surface[2]
-    } else {
-        theme.surface[1]
+    let (sign, fg, bg) = match (kind, left) {
+        (crate::diff::DiffLineKind::Removed, true) => ('-', style::DEL_FG, Some(style::DEL_BG)),
+        (crate::diff::DiffLineKind::Added, false) => ('+', style::ADD_FG, Some(style::ADD_BG)),
+        (crate::diff::DiffLineKind::Context, _) => (' ', theme.text_dim, None),
+        // A deletion has no right side and an addition no left side: leave an empty gutter.
+        _ => return,
     };
-
-    let mut left_lines = Vec::new();
-    let mut right_lines = Vec::new();
-    for (index, row) in rows[offset..end].iter().enumerate() {
-        let absolute = offset + index;
-        let selected = ranges
-            .get(viewer.selected_hunk)
-            .is_some_and(|range| range.contains(&absolute));
-        let left_style = split_style(row.kind, true, theme);
-        let right_style = split_style(row.kind, false, theme);
-        let mut left = Line::from(Span::styled(
-            prefix_split_text(&row.left, row.kind, true),
-            left_style,
-        ));
-        let mut right = Line::from(Span::styled(
-            prefix_split_text(&row.right, row.kind, false),
-            right_style,
-        ));
-        if selected {
-            left = apply_row_bg(
-                &left,
-                focus_highlight,
-                panes[0].width.saturating_sub(2) as usize,
-            );
-            right = apply_row_bg(
-                &right,
-                focus_highlight,
-                panes[1].width.saturating_sub(2) as usize,
-            );
-        }
-        left_lines.push(left);
-        right_lines.push(right);
-    }
-
-    frame.render_widget(block, area);
-    let left_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Before ");
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(" After ");
-    frame.render_widget(
-        Paragraph::new(left_lines).style(Style::default().bg(theme.surface[1])),
-        left_block.inner(panes[0]),
-    );
-    frame.render_widget(
-        Paragraph::new(right_lines).style(Style::default().bg(theme.surface[1])),
-        right_block.inner(panes[1]),
-    );
-    frame.render_widget(left_block, panes[0]);
-    frame.render_widget(right_block, panes[1]);
-}
-
-fn split_style(kind: crate::diff::DiffLineKind, left: bool, theme: &style::ThemeColors) -> Style {
-    match kind {
-        crate::diff::DiffLineKind::Header => {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-        }
-        crate::diff::DiffLineKind::Context => Style::default().fg(theme.text_dim),
-        crate::diff::DiffLineKind::Removed => {
-            if left {
-                Style::default().fg(theme.error)
-            } else {
-                Style::default().fg(theme.text_dim)
-            }
-        }
-        crate::diff::DiffLineKind::Added => {
-            if left {
-                Style::default().fg(theme.text_dim)
-            } else {
-                Style::default().fg(theme.success)
-            }
+    let bg_color = bg.unwrap_or(theme.background);
+    let style = Style::default().fg(fg).bg(bg_color);
+    if bg.is_some() {
+        let stop = (x + half).min(cells.len());
+        for cell in cells.iter_mut().take(stop).skip(x) {
+            *cell = (' ', style);
         }
     }
-}
-
-fn prefix_split_text(text: &str, kind: crate::diff::DiffLineKind, left: bool) -> String {
-    match kind {
-        crate::diff::DiffLineKind::Header => text.to_owned(),
-        crate::diff::DiffLineKind::Context => format!("  {text}"),
-        crate::diff::DiffLineKind::Removed => {
-            if left {
-                format!("- {text}")
-            } else {
-                String::new()
-            }
-        }
-        crate::diff::DiffLineKind::Added => {
-            if left {
-                String::new()
-            } else {
-                format!("+ {text}")
-            }
-        }
-    }
+    place_segments(cells, x, &[(sign.to_string(), style)]);
+    let code_room = half.saturating_sub(2).max(1);
+    let code = clip_text(text, code_room);
+    place_segments(cells, x + 2, &[(code, style)]);
 }
 
 /// Render the open modal dialog through the shared rich modal renderer: a centered card over the
@@ -3267,6 +3271,185 @@ mod tests {
 
     fn rendered(lines: &[Line]) -> String {
         lines.iter().map(plain).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A two-file `/diff` viewer fixture: file 0 (a context + one delete + one add hunk) opens
+    /// expanded, file 1 (a substitution) stays collapsed — the diff-viewer reference composition.
+    fn diff_viewer_fixture() -> crate::app::DiffViewer {
+        let f0 = crate::diff::compute_file_diff(
+            "crates/tui/src/stream_processor.rs",
+            Some("keep_a\nremove_me\nkeep_b\n"),
+            Some("keep_a\nadd_me\nkeep_b\n"),
+        )
+        .expect("file 0 diff");
+        let f1 = crate::diff::compute_file_diff(
+            "crates/tui/src/buffer.rs",
+            Some("alpha\nbeta\n"),
+            Some("ALPHA\nbeta\n"),
+        )
+        .expect("file 1 diff");
+        crate::app::DiffViewer {
+            files: vec![f0, f1],
+            selected_file: 0,
+            selected_hunk: 0,
+            mode: DiffViewMode::Unified,
+            focus: crate::app::DiffViewerFocus::Files,
+            expanded: vec![true, false],
+        }
+    }
+
+    #[test]
+    fn diff_view_note_summarizes_file_and_line_totals() {
+        // VAL-VIEW-023: the `Changes` panel note summarizes the file and line totals.
+        let viewer = diff_viewer_fixture();
+        assert_eq!(diff_view_note(&viewer), "2 files  +2 -2");
+    }
+
+    #[test]
+    fn diff_accordion_file_rows_show_disclosure_and_colored_meta() {
+        // VAL-VIEW-024/027: each file row begins with a `▼` (expanded) / `▶` (collapsed) disclosure
+        // and a right-aligned `+N -N` count — AMBER for the open file, DIM for a collapsed file.
+        let theme = style::ThemeColors::dark();
+        let viewer = diff_viewer_fixture();
+        let (lines, selected_row) = diff_accordion_lines(&viewer, 80, &theme);
+        assert_eq!(selected_row, 0, "file 0 is the selected/open row");
+
+        let row0 = plain(&lines[0]);
+        assert!(
+            row0.starts_with(crate::glyphs::DISCLOSURE_EXPANDED),
+            "open file row begins with `▼`:\n{row0}"
+        );
+        assert!(row0.contains("stream_processor.rs"), "open file path:\n{row0}");
+        assert!(row0.contains("+1 -1"), "open file meta:\n{row0}");
+        // VAL-VIEW-024: the `+N -N` meta is a single AMBER count on the open file (NOT the inline
+        // card's green/red pair — VAL-VIEW-026 reserves green/red for the hunk rows only).
+        let meta0 = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("+1 -1"))
+            .expect("open file meta span");
+        assert_eq!(meta0.style.fg, Some(theme.secondary), "open file meta is AMBER");
+        assert_ne!(meta0.style.fg, Some(theme.success), "open file meta is not green");
+        assert_ne!(meta0.style.fg, Some(theme.error), "open file meta is not red");
+
+        let collapsed = lines
+            .iter()
+            .find(|l| plain(l).contains("buffer.rs"))
+            .expect("collapsed file row");
+        let collapsed_text = plain(collapsed);
+        assert!(
+            collapsed_text.starts_with(crate::glyphs::DISCLOSURE_COLLAPSED),
+            "collapsed file row begins with `▶`:\n{collapsed_text}"
+        );
+        assert!(
+            !collapsed_text.contains(crate::glyphs::DISCLOSURE_EXPANDED),
+            "no `▼` on the collapsed row"
+        );
+        let meta1 = collapsed
+            .spans
+            .iter()
+            .find(|s| s.content.contains("+1 -1"))
+            .expect("collapsed file meta span");
+        assert_eq!(meta1.style.fg, Some(theme.text_dim), "collapsed file meta is DIM");
+    }
+
+    #[test]
+    fn diff_accordion_hunk_rows_reuse_wave0_add_del_tokens() {
+        // VAL-VIEW-025/026: expanded hunk rows use the EXACT wave0 conv-diff-card tokens — additions
+        // in ADD_FG on ADD_BG, deletions in DEL_FG on DEL_BG, context neutral — with a LNUM line
+        // number at the origin, the sign at origin+6, and the code at origin+8.
+        let theme = style::ThemeColors::dark();
+        let viewer = diff_viewer_fixture();
+        let (lines, _) = diff_accordion_lines(&viewer, 80, &theme);
+
+        let added = lines
+            .iter()
+            .find(|l| plain(l).contains("add_me"))
+            .expect("addition row");
+        let added_code = added
+            .spans
+            .iter()
+            .find(|s| s.content.contains("add_me"))
+            .expect("added code span");
+        assert_eq!(added_code.style.fg, Some(style::ADD_FG), "addition text ADD_FG");
+        assert_eq!(added_code.style.bg, Some(style::ADD_BG), "addition bg ADD_BG");
+
+        let removed = lines
+            .iter()
+            .find(|l| plain(l).contains("remove_me"))
+            .expect("deletion row");
+        let removed_code = removed
+            .spans
+            .iter()
+            .find(|s| s.content.contains("remove_me"))
+            .expect("removed code span");
+        assert_eq!(removed_code.style.fg, Some(style::DEL_FG), "deletion text DEL_FG");
+        assert_eq!(removed_code.style.bg, Some(style::DEL_BG), "deletion bg DEL_BG");
+
+        // Context rows carry no red/green background.
+        let context = lines
+            .iter()
+            .find(|l| plain(l).contains("keep_a"))
+            .expect("context row");
+        for span in &context.spans {
+            assert_ne!(span.style.bg, Some(style::ADD_BG), "context has no ADD_BG");
+            assert_ne!(span.style.bg, Some(style::DEL_BG), "context has no DEL_BG");
+        }
+
+        // A hunk row shows a right-justified LNUM line number, and the sign sits at origin+6.
+        let has_lnum = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.fg == Some(style::LNUM) && s.content.trim().parse::<usize>().is_ok());
+        assert!(has_lnum, "a hunk row shows a LNUM line number");
+        let added_plain = plain(added);
+        let sign_char = added_plain.chars().nth(DIFF_HUNK_ORIGIN + 6);
+        assert_eq!(sign_char, Some('+'), "the `+` sign sits at origin+6:\n{added_plain}");
+    }
+
+    #[test]
+    fn diff_accordion_collapsed_file_hides_its_hunks() {
+        // VAL-VIEW-027: a collapsed (`▶`) file renders only its summary row, no hunk body.
+        let theme = style::ThemeColors::dark();
+        let viewer = diff_viewer_fixture();
+        let (lines, _) = diff_accordion_lines(&viewer, 80, &theme);
+        let text = rendered(&lines);
+        assert!(
+            !text.contains("ALPHA"),
+            "collapsed file 1's hunk body is hidden:\n{text}"
+        );
+        assert!(
+            text.contains("add_me"),
+            "expanded file 0's hunk body is shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn diff_accordion_selected_row_uses_the_shared_inverse_selection_bar() {
+        // Consistency fix: the selected file row uses the shared inverse selection bar
+        // (`surface[3]` fill), matching slash/dialog/palette rows — NOT the old ad-hoc `info`-fg +
+        // `surface[2]` styling.
+        let theme = style::ThemeColors::dark();
+        let viewer = diff_viewer_fixture();
+        let selected = diff_file_row(&viewer.files[0], true, true, 80, &theme);
+        assert!(
+            selected.spans.iter().all(|s| s.style.bg == Some(theme.surface[3])),
+            "selected row is a full-width surface[3] selection bar"
+        );
+        assert!(
+            selected.spans.iter().all(|s| s.style.bg != Some(theme.surface[2])),
+            "selection bar does not use the old surface[2] fill"
+        );
+        assert!(
+            selected.spans.iter().all(|s| s.style.fg != Some(theme.info)),
+            "selection bar does not use the old info foreground"
+        );
+
+        let unselected = diff_file_row(&viewer.files[1], false, false, 80, &theme);
+        assert!(
+            unselected.spans.iter().all(|s| s.style.bg != Some(theme.surface[3])),
+            "an unselected row has no selection fill"
+        );
     }
 
     #[test]
