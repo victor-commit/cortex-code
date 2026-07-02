@@ -3441,13 +3441,14 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
             let rows = app.mcp_view_rows();
             sidebar_mcp_body(&rows, theme, cw, &mut lines);
         }
-        _ => {
-            for row in app.sidebar_rows() {
-                lines.push(Line::from(Span::styled(
-                    clip_columns(&row, cw),
-                    Style::default().fg(theme.text),
-                )));
-            }
+        crate::app::SidebarPanel::Todo => {
+            sidebar_todo_body(&app.sidebar_todo_items(), theme, cw, &mut lines);
+        }
+        crate::app::SidebarPanel::Subagents => {
+            sidebar_subagents_body(&app.sidebar_subagent_entries(), theme, cw, &mut lines);
+        }
+        crate::app::SidebarPanel::Queue => {
+            sidebar_queue_body(&app.sidebar_queue_entries(), theme, cw, &mut lines);
         }
     }
 
@@ -3677,6 +3678,135 @@ fn sidebar_mcp_body(
             Span::styled(name, Style::default().fg(theme.text)),
             Span::styled(" ".repeat(gap), Style::default()),
             Span::styled(status, Style::default().fg(color)),
+        ]));
+    }
+}
+
+/// Append the styled `todo` panel body: one row per task in three visually distinct states — a
+/// completed task as a green `✓` (OKG) with DIM text, an in-progress task as an ORANGE `▶` (the
+/// heavy triangle, never the thin `▸`) with BRIGHT text, and a pending task as a ghost-grey `○`
+/// with normal TXT text. A cancelled task reads as a FAINT `✗` so it stays distinct
+/// (VAL-SIDE-027).
+fn sidebar_todo_body(
+    items: &[protocol::TodoItem],
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_columns("No todo items for this session.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    for item in items {
+        let (marker, marker_color, text_color) = match item.status {
+            protocol::TodoStatus::Completed => (glyphs::MARK_DONE, theme.success, theme.text_dim),
+            protocol::TodoStatus::InProgress => (
+                glyphs::DISCLOSURE_COLLAPSED,
+                theme.primary,
+                theme.text_bright,
+            ),
+            protocol::TodoStatus::Pending => (glyphs::DOT_HOLLOW, theme.ghost, theme.text),
+            protocol::TodoStatus::Cancelled => {
+                (glyphs::MARK_ERROR, theme.text_muted, theme.text_muted)
+            }
+        };
+        // `<marker> <content>`: only the content is clipped, and only when it genuinely overruns
+        // the panel interior (never a premature `…`).
+        let content = clip_plain(&item.content, cw.saturating_sub(2).max(1));
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+            Span::styled(content, Style::default().fg(text_color)),
+        ]));
+    }
+}
+
+/// Append the styled `subagents` panel body: each child subagent is an `◆ name` header row (AMBER
+/// diamond + BRIGHT name) with a right-aligned status word colored by state (running → ORANGE,
+/// queued → FAINT, done → OKG green, error → ERR red), then a DIM task line indented under the
+/// name, with a blank spacer between entries (the reference's *3 row spacing) (VAL-SIDE-029).
+fn sidebar_subagents_body(
+    rows: &[crate::app::SidebarSubagentRow],
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_columns("No subagents for this session.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            // A blank spacer row separates entries (the reference's *3 row spacing).
+            lines.push(Line::from(""));
+        }
+        let status_color = match row.state {
+            crate::app::SubagentState::Running => theme.primary,
+            crate::app::SubagentState::Queued => theme.text_muted,
+            crate::app::SubagentState::Done => theme.success,
+            crate::app::SubagentState::Error => theme.error,
+        };
+        let status = clip_plain(&row.status, cw.saturating_sub(3).max(1));
+        let status_cols = status.chars().count();
+        // `◆ <name>` on the left, the status word flush right, ≥1 column of gap between them.
+        let name_budget = cw.saturating_sub(2 + status_cols + 1).max(1);
+        let name = clip_plain(&row.name, name_budget);
+        let used = 2 + name.chars().count() + status_cols;
+        let gap = cw.saturating_sub(used).max(1);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", glyphs::DOT_DIAMOND),
+                Style::default().fg(theme.secondary),
+            ),
+            Span::styled(name, Style::default().fg(theme.text_bright)),
+            Span::styled(" ".repeat(gap), Style::default()),
+            Span::styled(status, Style::default().fg(status_color)),
+        ]));
+        // The task description on the following line, indented two columns to align under the name.
+        let task = clip_plain(&row.task, cw.saturating_sub(2).max(1));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(task, Style::default().fg(theme.text_dim)),
+        ]));
+    }
+}
+
+/// Append the styled `queue` panel body: queued prompts as numbered rows. The run-next (first) row
+/// uses a brighter ORANGE number + BRIGHT text; later rows use a dimmer ORANGE_D number + normal
+/// TXT text. Prompt text that fits within the panel is rendered in full (no premature `…`)
+/// (VAL-SIDE-031/032).
+fn sidebar_queue_body(
+    prompts: &[String],
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if prompts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_columns("No queued prompts.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    for (index, prompt) in prompts.iter().enumerate() {
+        let run_next = index == 0;
+        let (number_color, text_color) = if run_next {
+            (theme.primary, theme.text_bright)
+        } else {
+            (theme.border, theme.text)
+        };
+        let number = format!("{} ", index + 1);
+        let prefix_cols = number.chars().count();
+        // Only the prompt text is clipped, and only when it genuinely overruns the panel width.
+        let text = clip_plain(prompt, cw.saturating_sub(prefix_cols).max(1));
+        lines.push(Line::from(vec![
+            Span::styled(number, Style::default().fg(number_color)),
+            Span::styled(text, Style::default().fg(text_color)),
         ]));
     }
 }
@@ -5033,6 +5163,146 @@ mod tests {
             "faint `<N> servers connected` subtitle"
         );
         assert!(!glyphs::contains_braille(&screen), "no braille in the mcp panel");
+    }
+
+    #[test]
+    fn todo_body_renders_three_distinct_task_states() {
+        // VAL-SIDE-027: completed -> green `✓` + DIM text, in-progress -> ORANGE `▶` (heavy, not
+        // `▸`) + BRIGHT text, pending -> ghost-grey `○` + normal TXT text.
+        let theme = style::ThemeColors::from_name("dark");
+        let items = vec![
+            protocol::TodoItem::new("cap the streaming buffer", protocol::TodoStatus::Completed),
+            protocol::TodoItem::new("write tests for the cap", protocol::TodoStatus::InProgress),
+            protocol::TodoItem::new("open a pull request", protocol::TodoStatus::Pending),
+        ];
+        let mut lines = Vec::new();
+        sidebar_todo_body(&items, &theme, 28, &mut lines);
+        assert_eq!(lines.len(), 3, "one row per task");
+
+        // Completed: green `✓` marker, DIM body text.
+        assert_eq!(lines[0].spans[0].content.trim(), glyphs::MARK_DONE);
+        assert_eq!(span_fg(&lines[0], glyphs::MARK_DONE), Some(theme.success));
+        assert_eq!(
+            span_fg(&lines[0], "cap the streaming buffer"),
+            Some(theme.text_dim)
+        );
+        // In-progress: ORANGE `▶` marker, BRIGHT body text.
+        assert_eq!(lines[1].spans[0].content.trim(), glyphs::DISCLOSURE_COLLAPSED);
+        assert_eq!(
+            span_fg(&lines[1], glyphs::DISCLOSURE_COLLAPSED),
+            Some(theme.primary)
+        );
+        assert_eq!(
+            span_fg(&lines[1], "write tests for the cap"),
+            Some(theme.text_bright)
+        );
+        // Pending: ghost-grey `○` marker, normal TXT body text.
+        assert_eq!(lines[2].spans[0].content.trim(), glyphs::DOT_HOLLOW);
+        assert_eq!(span_fg(&lines[2], glyphs::DOT_HOLLOW), Some(theme.ghost));
+        assert_eq!(span_fg(&lines[2], "open a pull request"), Some(theme.text));
+
+        // Glyph safety: the in-progress marker is the heavy `▶`, never the thin `▸`.
+        let rendered: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(rendered.contains('▶'), "heavy disclosure triangle present");
+        assert!(!rendered.contains('▸'), "no thin `▸` triangle");
+    }
+
+    #[test]
+    fn subagents_body_renders_marker_name_status_and_task() {
+        // VAL-SIDE-029: each entry is an AMBER `◆` + BRIGHT name + right-aligned status colored by
+        // state (running -> ORANGE, queued -> FAINT, done -> OKG green) + a DIM task on the next
+        // line, with a blank spacer between entries.
+        let theme = style::ThemeColors::from_name("dark");
+        let rows = vec![
+            crate::app::SidebarSubagentRow {
+                name: "explore".to_owned(),
+                task: "find auth middleware".to_owned(),
+                status: "running 8s".to_owned(),
+                state: crate::app::SubagentState::Running,
+            },
+            crate::app::SidebarSubagentRow {
+                name: "plan".to_owned(),
+                task: "design token-refresh flow".to_owned(),
+                status: "queued".to_owned(),
+                state: crate::app::SubagentState::Queued,
+            },
+            crate::app::SidebarSubagentRow {
+                name: "general".to_owned(),
+                task: "summarize redaction audit".to_owned(),
+                status: "done 1.2s".to_owned(),
+                state: crate::app::SubagentState::Done,
+            },
+        ];
+        let mut lines = Vec::new();
+        sidebar_subagents_body(&rows, &theme, 30, &mut lines);
+        // 3 entries * 2 rows + 2 blank spacers = 8 lines.
+        assert_eq!(lines.len(), 8, "header+task per entry with a spacer between");
+
+        // explore: AMBER `◆` + BRIGHT name + ORANGE `running 8s`, DIM task on the next line.
+        assert_eq!(lines[0].spans[0].content.trim(), glyphs::DOT_DIAMOND);
+        assert_eq!(span_fg(&lines[0], glyphs::DOT_DIAMOND), Some(theme.secondary));
+        assert_eq!(span_fg(&lines[0], "explore"), Some(theme.text_bright));
+        assert_eq!(span_fg(&lines[0], "running 8s"), Some(theme.primary));
+        assert!(line_text(&lines[0]).trim_end().ends_with("running 8s"));
+        assert!(line_text(&lines[1]).contains("find auth middleware"));
+        assert_eq!(span_fg(&lines[1], "find auth middleware"), Some(theme.text_dim));
+        // Blank spacer between entries.
+        assert_eq!(line_text(&lines[2]).trim(), "");
+        // plan: queued -> FAINT status.
+        assert_eq!(span_fg(&lines[3], "queued"), Some(theme.text_muted));
+        // general: done -> OKG green status.
+        assert_eq!(span_fg(&lines[6], "done 1.2s"), Some(theme.success));
+    }
+
+    #[test]
+    fn queue_body_numbers_rows_and_highlights_run_next() {
+        // VAL-SIDE-031/032: numbered rows; the run-next (first) row uses an ORANGE number + BRIGHT
+        // text; later rows a dimmer ORANGE_D number + normal TXT text; fitting text is not
+        // truncated.
+        let theme = style::ThemeColors::from_name("dark");
+        let prompts = vec![
+            "add tests for buffer cap".to_owned(),
+            "update CHANGELOG.md".to_owned(),
+            "run the full test suite".to_owned(),
+        ];
+        let mut lines = Vec::new();
+        sidebar_queue_body(&prompts, &theme, 30, &mut lines);
+        assert_eq!(lines.len(), 3, "one row per queued prompt");
+
+        // Run-next row: ORANGE `1` number + BRIGHT text, rendered in full (no `…`).
+        assert_eq!(lines[0].spans[0].content.trim(), "1");
+        assert_eq!(span_fg(&lines[0], "1"), Some(theme.primary));
+        assert_eq!(
+            span_fg(&lines[0], "add tests for buffer cap"),
+            Some(theme.text_bright)
+        );
+        assert!(!line_text(&lines[0]).contains(glyphs::ELLIPSIS), "no premature `…`");
+        // Later rows: dimmer ORANGE_D number + normal TXT text.
+        assert_eq!(lines[1].spans[0].content.trim(), "2");
+        assert_eq!(span_fg(&lines[1], "2"), Some(theme.border));
+        assert_eq!(span_fg(&lines[1], "update CHANGELOG.md"), Some(theme.text));
+        assert_eq!(span_fg(&lines[2], "3"), Some(theme.border));
+    }
+
+    #[test]
+    fn queue_body_clips_only_overrunning_prompt_text() {
+        // VAL-SIDE-032: a prompt wider than the panel is clipped (with `…`), but a prompt that fits
+        // is rendered verbatim without a trailing ellipsis.
+        let theme = style::ThemeColors::from_name("dark");
+        let prompts = vec![
+            "short prompt".to_owned(),
+            "this queued prompt is far too long to fit inside the narrow sidebar column".to_owned(),
+        ];
+        let mut lines = Vec::new();
+        sidebar_queue_body(&prompts, &theme, 20, &mut lines);
+        // The short prompt fits and keeps no ellipsis.
+        assert!(line_text(&lines[0]).contains("short prompt"));
+        assert!(!line_text(&lines[0]).contains(glyphs::ELLIPSIS), "fitting text is verbatim");
+        // The overrunning prompt is hard-clipped to the panel interior (never overruns the width).
+        assert!(line_text(&lines[1]).chars().count() <= 20, "row stays within the panel");
     }
 
     #[test]

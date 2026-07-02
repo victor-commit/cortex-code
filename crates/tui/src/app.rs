@@ -330,6 +330,37 @@ impl LspFileGroup {
     }
 }
 
+/// The semantic state of a child subagent row in the sidebar `subagents` panel, driving the color
+/// of its right-aligned status word (running → ORANGE, queued → FAINT, done → OKG green, error →
+/// ERR red).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentState {
+    /// The subagent is actively working (status colored ORANGE).
+    Running,
+    /// The subagent is waiting to start (status colored FAINT grey).
+    Queued,
+    /// The subagent finished successfully (status colored OKG green).
+    Done,
+    /// The subagent finished with an error (status colored ERR red).
+    Error,
+}
+
+/// One child subagent row in the sidebar `subagents` panel: an agent name, its task description
+/// (shown DIM on the following line), a status word (`running 8s` / `queued` / `done 1.2s`), and
+/// the [`SubagentState`] that colors the status. Colors are applied by the renderer; this carries
+/// only the data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarSubagentRow {
+    /// The subagent's agent name (e.g. `explore`, `plan`, `general`), shown BRIGHT.
+    pub name: String,
+    /// The subagent's task description, shown DIM on the line beneath the name.
+    pub task: String,
+    /// The right-aligned status word with elapsed time (`running 8s`, `queued`, `done 1.2s`).
+    pub status: String,
+    /// The semantic state driving the status color.
+    pub state: SubagentState,
+}
+
 /// The visual state of a `files` tree row: an expanded/collapsed directory (with its heavy `▼`/`▶`
 /// disclosure glyph) or a leaf file that is modified (inline `●`) or unchanged (no marker).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6615,6 +6646,53 @@ impl App {
         statuses
             .into_iter()
             .map(|(_, label, state, detail)| format!("[{state}] {label} — {detail}"))
+            .collect()
+    }
+
+    /// The active session's todo items for the sidebar `todo` panel renderer, in list order. Empty
+    /// when there is no persisted session, no store, or the list is empty/unreadable — the renderer
+    /// then shows a muted placeholder. Real/dynamic session state.
+    #[must_use]
+    pub fn sidebar_todo_items(&self) -> Vec<protocol::TodoItem> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return Vec::new();
+        };
+        let Some(db) = self.open_store() else {
+            return Vec::new();
+        };
+        db.todos().list_for_session(session_id).unwrap_or_default()
+    }
+
+    /// The active session's child subagents for the sidebar `subagents` panel renderer: each row
+    /// carries the agent name, its task description, a status word with elapsed time, and a
+    /// semantic [`SubagentState`] driving the status color. Empty when there is no active session
+    /// or no children.
+    #[must_use]
+    pub fn sidebar_subagent_entries(&self) -> Vec<SidebarSubagentRow> {
+        self.subagent_picks()
+            .into_iter()
+            .map(|pick| SidebarSubagentRow {
+                name: pick.name,
+                task: pick.task,
+                status: pick.status,
+                state: match pick.state {
+                    "running" => SubagentState::Running,
+                    "done" => SubagentState::Done,
+                    "error" => SubagentState::Error,
+                    _ => SubagentState::Queued,
+                },
+            })
+            .collect()
+    }
+
+    /// The queued prompts (in run order) for the sidebar `queue` panel renderer: the display text
+    /// of each queued message, the first being the run-next prompt. Each is collapsed to its first
+    /// line so a multi-line prompt renders as one numbered row. Empty when nothing is queued.
+    #[must_use]
+    pub fn sidebar_queue_entries(&self) -> Vec<String> {
+        self.queued_prompts
+            .iter()
+            .map(|queued| first_line(queued.header.as_deref().unwrap_or(&queued.prompt)))
             .collect()
     }
 
@@ -15532,6 +15610,154 @@ mod tests {
                 .any(|row| row.contains("queued prompt row")),
             "queue panel shows queued prompts"
         );
+    }
+
+    #[test]
+    fn todo_panel_chrome_shows_progress_note_subtitle_and_three_states() {
+        // VAL-SIDE-026/027: selecting the todo panel shows crumb `· todo`, title `Todo`, a
+        // right-aligned `<done>/<total>` note, a faint `current task list` subtitle, and the three
+        // task states (`✓`/`▶`/`○`, never `▸`) in the body.
+        let path = session_store_path("side-todo-panel");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        run_turn(&mut a, "seed", "reply");
+        let session_id = a.session_id.clone().expect("session id");
+        {
+            let db = db::Database::open(&path).expect("open store");
+            db.todos()
+                .replace_for_session(
+                    &session_id,
+                    &[
+                        protocol::TodoItem::new(
+                            "cap the streaming buffer",
+                            protocol::TodoStatus::Completed,
+                        ),
+                        protocol::TodoItem::new(
+                            "name the 64KB constant",
+                            protocol::TodoStatus::Completed,
+                        ),
+                        protocol::TodoItem::new(
+                            "write tests for the cap",
+                            protocol::TodoStatus::InProgress,
+                        ),
+                        protocol::TodoItem::new("update CHANGELOG.md", protocol::TodoStatus::Pending),
+                        protocol::TodoItem::new("open a pull request", protocol::TodoStatus::Pending),
+                    ],
+                )
+                .expect("seed todos");
+        }
+        a.load_session(&session_id);
+        a.on_key(key_mod(KeyCode::Char('5'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Todo);
+        // Drop the transient "Sidebar: …" toast so it doesn't overlay the right-hand panel chrome.
+        a.toasts.clear();
+
+        let buf = render_buffer(&a, 92, 30);
+        let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
+        assert!(row0.contains("todo"), "breadcrumb crumb is `todo`:\n{row0}");
+        let screen = buffer_text(&buf);
+        assert!(screen.contains("Todo"), "sidebar title `Todo`");
+        assert!(screen.contains("2/5"), "right-aligned `<done>/<total>` progress note");
+        assert!(screen.contains("current task list"), "faint subtitle");
+        assert!(screen.contains("write tests for the cap"), "in-progress task renders");
+        assert!(screen.contains('✓'), "completed `✓` marker renders");
+        assert!(screen.contains('▶'), "in-progress `▶` marker renders");
+        assert!(screen.contains('○'), "pending `○` marker renders");
+        assert!(!screen.contains('▸') && !screen.contains('▾'), "no thin triangles");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn subagents_panel_chrome_shows_count_note_subtitle_and_status_rows() {
+        // VAL-SIDE-028/029: selecting the subagents panel shows crumb `· subagents`, title
+        // `Subagents`, a right-aligned count note, a faint `background tasks` subtitle, and rows
+        // with an `◆` marker + name + right-aligned status + a task description line.
+        let path = session_store_path("side-subagents-panel");
+        let parent_id = "ses_parent_side";
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent session");
+            // A running child (a user message but no assistant reply yet).
+            let running = db
+                .sessions()
+                .create(Some(&format!(
+                    "find auth middleware (subagent:explore parent:{parent_id})"
+                )))
+                .expect("running child");
+            db.messages()
+                .create(&running.id, "user", "find auth middleware")
+                .expect("running user message");
+            // A done child (an assistant reply present).
+            let done = db
+                .sessions()
+                .create(Some(&format!(
+                    "summarize redaction audit (subagent:general parent:{parent_id})"
+                )))
+                .expect("done child");
+            db.messages()
+                .create(&done.id, "assistant", "summary ready")
+                .expect("done assistant message");
+        }
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        a.load_session(parent_id);
+        a.on_key(key_mod(KeyCode::Char('6'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Subagents);
+        a.toasts.clear();
+
+        let buf = render_buffer(&a, 92, 30);
+        let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
+        assert!(row0.contains("subagents"), "breadcrumb crumb is `subagents`:\n{row0}");
+        let screen = buffer_text(&buf);
+        assert!(screen.contains("Subagents"), "sidebar title `Subagents`");
+        assert!(screen.contains("background tasks"), "faint subtitle");
+        assert!(screen.contains('◆'), "the `◆` subagent marker renders");
+        assert!(screen.contains("explore"), "the running subagent name renders");
+        assert!(screen.contains("general"), "the done subagent name renders");
+        assert!(
+            screen.contains("find auth middleware"),
+            "the subagent task description renders"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_panel_chrome_shows_count_note_subtitle_and_numbered_rows() {
+        // VAL-SIDE-030/031/032: selecting the queue panel shows crumb `· queue`, title `Queue`, a
+        // right-aligned count note, a faint `runs after this turn` subtitle, and numbered prompt
+        // rows rendered in full (no premature `…`).
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        for prompt in [
+            "add tests for buffer cap",
+            "update CHANGELOG.md",
+            "run the full test suite",
+            "open a PR for the change",
+        ] {
+            type_str(&mut a, prompt);
+            a.on_key(key(KeyCode::Enter));
+        }
+        a.on_key(key_mod(KeyCode::Char('7'), KeyModifiers::CONTROL));
+        assert_eq!(a.sidebar_panel(), SidebarPanel::Queue);
+        a.toasts.clear();
+
+        let buf = render_buffer(&a, 92, 30);
+        let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
+        assert!(row0.contains("queue"), "breadcrumb crumb is `queue`:\n{row0}");
+        let screen = buffer_text(&buf);
+        assert!(screen.contains("Queue"), "sidebar title `Queue`");
+        assert!(screen.contains("runs after this turn"), "faint subtitle");
+        assert!(screen.contains('4'), "right-aligned count note (4 queued)");
+        assert!(screen.contains("add tests for buffer cap"), "run-next prompt renders in full");
+        assert!(screen.contains("open a PR for the change"), "later prompt renders in full");
+        // These specific prompts fit within the panel interior and are not clipped with `…`.
+        let queued = a.sidebar_queue_entries();
+        for entry in &queued {
+            assert!(!entry.contains(glyphs::ELLIPSIS), "fitting prompt is verbatim: {entry}");
+        }
     }
 
     // --- Wave 3: context + files panels ------------------------------------------------------
