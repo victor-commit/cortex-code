@@ -406,7 +406,7 @@ pub enum McpStatusTone {
 impl McpStatusTone {
     /// The theme color for this tone's status dot and word.
     #[must_use]
-    fn color(self, theme: &ThemeColors) -> ratatui::style::Color {
+    pub fn color(self, theme: &ThemeColors) -> ratatui::style::Color {
         match self {
             McpStatusTone::Ready => theme.success,
             McpStatusTone::Degraded => theme.secondary,

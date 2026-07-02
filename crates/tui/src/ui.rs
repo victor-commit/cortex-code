@@ -3434,6 +3434,13 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
             let body_rows = (content.height as usize).saturating_sub(2);
             sidebar_files_body(app, theme, cw, body_rows, &mut lines);
         }
+        crate::app::SidebarPanel::Lsp => {
+            sidebar_lsp_body(app.sidebar_lsp_files(), theme, cw, &mut lines);
+        }
+        crate::app::SidebarPanel::Mcp => {
+            let rows = app.mcp_view_rows();
+            sidebar_mcp_body(&rows, theme, cw, &mut lines);
+        }
         _ => {
             for row in app.sidebar_rows() {
                 lines.push(Line::from(Span::styled(
@@ -3564,6 +3571,113 @@ fn sidebar_files_body(
             }
         }
         lines.push(Line::from(spans));
+    }
+}
+
+/// Append the styled `lsp` panel body: one `●` file row per diagnosed file (dot colored by the
+/// file's worst severity — ERR red / AMBER warning / neutral clean — and the filename in BRIGHT),
+/// followed by its diagnostics as `<line#> <E|W> <message>` rows (`E` ERR-red, `W` AMBER); a clean
+/// file adds a green `○ no problems` row (VAL-SIDE-020/021/022/023).
+fn sidebar_lsp_body(
+    groups: &[crate::app::LspFileGroup],
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if groups.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_columns("No recent LSP diagnostics.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    for group in groups {
+        // `● <filename>` — the dot's color is the file's worst diagnostic severity; a clean file
+        // gets a neutral (FAINT) dot so it reads distinct from the green `○ no problems` row below.
+        let dot_color = match group.severity() {
+            crate::app::LspFileSeverity::Error => theme.error,
+            crate::app::LspFileSeverity::Warning => theme.warning,
+            crate::app::LspFileSeverity::Clean => theme.text_muted,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", glyphs::DOT_FILLED),
+                Style::default().fg(dot_color),
+            ),
+            Span::styled(
+                clip_plain(&group.file, cw.saturating_sub(2).max(1)),
+                Style::default().fg(theme.text_bright),
+            ),
+        ]));
+        if group.diagnostics.is_empty() {
+            // A checked-clean file: a hollow green dot + `no problems`, both in OKG success green.
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", glyphs::DOT_HOLLOW),
+                    Style::default().fg(theme.success),
+                ),
+                Span::styled(
+                    clip_plain("no problems", cw.saturating_sub(2).max(1)),
+                    Style::default().fg(theme.success),
+                ),
+            ]));
+            continue;
+        }
+        for diagnostic in &group.diagnostics {
+            // `<line#>  <E|W> <message>`: a right-aligned dim line-number column, the severity
+            // letter (ERR red / AMBER warning), then the message in TXT.
+            let (letter, letter_color) = if diagnostic.is_error {
+                ("E", theme.error)
+            } else {
+                ("W", theme.warning)
+            };
+            let number = format!("{:>3}", diagnostic.line);
+            let prefix_cols = 1 + number.chars().count() + 2 + 1 + 1; // " " + num + "  " + letter + " "
+            let message = clip_plain(&diagnostic.message, cw.saturating_sub(prefix_cols).max(1));
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {number}  "), Style::default().fg(theme.text_dim)),
+                Span::styled(letter.to_owned(), Style::default().fg(letter_color)),
+                Span::styled(format!(" {message}"), Style::default().fg(theme.text)),
+            ]));
+        }
+    }
+}
+
+/// Append the styled `mcp` mini-panel body: one row per configured/connected MCP server, each a
+/// leading `●` status dot + server name + a right-aligned status word, with the dot and word
+/// colored by the server's connection state (ready=green, starting=amber, error=red, else faint)
+/// (VAL-SIDE-024/025).
+fn sidebar_mcp_body(
+    rows: &[crate::view::McpServerRow],
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_columns("No MCP servers configured.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    for row in rows {
+        let color = row.tone.color(theme);
+        let status = clip_plain(&row.status_word, cw.saturating_sub(3).max(1));
+        let status_cols = status.chars().count();
+        // `● <name>` on the left, `<status>` flush right, ≥1 column of gap between them.
+        let name_budget = cw.saturating_sub(2 + status_cols + 1).max(1);
+        let name = clip_plain(&row.name, name_budget);
+        let used = 2 + name.chars().count() + status_cols;
+        let gap = cw.saturating_sub(used).max(1);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", glyphs::DOT_FILLED),
+                Style::default().fg(color),
+            ),
+            Span::styled(name, Style::default().fg(theme.text)),
+            Span::styled(" ".repeat(gap), Style::default()),
+            Span::styled(status, Style::default().fg(color)),
+        ]));
     }
 }
 
@@ -4722,6 +4836,203 @@ mod tests {
             theme.border,
             "sidebar border is the dim-orange (ORANGE_D) token"
         );
+    }
+
+    /// The flattened text of a rendered `Line`.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The fg color of the first span in `line` whose content, trimmed, equals `needle`.
+    fn span_fg(line: &Line<'_>, needle: &str) -> Option<Color> {
+        line.spans
+            .iter()
+            .find(|s| s.content.trim() == needle)
+            .and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn lsp_body_renders_worst_severity_dots_ew_rows_and_clean_indicator() {
+        // VAL-SIDE-020/021/023: each diagnosed file row shows a `●` dot colored by its worst
+        // diagnostic (red error / amber warning) + BRIGHT filename; per-diagnostic rows show a line
+        // number, an `E` (red) / `W` (amber) severity letter, and the message.
+        let theme = style::ThemeColors::from_name("dark");
+        let groups = vec![
+            crate::app::LspFileGroup {
+                file: "buffer.rs".to_owned(),
+                errors: 1,
+                warnings: 1,
+                diagnostics: vec![
+                    crate::app::LspDiagnosticRow {
+                        line: 42,
+                        is_error: true,
+                        message: "cap unused when 0".to_owned(),
+                    },
+                    crate::app::LspDiagnosticRow {
+                        line: 18,
+                        is_error: false,
+                        message: "unused import Read".to_owned(),
+                    },
+                ],
+            },
+            crate::app::LspFileGroup {
+                file: "mod.rs".to_owned(),
+                errors: 0,
+                warnings: 1,
+                diagnostics: vec![crate::app::LspDiagnosticRow {
+                    line: 90,
+                    is_error: false,
+                    message: "redundant clone()".to_owned(),
+                }],
+            },
+        ];
+        let mut lines = Vec::new();
+        sidebar_lsp_body(&groups, &theme, 30, &mut lines);
+
+        // buffer.rs: worst = error -> red `●`, BRIGHT filename.
+        assert_eq!(lines[0].spans[0].content.trim(), glyphs::DOT_FILLED);
+        assert_eq!(span_fg(&lines[0], glyphs::DOT_FILLED), Some(theme.error));
+        assert_eq!(span_fg(&lines[0], "buffer.rs"), Some(theme.text_bright));
+        // error diagnostic row: `E` in red + line number + message.
+        assert!(line_text(&lines[1]).contains("42"));
+        assert!(line_text(&lines[1]).contains("cap unused when 0"));
+        assert_eq!(span_fg(&lines[1], "E"), Some(theme.error));
+        // warning diagnostic row: `W` in amber.
+        assert!(line_text(&lines[2]).contains("18"));
+        assert_eq!(span_fg(&lines[2], "W"), Some(theme.warning));
+        // mod.rs: worst = warning -> amber `●` (VAL-SIDE-023: amber for a warning-only file).
+        assert_eq!(span_fg(&lines[3], glyphs::DOT_FILLED), Some(theme.warning));
+        assert_eq!(span_fg(&lines[4], "W"), Some(theme.warning));
+    }
+
+    #[test]
+    fn lsp_body_clean_file_shows_green_no_problems_row() {
+        // VAL-SIDE-022: a file with no diagnostics shows a green `○ no problems` row (OKG success),
+        // distinct from the error/warning dot styling (its file dot is a neutral, non-severity tone).
+        let theme = style::ThemeColors::from_name("dark");
+        let groups = vec![crate::app::LspFileGroup {
+            file: "stream_processor.rs".to_owned(),
+            errors: 0,
+            warnings: 0,
+            diagnostics: Vec::new(),
+        }];
+        let mut lines = Vec::new();
+        sidebar_lsp_body(&groups, &theme, 30, &mut lines);
+
+        // The clean file's `●` dot is a neutral (FAINT) tone — not red or amber.
+        assert_eq!(span_fg(&lines[0], glyphs::DOT_FILLED), Some(theme.text_muted));
+        assert_ne!(span_fg(&lines[0], glyphs::DOT_FILLED), Some(theme.error));
+        assert_ne!(span_fg(&lines[0], glyphs::DOT_FILLED), Some(theme.warning));
+        // The `○ no problems` row is OKG green (both glyph and label).
+        assert_eq!(lines[1].spans[0].content.trim(), glyphs::DOT_HOLLOW);
+        assert_eq!(span_fg(&lines[1], glyphs::DOT_HOLLOW), Some(theme.success));
+        assert!(line_text(&lines[1]).contains("no problems"));
+        assert_eq!(span_fg(&lines[1], "no problems"), Some(theme.success));
+    }
+
+    #[test]
+    fn mcp_body_renders_status_dots_and_state_colored_words() {
+        // VAL-SIDE-025: each server row shows a leading `●` status dot + name + a right-aligned
+        // status word, with the dot and word colored by state (ready=green, starting=amber,
+        // error=red).
+        let theme = style::ThemeColors::from_name("dark");
+        let rows = vec![
+            crate::view::McpServerRow {
+                name: "context7".to_owned(),
+                status_word: "ready".to_owned(),
+                tone: crate::view::McpStatusTone::Ready,
+                tool_count: Some(5),
+                exposes: String::new(),
+            },
+            crate::view::McpServerRow {
+                name: "playwright".to_owned(),
+                status_word: "starting".to_owned(),
+                tone: crate::view::McpStatusTone::Degraded,
+                tool_count: None,
+                exposes: String::new(),
+            },
+            crate::view::McpServerRow {
+                name: "github".to_owned(),
+                status_word: "error".to_owned(),
+                tone: crate::view::McpStatusTone::Error,
+                tool_count: None,
+                exposes: String::new(),
+            },
+        ];
+        let width = 30usize;
+        let mut lines = Vec::new();
+        sidebar_mcp_body(&rows, &theme, width, &mut lines);
+
+        // ready -> green dot + green `ready` flush-right.
+        assert_eq!(lines[0].spans[0].content.trim(), glyphs::DOT_FILLED);
+        assert_eq!(span_fg(&lines[0], glyphs::DOT_FILLED), Some(theme.success));
+        assert!(line_text(&lines[0]).contains("context7"));
+        assert_eq!(span_fg(&lines[0], "ready"), Some(theme.success));
+        // The status word sits flush against the right edge of the panel width.
+        assert!(line_text(&lines[0]).trim_end().ends_with("ready"));
+        assert_eq!(line_text(&lines[0]).chars().count(), width, "row fills the panel width");
+        // starting -> amber dot + word.
+        assert_eq!(span_fg(&lines[1], glyphs::DOT_FILLED), Some(theme.secondary));
+        assert_eq!(span_fg(&lines[1], "starting"), Some(theme.secondary));
+        // error -> red dot + word.
+        assert_eq!(span_fg(&lines[2], glyphs::DOT_FILLED), Some(theme.error));
+        assert_eq!(span_fg(&lines[2], "error"), Some(theme.error));
+    }
+
+    #[test]
+    fn lsp_panel_chrome_shows_title_ew_note_and_server_subtitle() {
+        // VAL-SIDE-019: selecting the lsp panel shows crumb `· lsp`, title `LSP`, a right-aligned
+        // `<E>E · <W>W` note (real counts), and a faint `rust-analyzer` subtitle.
+        let mut a = app();
+        a.transcript.push(Entry::User("cap the buffer".to_owned()));
+        a.capture_lsp_sidebar_note(
+            "edit",
+            "Diagnostics:\n\
+             lsp diagnostics for src/buffer.rs: 1 error(s), 1 warning(s), 0 other\n\
+             - error [E0433] (rustc) at line 42, character 5-10: cap unused when 0\n\
+             - warning at line 18, character 1-3: unused import Read\n\
+             lsp diagnostics for src/mod.rs: 0 error(s), 1 warning(s), 0 other\n\
+             - warning at line 90, character 2-8: redundant clone()",
+        );
+        open_context_sidebar(&mut a);
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('3'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let buf = draw_92x30(&a);
+        assert!(buf_row(&buf, 0).contains("lsp"), "breadcrumb crumb is `lsp`");
+        let screen = buf_text(&buf);
+        assert!(screen.contains("LSP"), "sidebar title `LSP`");
+        assert!(screen.contains("1E"), "note shows the real error count");
+        assert!(screen.contains("2W"), "note shows the real warning count");
+        assert!(screen.contains("rust-analyzer"), "faint subtitle names the language server");
+        assert!(screen.contains("buffer.rs"), "the diagnosed file renders in the body");
+        assert!(!screen.contains('▾') && !screen.contains('▸'), "no thin triangles");
+        assert!(!glyphs::contains_braille(&screen), "no braille in the lsp panel");
+    }
+
+    #[test]
+    fn mcp_panel_chrome_shows_title_tools_note_and_servers_subtitle() {
+        // VAL-SIDE-024: selecting the mcp panel shows crumb `· mcp`, title `MCP`, a right-aligned
+        // `<N> tools` note, and a faint `<N> servers connected` subtitle (real counts; the offline
+        // seeded session honestly shows zero).
+        let mut a = app();
+        a.transcript.push(Entry::User("check servers".to_owned()));
+        open_context_sidebar(&mut a);
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('4'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let buf = draw_92x30(&a);
+        assert!(buf_row(&buf, 0).contains("mcp"), "breadcrumb crumb is `mcp`");
+        let screen = buf_text(&buf);
+        assert!(screen.contains("MCP"), "sidebar title `MCP`");
+        assert!(screen.contains("tools"), "right-aligned `<N> tools` note");
+        assert!(
+            screen.contains("servers connected") || screen.contains("server connected"),
+            "faint `<N> servers connected` subtitle"
+        );
+        assert!(!glyphs::contains_braille(&screen), "no braille in the mcp panel");
     }
 
     #[test]

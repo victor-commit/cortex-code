@@ -274,6 +274,62 @@ pub struct ContextFileRow {
     pub tokens: String,
 }
 
+/// The worst diagnostic severity across a file's LSP diagnostics, driving the color of the file
+/// row's `●` dot in the sidebar `lsp` panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspFileSeverity {
+    /// The file has at least one error diagnostic — red dot.
+    Error,
+    /// The file has warnings but no errors — amber dot.
+    Warning,
+    /// The file was checked and has no diagnostics — a neutral dot plus a green `○ no problems` row.
+    Clean,
+}
+
+/// One diagnostic under a file in the sidebar `lsp` panel: a one-based line number, whether it is
+/// an error (`E`, red) or a warning (`W`, amber), and the message text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspDiagnosticRow {
+    /// One-based line number the diagnostic points at.
+    pub line: u32,
+    /// `true` for an error (`E`, red), `false` for a warning (`W`, amber).
+    pub is_error: bool,
+    /// The diagnostic message text.
+    pub message: String,
+}
+
+/// One diagnosed (or clean) file in the sidebar `lsp` panel: the display filename, the error and
+/// warning counts (from the diagnostics summary, authoritative for the panel note), and the
+/// individual diagnostic rows beneath it (empty when the file is clean).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspFileGroup {
+    /// The file's display name (basename).
+    pub file: String,
+    /// Error count reported for the file (summary count; may exceed the shown rows if truncated).
+    pub errors: usize,
+    /// Warning count reported for the file.
+    pub warnings: usize,
+    /// The individual diagnostic rows; empty when the file is clean.
+    pub diagnostics: Vec<LspDiagnosticRow>,
+}
+
+impl LspFileGroup {
+    /// The worst severity across the file's diagnostics, driving the file dot color. A file with
+    /// no errors and no warnings is [`LspFileSeverity::Clean`].
+    #[must_use]
+    pub fn severity(&self) -> LspFileSeverity {
+        let has_error = self.errors > 0 || self.diagnostics.iter().any(|d| d.is_error);
+        let has_warning = self.warnings > 0 || self.diagnostics.iter().any(|d| !d.is_error);
+        if has_error {
+            LspFileSeverity::Error
+        } else if has_warning {
+            LspFileSeverity::Warning
+        } else {
+            LspFileSeverity::Clean
+        }
+    }
+}
+
 /// The visual state of a `files` tree row: an expanded/collapsed directory (with its heavy `▼`/`▶`
 /// disclosure glyph) or a leaf file that is modified (inline `●`) or unchanged (no marker).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1102,8 +1158,9 @@ pub struct App {
     /// Error-level toasts render with distinct error styling; entries are removed once their display
     /// window elapses (see [`App::tick_toasts`]).
     toasts: Vec<Toast>,
-    /// Recent LSP notes extracted from tool results (`write`/`edit`/`lsp`) for the LSP sidebar tab.
-    sidebar_lsp_notes: Vec<String>,
+    /// Structured LSP diagnostics grouped by file, parsed from `write`/`edit`/`lsp` tool results,
+    /// backing the sidebar `lsp` panel (per-file worst-severity dots + per-diagnostic E/W rows).
+    sidebar_lsp_groups: Vec<LspFileGroup>,
     /// The shadow checkpoint store backing `/undo` and `/redo`, opened for the working directory at
     /// launch. `None` when no data location resolves (so undo/redo degrade to a graceful no-op note
     /// rather than failing). The undo/redo handlers re-read its on-disk journal each invocation, so
@@ -1253,7 +1310,7 @@ impl App {
             ack: None,
             copy_request: None,
             toasts: Vec::new(),
-            sidebar_lsp_notes: Vec::new(),
+            sidebar_lsp_groups: Vec::new(),
             checkpoints: None,
             mcp_manager: None,
             mcp_runtime: None,
@@ -1515,28 +1572,34 @@ impl App {
         }
     }
 
-    /// Best-effort error/warning counts for the LSP note, derived from the captured LSP notes.
+    /// Total error/warning counts for the LSP note, summed across the diagnosed files. The summary
+    /// counts win, falling back to the visible-row counts when a file carries only detail rows.
     fn sidebar_lsp_counts(&self) -> (usize, usize) {
         let mut errors = 0;
         let mut warnings = 0;
-        for note in &self.sidebar_lsp_notes {
-            let lower = note.to_lowercase();
-            if lower.contains("error") {
-                errors += 1;
-            } else if lower.contains("warn") {
-                warnings += 1;
-            }
+        for group in &self.sidebar_lsp_groups {
+            let row_errors = group.diagnostics.iter().filter(|d| d.is_error).count();
+            let row_warnings = group.diagnostics.iter().filter(|d| !d.is_error).count();
+            errors += group.errors.max(row_errors);
+            warnings += group.warnings.max(row_warnings);
         }
         (errors, warnings)
     }
 
-    /// The language server name shown as the LSP subtitle, or a neutral placeholder when unknown.
+    /// The language server name shown as the LSP subtitle, or a neutral placeholder when no
+    /// diagnostics have been gathered yet.
     fn sidebar_lsp_server_name(&self) -> String {
-        if self.sidebar_lsp_notes.is_empty() {
+        if self.sidebar_lsp_groups.is_empty() {
             "no language server".to_owned()
         } else {
             "rust-analyzer".to_owned()
         }
+    }
+
+    /// The structured LSP diagnostics grouped by file for the sidebar `lsp` panel renderer.
+    #[must_use]
+    pub fn sidebar_lsp_files(&self) -> &[LspFileGroup] {
+        &self.sidebar_lsp_groups
     }
 
     /// The number of MCP tools currently advertised across connected servers.
@@ -2386,7 +2449,13 @@ impl App {
         }
     }
 
-    fn capture_lsp_sidebar_note(&mut self, tool_name: &str, output: &str) {
+    /// Parse an LSP diagnostics block from a `write`/`edit`/`lsp` tool result into structured
+    /// per-file groups for the sidebar `lsp` panel. The `render_feedback_block` shape is:
+    /// `lsp diagnostics for <path>: <E> error(s), <W> warning(s), <O> other` (one per file),
+    /// followed by `- <severity> [...] at line <L>, character ...: <message>` detail rows. Each
+    /// file's group is upserted (a newer report replaces an older one) so the panel tracks the
+    /// latest state, capped to the most recent files.
+    pub(crate) fn capture_lsp_sidebar_note(&mut self, tool_name: &str, output: &str) {
         let name = tool_name.to_ascii_lowercase();
         let output_lower = output.to_ascii_lowercase();
         let looks_like_lsp =
@@ -2394,29 +2463,31 @@ impl App {
         if !looks_like_lsp {
             return;
         }
-        let mut pushed = false;
+        let mut current: Option<usize> = None;
         for line in output
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
         {
-            let lower = line.to_ascii_lowercase();
-            if lower.contains("diagnostic")
-                || lower.contains("lsp")
-                || lower.contains("workspace symbols")
-                || lower.contains("definition")
-                || lower.contains("hover")
+            if let Some((file, errors, warnings)) = parse_lsp_summary(line) {
+                self.sidebar_lsp_groups.retain(|group| group.file != file);
+                self.sidebar_lsp_groups.push(LspFileGroup {
+                    file,
+                    errors,
+                    warnings,
+                    diagnostics: Vec::new(),
+                });
+                current = Some(self.sidebar_lsp_groups.len() - 1);
+            } else if let Some(diagnostic) = parse_lsp_detail(line)
+                && let Some(index) = current
             {
-                self.sidebar_lsp_notes.push(line.to_owned());
-                pushed = true;
+                self.sidebar_lsp_groups[index].diagnostics.push(diagnostic);
             }
         }
-        if !pushed && let Some(line) = output.lines().map(str::trim).find(|line| !line.is_empty()) {
-            self.sidebar_lsp_notes.push(line.to_owned());
-        }
-        if self.sidebar_lsp_notes.len() > 8 {
-            let keep_from = self.sidebar_lsp_notes.len() - 8;
-            self.sidebar_lsp_notes.drain(0..keep_from);
+        const MAX_LSP_FILES: usize = 8;
+        if self.sidebar_lsp_groups.len() > MAX_LSP_FILES {
+            let keep_from = self.sidebar_lsp_groups.len() - MAX_LSP_FILES;
+            self.sidebar_lsp_groups.drain(0..keep_from);
         }
     }
 
@@ -6483,10 +6554,22 @@ impl App {
     }
 
     fn sidebar_lsp_rows(&self) -> Vec<String> {
-        if self.sidebar_lsp_notes.is_empty() {
+        if self.sidebar_lsp_groups.is_empty() {
             return vec!["No recent LSP diagnostics.".to_owned()];
         }
-        self.sidebar_lsp_notes.clone()
+        let mut rows = Vec::new();
+        for group in &self.sidebar_lsp_groups {
+            rows.push(group.file.clone());
+            if group.diagnostics.is_empty() {
+                rows.push("no problems".to_owned());
+            } else {
+                for diagnostic in &group.diagnostics {
+                    let letter = if diagnostic.is_error { "E" } else { "W" };
+                    rows.push(format!("{} {letter} {}", diagnostic.line, diagnostic.message));
+                }
+            }
+        }
+        rows
     }
 
     fn sidebar_mcp_rows(&self) -> Vec<String> {
@@ -8476,6 +8559,70 @@ fn restore_report(redo: bool, outcome: &RestoreOutcome) -> (String, ToastLevel, 
             format!("Cannot {verb} (file changed)"),
         ),
     }
+}
+
+/// Parse an LSP diagnostics summary line into `(display filename, errors, warnings)`.
+///
+/// Recognizes the `render_feedback_block` shape `lsp diagnostics for <path>: <E> error(s),
+/// <W> warning(s), <O> other`. Returns `None` for any other line.
+fn parse_lsp_summary(line: &str) -> Option<(String, usize, usize)> {
+    let lower = line.to_ascii_lowercase();
+    let marker = "lsp diagnostics for ";
+    let start = lower.find(marker)? + marker.len();
+    let (path, tail) = line[start..].split_once(':')?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let file = std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_owned();
+    let tail = tail.to_ascii_lowercase();
+    Some((file, count_before(&tail, "error"), count_before(&tail, "warning")))
+}
+
+/// The integer immediately preceding `keyword` in `text` (e.g. `2` in `2 error(s)`), or `0`.
+fn count_before(text: &str, keyword: &str) -> usize {
+    let Some(pos) = text.find(keyword) else {
+        return 0;
+    };
+    let digits: String = text[..pos]
+        .trim_end()
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.chars().rev().collect::<String>().parse().unwrap_or(0)
+}
+
+/// Parse an LSP diagnostic detail line into a structured [`LspDiagnosticRow`].
+///
+/// Recognizes the `render_feedback_block` shape `- <severity> [code] (source) at line <L>,
+/// character <C>-<D>: <message>`. Only `error`/`warning` severities map to the sidebar's E/W rows;
+/// informational/hint diagnostics return `None`.
+fn parse_lsp_detail(line: &str) -> Option<LspDiagnosticRow> {
+    let rest = line.strip_prefix("- ")?;
+    let is_error = match rest.split_whitespace().next()?.to_ascii_lowercase().as_str() {
+        "error" => true,
+        "warning" | "warn" => false,
+        _ => return None,
+    };
+    let at_line = rest.find("at line ")?;
+    let after = &rest[at_line + "at line ".len()..];
+    let line_no: u32 = after
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    let message = after.find(": ").map(|idx| after[idx + 2..].trim().to_owned())?;
+    Some(LspDiagnosticRow {
+        line: line_no,
+        is_error,
+        message,
+    })
 }
 
 /// The built-in default theme name (the first available theme), used before any config is loaded.
@@ -15183,6 +15330,72 @@ mod tests {
                 && item.contains(&format!("parent:{parent_id}"))),
             "child subagent row includes the parent linkage: {items:?}"
         );
+    }
+
+    #[test]
+    fn capture_lsp_sidebar_note_parses_grouped_diagnostics_and_counts() {
+        // The `render_feedback_block` shape parses into structured per-file groups: each summary
+        // line establishes a file (worst-severity dot source) and following detail lines become
+        // E/W diagnostic rows; the panel note sums real error/warning counts.
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "edit",
+            "Diagnostics:\n\
+             lsp diagnostics for src/buffer.rs: 1 error(s), 1 warning(s), 0 other\n\
+             - error [E0433] (rustc) at line 42, character 5-10: cap unused when 0\n\
+             - warning at line 18, character 1-3: unused import Read\n\
+             lsp diagnostics for src/mod.rs: 0 error(s), 1 warning(s), 0 other\n\
+             - warning at line 90, character 2-8: redundant clone()",
+        );
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 2, "one group per diagnosed file");
+        assert_eq!(files[0].file, "buffer.rs", "path is reduced to the basename");
+        assert_eq!(files[0].severity(), LspFileSeverity::Error, "worst severity = error");
+        assert_eq!(files[0].diagnostics.len(), 2);
+        assert_eq!(files[0].diagnostics[0].line, 42);
+        assert!(files[0].diagnostics[0].is_error);
+        assert_eq!(files[0].diagnostics[0].message, "cap unused when 0");
+        assert!(!files[0].diagnostics[1].is_error, "second row is a warning");
+        assert_eq!(files[1].severity(), LspFileSeverity::Warning, "warning-only file");
+        assert_eq!(a.sidebar_lsp_counts(), (1, 2), "note sums real E/W counts");
+        a.sidebar_panel = SidebarPanel::Lsp;
+        assert_eq!(a.sidebar_note(), format!("1E {} 2W", glyphs::SEPARATOR));
+    }
+
+    #[test]
+    fn capture_lsp_sidebar_note_marks_zero_diagnostics_as_clean() {
+        // A file reported with zero errors and zero warnings becomes a clean group (empty
+        // diagnostics), which the panel renders as a green `○ no problems` row.
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "edit",
+            "lsp diagnostics for src/stream_processor.rs: 0 error(s), 0 warning(s), 0 other",
+        );
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file, "stream_processor.rs");
+        assert!(files[0].diagnostics.is_empty(), "clean file has no diagnostic rows");
+        assert_eq!(files[0].severity(), LspFileSeverity::Clean);
+    }
+
+    #[test]
+    fn capture_lsp_sidebar_note_upserts_the_latest_report_per_file() {
+        // Re-reporting a file replaces its prior group so the panel always reflects the newest
+        // diagnostics rather than stacking duplicates.
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "edit",
+            "lsp diagnostics for src/buffer.rs: 2 error(s), 0 warning(s), 0 other\n\
+             - error at line 5, character 1-2: first\n\
+             - error at line 9, character 1-2: second",
+        );
+        a.capture_lsp_sidebar_note(
+            "edit",
+            "lsp diagnostics for src/buffer.rs: 0 error(s), 0 warning(s), 0 other",
+        );
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 1, "the file is upserted, not duplicated");
+        assert_eq!(files[0].severity(), LspFileSeverity::Clean, "latest report wins (clean)");
     }
 
     #[test]
