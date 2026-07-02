@@ -2462,7 +2462,7 @@ impl App {
     /// Transition the running tool card matching `id` to its terminal (completed/failed) state,
     /// recording the result text. The most recent matching card wins so re-used ids never collide.
     fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
-        let mut lsp_candidate: Option<(String, String)> = None;
+        let mut lsp_candidate: Option<(String, String, String)> = None;
         if let Some(card) = self
             .transcript
             .iter_mut()
@@ -2473,20 +2473,38 @@ impl App {
             })
         {
             card.complete(parts, is_error);
-            lsp_candidate = Some((card.name.clone(), card.output.clone()));
+            // The card summary is the tool's target (the path for write/edit, the first patch file
+            // for apply_patch), used to attribute headerless `Diagnostic::render()` rows.
+            lsp_candidate = Some((card.name.clone(), card.summary.clone(), card.output.clone()));
         }
-        if let Some((name, output)) = lsp_candidate {
-            self.capture_lsp_sidebar_note(&name, &output);
+        if let Some((name, target, output)) = lsp_candidate {
+            self.capture_lsp_sidebar_note(&name, Some(&target), &output);
         }
     }
 
-    /// Parse an LSP diagnostics block from a `write`/`edit`/`lsp` tool result into structured
-    /// per-file groups for the sidebar `lsp` panel. The `render_feedback_block` shape is:
-    /// `lsp diagnostics for <path>: <E> error(s), <W> warning(s), <O> other` (one per file),
-    /// followed by `- <severity> [...] at line <L>, character ...: <message>` detail rows. Each
-    /// file's group is upserted (a newer report replaces an older one) so the panel tracks the
+    /// Parse the diagnostics carried by a completed `edit`/`write`/`apply_patch`/`lsp`/`bash` tool
+    /// result into structured per-file groups for the sidebar `lsp` panel.
+    ///
+    /// Real runtime tool cards emit `tools::Diagnostic::render()` lines
+    /// (`error [E0308] (rustc) at line 5, character 10-15: <msg>`), NOT the dead
+    /// `render_feedback_block` text — see `library/architecture-notes.md` for the cross-crate
+    /// coupling gotcha. Three shapes are recognized so the panel populates from real output:
+    /// - the mutating-tool feedback shape (`<summary> in <path>` + `Diagnostics:` + bare
+    ///   `Diagnostic::render()` rows) — the rows carry no per-file header, so they are attributed to
+    ///   `target_hint`, the file the tool just wrote;
+    /// - the `cortex lsp diagnostics` CLI text (`lsp diagnostics for <path>\tstatus=<s>` + rows, or
+    ///   `diagnostics=0` when clean);
+    /// - the legacy `render_feedback_block` shape (`lsp diagnostics for <path>: <E> error(s),
+    ///   <W> warning(s)` + `- <severity> ... at line <L>: <msg>`).
+    ///
+    /// Each file's group is upserted (a newer report replaces an older one) so the panel tracks the
     /// latest state, capped to the most recent files.
-    pub(crate) fn capture_lsp_sidebar_note(&mut self, tool_name: &str, output: &str) {
+    pub(crate) fn capture_lsp_sidebar_note(
+        &mut self,
+        tool_name: &str,
+        target_hint: Option<&str>,
+        output: &str,
+    ) {
         let name = tool_name.to_ascii_lowercase();
         let output_lower = output.to_ascii_lowercase();
         let looks_like_lsp =
@@ -2494,6 +2512,9 @@ impl App {
         if !looks_like_lsp {
             return;
         }
+        // The basename of the mutating tool's target, used to attribute bare `Diagnostic::render()`
+        // rows (which carry no per-file header) to the file the tool just wrote.
+        let hint_file = target_hint.and_then(basename_of);
         let mut current: Option<usize> = None;
         for line in output
             .lines()
@@ -2501,17 +2522,23 @@ impl App {
             .filter(|line| !line.is_empty())
         {
             if let Some((file, errors, warnings)) = parse_lsp_summary(line) {
-                self.sidebar_lsp_groups.retain(|group| group.file != file);
-                self.sidebar_lsp_groups.push(LspFileGroup {
-                    file,
-                    errors,
-                    warnings,
-                    diagnostics: Vec::new(),
-                });
-                current = Some(self.sidebar_lsp_groups.len() - 1);
-            } else if let Some(diagnostic) = parse_lsp_detail(line)
-                && let Some(index) = current
-            {
+                current = Some(self.upsert_lsp_group(file, errors, warnings));
+            } else if let Some(file) = parse_lsp_cli_header(line) {
+                current = Some(self.upsert_lsp_group(file, 0, 0));
+            } else if let Some(diagnostic) = parse_lsp_detail(line) {
+                let index = match current {
+                    Some(index) => index,
+                    None => {
+                        // Bare render rows with no header (mutating-tool feedback): attribute them
+                        // to the tool's target file so the group still forms.
+                        let Some(file) = hint_file.clone() else {
+                            continue;
+                        };
+                        let index = self.upsert_lsp_group(file, 0, 0);
+                        current = Some(index);
+                        index
+                    }
+                };
                 self.sidebar_lsp_groups[index].diagnostics.push(diagnostic);
             }
         }
@@ -2520,6 +2547,20 @@ impl App {
             let keep_from = self.sidebar_lsp_groups.len() - MAX_LSP_FILES;
             self.sidebar_lsp_groups.drain(0..keep_from);
         }
+    }
+
+    /// Replace any prior group for `file` with a fresh one (latest report wins) and return its
+    /// index. Detail rows appended afterwards drive the worst-severity dot and E/W counts even when
+    /// `errors`/`warnings` are `0` (the bare `Diagnostic::render()` shape has no summary counts).
+    fn upsert_lsp_group(&mut self, file: String, errors: usize, warnings: usize) -> usize {
+        self.sidebar_lsp_groups.retain(|group| group.file != file);
+        self.sidebar_lsp_groups.push(LspFileGroup {
+            file,
+            errors,
+            warnings,
+            diagnostics: Vec::new(),
+        });
+        self.sidebar_lsp_groups.len() - 1
     }
 
     /// Append a streamed answer fragment to the in-progress assistant entry.
@@ -8677,11 +8718,16 @@ fn count_before(text: &str, keyword: &str) -> usize {
 
 /// Parse an LSP diagnostic detail line into a structured [`LspDiagnosticRow`].
 ///
-/// Recognizes the `render_feedback_block` shape `- <severity> [code] (source) at line <L>,
-/// character <C>-<D>: <message>`. Only `error`/`warning` severities map to the sidebar's E/W rows;
+/// Recognizes BOTH the real runtime `tools::Diagnostic::render()` shape emitted by completed
+/// edit/write/apply_patch/lsp tool cards — `<severity> [code] (source) at line <L>, character
+/// <C>-<D>: <message>` (no leading `- `) — and the legacy `render_feedback_block` shape with a
+/// leading `- `. The multi-line range form (`... at line <L>, character <C> to line <L2>, character
+/// <D>: <message>`) is handled by anchoring on the FIRST `at line <N>` and the FIRST `: ` after it
+/// (the location's separator always precedes any colon inside the message, so a message containing
+/// a colon is preserved). Only `error`/`warning` severities map to the sidebar's E/W rows;
 /// informational/hint diagnostics return `None`.
 fn parse_lsp_detail(line: &str) -> Option<LspDiagnosticRow> {
-    let rest = line.strip_prefix("- ")?;
+    let rest = line.strip_prefix("- ").unwrap_or(line);
     let is_error = match rest.split_whitespace().next()?.to_ascii_lowercase().as_str() {
         "error" => true,
         "warning" | "warn" => false,
@@ -8701,6 +8747,47 @@ fn parse_lsp_detail(line: &str) -> Option<LspDiagnosticRow> {
         is_error,
         message,
     })
+}
+
+/// Parse the `cortex lsp diagnostics` CLI text header line `lsp diagnostics for <path>\tstatus=<s>`
+/// into the diagnosed file's basename, but ONLY for a conclusive `status=diagnostics`/`status=clean`
+/// result. Distinct from [`parse_lsp_summary`], which parses the `render_feedback_block`
+/// `<path>: <E> error(s)` shape. Returns `None` for that colon shape (so the two never collide) and
+/// for `no_server`/`unavailable` statuses (which carry no diagnostics).
+fn parse_lsp_cli_header(line: &str) -> Option<String> {
+    let marker = "lsp diagnostics for ";
+    let start = line.to_ascii_lowercase().find(marker)? + marker.len();
+    let tail = &line[start..];
+    // The `render_feedback_block` summary form is `<path>: <E> error(s)...`; that shape is handled
+    // by `parse_lsp_summary` instead, so bail if it matches (or if the tail leads with a colon).
+    if tail.trim_start().starts_with(':') || parse_lsp_summary(line).is_some() {
+        return None;
+    }
+    // The CLI header is `<path>\tstatus=<s>`; only the `diagnostics`/`clean` statuses describe a
+    // real result. `no_server`/`unavailable` carry no diagnostics and must NOT form a (falsely
+    // clean) group, so require the tab-delimited status token to be present and conclusive.
+    let (path, rest) = tail.split_once('\t')?;
+    let status = rest
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("status="))?;
+    if !matches!(status, "diagnostics" | "clean") {
+        return None;
+    }
+    basename_of(path)
+}
+
+/// The basename of a path-like string (the segment after the last `/`), or the whole trimmed string
+/// when it has no separator. Returns `None` for an empty string.
+fn basename_of(path: &str) -> Option<String> {
+    let file = std::path::Path::new(path.trim())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| path.trim());
+    if file.is_empty() {
+        None
+    } else {
+        Some(file.to_owned())
+    }
 }
 
 /// The built-in default theme name (the first available theme), used before any config is loaded.
@@ -15418,6 +15505,7 @@ mod tests {
         let mut a = app();
         a.capture_lsp_sidebar_note(
             "edit",
+            None,
             "Diagnostics:\n\
              lsp diagnostics for src/buffer.rs: 1 error(s), 1 warning(s), 0 other\n\
              - error [E0433] (rustc) at line 42, character 5-10: cap unused when 0\n\
@@ -15447,6 +15535,7 @@ mod tests {
         let mut a = app();
         a.capture_lsp_sidebar_note(
             "edit",
+            None,
             "lsp diagnostics for src/stream_processor.rs: 0 error(s), 0 warning(s), 0 other",
         );
         let files = a.sidebar_lsp_files();
@@ -15463,17 +15552,194 @@ mod tests {
         let mut a = app();
         a.capture_lsp_sidebar_note(
             "edit",
+            None,
             "lsp diagnostics for src/buffer.rs: 2 error(s), 0 warning(s), 0 other\n\
              - error at line 5, character 1-2: first\n\
              - error at line 9, character 1-2: second",
         );
         a.capture_lsp_sidebar_note(
             "edit",
+            None,
             "lsp diagnostics for src/buffer.rs: 0 error(s), 0 warning(s), 0 other",
         );
         let files = a.sidebar_lsp_files();
         assert_eq!(files.len(), 1, "the file is upserted, not duplicated");
         assert_eq!(files[0].severity(), LspFileSeverity::Clean, "latest report wins (clean)");
+    }
+
+    #[test]
+    fn lsp_sidebar_populates_from_a_real_completed_edit_tool_card() {
+        // The regression this locks: real edit/write/apply_patch tool cards emit
+        // `tools::Diagnostic::render()` lines (NOT the dead `render_feedback_block` shape), so the
+        // panel must ingest that shape. Feed REAL `Diagnostic::render()` output (built from the same
+        // `tools::Diagnostic` type the mutating tools re-inject) through the full runner flow — a
+        // ToolCall opens the card, a ToolResult with the mutating-tool feedback parts completes it —
+        // and confirm the sidebar groups the diagnostics under the edited file with the right
+        // severities and line numbers.
+        let type_error = tools::Diagnostic::with_range("error", 5, 17, 5, 22, "mismatched types")
+            .with_metadata(Some("rustc".to_owned()), Some("E0308".to_owned()));
+        let unused = tools::Diagnostic::with_range(
+            "warning",
+            3,
+            9,
+            3,
+            12,
+            "unused variable: `tmp`",
+        )
+        .with_metadata(Some("rustc".to_owned()), Some("unused_variables".to_owned()));
+        // The exact two-part shape `render_with_feedback` emits: a summary part, then a
+        // `Diagnostics:`-headed block of bare `Diagnostic::render()` rows.
+        let feedback_block = format!(
+            "Diagnostics:\n{}\n{}",
+            type_error.render(),
+            unused.render()
+        );
+
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("introduce a type error".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "call_edit".to_owned(),
+            name: "edit".to_owned(),
+            arguments: r#"{"path":"src/broken.rs","oldString":"a","newString":"b"}"#.to_owned(),
+        }))
+        .unwrap();
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "call_edit".to_owned(),
+            name: "edit".to_owned(),
+            parts: vec![
+                protocol::ToolResultPart::text("edit: replaced 1 occurrence in src/broken.rs"),
+                protocol::ToolResultPart::text(&feedback_block),
+            ],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 1, "the edited file forms one diagnostics group");
+        assert_eq!(files[0].file, "broken.rs", "attributed to the edit target basename");
+        assert_eq!(files[0].severity(), LspFileSeverity::Error, "worst severity = error");
+        assert_eq!(files[0].diagnostics.len(), 2, "both render() rows are ingested");
+        assert_eq!(files[0].diagnostics[0].line, 5);
+        assert!(files[0].diagnostics[0].is_error, "first row is the E0308 error");
+        assert_eq!(files[0].diagnostics[0].message, "mismatched types");
+        assert_eq!(files[0].diagnostics[1].line, 3);
+        assert!(!files[0].diagnostics[1].is_error, "second row is the unused-variable warning");
+        assert_eq!(files[0].diagnostics[1].message, "unused variable: `tmp`");
+        assert_eq!(a.sidebar_lsp_counts(), (1, 1), "note counts the real E/W split");
+        a.sidebar_panel = SidebarPanel::Lsp;
+        assert_eq!(a.sidebar_note(), format!("1E {} 1W", glyphs::SEPARATOR));
+    }
+
+    #[test]
+    fn lsp_sidebar_ingests_multiple_real_render_diagnostic_files_with_worst_severity_dots() {
+        // Two separate mutating-tool results (a warning-only file, then an error file) each carry
+        // real `Diagnostic::render()` rows attributed to their own target; the panel keeps both
+        // groups with the correct worst-severity dot per file (VAL-SIDE-020/021/023).
+        let warn_only = tools::Diagnostic::new("warning", 12, "unused import: `Read`")
+            .with_metadata(Some("rustc".to_owned()), Some("unused_imports".to_owned()));
+        let hard_error = tools::Diagnostic::new("error", 8, "cannot find value `x` in this scope")
+            .with_metadata(Some("rustc".to_owned()), Some("E0425".to_owned()));
+
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "write",
+            Some("src/warn.rs"),
+            &format!("write: overwrote src/warn.rs (40 bytes)\nDiagnostics:\n{}", warn_only.render()),
+        );
+        a.capture_lsp_sidebar_note(
+            "apply_patch",
+            Some("src/broken.rs"),
+            &format!(
+                "apply_patch: applied 1 change: updated src/broken.rs\nDiagnostics:\n{}",
+                hard_error.render()
+            ),
+        );
+
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 2, "one group per diagnosed file");
+        let warn = files.iter().find(|g| g.file == "warn.rs").expect("warn.rs group");
+        assert_eq!(warn.severity(), LspFileSeverity::Warning, "warning-only file → amber dot");
+        assert_eq!(warn.diagnostics[0].line, 12);
+        assert!(!warn.diagnostics[0].is_error);
+        let broken = files.iter().find(|g| g.file == "broken.rs").expect("broken.rs group");
+        assert_eq!(broken.severity(), LspFileSeverity::Error, "error file → red dot");
+        assert_eq!(broken.diagnostics[0].line, 8);
+        assert!(broken.diagnostics[0].is_error);
+    }
+
+    #[test]
+    fn lsp_sidebar_ingests_the_cortex_lsp_diagnostics_cli_text_including_clean() {
+        // A `bash` tool card running `cortex lsp diagnostics <file>` emits the CLI text shape
+        // (`lsp diagnostics for <path>\tstatus=<s>` header + bare `Diagnostic::render()` rows, or
+        // `diagnostics=0` when clean). Both the diagnosed and clean forms must ingest, so a clean
+        // file renders the green `○ no problems` row (VAL-SIDE-022).
+        let err = tools::Diagnostic::with_range("error", 5, 17, 5, 22, "mismatched types")
+            .with_metadata(Some("rustc".to_owned()), Some("E0308".to_owned()));
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "bash",
+            Some("cortex lsp diagnostics src/broken.rs"),
+            &format!(
+                "lsp diagnostics for src/broken.rs\tstatus=diagnostics\n\
+                 language=rust\nprogram=rust-analyzer\nDiagnostics:\n{}",
+                err.render()
+            ),
+        );
+        a.capture_lsp_sidebar_note(
+            "bash",
+            Some("cortex lsp diagnostics src/clean.rs"),
+            "lsp diagnostics for src/clean.rs\tstatus=clean\n\
+             language=rust\nprogram=rust-analyzer\ndiagnostics=0",
+        );
+
+        let files = a.sidebar_lsp_files();
+        assert_eq!(files.len(), 2, "both the diagnosed and clean files form groups");
+        let broken = files.iter().find(|g| g.file == "broken.rs").expect("broken.rs group");
+        assert_eq!(broken.severity(), LspFileSeverity::Error);
+        assert_eq!(broken.diagnostics[0].line, 5);
+        assert!(broken.diagnostics[0].is_error);
+        let clean = files.iter().find(|g| g.file == "clean.rs").expect("clean.rs group");
+        assert_eq!(clean.severity(), LspFileSeverity::Clean, "clean file → green ○ no problems");
+        assert!(clean.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn lsp_sidebar_ignores_unavailable_cli_headers_so_no_false_clean_group_forms() {
+        // A `cortex lsp diagnostics` run whose server was unavailable emits `status=unavailable`
+        // (+ a `diagnostics=0` line and an `LSP ... unavailable` note). That is NOT a clean result,
+        // so it must NOT create a (falsely green) group.
+        let mut a = app();
+        a.capture_lsp_sidebar_note(
+            "bash",
+            Some("cortex lsp diagnostics src/clean.rs"),
+            "lsp diagnostics for src/clean.rs\tstatus=unavailable\n\
+             language=rust\nprogram=rust-analyzer\ndiagnostics=0\n\
+             LSP diagnostics unavailable for src/clean.rs: language server stopped responding",
+        );
+        assert!(
+            a.sidebar_lsp_files().is_empty(),
+            "an unavailable server forms no group (no false clean row)"
+        );
+    }
+
+    #[test]
+    fn parse_lsp_detail_accepts_both_bare_render_and_legacy_dash_shapes() {
+        // The bare `Diagnostic::render()` line (no `- ` prefix, real runtime shape) and the legacy
+        // `render_feedback_block` `- ` line both parse; the multi-line-range render form keeps its
+        // start line and its colon-bearing message.
+        let bare = tools::Diagnostic::with_range("error", 5, 17, 6, 4, "expected `;`, found `}`")
+            .with_metadata(Some("rustc".to_owned()), Some("E0308".to_owned()));
+        let row = parse_lsp_detail(&bare.render()).expect("bare render row parses");
+        assert_eq!(row.line, 5, "anchors on the FIRST `at line <N>`");
+        assert!(row.is_error);
+        assert_eq!(row.message, "expected `;`, found `}`", "colon-free message preserved");
+
+        let legacy = parse_lsp_detail("- warning at line 90, character 2-8: redundant clone()")
+            .expect("legacy `- ` row still parses");
+        assert_eq!(legacy.line, 90);
+        assert!(!legacy.is_error);
     }
 
     #[test]

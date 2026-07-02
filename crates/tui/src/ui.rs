@@ -5117,6 +5117,7 @@ mod tests {
         a.transcript.push(Entry::User("cap the buffer".to_owned()));
         a.capture_lsp_sidebar_note(
             "edit",
+            None,
             "Diagnostics:\n\
              lsp diagnostics for src/buffer.rs: 1 error(s), 1 warning(s), 0 other\n\
              - error [E0433] (rustc) at line 42, character 5-10: cap unused when 0\n\
