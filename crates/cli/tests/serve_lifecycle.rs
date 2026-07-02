@@ -9,7 +9,11 @@ use std::time::{Duration, Instant};
 
 static SERVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
-const WAIT_TIMEOUT: Duration = Duration::from_secs(8);
+// A cold /lsp probe (and the stale-while-revalidate background refresh it spawns) can run for tens
+// of seconds while it enumerates language-server availability, so teardown must wait long enough for
+// a SIGTERM'd server to drain an in-flight refresh before it is force-killed. This is a max-wait
+// bound only: a healthy server with no in-flight probe exits and releases its port immediately.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn serve_health_loopback_bind_and_shutdown_release_are_black_box_visible() {
@@ -439,7 +443,7 @@ fn serve_lsp_status_stays_prompt_under_tight_sequential_loop() {
     let mut server = ServerProcess::start_with_db_path(port, &db_path);
 
     // Warm the cache once with a tolerant read timeout (the first probe is heavy).
-    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(20))
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
         .expect("warm /lsp request");
     assert_eq!(
         warm.status, 200,
@@ -535,7 +539,7 @@ fn serve_lsp_status_revalidation_recovers_across_stale_windows() {
     let mut server = ServerProcess::start_with_db_path(port, &db_path);
 
     // Warm the cache once with a tolerant read timeout (the first probe is heavy).
-    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(20))
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
         .expect("warm /lsp request");
     assert_eq!(
         warm.status, 200,
