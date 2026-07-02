@@ -2813,6 +2813,13 @@ impl App {
         self.pin_to_bottom();
     }
 
+    /// Open a permission prompt directly (test-only), used by rendering tests in sibling modules
+    /// that cannot reach the private turn-message apply path.
+    #[cfg(test)]
+    pub(crate) fn open_permission_for_test(&mut self, ask: PermissionAsk) {
+        self.open_permission(ask);
+    }
+
     /// Move the permission highlight one step (`forward` = toward Deny), clamped at the ends so the
     /// arrows scan the three options without wrapping.
     fn permission_step(&mut self, forward: bool) {
@@ -4913,6 +4920,9 @@ impl App {
         );
         let cost = format!("${:.2} this session", self.usage.cost.unwrap_or(0.0));
 
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let permits = crate::turn::permission_posture(&cwd, &self.status.agent);
+
         crate::view::StatusData {
             session,
             started,
@@ -4923,7 +4933,7 @@ impl App {
             context_limit: self.model_context_limit(),
             tokens,
             cost,
-            permits: "edit allow · bash allow-all · web allow".to_owned(),
+            permits,
             workspace: crate::motd::current_dir_display(),
             git: git_info(),
         }
@@ -12603,6 +12613,28 @@ mod tests {
             a.active_view(),
             Some(crate::view::ViewKind::Help),
             "`?` from a full-screen view opens the help reference"
+        );
+    }
+
+    #[test]
+    fn status_view_permits_row_reflects_the_real_posture() {
+        // The `/status` permits row is wired to the real permission posture (via the engine), not a
+        // static placeholder: the default build agent ask-gates edit/bash and allows web.
+        let mut a = app();
+        type_str(&mut a, "/status");
+        a.on_key(key(KeyCode::Enter));
+        let data = a.status_snapshot().expect("status snapshot after /status");
+        assert_eq!(
+            data.permits,
+            format!(
+                "edit ask {sep} bash ask {sep} web allow",
+                sep = crate::glyphs::SEPARATOR
+            ),
+            "permits reflects the real classification"
+        );
+        assert_ne!(
+            data.permits, "edit allow · bash allow-all · web allow",
+            "permits is no longer the static placeholder"
         );
     }
 

@@ -155,8 +155,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_palette(frame, app, area, &theme);
     // The which-key overlay lists the active leader bindings while the leader chord is armed.
     draw_which_key(frame, app, area, &theme);
-    // An interactive permission prompt is modal: it overlays everything (it captures every key
-    // while the turn worker is blocked awaiting the decision).
+    // An interactive permission prompt is modal: it floats over a dimmed backdrop (the faded prior
+    // conversation) and captures every key while the turn worker is blocked awaiting the decision.
+    if app.permission_open() {
+        dim_backdrop(frame, area, &theme);
+    }
     draw_permission(frame, app, area, &theme);
     // Transient toast notifications float above everything else (top-right) so they remain visible
     // over any open dialog/overlay, and auto-dismiss without disturbing the layout beneath them.
@@ -3095,110 +3098,254 @@ fn parse_hints(hint: &str) -> Vec<crate::modal::ModalHint> {
         .collect()
 }
 
-/// Render the interactive permission prompt: a centered modal naming the ask-gated tool and its
-/// target with selectable Allow/Deny options, drawn over everything while a decision is pending.
+/// One permission option: its label, its right-hand description, and whether it is the destructive
+/// `Deny` choice (rendered in red).
+struct PermissionOption {
+    label: &'static str,
+    desc: &'static str,
+    deny: bool,
+}
+
+/// Render the interactive permission prompt (`perm_permission.png`): a centered rounded modal over a
+/// faded backdrop. The top border embeds `Permission required` (AMBER) with a right-edge context tag
+/// (FAINT); the body shows the requested command in a bordered `$`-prompt box, the real working
+/// directory, and three selectable options (`Allow once` [selected], `Allow for this session`,
+/// `Deny` in red), plus the `↵ choose · ↑↓ move · esc deny` key hints.
 fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some((tool, subject, selected, feedback)) = app.permission_prompt() else {
         return;
     };
-    if area.width < 8 || area.height < 6 {
+    if area.width < 12 || area.height < 8 {
         return;
     }
 
-    // The option row: Allow once · Allow always (remember) · Deny. The highlighted choice carries a
-    // `›` marker and bold styling, and the options keep their semantic colors (allow = success/green,
-    // deny = error/red) so the choice is unmistakable in a snapshot.
-    let option = |label: &str, index: usize, color| {
-        let marked = format!("{}{label}", row_marker(selected == index));
-        Span::styled(marked, option_style(color, selected == index, theme))
-    };
     let is_question = tool == "question";
-    let allow_once_label = if is_question {
-        "Submit once"
+    let is_shell = tool == "bash";
+    let tag = if is_shell {
+        "shell".to_owned()
     } else {
-        "Allow once"
+        tool.to_owned()
     };
-    let allow_always_label = if is_question {
-        "Submit always"
+    let prompt_text = if is_question {
+        "the agent asks:"
+    } else if is_shell {
+        "the agent wants to run a command:"
     } else {
-        "Allow always"
+        "the agent wants to run a tool:"
     };
-    let deny_label = if is_question { "Cancel" } else { "Deny" };
-    let options = Line::from(vec![
-        option(allow_once_label, 0, theme.success),
-        Span::raw("  "),
-        option(allow_always_label, 1, theme.success),
-        Span::raw("  "),
-        option(deny_label, 2, theme.error),
-    ]);
-    let hint = if is_question {
-        "type answer · ←/→ select · Enter confirm · Esc cancel"
+    let options = if is_question {
+        [
+            PermissionOption { label: "Submit once", desc: "answer just this question", deny: false },
+            PermissionOption { label: "Submit for this session", desc: "remember this answer", deny: false },
+            PermissionOption { label: "Cancel", desc: "reject and tell the agent why", deny: true },
+        ]
     } else {
-        "y once · a always · n deny · ←/→ select · type feedback on Deny · Enter confirm · Esc deny"
-    };
-
-    let feedback_line = if is_question || selected == 2 || !feedback.is_empty() {
-        Some(Line::from(vec![
-            Span::styled(
-                if is_question {
-                    "Answer: "
-                } else {
-                    "Feedback: "
-                },
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(feedback.to_owned(), Style::default().fg(theme.text)),
-            Span::styled("▏", Style::default().fg(theme.warning)),
-        ]))
-    } else {
-        None
+        [
+            PermissionOption { label: "Allow once", desc: "run just this command", deny: false },
+            PermissionOption { label: "Allow for this session", desc: "don't ask again this session", deny: false },
+            PermissionOption { label: "Deny", desc: "reject and tell the agent why", deny: true },
+        ]
     };
 
-    let mut rows: Vec<Line<'static>> = vec![
-        Line::from(vec![
-            Span::styled(
-                tool.to_owned(),
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " requests permission to act on:",
-                Style::default().fg(theme.text),
-            ),
-        ]),
-        Line::from(Span::styled(
-            format!("  {subject}"),
-            Style::default().fg(theme.text),
-        )),
-        Line::from(""),
-        options,
+    // Column geometry: the `›` marker sits at col 0, labels at col 2, and the descriptions align in
+    // a fixed column two cells past the widest label (a right-hand description column).
+    let label_col = 2usize;
+    let longest_label = options.iter().map(|o| o.label.chars().count()).max().unwrap_or(0);
+    let desc_col = label_col + longest_label + 2;
+    let longest_desc = options.iter().map(|o| o.desc.chars().count()).max().unwrap_or(0);
+
+    let cwd = crate::motd::current_dir_display();
+    let cwd_line = format!("in {cwd}");
+    let cmd_lead = if is_shell { 2 } else { 0 }; // `$ `
+    let move_keys = format!("{}{}", glyphs::KEY_UP, glyphs::KEY_DOWN);
+    let footer: [(String, &str); 3] = [
+        (glyphs::KEY_ENTER.to_owned(), if is_question { "submit" } else { "choose" }),
+        (move_keys, "move"),
+        ("esc".to_owned(), if is_question { "cancel" } else { "deny" }),
     ];
-    if let Some(feedback_line) = feedback_line {
-        rows.push(feedback_line);
-    }
-    rows.push(Line::from(Span::styled(
-        hint,
-        Style::default().fg(theme.text_dim),
-    )));
+    let footer_w: usize = footer
+        .iter()
+        .map(|(k, l)| k.chars().count() + 1 + l.chars().count())
+        .sum::<usize>()
+        + 3 * footer.len().saturating_sub(1);
 
-    let content_w = rows.iter().map(Line::width).max().unwrap_or(0);
-    let max_w = (area.width as usize) * 9 / 10;
-    let width = (content_w + 4).clamp(28, max_w.max(28)) as u16;
-    let height = (rows.len() as u16).saturating_add(2);
+    // Interior width: the widest of the option block, the command box, the prompt/cwd lines, and the
+    // footer — floored to a comfortable modal width and capped at 90% of the canvas.
+    let content = [
+        desc_col + longest_desc,
+        4 + cmd_lead + subject.chars().count() + 1,
+        prompt_text.chars().count() + 2,
+        cwd_line.chars().count() + 2,
+        footer_w + 2,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(60);
+    let max_interior = ((area.width as usize) * 9 / 10).saturating_sub(2).max(40);
+    let interior_width = content.clamp(60.min(max_interior), max_interior);
+
+    let bg = theme.background;
+    let sel_bg = theme.surface[3];
+    let blank = || -> Vec<(char, Style)> {
+        vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width]
+    };
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    rows.push(cells_to_line(&blank()));
+
+    // Prompt line.
+    let mut prompt_cells = blank();
+    place_segments(
+        &mut prompt_cells,
+        2,
+        &[(prompt_text.to_owned(), Style::default().fg(theme.text).bg(bg))],
+    );
+    rows.push(cells_to_line(&prompt_cells));
+    rows.push(cells_to_line(&blank()));
+
+    // Command box: a rounded ORANGE_D inner box holding `$ <command>` (`$` ORANGE, command BRIGHT).
+    let box_indent = 2usize;
+    let box_width = interior_width.saturating_sub(box_indent * 2).max(4);
+    let border = Style::default().fg(theme.border).bg(bg);
+    let mut top = blank();
+    let top_seg = format!(
+        "{}{}{}",
+        glyphs::BOX_TOP_LEFT,
+        glyphs::BOX_HORIZONTAL.repeat(box_width.saturating_sub(2)),
+        glyphs::BOX_TOP_RIGHT
+    );
+    place_segments(&mut top, box_indent, &[(top_seg, border)]);
+    rows.push(cells_to_line(&top));
+
+    let mut mid = blank();
+    place_segments(&mut mid, box_indent, &[(glyphs::BOX_VERTICAL.to_owned(), border)]);
+    place_segments(
+        &mut mid,
+        box_indent + box_width - 1,
+        &[(glyphs::BOX_VERTICAL.to_owned(), border)],
+    );
+    let mut cmd_col = box_indent + 2;
+    if is_shell {
+        place_segments(
+            &mut mid,
+            cmd_col,
+            &[("$".to_owned(), Style::default().fg(theme.primary).bg(bg))],
+        );
+        cmd_col += 2;
+    }
+    let cmd_room = (box_indent + box_width - 1).saturating_sub(cmd_col).saturating_sub(1);
+    let command = clip_to(subject, cmd_room);
+    place_segments(
+        &mut mid,
+        cmd_col,
+        &[(command, Style::default().fg(theme.text_bright).bg(bg))],
+    );
+    rows.push(cells_to_line(&mid));
+
+    let mut bottom = blank();
+    let bottom_seg = format!(
+        "{}{}{}",
+        glyphs::BOX_BOTTOM_LEFT,
+        glyphs::BOX_HORIZONTAL.repeat(box_width.saturating_sub(2)),
+        glyphs::BOX_BOTTOM_RIGHT
+    );
+    place_segments(&mut bottom, box_indent, &[(bottom_seg, border)]);
+    rows.push(cells_to_line(&bottom));
+    rows.push(cells_to_line(&blank()));
+
+    // Working-directory context line (real cwd), dim.
+    let mut cwd_cells = blank();
+    place_segments(
+        &mut cwd_cells,
+        2,
+        &[(clip_to(&cwd_line, interior_width.saturating_sub(3)), Style::default().fg(theme.text_dim).bg(bg))],
+    );
+    rows.push(cells_to_line(&cwd_cells));
+    rows.push(cells_to_line(&blank()));
+
+    // Option rows: the selected row is a solid SELBG inverse bar with a `›` ORANGE marker + bright
+    // label; `Deny` is red in every state. Descriptions sit in the fixed right-hand column (FAINT).
+    for (index, option) in options.iter().enumerate() {
+        let is_selected = index == selected;
+        let row_bg = if is_selected { sel_bg } else { bg };
+        let mut cells: Vec<(char, Style)> =
+            vec![(' ', Style::default().fg(theme.text).bg(row_bg)); interior_width];
+        if is_selected {
+            place_segments(
+                &mut cells,
+                0,
+                &[(glyphs::SELECT_MARKER.to_owned(), Style::default().fg(theme.primary).bg(row_bg))],
+            );
+        }
+        let mut label_style = if option.deny {
+            Style::default().fg(theme.error).bg(row_bg)
+        } else if is_selected {
+            Style::default().fg(theme.text_bright).bg(row_bg)
+        } else {
+            Style::default().fg(theme.text).bg(row_bg)
+        };
+        if is_selected {
+            label_style = label_style.add_modifier(Modifier::BOLD);
+        }
+        place_segments(&mut cells, label_col, &[(option.label.to_owned(), label_style)]);
+        place_segments(
+            &mut cells,
+            desc_col,
+            &[(
+                clip_to(option.desc, interior_width.saturating_sub(desc_col + 1)),
+                Style::default().fg(theme.text_muted).bg(row_bg),
+            )],
+        );
+        rows.push(cells_to_line(&cells));
+    }
+
+    // Feedback capture line (Deny corrective note / question answer): shown only while feedback is
+    // active, so the default Allow-once view matches the reference exactly.
+    if is_question || selected == 2 {
+        rows.push(cells_to_line(&blank()));
+        let mut fb = blank();
+        let label = if is_question { "answer: " } else { "reason: " };
+        place_segments(
+            &mut fb,
+            2,
+            &[
+                (label.to_owned(), Style::default().fg(theme.secondary).bg(bg)),
+                (feedback.to_owned(), Style::default().fg(theme.text).bg(bg)),
+                (glyphs::CURSOR.to_owned(), Style::default().fg(theme.primary).bg(bg)),
+            ],
+        );
+        rows.push(cells_to_line(&fb));
+    }
+
+    rows.push(cells_to_line(&blank()));
+
+    // Footer key hints: key glyphs in dim orange, labels in faint grey.
+    let mut footer_cells = blank();
+    let mut footer_segs: Vec<(String, Style)> = Vec::new();
+    for (i, (key, label)) in footer.iter().enumerate() {
+        if i > 0 {
+            footer_segs.push(("   ".to_owned(), Style::default().fg(theme.text_muted).bg(bg)));
+        }
+        footer_segs.push((key.clone(), Style::default().fg(theme.border).bg(bg)));
+        footer_segs.push((" ".to_owned(), Style::default().fg(theme.text_muted).bg(bg)));
+        footer_segs.push(((*label).to_owned(), Style::default().fg(theme.text_muted).bg(bg)));
+    }
+    place_segments(&mut footer_cells, 2, &footer_segs);
+    rows.push(cells_to_line(&footer_cells));
+
+    let width = (interior_width + 2) as u16;
+    let height = (rows.len() + 2) as u16;
     let popup = centered_rect(width, height, area);
 
     let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
+        .style(Style::default().bg(bg))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.warning))
+        .border_style(Style::default().fg(theme.border))
         .title(" Permission required ")
         .title_style(
             Style::default()
-                .fg(theme.warning)
+                .fg(theme.secondary)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(popup);
@@ -3206,23 +3353,43 @@ fn draw_permission(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(
-        Paragraph::new(rows).style(Style::default().fg(theme.text).bg(theme.surface[1])),
+        Paragraph::new(rows).style(Style::default().fg(theme.text).bg(bg)),
         inner,
     );
+
+    // The context tag rides the top border, right-aligned, like the shared view/panel note.
+    let tag_text = format!(" {tag} ");
+    let tag_len = tag_text.chars().count() as u16;
+    if tag_len + 2 < popup.width {
+        let tag_area = Rect {
+            x: popup.x + popup.width - 1 - tag_len,
+            y: popup.y,
+            width: tag_len,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                tag_text,
+                Style::default().fg(theme.text_muted).bg(bg),
+            ))),
+            tag_area,
+        );
+    }
 }
 
-/// The style for a permission option: its semantic color when idle, and an explicit solid inverse
-/// pair when highlighted (near-black text on the semantic color), so the active option stands out
-/// as a solid fill rather than a terminal `REVERSED` swap.
-fn option_style(color: Color, selected: bool, theme: &style::ThemeColors) -> Style {
-    if selected {
-        Style::default()
-            .fg(theme.background)
-            .bg(color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(color).add_modifier(Modifier::DIM)
+/// Truncate `s` to at most `max` display columns, appending `…` when it is cut.
+fn clip_to(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
     }
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str(glyphs::ELLIPSIS);
+    out
 }
 
 /// The footer hint for a dialog: the session picker advertises its switch/rename/delete actions
@@ -7889,5 +8056,135 @@ mod tests {
             s.contains("auto (high) · allow all commands") && s.contains("google/gemini-2.5-flash"),
             "3-zone status bar present in a conversation:\n{s}"
         );
+    }
+
+    /// Open a bash permission prompt over a live turn and return the rendered 92x30 buffer.
+    fn permission_buffer(subject: &str) -> ratatui::buffer::Buffer {
+        use crate::app::Entry;
+        use crate::permission::PermissionAsk;
+        let mut a = app();
+        a.transcript.push(Entry::User("clean the build".to_owned()));
+        let (reply, wait) = channel();
+        a.open_permission_for_test(PermissionAsk::new("bash", subject, reply));
+        // Keep the receiver alive so the ask stays open for the duration of the render.
+        std::mem::forget(wait);
+        render_92x30(&a)
+    }
+
+    fn cell_at<'b>(buf: &'b ratatui::buffer::Buffer, needle: &str) -> Option<&'b ratatui::buffer::Cell> {
+        let w = buf.area.width as usize;
+        let h = buf.area.height as usize;
+        for y in 0..h {
+            let row: String = (0..w).map(|x| buf.content()[y * w + x].symbol()).collect();
+            if let Some(byte_idx) = row.find(needle) {
+                let col = row[..byte_idx].chars().count();
+                return Some(&buf.content()[y * w + col]);
+            }
+        }
+        None
+    }
+
+    /// The 92x30 buffer rendered as text, one row per line (so a needle that sits on one row is
+    /// found without being split across a wrap boundary).
+    fn buffer_rows(buf: &ratatui::buffer::Buffer) -> String {
+        let w = buf.area.width as usize;
+        let h = buf.area.height as usize;
+        (0..h)
+            .map(|y| (0..w).map(|x| buf.content()[y * w + x].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn permission_dialog_shows_command_box_options_and_hints() {
+        // VAL-PERM-001/003/004/006/009: the modal titled `Permission required` with a `shell` tag,
+        // a `$`-prompted command box holding the real command, the three ordered options with
+        // right-hand descriptions, and the `choose/move/deny` key hints.
+        let theme = style::ThemeColors::dark();
+        let buf = permission_buffer("rm -rf target/ && cargo build --release");
+        let text = buffer_rows(&buf);
+
+        assert!(text.contains("Permission required"), "modal title:\n{text}");
+        assert!(text.contains("shell"), "right-edge shell tag:\n{text}");
+        assert!(
+            text.contains("the agent wants to run a command:"),
+            "command prompt line:\n{text}"
+        );
+        assert!(
+            text.contains("rm -rf target/ && cargo build --release"),
+            "the real requested command is shown in the box:\n{text}"
+        );
+        // The `$` prompt is ORANGE.
+        let dollar = cell_at(&buf, "$").expect("`$` prompt present");
+        assert_eq!(dollar.fg, theme.primary, "`$` prompt is ORANGE");
+
+        for (opt, desc) in [
+            ("Allow once", "run just this command"),
+            ("Allow for this session", "don't ask again this session"),
+            ("Deny", "reject and tell the agent why"),
+        ] {
+            assert!(text.contains(opt), "option `{opt}` present:\n{text}");
+            assert!(text.contains(desc), "description `{desc}` present:\n{text}");
+        }
+        // Option order: Allow once, then Allow for this session, then Deny.
+        let once = text.find("Allow once").expect("allow once");
+        let session = text.find("Allow for this session").expect("allow session");
+        let deny = text.find("Deny").expect("deny");
+        assert!(once < session && session < deny, "options in order:\n{text}");
+
+        // Footer key hints.
+        assert!(text.contains("choose"), "choose hint:\n{text}");
+        assert!(text.contains("move"), "move hint:\n{text}");
+        assert!(text.contains("deny"), "deny hint:\n{text}");
+    }
+
+    #[test]
+    fn permission_dialog_deny_is_red_first_option_selected() {
+        // VAL-PERM-007/008: the first option (`Allow once`) is the selected inverse SELBG bar with a
+        // `›` ORANGE marker, and `Deny` is rendered in the ERR red while the allow options are not.
+        let theme = style::ThemeColors::dark();
+        let buf = permission_buffer("rm -rf target/");
+
+        // `Deny` label is red.
+        let deny = cell_at(&buf, "Deny").expect("Deny label present");
+        assert_eq!(deny.fg, theme.error, "Deny is red");
+        // The allow options are NOT red.
+        let allow = cell_at(&buf, "Allow once").expect("Allow once present");
+        assert_ne!(allow.fg, theme.error, "Allow once is not red");
+
+        // The selected first option carries the SELBG inverse bar and a `›` marker in ORANGE.
+        let allow_bar = cell_at(&buf, "Allow once").expect("Allow once cell");
+        assert_eq!(allow_bar.bg, theme.surface[3], "selected row is the SELBG inverse bar");
+        // The `›` marker sits on the selected row (the transcript `›` is dimmed by the backdrop, so
+        // find the one on the SELBG bar).
+        let w = buf.area.width as usize;
+        let h = buf.area.height as usize;
+        let marker = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| &buf.content()[y * w + x])
+            .find(|c| c.symbol() == "›" && c.bg == theme.surface[3]);
+        assert!(marker.is_some(), "the selected row carries a `›` marker on the SELBG bar");
+        assert_eq!(marker.unwrap().fg, theme.primary, "`›` marker is ORANGE");
+    }
+
+    #[test]
+    fn permission_dialog_shows_real_cwd_and_dims_backdrop() {
+        // VAL-PERM-002/005: the working-directory line reflects the real cwd, and the prior
+        // conversation behind the modal is dimmed (not full-brightness).
+        let buf = permission_buffer("rm -rf target/");
+        let text = buffer_rows(&buf);
+        let cwd = crate::motd::current_dir_display();
+        assert!(
+            text.contains(&format!("in {cwd}")),
+            "real cwd context line present (`in {cwd}`):\n{text}"
+        );
+
+        // The backdrop user line `clean the build` is faded: its fg is blended toward the page bg,
+        // so it is no longer the crisp TXT token.
+        let theme = style::ThemeColors::dark();
+        let faded = cell_at(&buf, "clean the build");
+        if let Some(cell) = faded {
+            assert_ne!(cell.fg, theme.text, "backdrop text is dimmed, not full-brightness");
+        }
     }
 }

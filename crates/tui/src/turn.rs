@@ -722,6 +722,33 @@ fn readonly_agent_hard_denies(agent: Agent) -> Vec<permissions::Rule> {
     }
 }
 
+/// The real permission posture shown on the `/status` view's `permits` row.
+///
+/// Rather than a static placeholder, this classifies a few representative capabilities (`edit`,
+/// `bash`, `web`) through the very engine a turn uses for the active agent, so the row reflects the
+/// actual mode/posture: an ask-gated build agent reads `edit ask · bash ask · web allow`, a
+/// read-only plan/explore agent reads `edit deny · bash deny · web allow`, and a capability that was
+/// approved "for this session" (a saved-always allow, loaded from the shared store) reads `allow`.
+#[must_use]
+pub fn permission_posture(cwd: &std::path::Path, agent_name: &str) -> String {
+    let agent =
+        custom_agents::ActiveAgent::Builtin(Agent::from_name(agent_name).unwrap_or_default());
+    let (tx, _rx) = mpsc::channel();
+    let (engine, _saved, _loaded) = build_permission_engine(tx, cwd, &agent);
+    let word = |tool: &str, subject: &str| match engine.classify(tool, subject) {
+        permissions::Action::Allow => "allow",
+        permissions::Action::Ask => "ask",
+        permissions::Action::Deny => "deny",
+    };
+    let sep = crate::glyphs::SEPARATOR;
+    format!(
+        "edit {} {sep} bash {} {sep} web {}",
+        word("edit", "src/main.rs"),
+        word("bash", "echo hi"),
+        word("webfetch", "https://example.com"),
+    )
+}
+
 /// Persist any "always allow/deny" decisions recorded this turn to the shared per-project store, so
 /// a later run on this project — in either surface — honors them without re-asking (VAL-CROSS-028).
 ///
@@ -973,6 +1000,32 @@ mod tests {
             rx.try_recv().is_err(),
             "a hard deny should not surface a permission prompt"
         );
+    }
+
+    #[test]
+    fn permission_posture_reflects_the_real_agent_mode() {
+        use crate::glyphs::SEPARATOR;
+
+        // The default build agent ask-gates edit/bash and allows web reads: the posture is the real
+        // classification, not a static `allow-all` placeholder.
+        let build = permission_posture(std::path::Path::new("."), "build");
+        assert_eq!(
+            build,
+            format!("edit ask {SEPARATOR} bash ask {SEPARATOR} web allow"),
+            "build agent posture is dynamic"
+        );
+
+        // A read-only plan agent hard-denies edit/bash (plan mode), so the posture reflects it.
+        let plan = permission_posture(std::path::Path::new("."), "plan");
+        assert_eq!(
+            plan,
+            format!("edit deny {SEPARATOR} bash deny {SEPARATOR} web allow"),
+            "plan (read-only) agent posture reflects the hard denies"
+        );
+
+        // The row is never the old static placeholder.
+        assert_ne!(build, "edit allow · bash allow-all · web allow");
+        assert_ne!(plan, "edit allow · bash allow-all · web allow");
     }
 
     #[test]
