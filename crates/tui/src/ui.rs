@@ -3426,17 +3426,154 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
         glyphs::BOX_HORIZONTAL.repeat(cw),
         Style::default().fg(theme.ghost),
     )));
-    for row in app.sidebar_rows() {
-        lines.push(Line::from(Span::styled(
-            clip_columns(&row, cw),
-            Style::default().fg(theme.text),
-        )));
+    match panel {
+        crate::app::SidebarPanel::Context => sidebar_context_body(app, theme, cw, &mut lines),
+        crate::app::SidebarPanel::Files => {
+            // The tree body gets the rows below the subtitle + divider; scroll it to keep the
+            // focused node visible when the tree is taller than the panel.
+            let body_rows = (content.height as usize).saturating_sub(2);
+            sidebar_files_body(app, theme, cw, body_rows, &mut lines);
+        }
+        _ => {
+            for row in app.sidebar_rows() {
+                lines.push(Line::from(Span::styled(
+                    clip_columns(&row, cw),
+                    Style::default().fg(theme.text),
+                )));
+            }
+        }
     }
 
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme.background)),
         content,
     );
+}
+
+/// Append the styled `context` panel body: one row per context file (`›` ORANGE_D marker + name +
+/// a right-aligned DIM token count, aligned to a common column), then a ghost rule and the
+/// `@ add files to context` affordance (`@` in ORANGE).
+fn sidebar_context_body(
+    app: &App,
+    theme: &style::ThemeColors,
+    cw: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let files = app.context_files();
+    for file in &files {
+        // Right-align the token count to the panel edge, leaving the name a left-aligned column
+        // and at least one space of gap before the count.
+        let marker_cols = 2; // `› `
+        let count_cols = file.tokens.chars().count();
+        let name_budget = cw.saturating_sub(marker_cols + count_cols + 1);
+        let name = clip_plain(&file.name, name_budget.max(1));
+        let used = marker_cols + name.chars().count() + count_cols;
+        let gap = cw.saturating_sub(used).max(1);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", glyphs::PROMPT),
+                Style::default().fg(theme.border),
+            ),
+            Span::styled(name, Style::default().fg(theme.text)),
+            Span::styled(" ".repeat(gap), Style::default()),
+            Span::styled(file.tokens.clone(), Style::default().fg(theme.text_dim)),
+        ]));
+    }
+    // A blank spacer, a ghost rule, then the add-files affordance under it.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        glyphs::BOX_HORIZONTAL.repeat(cw),
+        Style::default().fg(theme.ghost),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("@ ", Style::default().fg(theme.primary)),
+        Span::styled(
+            clip_plain("add files to context", cw.saturating_sub(2)),
+            Style::default().fg(theme.text_dim),
+        ),
+    ]));
+}
+
+/// Append the styled `files` collapsible-tree body: each row indented by `depth*2`, directories
+/// carrying a heavy `▼`/`▶` disclosure glyph (ORANGE_D) and modified files an inline `●` marker
+/// (AMBER); the focused row is drawn as an inverse selection bar once navigation is active.
+fn sidebar_files_body(
+    app: &App,
+    theme: &style::ThemeColors,
+    cw: usize,
+    body_rows: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let rows = app.file_tree_rows();
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            clip_plain("No files to show.", cw),
+            Style::default().fg(theme.text_muted),
+        )));
+        return;
+    }
+    let cursor = app.files_cursor();
+    let nav = app.files_nav_active();
+    // Scroll the window so the focused node stays visible when the tree overflows the panel.
+    let scroll = if body_rows > 0 && cursor >= body_rows {
+        cursor - body_rows + 1
+    } else {
+        0
+    };
+    for (index, row) in rows.iter().enumerate().skip(scroll) {
+        let selected = nav && index == cursor;
+        let indent = "  ".repeat(row.depth);
+        let (marker, marker_style, name_style) = match row.kind {
+            crate::app::FileTreeKind::DirExpanded => (
+                glyphs::DISCLOSURE_EXPANDED,
+                Style::default().fg(theme.border),
+                Style::default().fg(theme.text),
+            ),
+            crate::app::FileTreeKind::DirCollapsed => (
+                glyphs::DISCLOSURE_COLLAPSED,
+                Style::default().fg(theme.border),
+                Style::default().fg(theme.text),
+            ),
+            crate::app::FileTreeKind::FileModified => (
+                glyphs::DOT_FILLED,
+                Style::default().fg(theme.secondary),
+                Style::default().fg(theme.text_bright),
+            ),
+            crate::app::FileTreeKind::File => (
+                " ",
+                Style::default(),
+                Style::default().fg(theme.text),
+            ),
+        };
+        // Fit `<indent><marker> <name>` in the content width without a premature `…`: only the
+        // name (never the indent/glyph) is clipped, and only when it genuinely overruns.
+        let prefix_cols = indent.chars().count() + 2;
+        let name = clip_plain(&row.name, cw.saturating_sub(prefix_cols).max(1));
+        let mut spans = vec![
+            Span::styled(indent, Style::default()),
+            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(name, name_style),
+        ];
+        if selected {
+            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            if used < cw {
+                spans.push(Span::styled(" ".repeat(cw - used), Style::default()));
+            }
+            for span in &mut spans {
+                span.style = span.style.bg(theme.surface[3]);
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+}
+
+/// Clip `s` to at most `max` columns WITHOUT appending an ellipsis when it fits (used where a
+/// premature `…` would be a defect); only overrunning text is hard-truncated.
+fn clip_plain(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    s.chars().take(max).collect()
 }
 
 /// Clip `s` to at most `max` columns, appending a `…` when it is cut, so a sidebar row never

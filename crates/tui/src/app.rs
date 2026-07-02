@@ -264,6 +264,52 @@ impl SidebarPanel {
     }
 }
 
+/// One file listed in the sidebar `context` panel: a display name plus its estimated token
+/// contribution to the conversation context (rendered as a right-aligned `k`/`M` figure).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextFileRow {
+    /// The file's display name (basename).
+    pub name: String,
+    /// The formatted per-file token size (e.g. `8.1k`), right-aligned in the panel.
+    pub tokens: String,
+}
+
+/// The visual state of a `files` tree row: an expanded/collapsed directory (with its heavy `▼`/`▶`
+/// disclosure glyph) or a leaf file that is modified (inline `●`) or unchanged (no marker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreeKind {
+    /// A directory the tree currently shows expanded (`▼`), its children listed below.
+    DirExpanded,
+    /// A directory the tree currently shows collapsed (`▶`), its children hidden.
+    DirCollapsed,
+    /// A leaf file with uncommitted modifications (inline `●` marker).
+    FileModified,
+    /// A leaf file with no uncommitted changes (no marker).
+    File,
+}
+
+/// One flattened row of the sidebar `files` collapsible tree: a depth (for `depth*2` indentation),
+/// a display name, its [`FileTreeKind`], and the absolute path used to toggle a directory node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileTreeRow {
+    /// Nesting depth from the workspace root (0 = top level); children indent by `depth*2`.
+    pub depth: usize,
+    /// The entry's display name (basename); directories carry a trailing `/`.
+    pub name: String,
+    /// Whether the row is an expanded/collapsed directory or a modified/unmodified file.
+    pub kind: FileTreeKind,
+    /// The absolute on-disk path, used to flip a directory's expand/collapse state on toggle.
+    path: PathBuf,
+}
+
+impl FileTreeRow {
+    /// Whether this row is a directory (expanded or collapsed), i.e. a togglable node.
+    #[must_use]
+    pub fn is_dir(&self) -> bool {
+        matches!(self.kind, FileTreeKind::DirExpanded | FileTreeKind::DirCollapsed)
+    }
+}
+
 /// A modal list dialog (a picker or status view) floating over the transcript.
 ///
 /// The dialog opening built-ins populate it with their respective items; navigation moves the
@@ -963,6 +1009,20 @@ pub struct App {
     sidebar_visible: bool,
     /// Active sidebar tab.
     sidebar_panel: SidebarPanel,
+    /// Cached flattened `files`-panel tree, rebuilt when the panel is (re)selected and on each
+    /// expand/collapse toggle so rendering never touches the filesystem/git on a bare redraw.
+    files_tree: Vec<FileTreeRow>,
+    /// The workspace root the files tree is built from (the cwd captured when the panel opened).
+    files_root: PathBuf,
+    /// Directories the user explicitly EXPANDED in the files tree (override the default state).
+    files_expanded: BTreeSet<PathBuf>,
+    /// Directories the user explicitly COLLAPSED in the files tree (override the default state).
+    files_collapsed: BTreeSet<PathBuf>,
+    /// The focused row index in the files tree (the toggle target); clamped to the visible rows.
+    files_cursor: usize,
+    /// Whether the user has begun navigating the files tree; until then no selection bar is drawn
+    /// so a freshly-opened panel design-matches the reference (no highlight).
+    files_nav_active: bool,
     /// The persisted-session metadata backing the open session picker, parallel to the dialog's
     /// item rows (index 0 is the synthetic "current session" row). Populated when the session
     /// picker opens; consulted by switch/rename/delete; cleared when the dialog closes.
@@ -1159,6 +1219,12 @@ impl App {
             leader_pending: false,
             sidebar_visible: false,
             sidebar_panel: SidebarPanel::Context,
+            files_tree: Vec::new(),
+            files_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            files_expanded: BTreeSet::new(),
+            files_collapsed: BTreeSet::new(),
+            files_cursor: 0,
+            files_nav_active: false,
             session_entries: Vec::new(),
             timeline_entries: Vec::new(),
             model_rows: Vec::new(),
@@ -1404,7 +1470,7 @@ impl App {
     #[must_use]
     pub fn sidebar_note(&self) -> String {
         match self.sidebar_panel {
-            SidebarPanel::Context => format_tokens(self.usage.total_tokens),
+            SidebarPanel::Context => format_tokens(self.context_total_tokens()),
             SidebarPanel::Files => match git_info() {
                 Some(git) => format!("git: {}", git.branch),
                 None => format!("git: {}", glyphs::EM_DASH),
@@ -1432,7 +1498,7 @@ impl App {
     pub fn sidebar_subtitle(&self) -> String {
         match self.sidebar_panel {
             SidebarPanel::Context => {
-                let files = self.sidebar_context_file_count();
+                let files = self.context_files().len();
                 let plural = if files == 1 { "file" } else { "files" };
                 format!("{files} {plural} in context")
             }
@@ -1487,18 +1553,70 @@ impl App {
             .map_or_else(|| configured_mcp_servers().len(), |m| m.statuses().len())
     }
 
-    /// The number of files currently attached to the conversation context.
-    fn sidebar_context_file_count(&self) -> usize {
+    /// The files currently in the conversation context: every file the session has attached or
+    /// changed (staged attachments + the transcript's tool diffs), de-duplicated in discovery
+    /// order. Each row carries the file's display name and its estimated token contribution
+    /// (byte length / 4). Real/dynamic — an offline session with no attachments/edits is empty.
+    #[must_use]
+    pub fn context_files(&self) -> Vec<ContextFileRow> {
         let mut seen = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut push = |path: &str, rows: &mut Vec<ContextFileRow>| {
+            if path.is_empty() || !seen.insert(path.to_owned()) {
+                return;
+            }
+            let name = Path::new(path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(path)
+                .to_owned();
+            rows.push(ContextFileRow {
+                name,
+                tokens: format_tokens(file_token_estimate(path)),
+            });
+        };
+        // Files the model has already seen this turn stack first (most-recent edits), then any
+        // staged composer attachments not already counted.
+        for entry in &self.transcript {
+            if let Entry::Diff(diff) = entry {
+                push(&diff.path, &mut rows);
+            }
+        }
         for attachment in self
             .composer_attachments
             .iter()
             .chain(self.pending_attachments.iter())
             .chain(self.turn_attachments.iter())
         {
-            seen.insert(attachment.path.clone());
+            push(&attachment.path, &mut rows);
         }
-        seen.len()
+        rows
+    }
+
+    /// The total estimated token size of every file in context (the sum of the per-file estimates),
+    /// shown as the context panel's right-aligned note.
+    #[must_use]
+    pub fn context_total_tokens(&self) -> u64 {
+        let mut seen = BTreeSet::new();
+        let mut total = 0;
+        for entry in &self.transcript {
+            if let Entry::Diff(diff) = entry
+                && seen.insert(diff.path.clone())
+            {
+                total += file_token_estimate(&diff.path);
+            }
+        }
+        for attachment in self
+            .composer_attachments
+            .iter()
+            .chain(self.pending_attachments.iter())
+            .chain(self.turn_attachments.iter())
+        {
+            if seen.insert(attachment.path.clone()) {
+                total += file_token_estimate(&attachment.path);
+            }
+        }
+        total
     }
 
     /// Completed/total todo counts for the active session's task list.
@@ -6137,12 +6255,27 @@ impl App {
     /// Show or hide the session sidebar panel (the sidebar-toggle keybind).
     fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+        if self.sidebar_visible && self.sidebar_panel == SidebarPanel::Files {
+            self.enter_files_panel();
+        }
     }
 
     fn set_sidebar_panel(&mut self, panel: SidebarPanel) {
         self.sidebar_visible = true;
         self.sidebar_panel = panel;
+        if panel == SidebarPanel::Files {
+            self.enter_files_panel();
+        }
         self.push_toast(ToastLevel::Info, format!("Sidebar: {}", panel.title()));
+    }
+
+    /// Refresh the files tree and reset navigation state when the Files panel is (re)opened so a
+    /// freshly-reached panel shows the current working tree with no selection bar (design-match).
+    fn enter_files_panel(&mut self) {
+        self.files_cursor = 0;
+        self.files_nav_active = false;
+        self.files_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.rebuild_file_tree();
     }
 
     fn cycle_sidebar_panel(&mut self, forward: bool) {
@@ -6159,65 +6292,194 @@ impl App {
         self.set_sidebar_panel(tabs[next]);
     }
 
+    /// A plain-text projection of the `context` panel body (the styled rendering lives in `ui`);
+    /// each file as `<name>  <tokens>`, followed by the add-files affordance.
     fn sidebar_context_rows(&self) -> Vec<String> {
-        let mut rows = vec![
-            format!("model: {}", self.status.model),
-            format!("agent: {}", self.status.agent),
-            format!("variant: {}", self.status.variant),
-            format!("mode: {}", self.status.mode),
-            format!("session: {}", self.status.session),
-            format!("messages: {}", self.transcript.len()),
-        ];
-        rows.push(if self.usage.reported {
-            format!(
-                "usage: ↑{} ↓{} total {}",
-                self.usage.input_tokens, self.usage.output_tokens, self.usage.total_tokens
-            )
-        } else {
-            "usage: —".to_owned()
-        });
-        if let Some(cost) = self.usage.cost {
-            rows.push(format!("cost: ${cost:.4}"));
-        }
-        rows.push(format!("queued prompts: {}", self.queued_prompts.len()));
-        let (total, running, done) = self.subagent_footer_summary();
-        rows.push(format!(
-            "subagents: {total} total · {running} running · {done} done"
-        ));
+        let mut rows: Vec<String> = self
+            .context_files()
+            .into_iter()
+            .map(|file| format!("{} {}  {}", glyphs::PROMPT, file.name, file.tokens))
+            .collect();
+        rows.push("@ add files to context".to_owned());
         rows
     }
 
+    /// A plain-text projection of the `files` tree body (the styled rendering lives in `ui`); each
+    /// row indented by `depth*2` with its disclosure/modified glyph, or an empty-state line.
     fn sidebar_files_rows(&self) -> Vec<String> {
-        let mut seen = BTreeSet::new();
+        let tree = self.file_tree_rows();
+        if tree.is_empty() {
+            return vec!["No files to show.".to_owned()];
+        }
+        tree.iter()
+            .map(|row| {
+                let indent = " ".repeat(row.depth * 2);
+                let marker = match row.kind {
+                    FileTreeKind::DirExpanded => glyphs::DISCLOSURE_EXPANDED,
+                    FileTreeKind::DirCollapsed => glyphs::DISCLOSURE_COLLAPSED,
+                    FileTreeKind::FileModified => glyphs::DOT_FILLED,
+                    FileTreeKind::File => " ",
+                };
+                format!("{indent}{marker} {}", row.name)
+            })
+            .collect()
+    }
+
+    /// The cached, flattened `files`-panel tree (built on panel select / toggle). Callers render or
+    /// navigate over this snapshot; it never touches the filesystem on a bare redraw.
+    #[must_use]
+    pub fn file_tree_rows(&self) -> &[FileTreeRow] {
+        &self.files_tree
+    }
+
+    /// The focused files-tree row index (the toggle target), clamped to the current rows.
+    #[must_use]
+    pub fn files_cursor(&self) -> usize {
+        self.files_cursor.min(self.files_tree.len().saturating_sub(1))
+    }
+
+    /// Whether a files-tree selection bar should be drawn (only after the user starts navigating,
+    /// so a freshly-opened panel design-matches the reference with no highlight).
+    #[must_use]
+    pub fn files_nav_active(&self) -> bool {
+        self.files_nav_active && !self.files_tree.is_empty()
+    }
+
+    /// Rebuild the cached files tree from the current working directory, honoring the user's
+    /// expand/collapse overrides (and auto-expanding the top level plus any directory on the path
+    /// to a git-modified file so the default view shows both disclosure states + `●` markers).
+    fn rebuild_file_tree(&mut self) {
+        let root = self.files_root.clone();
+        let modified = git_modified_paths(&root);
         let mut rows = Vec::new();
-        for entry in self.transcript.iter().rev() {
-            if let Entry::Diff(diff) = entry
-                && seen.insert(diff.path.clone())
-            {
-                rows.push(format!("changed: {}", diff.path));
+        self.walk_file_tree(&root, 0, &modified, &mut rows);
+        self.files_tree = rows;
+        let len = self.files_tree.len();
+        if len == 0 {
+            self.files_cursor = 0;
+        } else if self.files_cursor >= len {
+            self.files_cursor = len - 1;
+        }
+    }
+
+    /// Recursively append the sorted (directories first) children of `dir` to `rows`, descending
+    /// only into directories that are currently expanded.
+    fn walk_file_tree(
+        &self,
+        dir: &Path,
+        depth: usize,
+        modified: &BTreeSet<PathBuf>,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
+        // Bound the tree so a deep repo never floods the ~24-row panel with thousands of rows.
+        if depth > 12 || rows.len() > 400 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut dirs: Vec<(String, PathBuf)> = Vec::new();
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_tree_entry(&name) {
+                continue;
             }
-            if rows.len() >= 8 {
-                break;
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push((name, path));
+            } else {
+                files.push((name, path));
             }
         }
-        for attachment in self
-            .composer_attachments
-            .iter()
-            .chain(self.pending_attachments.iter())
-            .chain(self.turn_attachments.iter())
-        {
-            let label = format!("attachment: {}", attachment.path);
-            if seen.insert(label.clone()) {
-                rows.push(label);
-            }
-            if rows.len() >= 10 {
-                break;
+        dirs.sort_by_key(|entry| entry.0.to_ascii_lowercase());
+        files.sort_by_key(|entry| entry.0.to_ascii_lowercase());
+
+        for (name, path) in dirs {
+            let expanded = self.dir_is_expanded(&path, depth, modified);
+            rows.push(FileTreeRow {
+                depth,
+                name: format!("{name}/"),
+                kind: if expanded {
+                    FileTreeKind::DirExpanded
+                } else {
+                    FileTreeKind::DirCollapsed
+                },
+                path: path.clone(),
+            });
+            if expanded {
+                self.walk_file_tree(&path, depth + 1, modified, rows);
             }
         }
-        if rows.is_empty() {
-            rows.push("No changed or attached files yet.".to_owned());
+        for (name, path) in files {
+            let kind = if modified.contains(&path) {
+                FileTreeKind::FileModified
+            } else {
+                FileTreeKind::File
+            };
+            rows.push(FileTreeRow {
+                depth,
+                name,
+                kind,
+                path,
+            });
         }
-        rows
+    }
+
+    /// Whether directory `path` should render expanded: an explicit user override wins, else the
+    /// default (top-level directories, and any directory on the path to a modified file).
+    fn dir_is_expanded(&self, path: &Path, depth: usize, modified: &BTreeSet<PathBuf>) -> bool {
+        if self.files_expanded.contains(path) {
+            return true;
+        }
+        if self.files_collapsed.contains(path) {
+            return false;
+        }
+        depth == 0 || modified.iter().any(|m| m.starts_with(path))
+    }
+
+    /// Move the files-tree cursor down (next visible row), activating the selection bar.
+    fn files_tree_select_next(&mut self) {
+        if self.files_tree.is_empty() {
+            return;
+        }
+        self.files_nav_active = true;
+        let last = self.files_tree.len() - 1;
+        self.files_cursor = (self.files_cursor.min(last) + 1).min(last);
+    }
+
+    /// Move the files-tree cursor up (previous visible row), activating the selection bar.
+    fn files_tree_select_prev(&mut self) {
+        if self.files_tree.is_empty() {
+            return;
+        }
+        self.files_nav_active = true;
+        self.files_cursor = self.files_cursor.min(self.files_tree.len() - 1).saturating_sub(1);
+    }
+
+    /// Toggle the focused directory node between expanded and collapsed, then rebuild the tree.
+    /// Returns whether a directory was toggled (a leaf file is a no-op).
+    fn files_tree_toggle_selected(&mut self) -> bool {
+        let Some(row) = self.files_tree.get(self.files_cursor()).cloned() else {
+            return false;
+        };
+        if !row.is_dir() {
+            return false;
+        }
+        self.files_nav_active = true;
+        match row.kind {
+            FileTreeKind::DirExpanded => {
+                self.files_expanded.remove(&row.path);
+                self.files_collapsed.insert(row.path.clone());
+            }
+            FileTreeKind::DirCollapsed => {
+                self.files_collapsed.remove(&row.path);
+                self.files_expanded.insert(row.path.clone());
+            }
+            _ => return false,
+        }
+        self.rebuild_file_tree();
+        true
     }
 
     fn sidebar_lsp_rows(&self) -> Vec<String> {
@@ -7681,6 +7943,35 @@ impl App {
             }
         }
 
+        // Files-tree navigation: while the Files sidebar panel is open and the composer is empty,
+        // the arrows move a cursor through the tree and Enter/Space/Right/Left expand or collapse
+        // the focused directory. Gating on an empty composer keeps ordinary text entry intact (all
+        // these keys are no-ops on an empty single-line input), and works over any terminal.
+        if self.sidebar_visible
+            && self.sidebar_panel == SidebarPanel::Files
+            && self.input.value().is_empty()
+            && !ctrl
+            && !alt
+            && !self.slash_menu_open()
+            && !self.mention_open()
+        {
+            match key.code {
+                KeyCode::Up => {
+                    self.files_tree_select_prev();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.files_tree_select_next();
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right | KeyCode::Left => {
+                    self.files_tree_toggle_selected();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             // Quit keybind.
             KeyCode::Char('c') if ctrl => self.should_quit = true,
@@ -8599,6 +8890,37 @@ fn format_tokens(n: u64) -> String {
     } else {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     }
+}
+
+/// A best-effort per-file token estimate for the sidebar `context` panel: the file's on-disk byte
+/// length divided by four (a common chars-per-token heuristic). Zero when the path cannot be
+/// stat-ed. Cheap — only reads the directory entry's metadata, never the file contents.
+fn file_token_estimate(path: &str) -> u64 {
+    std::fs::metadata(path).map_or(0, |meta| meta.len() / 4)
+}
+
+/// The set of absolute paths with uncommitted changes under `root` (`git status --porcelain`),
+/// used to mark modified files in the `files` tree and to auto-expand their ancestor directories.
+/// Empty when git is unavailable or the tree is clean.
+fn git_modified_paths(root: &Path) -> BTreeSet<PathBuf> {
+    let mut set = BTreeSet::new();
+    let out = run_git(&["status", "--porcelain"]).unwrap_or_default();
+    for line in out.lines() {
+        // Porcelain v1: two status columns, a space, then the path (a rename is `old -> new`).
+        let path = line.get(3..).unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+        let rel = path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"');
+        set.insert(root.join(rel));
+    }
+    set
+}
+
+/// Whether a directory entry name should be omitted from the `files` tree: hidden dotfiles and the
+/// heavy build/VCS directories that would flood the panel and are never useful context.
+fn is_ignored_tree_entry(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "target" | "node_modules" | "dist" | "build")
 }
 
 /// The workspace git state for the `/status` view, read once when the view opens: the current branch
@@ -14997,6 +15319,313 @@ mod tests {
                 .any(|row| row.contains("queued prompt row")),
             "queue panel shows queued prompts"
         );
+    }
+
+    // --- Wave 3: context + files panels ------------------------------------------------------
+
+    /// A unique scratch directory for a files-tree test, populated with `spec` relative paths
+    /// (a trailing `/` marks a directory to create; otherwise a file with placeholder content).
+    fn files_tree_fixture(tag: &str, spec: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-tui-files-{tag}-{}-{}",
+            std::process::id(),
+            DIFF_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture root");
+        for entry in spec {
+            let path = root.join(entry);
+            if entry.ends_with('/') {
+                std::fs::create_dir_all(&path).expect("create fixture dir");
+            } else {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).expect("create fixture parent");
+                }
+                std::fs::write(&path, b"placeholder\n").expect("write fixture file");
+            }
+        }
+        root
+    }
+
+    fn render_buffer(a: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| crate::ui::draw(frame, a)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        buf.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn context_panel_lists_context_files_with_token_totals() {
+        // VAL-SIDE-011/012: the context panel derives its file list + per-file token sizes + the
+        // total-size note from real session state (a changed file becomes a context file).
+        let cwd = std::env::current_dir().expect("cwd");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            DIFF_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let rel = format!("target/cortex-ctx-{unique}.rs");
+        let absolute = cwd.join(&rel);
+        std::fs::create_dir_all(absolute.parent().expect("parent")).expect("target dir");
+        let content = "a".repeat(8_000);
+        std::fs::write(&absolute, &content).expect("seed context file");
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(""), Some(&content)).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+
+        let files = a.context_files();
+        assert_eq!(files.len(), 1, "the changed file is the single context file");
+        assert!(
+            files[0].name.ends_with(".rs") && !files[0].name.contains('/'),
+            "row shows the basename: {}",
+            files[0].name
+        );
+        assert_ne!(files[0].tokens, "0", "per-file token size is a real estimate");
+        assert!(a.context_total_tokens() >= 1_000, "total ~ 8000 bytes / 4");
+        a.sidebar_visible = true;
+        a.sidebar_panel = SidebarPanel::Context;
+        assert!(
+            a.sidebar_subtitle().contains("1 file in context"),
+            "subtitle counts the context file: {}",
+            a.sidebar_subtitle()
+        );
+        std::fs::remove_file(&absolute).ok();
+    }
+
+    #[test]
+    fn context_panel_renders_marker_counts_and_add_affordance() {
+        // VAL-SIDE-011/012/013: `›` ORANGE_D marker + name + DIM token count per file, and a
+        // `@ add files to context` affordance with the `@` in ORANGE.
+        let cwd = std::env::current_dir().expect("cwd");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            DIFF_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let rel = format!("target/cortex-ctx-render-{unique}.rs");
+        let absolute = cwd.join(&rel);
+        std::fs::create_dir_all(absolute.parent().expect("parent")).expect("target dir");
+        let content = "x".repeat(4_000);
+        std::fs::write(&absolute, &content).expect("seed context file");
+
+        let mut a = app();
+        let diff = crate::diff::compute_file_diff(&rel, Some(""), Some(&content)).expect("a diff");
+        a.transcript.push(Entry::Diff(diff));
+        a.sidebar_visible = true;
+        a.sidebar_panel = SidebarPanel::Context;
+
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        let buf = render_buffer(&a, 92, 30);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Context"), "sidebar titled Context");
+        assert!(text.contains("1 file in context"), "faint files header");
+        assert!(text.contains("add files to context"), "add-files affordance present");
+
+        // The `›` marker on a file row is the dim-orange (ORANGE_D / border) token.
+        let mut prompt_border = false;
+        let mut at_orange = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == glyphs::PROMPT && cell.fg == theme.border {
+                    prompt_border = true;
+                }
+                if cell.symbol() == "@" && cell.fg == theme.primary {
+                    at_orange = true;
+                }
+            }
+        }
+        assert!(prompt_border, "context `›` marker is ORANGE_D");
+        assert!(at_orange, "`@` add-files glyph is ORANGE");
+        std::fs::remove_file(&absolute).ok();
+    }
+
+    #[test]
+    fn files_tree_builds_disclosure_and_modified_markers() {
+        // VAL-SIDE-015/016/018: directories carry `▼`/`▶`, a git-modified file carries `●`, leaves
+        // carry no glyph, collapsed dirs hide their children, and names are not prematurely cut.
+        let root = files_tree_fixture(
+            "build",
+            &["crates/", "crates/inner.rs", "crates/sub/", "crates/sub/deep.rs", "README.md"],
+        );
+        let a = app();
+        let mut modified = BTreeSet::new();
+        modified.insert(root.join("crates/inner.rs"));
+        let mut rows = Vec::new();
+        a.walk_file_tree(&root, 0, &modified, &mut rows);
+
+        let find = |name: &str| rows.iter().find(|r| r.name == name);
+        assert_eq!(
+            find("crates/").map(|r| r.kind),
+            Some(FileTreeKind::DirExpanded),
+            "top-level dir defaults to expanded (▼)"
+        );
+        assert_eq!(
+            find("inner.rs").map(|r| r.kind),
+            Some(FileTreeKind::FileModified),
+            "the git-modified file carries a ● marker"
+        );
+        assert_eq!(
+            find("README.md").map(|r| r.kind),
+            Some(FileTreeKind::File),
+            "an unmodified leaf carries no marker"
+        );
+        assert_eq!(
+            find("sub/").map(|r| r.kind),
+            Some(FileTreeKind::DirCollapsed),
+            "a nested unmodified dir defaults to collapsed (▶)"
+        );
+        assert!(
+            find("deep.rs").is_none(),
+            "a collapsed directory hides its children"
+        );
+        // inner.rs sits one level under crates/ (depth 1), README.md at the root (depth 0).
+        assert_eq!(find("inner.rs").map(|r| r.depth), Some(1));
+        assert_eq!(find("README.md").map(|r| r.depth), Some(0));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn files_panel_renders_safe_glyphs_and_amber_modified_dot() {
+        // VAL-SIDE-014/015/016/018: the files tree renders heavy `▼`/`▶` disclosure (ORANGE_D),
+        // an AMBER `●` on modified files, a full long filename (no premature `…`), and never the
+        // thin `▾`/`▸` triangles.
+        let mut a = app();
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        a.sidebar_visible = true;
+        a.sidebar_panel = SidebarPanel::Files;
+        // Inject a known tree so the rendering is deterministic (independent of the test cwd/git).
+        a.files_tree = vec![
+            FileTreeRow {
+                depth: 0,
+                name: "crates/".to_owned(),
+                kind: FileTreeKind::DirExpanded,
+                path: PathBuf::from("/tmp/crates"),
+            },
+            FileTreeRow {
+                depth: 1,
+                name: "engine/".to_owned(),
+                kind: FileTreeKind::DirCollapsed,
+                path: PathBuf::from("/tmp/crates/engine"),
+            },
+            FileTreeRow {
+                depth: 2,
+                name: "stream_processor.rs".to_owned(),
+                kind: FileTreeKind::FileModified,
+                path: PathBuf::from("/tmp/crates/tui/stream_processor.rs"),
+            },
+            FileTreeRow {
+                depth: 2,
+                name: "mod.rs".to_owned(),
+                kind: FileTreeKind::File,
+                path: PathBuf::from("/tmp/crates/tui/mod.rs"),
+            },
+        ];
+
+        let buf = render_buffer(&a, 92, 30);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Files"), "sidebar titled Files");
+        assert!(
+            text.contains("stream_processor.rs"),
+            "a long filename renders in full (no premature truncation)"
+        );
+        assert!(!text.contains('▾') && !text.contains('▸'), "no thin disclosure triangles");
+
+        let mut expanded_border = false;
+        let mut collapsed_border = false;
+        let mut modified_amber = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                match cell.symbol() {
+                    "▼" if cell.fg == theme.border => expanded_border = true,
+                    "▶" if cell.fg == theme.border => collapsed_border = true,
+                    "●" if cell.fg == theme.secondary => modified_amber = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(expanded_border, "expanded dir uses ▼ in ORANGE_D");
+        assert!(collapsed_border, "collapsed dir uses ▶ in ORANGE_D");
+        assert!(modified_amber, "modified file uses ● in AMBER");
+    }
+
+    #[test]
+    fn files_panel_enter_toggles_directory_and_hides_children() {
+        // VAL-SIDE-017: with the Files panel open and an empty composer, Enter flips the focused
+        // directory's disclosure glyph (▼→▶) and hides/shows its indented children.
+        let root = files_tree_fixture("toggle", &["pkg/", "pkg/child.rs", "top.rs"]);
+        let mut a = app();
+        a.sidebar_visible = true;
+        a.sidebar_panel = SidebarPanel::Files;
+        a.files_root = root.clone();
+        a.rebuild_file_tree();
+
+        let kind_of = |a: &App, name: &str| {
+            a.file_tree_rows()
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.kind)
+        };
+        assert_eq!(
+            kind_of(&a, "pkg/"),
+            Some(FileTreeKind::DirExpanded),
+            "top-level dir starts expanded"
+        );
+        assert_eq!(kind_of(&a, "child.rs"), Some(FileTreeKind::File), "child visible");
+
+        // Enter toggles the focused directory (cursor at row 0 = pkg/) closed.
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            kind_of(&a, "pkg/"),
+            Some(FileTreeKind::DirCollapsed),
+            "Enter collapses the directory (▼→▶)"
+        );
+        assert!(kind_of(&a, "child.rs").is_none(), "collapsed dir hides its child");
+
+        // Enter again re-expands and reveals the child.
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            kind_of(&a, "pkg/"),
+            Some(FileTreeKind::DirExpanded),
+            "Enter re-expands the directory (▶→▼)"
+        );
+        assert_eq!(kind_of(&a, "child.rs"), Some(FileTreeKind::File), "child visible again");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn files_panel_arrows_move_cursor_and_show_selection_bar() {
+        // VAL-SIDE-017 (nav): arrows activate a cursor and draw an inverse selection bar; a fresh
+        // panel shows no bar (design-match), matching the reference default.
+        let root = files_tree_fixture("nav", &["pkg/", "pkg/child.rs", "top.rs"]);
+        let mut a = app();
+        a.sidebar_visible = true;
+        a.sidebar_panel = SidebarPanel::Files;
+        a.files_root = root.clone();
+        a.rebuild_file_tree();
+
+        assert!(!a.files_nav_active(), "no selection bar before navigation");
+        a.on_key(key(KeyCode::Down));
+        assert!(a.files_nav_active(), "Down activates the cursor");
+        assert_eq!(a.files_cursor(), 1, "cursor moved to the second row");
+
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        let buf = render_buffer(&a, 92, 30);
+        let selected_bar = (0..buf.area.height).any(|y| {
+            (0..buf.area.width).any(|x| buf[(x, y)].bg == theme.surface[3])
+        });
+        assert!(selected_bar, "the focused row paints an inverse SELBG bar");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
