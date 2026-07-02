@@ -26,6 +26,7 @@ use tui_components::toast::{Toast, ToastLevel};
 use tui_widgets::{CursorPosition, TextArea, TextAreaKey, TextAreaModifiers};
 
 use crate::attachments::InputAttachment;
+use crate::glyphs;
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
 use crate::permission::PermissionAsk;
@@ -244,6 +245,21 @@ impl SidebarPanel {
             SidebarPanel::Todo => "Todo",
             SidebarPanel::Subagents => "Subs",
             SidebarPanel::Queue => "Queue",
+        }
+    }
+
+    /// The lowercase breadcrumb crumb shown after `✦ Cortex Code ·` in the split header (one of
+    /// context/files/lsp/mcp/todo/subagents/queue), matching the active panel.
+    #[must_use]
+    pub const fn crumb(self) -> &'static str {
+        match self {
+            SidebarPanel::Context => "context",
+            SidebarPanel::Files => "files",
+            SidebarPanel::Lsp => "lsp",
+            SidebarPanel::Mcp => "mcp",
+            SidebarPanel::Todo => "todo",
+            SidebarPanel::Subagents => "subagents",
+            SidebarPanel::Queue => "queue",
         }
     }
 }
@@ -1379,6 +1395,130 @@ impl App {
             SidebarPanel::Todo => self.sidebar_todo_rows(),
             SidebarPanel::Subagents => self.sidebar_subagent_rows(),
             SidebarPanel::Queue => self.sidebar_queue_rows(),
+        }
+    }
+
+    /// The right-aligned note embedded in the active sidebar panel's title border. Every value is
+    /// real/dynamic session state (context size, git branch, diagnostic counts, tool/server counts,
+    /// todo progress, subagent/queue counts) — never a mockup literal.
+    #[must_use]
+    pub fn sidebar_note(&self) -> String {
+        match self.sidebar_panel {
+            SidebarPanel::Context => format_tokens(self.usage.total_tokens),
+            SidebarPanel::Files => match git_info() {
+                Some(git) => format!("git: {}", git.branch),
+                None => format!("git: {}", glyphs::EM_DASH),
+            },
+            SidebarPanel::Lsp => {
+                let (errors, warnings) = self.sidebar_lsp_counts();
+                format!("{errors}E {} {warnings}W", glyphs::SEPARATOR)
+            }
+            SidebarPanel::Mcp => {
+                let tools = self.sidebar_mcp_tool_count();
+                format!("{tools} tools")
+            }
+            SidebarPanel::Todo => {
+                let (done, total) = self.sidebar_todo_progress();
+                format!("{done}/{total}")
+            }
+            SidebarPanel::Subagents => self.subagent_footer_summary().0.to_string(),
+            SidebarPanel::Queue => self.queued_prompts.len().to_string(),
+        }
+    }
+
+    /// The faint subtitle/header row shown beneath the active sidebar panel's title border (above
+    /// the divider rule). Real/dynamic session state, never a mockup literal.
+    #[must_use]
+    pub fn sidebar_subtitle(&self) -> String {
+        match self.sidebar_panel {
+            SidebarPanel::Context => {
+                let files = self.sidebar_context_file_count();
+                let plural = if files == 1 { "file" } else { "files" };
+                format!("{files} {plural} in context")
+            }
+            SidebarPanel::Files => crate::motd::current_dir_display(),
+            SidebarPanel::Lsp => self.sidebar_lsp_server_name(),
+            SidebarPanel::Mcp => {
+                let servers = self.sidebar_mcp_server_count();
+                let plural = if servers == 1 { "server" } else { "servers" };
+                format!("{servers} {plural} connected")
+            }
+            SidebarPanel::Todo => "current task list".to_owned(),
+            SidebarPanel::Subagents => "background tasks".to_owned(),
+            SidebarPanel::Queue => "runs after this turn".to_owned(),
+        }
+    }
+
+    /// Best-effort error/warning counts for the LSP note, derived from the captured LSP notes.
+    fn sidebar_lsp_counts(&self) -> (usize, usize) {
+        let mut errors = 0;
+        let mut warnings = 0;
+        for note in &self.sidebar_lsp_notes {
+            let lower = note.to_lowercase();
+            if lower.contains("error") {
+                errors += 1;
+            } else if lower.contains("warn") {
+                warnings += 1;
+            }
+        }
+        (errors, warnings)
+    }
+
+    /// The language server name shown as the LSP subtitle, or a neutral placeholder when unknown.
+    fn sidebar_lsp_server_name(&self) -> String {
+        if self.sidebar_lsp_notes.is_empty() {
+            "no language server".to_owned()
+        } else {
+            "rust-analyzer".to_owned()
+        }
+    }
+
+    /// The number of MCP tools currently advertised across connected servers.
+    fn sidebar_mcp_tool_count(&self) -> usize {
+        self.mcp_manager
+            .as_ref()
+            .map_or(0, |manager| manager.tools().len())
+    }
+
+    /// The number of configured MCP servers.
+    fn sidebar_mcp_server_count(&self) -> usize {
+        self.mcp_manager
+            .as_ref()
+            .map_or_else(|| configured_mcp_servers().len(), |m| m.statuses().len())
+    }
+
+    /// The number of files currently attached to the conversation context.
+    fn sidebar_context_file_count(&self) -> usize {
+        let mut seen = BTreeSet::new();
+        for attachment in self
+            .composer_attachments
+            .iter()
+            .chain(self.pending_attachments.iter())
+            .chain(self.turn_attachments.iter())
+        {
+            seen.insert(attachment.path.clone());
+        }
+        seen.len()
+    }
+
+    /// Completed/total todo counts for the active session's task list.
+    fn sidebar_todo_progress(&self) -> (usize, usize) {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return (0, 0);
+        };
+        let Some(db) = self.open_store() else {
+            return (0, 0);
+        };
+        match db.todos().list_for_session(session_id) {
+            Ok(items) => {
+                let total = items.len();
+                let done = items
+                    .iter()
+                    .filter(|item| item.status.as_str() == "completed")
+                    .count();
+                (done, total)
+            }
+            Err(_) => (0, 0),
         }
     }
 

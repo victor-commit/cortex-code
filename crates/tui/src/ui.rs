@@ -7,13 +7,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use tui_components::style;
 use tui_components::toast::ToastLevel;
 
 use crate::app::{App, AssistantTurn, DialogKind, DiffViewMode, Entry};
 use crate::diff::FileDiff;
+use crate::glyphs;
 use crate::tool_card::{ToolCard, ToolStatus};
 
 /// Maximum number of slash-command rows shown before the menu scrolls.
@@ -31,8 +32,18 @@ const MAX_TOOL_DETAIL_LINES: usize = 40;
 /// Maximum number of diff rows shown inside an expanded diff card before truncation.
 const MAX_DIFF_BODY_ROWS: usize = 40;
 
-/// Width (in columns) of the session sidebar panel when shown.
-const SIDEBAR_WIDTH: u16 = 30;
+/// Width (in columns) of the right-hand sidebar panel box when the split is shown (`SBW`).
+const SIDEBAR_PANEL_WIDTH: u16 = 32;
+
+/// Left content margin (`MAINX`) of the conversation pane, and the right margin reserved past the
+/// sidebar box, when the split is shown. The sidebar's left edge is `SBX = W - RIGHT_MARGIN - SBW`
+/// and the conversation width is `MAINW = SBX - MAINX - 1` (one clean gap column between the panes).
+const SPLIT_LEFT_MARGIN: u16 = 2;
+const SPLIT_RIGHT_MARGIN: u16 = 2;
+
+/// Minimum terminal width required to open the split; below this the conversation stays full-width
+/// (so the left pane keeps a usable width). At 92 cols this yields the reference `MAINW = 55`.
+const MIN_SPLIT_WIDTH: u16 = 56;
 
 /// Left margin (columns) that transcript content (the `›`/`✦` author marks and the scrollback
 /// `▲ N lines above` marker) is inset from the viewport edge, aligning with the MOTD card frame and
@@ -62,14 +73,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     }
 
-    // Reserve a left column for the sidebar when it is shown, so the transcript/prompt reflow
-    // beside it; otherwise the main column spans the full width.
-    let (sidebar_area, main_area) = if app.sidebar_visible() && area.width > SIDEBAR_WIDTH + 8 {
-        let cols =
-            Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)]).split(area);
-        (Some(cols[0]), cols[1])
+    // When the sidebar is open the screen splits into a live conversation on the LEFT and the
+    // sidebar column on the RIGHT, wrapped in the shared `✦ Cortex Code · <panel>` chrome (header +
+    // rule + a full-width status bar). Otherwise the conversation spans the full width and draws its
+    // own one-line status bar.
+    let split = sidebar_split(app, area);
+    let (main_area, own_footer) = if let Some(split) = split {
+        // Draw the breadcrumb header + rule + full-width status bar; the conversation only uses the
+        // returned left region (the sidebar box occupies the right region).
+        crate::view::render_chrome(frame, area, app, app.sidebar_panel().crumb(), &theme);
+        (split.conversation, false)
     } else {
-        (None, area)
+        (area, true)
     };
 
     let prompt_rows = prompt_rows(app, main_area.height);
@@ -81,11 +96,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     } else {
         0
     };
+    // In the split the status bar is the full-width bar drawn by the shared chrome, so the
+    // conversation column does not reserve a footer row of its own.
+    let footer_rows: u16 = if own_footer { 1 } else { 0 };
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(band_rows),
         Constraint::Length(prompt_rows + 2),
-        Constraint::Length(1),
+        Constraint::Length(footer_rows),
     ])
     .split(main_area);
     let transcript_area = chunks[0];
@@ -98,7 +116,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_working_band(frame, app, band_area, &theme);
     }
     draw_prompt(frame, app, prompt_area, &theme);
-    draw_footer(frame, app, footer_area, &theme);
+    if own_footer {
+        draw_footer(frame, app, footer_area, &theme);
+    }
     // The slash menu floats above the prompt, so it is drawn last to overlay the transcript.
     draw_slash_menu(frame, app, prompt_area, &theme);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
@@ -107,9 +127,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_find_bar(frame, app, prompt_area, &theme);
     // A transient acknowledgement (e.g. a copy confirmation) shows just above the prompt.
     draw_ack(frame, app, prompt_area, &theme);
-    // The sidebar occupies its reserved column beside the main content.
-    if let Some(sidebar) = sidebar_area {
-        draw_sidebar(frame, app, sidebar, &theme);
+    // The sidebar box occupies the reserved right-hand column beside the conversation.
+    if let Some(split) = split {
+        draw_sidebar(frame, app, split.sidebar, &theme);
     }
     // The dedicated `/diff` viewer is a full-screen Wave-2 view (shared chrome + `Changes`
     // accordion) that fully repaints the frame, so it overlays the conversation beneath it.
@@ -3321,65 +3341,117 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
     crate::modal::render_modal(frame, area, &spec, theme, app.selection_anim_state());
 }
 
-/// Render the session sidebar: a bordered panel beside the main content listing the active session
-/// context (model / agent / mode / session) and live counters (transcript messages, token usage),
-/// so its presence is unambiguous in a snapshot.
+/// The geometry of an open sidebar split: the live conversation on the left and the sidebar box on
+/// the right, wrapped in the shared `✦ Cortex Code · <panel>` chrome (header + rule + status bar).
+#[derive(Debug, Clone, Copy)]
+struct SidebarSplit {
+    /// The left conversation region (`MAINX`/`MAINW`), below the chrome header + rule.
+    conversation: Rect,
+    /// The right sidebar box region (`SBX`/`SBW`), aligned with the conversation top.
+    sidebar: Rect,
+}
+
+/// Compute the sidebar split geometry for `area` when the sidebar is open, or `None` when it is
+/// closed or the terminal is too small to keep a usable conversation width.
+///
+/// At the reference 92×30 this yields `MAINX=2, MAINW=55` (the conversation), a single clean gap
+/// column, then `SBX=58, SBW=32` (the sidebar) — with the header (row 0), rule (row 1), a bottom
+/// gap row, and the full-width status bar (last row) reserved by the shared chrome.
+fn sidebar_split(app: &App, area: Rect) -> Option<SidebarSplit> {
+    if !app.sidebar_visible() || area.width < MIN_SPLIT_WIDTH || area.height < 10 {
+        return None;
+    }
+    let sbx = area.x + area.width - SPLIT_RIGHT_MARGIN - SIDEBAR_PANEL_WIDTH;
+    let mainx = area.x + SPLIT_LEFT_MARGIN;
+    let mainw = sbx.saturating_sub(mainx + 1);
+    // Body rows sit below the header (row 0) + rule (row 1); the sidebar box is `H-4` tall so a gap
+    // row separates it from the full-width status bar the chrome paints on the last row.
+    let body_y = area.y + 2;
+    let body_height = area.height.saturating_sub(4);
+    Some(SidebarSplit {
+        conversation: Rect {
+            x: mainx,
+            y: body_y,
+            width: mainw,
+            height: body_height,
+        },
+        sidebar: Rect {
+            x: sbx,
+            y: body_y,
+            width: SIDEBAR_PANEL_WIDTH,
+            height: body_height,
+        },
+    })
+}
+
+/// Render the right-hand sidebar box for the active panel: a rounded `ORANGE_D` frame with an AMBER
+/// title-in-border and a right-aligned FAINT note, a faint subtitle row, a ghost-grey divider rule,
+/// and the panel body rows. The chrome (title/note/subtitle/rule) is this feature's responsibility;
+/// the per-panel body content is real/dynamic session state. Colors come only from theme tokens and
+/// glyphs only from the safe module, so the box stays brand-pure and tofu-free.
 fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    if area.width < 4 || area.height < 3 {
+    if area.width < 8 || area.height < 4 {
         return;
     }
-    let dim = Style::default().fg(theme.text_dim);
-    let selected = app.sidebar_panel();
-    let mut tab_spans = Vec::new();
-    for (index, panel) in app.sidebar_panels().iter().enumerate() {
-        if index > 0 {
-            tab_spans.push(Span::styled(" ", Style::default().fg(theme.text_muted)));
-        }
-        let style = if *panel == selected {
-            // An explicit solid inverse pair (near-black text on the brand accent), not a terminal
-            // `REVERSED` swap, so the active tab reads as a solid fill in a snapshot.
-            Style::default()
-                .fg(theme.selection_fg)
-                .bg(theme.selection_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text_muted)
-        };
-        tab_spans.push(Span::styled(panel.short().to_owned(), style));
+    let panel = app.sidebar_panel();
+
+    // The rounded box + AMBER title-in-border + right-aligned FAINT note (reusing the shared view
+    // panel chrome so the sidebar and full-screen views frame consistently).
+    let note = app.sidebar_note();
+    let inner = crate::view::render_panel(frame, area, panel.title(), Some(&note), theme);
+    if inner.width < 3 || inner.height < 2 {
+        return;
     }
 
-    let mut lines: Vec<Line<'static>> = vec![Line::from(tab_spans), Line::from("")];
-    lines.extend(app.sidebar_rows().into_iter().map(Line::from));
-    lines.push(Line::from(""));
+    // Content is inset one column inside the box (the `SBX+2` content origin) and starts one row
+    // below the top border, leaving a blank padding row under the title.
+    let content = Rect {
+        x: inner.x + 1,
+        y: inner.y + 1,
+        width: inner.width.saturating_sub(2),
+        height: inner.height.saturating_sub(1),
+    };
+    if content.width == 0 || content.height == 0 {
+        return;
+    }
+    let cw = content.width as usize;
+
+    // Row 0: the faint subtitle/header. Row 1: the ghost divider rule. Rows 2+: the panel body.
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(content.height as usize);
     lines.push(Line::from(Span::styled(
-        format!(
-            "{} B toggle · Ctrl+[ / Ctrl+] cycle · Ctrl+1..7 tabs",
-            app.keybinds().leader.display()
-        ),
-        dim,
+        clip_columns(&app.sidebar_subtitle(), cw),
+        Style::default().fg(theme.text_muted),
     )));
+    lines.push(Line::from(Span::styled(
+        glyphs::BOX_HORIZONTAL.repeat(cw),
+        Style::default().fg(theme.ghost),
+    )));
+    for row in app.sidebar_rows() {
+        lines.push(Line::from(Span::styled(
+            clip_columns(&row, cw),
+            Style::default().fg(theme.text),
+        )));
+    }
 
-    let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focus))
-        .title(format!(" Sidebar · {} ", selected.title()))
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        );
-    let inner = block.inner(area);
-
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::default().fg(theme.text).bg(theme.surface[1]))
-            .wrap(Wrap { trim: false }),
-        inner,
+        Paragraph::new(lines).style(Style::default().bg(theme.background)),
+        content,
     );
+}
+
+/// Clip `s` to at most `max` columns, appending a `…` when it is cut, so a sidebar row never
+/// overruns the box interior.
+fn clip_columns(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str(glyphs::ELLIPSIS);
+    out
 }
 
 /// Render the which-key overlay while the leader chord is armed: a centered popup listing each
@@ -4175,9 +4247,10 @@ mod tests {
         let mut a = app();
         a.set_theme("light".to_owned());
         a.transcript.push(Entry::User("hello".to_owned()));
-        // Open the sidebar so the elevated overlay surface (PANEL) is exercised: the composer and
-        // the centered modals are flat on the CANVAS/background in the brand design, so the PANEL
-        // layer comes from the sidebar panel (Ctrl+1 shows the context panel).
+        // Open the sidebar so the split chrome (breadcrumb header + rule + full-width status bar)
+        // and the flat-on-canvas sidebar box are drawn. In the brand design the sidebar box sits on
+        // the near-black canvas (theme.background), not an elevated PANEL surface; the themed BAR
+        // surface comes from the status bar the shared chrome paints (Ctrl+1 shows the context panel).
         a.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('1'),
             crossterm::event::KeyModifiers::CONTROL,
@@ -4191,15 +4264,326 @@ mod tests {
 
         assert!(
             cells.iter().any(|c| c.bg == theme.background),
-            "transcript background uses the theme background"
-        );
-        assert!(
-            cells.iter().any(|c| c.bg == theme.surface[1]),
-            "overlay surfaces use themed surface background"
+            "canvas/sidebar background uses the theme background"
         );
         assert!(
             cells.iter().any(|c| c.bg == theme.surface[0]),
-            "footer uses themed footer background"
+            "the status bar uses the themed BAR surface"
+        );
+        // On the light theme every cell must carry an explicit themed background — no band falls
+        // through to terminal-default black (no black bars under the split).
+        assert!(
+            cells.iter().all(|c| c.bg != ratatui::style::Color::Reset),
+            "every cell carries an explicit themed background (no default-black fallthrough)"
+        );
+    }
+
+    // --- Wave 3: sidebar split layout ---------------------------------------------------------
+
+    /// Open the sidebar on the default context panel via the leader toggle (`Ctrl+G` then `b`). This
+    /// avoids the info toast that the `Ctrl+1..7` panel shortcuts pop, keeping the snapshot clean for
+    /// per-cell color assertions.
+    fn open_context_sidebar(a: &mut App) {
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    /// Render `a` into a 92×30 truecolor `TestBackend` and return the buffer.
+    fn draw_92x30(a: &App) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, a)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The full text of buffer row `y`.
+    fn buf_row(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    /// The whole buffer flattened to text.
+    fn buf_text(buf: &ratatui::buffer::Buffer) -> String {
+        buf.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    /// The fg color of the first cell of the first row whose text run contains `needle`.
+    fn first_fg(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<Color> {
+        for y in 0..buf.area.height {
+            let row = buf_row(buf, y);
+            if let Some(byte_idx) = row.find(needle) {
+                let col = row[..byte_idx].chars().count() as u16;
+                return Some(buf[(col, y)].fg);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn sidebar_split_geometry_is_mainw_55_and_sbw_32_at_sbx_58() {
+        // VAL-SIDE-001/003: at 92×30 the split puts the live conversation at MAINX=2 / MAINW=55 and
+        // the sidebar box at SBX=58 / SBW=32, with a single clean gap column between the panes;
+        // closing the sidebar removes the split entirely.
+        let mut a = app();
+        open_context_sidebar(&mut a);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 92,
+            height: 30,
+        };
+        let split = sidebar_split(&a, area).expect("an open sidebar yields a split");
+        assert_eq!(split.conversation.x, 2, "MAINX = 2");
+        assert_eq!(split.conversation.width, 55, "MAINW = 55");
+        assert_eq!(split.sidebar.x, 58, "SBX = 58");
+        assert_eq!(split.sidebar.width, 32, "SBW = 32");
+        // Clean separation: the conversation ends at col 57, the sidebar starts at col 58.
+        assert_eq!(
+            split.conversation.x + split.conversation.width,
+            57,
+            "conversation right edge is one clean column before the sidebar"
+        );
+        assert!(
+            split.conversation.x + split.conversation.width < split.sidebar.x,
+            "at least one gap column separates the panes (no overlap)"
+        );
+        // Both panes share the same top row and height (aligned split).
+        assert_eq!(split.conversation.y, split.sidebar.y, "panes top-aligned");
+        assert_eq!(split.conversation.height, split.sidebar.height, "equal height");
+
+        let closed = app();
+        assert!(
+            sidebar_split(&closed, area).is_none(),
+            "a closed sidebar yields no split (full-width conversation)"
+        );
+    }
+
+    #[test]
+    fn sidebar_open_renders_breadcrumb_box_subtitle_rule_and_status_bar() {
+        // VAL-SIDE-001/004/005/006/007: opening the sidebar draws the `✦ Cortex Code · context`
+        // breadcrumb, a rounded sidebar box titled `Context` with a subtitle + ghost rule, and the
+        // 3-zone status bar (real model id) on the bottom row.
+        let mut a = app();
+        a.transcript.push(Entry::User("cap the streaming buffer".to_owned()));
+        open_context_sidebar(&mut a);
+        let buf = draw_92x30(&a);
+
+        let row0 = buf_row(&buf, 0);
+        assert!(row0.contains('✦'), "breadcrumb star on row 0:\n{row0}");
+        assert!(row0.contains("Cortex Code"), "breadcrumb wordmark:\n{row0}");
+        assert!(
+            row0.contains("context"),
+            "breadcrumb crumb equals the active panel:\n{row0}"
+        );
+
+        let screen = buf_text(&buf);
+        assert!(
+            screen.contains('╭') && screen.contains('╮'),
+            "rounded sidebar top corners"
+        );
+        assert!(
+            screen.contains('╰') && screen.contains('╯'),
+            "rounded sidebar bottom corners"
+        );
+        assert!(screen.contains("Context"), "sidebar title `Context`");
+        assert!(
+            screen.contains("in context"),
+            "faint subtitle `N files in context`"
+        );
+
+        let status = buf_row(&buf, 29);
+        assert!(status.contains("? for help"), "status left zone:\n{status}");
+        assert!(
+            status.contains("google/gemini-2.5-flash"),
+            "status right zone shows the real model id:\n{status}"
+        );
+        assert!(!status.contains("opus-4.8"), "never the mockup model id:\n{status}");
+    }
+
+    #[test]
+    fn sidebar_left_pane_stays_live_beside_the_sidebar() {
+        // VAL-SIDE-002: while the sidebar is open the left pane still renders the user `›` mark and
+        // the composer, confined to the conversation column (nothing blanked/collapsed).
+        let mut a = app();
+        a.transcript.push(Entry::User("cap the streaming buffer".to_owned()));
+        open_context_sidebar(&mut a);
+        let buf = draw_92x30(&a);
+        let screen = buf_text(&buf);
+        assert!(screen.contains('›'), "the user `›` mark renders in the left pane");
+        assert!(
+            screen.contains("reply to cortex"),
+            "the composer stays live in the left pane"
+        );
+        // The user message text sits within the conversation column (left of the sidebar at col 58).
+        let mut found_in_left = false;
+        for y in 0..buf.area.height {
+            let row = buf_row(&buf, y);
+            if let Some(idx) = row.find("cap the streaming") {
+                let col = row[..idx].chars().count();
+                assert!(col < 58, "transcript text stays left of the sidebar (col {col})");
+                found_in_left = true;
+            }
+        }
+        assert!(found_in_left, "the transcript message renders in the left pane");
+    }
+
+    #[test]
+    fn sidebar_title_is_amber_in_border_with_a_faint_right_aligned_note() {
+        // VAL-SIDE-005: the title rides the top border in AMBER; a FAINT note is right-aligned in
+        // the same border with padding before the corner (not hugging it).
+        let mut a = app();
+        open_context_sidebar(&mut a);
+        let buf = draw_92x30(&a);
+        let theme = style::ThemeColors::from_name(a.theme());
+
+        // The title sits on the sidebar box top border (row 2).
+        let top = buf_row(&buf, 2);
+        assert!(top.contains("Context"), "title embedded in the top border:\n{top}");
+        assert_eq!(first_fg(&buf, "Context"), Some(theme.secondary), "title is AMBER");
+
+        // The top-right rounded corner exists with a blank pad column immediately before it (the
+        // note never hugs the corner).
+        let corner_col = top.chars().position(|c| c == '╮').expect("top-right corner");
+        assert!(corner_col >= 1, "corner is not at column 0");
+        let before: char = top.chars().nth(corner_col - 1).unwrap();
+        assert_eq!(before, ' ', "≥1 blank column pads the note from the corner");
+    }
+
+    #[test]
+    fn sidebar_switching_panels_swaps_body_not_geometry() {
+        // VAL-SIDE-008: cycling to another panel changes the breadcrumb crumb + sidebar title while
+        // the conversation region and the sidebar region (widths/separation) stay identical.
+        let mut a = app();
+        open_context_sidebar(&mut a);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 92,
+            height: 30,
+        };
+        let ctx_split = sidebar_split(&a, area).unwrap();
+        let ctx_buf = draw_92x30(&a);
+        assert!(buf_row(&ctx_buf, 0).contains("context"), "crumb starts as context");
+        assert!(buf_text(&ctx_buf).contains("Context"), "title starts as Context");
+
+        // Switch to the files panel (Ctrl+2).
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('2'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let files_split = sidebar_split(&a, area).unwrap();
+        let files_buf = draw_92x30(&a);
+        assert!(buf_row(&files_buf, 0).contains("files"), "crumb switched to files");
+        assert!(buf_text(&files_buf).contains("Files"), "title switched to Files");
+
+        assert_eq!(
+            ctx_split.conversation, files_split.conversation,
+            "the conversation region is unchanged across panel switches"
+        );
+        assert_eq!(
+            ctx_split.sidebar, files_split.sidebar,
+            "the sidebar region is unchanged across panel switches"
+        );
+    }
+
+    #[test]
+    fn sidebar_toggle_round_trips_to_full_width() {
+        // VAL-SIDE-034: toggling the sidebar open then closed restores the full-width conversation
+        // (no right column) and preserves the left conversation content across the round-trip.
+        let leader = || {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('g'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )
+        };
+        let toggle = || {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('b'),
+                crossterm::event::KeyModifiers::NONE,
+            )
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 92,
+            height: 30,
+        };
+
+        let mut a = app();
+        a.transcript.push(Entry::User("keep this line".to_owned()));
+
+        // Toggle ON.
+        a.on_key(leader());
+        a.on_key(toggle());
+        assert!(a.sidebar_visible(), "sidebar shown after the first toggle");
+        assert!(sidebar_split(&a, area).is_some(), "split present while open");
+        let open_buf = draw_92x30(&a);
+        assert!(buf_row(&open_buf, 0).contains("context"), "breadcrumb present while open");
+        assert!(buf_text(&open_buf).contains('╭'), "sidebar box present while open");
+
+        // Toggle OFF.
+        a.on_key(leader());
+        a.on_key(toggle());
+        assert!(!a.sidebar_visible(), "sidebar hidden after the second toggle");
+        assert!(
+            sidebar_split(&a, area).is_none(),
+            "no split when closed (full-width conversation)"
+        );
+        let closed_buf = draw_92x30(&a);
+        assert!(
+            buf_text(&closed_buf).contains("keep this line"),
+            "the left conversation content is preserved across the toggle"
+        );
+        // The composer/status bar span the full width again; the status right zone is flush-right.
+        let status = buf_row(&closed_buf, 29);
+        assert!(status.contains("? for help"), "full-width status bar restored:\n{status}");
+        assert!(
+            status.trim_end().ends_with("google/gemini-2.5-flash"),
+            "status right zone is flush to the full width:\n{status}"
+        );
+    }
+
+    #[test]
+    fn sidebar_chrome_is_glyph_safe_and_brand_pure() {
+        // VAL-SIDE-009/010: the sidebar chrome never renders the thin `▾`/`▸` triangles or braille,
+        // and its border/title/note/subtitle/rule use only orange-family + neutral grey tokens.
+        let mut a = app();
+        open_context_sidebar(&mut a);
+        let buf = draw_92x30(&a);
+        let screen = buf_text(&buf);
+        assert!(!screen.contains('▾'), "no thin `▾` disclosure triangle");
+        assert!(!screen.contains('▸'), "no thin `▸` disclosure triangle");
+        assert!(!glyphs::contains_braille(&screen), "no braille anywhere");
+        assert!(!screen.contains(">_"), "no `>_` cliché");
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        // Title AMBER, subtitle FAINT — chrome tokens only.
+        assert_eq!(first_fg(&buf, "Context"), Some(theme.secondary), "title AMBER");
+        assert_eq!(
+            first_fg(&buf, "in context"),
+            Some(theme.text_muted),
+            "subtitle FAINT"
+        );
+        // The sidebar box top-left corner (SBX=58, row 2) is drawn in the dim-orange border token
+        // (no blue/cyan chrome).
+        assert_eq!(buf[(58, 2)].symbol(), "╭", "sidebar top-left rounded corner at SBX");
+        assert_eq!(
+            buf[(58, 2)].fg,
+            theme.border,
+            "sidebar border is the dim-orange (ORANGE_D) token"
         );
     }
 
