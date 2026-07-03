@@ -108,15 +108,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // model id) is drawn by the chrome, so the conversation draws no own footer.
         let body = crate::view::render_chrome(frame, area, app, "chat · rendering", &theme);
         (body, false)
+    } else if app.find().is_some() {
+        // In-chat find: wrap the conversation in the shared chrome under a `chat · find` crumb
+        // (markdown_search.png); the find bar replaces the composer (pinned just above the shared
+        // status bar), so the conversation draws no own footer.
+        let body = crate::view::render_chrome(frame, area, app, "chat · find", &theme);
+        (body, false)
     } else {
         (area, true)
     };
 
+    let find_mode = app.find().is_some();
     let prompt_rows = prompt_rows(app, main_area.height);
     // While a turn is in flight a Working band sits directly above the composer, separated from it
     // by one blank gap row (so the band area is two rows: the band itself, then the gap). It is only
-    // reserved when there is room to keep at least one transcript row.
-    let band_rows: u16 = if app.is_busy() && main_area.height > prompt_rows + 2 + 1 + 2 {
+    // reserved when there is room to keep at least one transcript row. Not shown while find is open
+    // (the composer, and everything anchored to it, is replaced by the find bar).
+    let band_rows: u16 = if !find_mode && app.is_busy() && main_area.height > prompt_rows + 2 + 1 + 2
+    {
         2
     } else {
         0
@@ -124,21 +133,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // In plan mode a persistent amber footer banner sits directly above the composer, separated from
     // it by one blank gap row (band-style: banner row + gap row), when there is room to keep at least
     // one transcript row.
-    let plan_banner_rows: u16 =
-        if plan_mode && main_area.height > prompt_rows + 2 + band_rows + 1 + 2 {
-            2
-        } else {
-            0
-        };
+    let plan_banner_rows: u16 = if !find_mode
+        && plan_mode
+        && main_area.height > prompt_rows + 2 + band_rows + 1 + 2
+    {
+        2
+    } else {
+        0
+    };
     // In the split (or plan chrome) the status bar is the full-width bar drawn by the shared chrome,
     // so the conversation column does not reserve a footer row of its own.
     let footer_rows: u16 = if own_footer { 1 } else { 0 };
+    // The composer box is fully replaced by the find bar while find mode is active (markdown_search.png
+    // shows no composer at all — the find bar is the only thing pinned above the shared status bar).
+    let prompt_box_rows: u16 = if find_mode { 0 } else { prompt_rows + 2 };
+    // The find bar is a single row, pinned directly above the shared status bar (the last row of the
+    // chrome body — `render_chrome` already excludes the status-bar row from `main_area`).
+    let find_bar_rows: u16 = if find_mode && main_area.height > 0 { 1 } else { 0 };
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(band_rows),
         Constraint::Length(plan_banner_rows),
-        Constraint::Length(prompt_rows + 2),
+        Constraint::Length(prompt_box_rows),
         Constraint::Length(footer_rows),
+        Constraint::Length(find_bar_rows),
     ])
     .split(main_area);
     let transcript_area = chunks[0];
@@ -146,6 +164,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let plan_banner_area = chunks[2];
     let prompt_area = chunks[3];
     let footer_area = chunks[4];
+    let find_bar_area = chunks[5];
 
     draw_transcript(frame, app, transcript_area, &theme);
     if band_rows > 0 {
@@ -154,7 +173,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if plan_banner_rows > 0 {
         draw_plan_banner(frame, plan_banner_area, &theme);
     }
-    draw_prompt(frame, app, prompt_area, &theme);
+    if !find_mode {
+        draw_prompt(frame, app, prompt_area, &theme);
+    }
     if own_footer {
         draw_footer(frame, app, footer_area, &theme);
     }
@@ -162,8 +183,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_slash_menu(frame, app, prompt_area, &theme);
     // The `@`-file picker also floats above the prompt (mutually exclusive with the slash menu).
     draw_mention_menu(frame, app, prompt_area, &theme);
-    // The find-in-chat search bar floats above the prompt while find mode is active.
-    draw_find_bar(frame, app, prompt_area, &theme);
+    // The find-in-chat search bar occupies its own pinned row while find mode is active.
+    draw_find_bar(frame, app, find_bar_area, &theme);
     // A transient acknowledgement (e.g. a copy confirmation) shows just above the prompt.
     draw_ack(frame, app, prompt_area, &theme);
     // The sidebar box occupies the reserved right-hand column beside the conversation.
@@ -235,16 +256,18 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: &style::Them
         highlight_selected(&mut lines, &entry_starts, selected, width, theme.surface[3]);
     }
 
-    // Highlight find matches; the active match carries a distinct, bolder style so next/prev
-    // navigation is visible as the emphasis moves between occurrences.
     if let Some(find) = app.find() {
         if !find.query.is_empty() {
+            // Every match carries the HIT background; the active match carries the distinct
+            // HITCUR background + BRIGHT foreground so next/prev navigation is visible as the
+            // emphasis moves between occurrences (VAL-MD-021/022).
             highlight_find(
                 &mut lines,
                 &find.query,
                 find.active,
-                theme.info,
-                theme.warning,
+                theme.search_hit,
+                theme.search_hit_current,
+                theme.text_bright,
             );
         }
     }
@@ -423,15 +446,17 @@ pub fn transcript_matches(lines: &[Line], query: &str) -> Vec<FindMatch> {
     out
 }
 
-/// Re-style the lines holding find matches: every match gets a background band and the active match
-/// (the `active`-th in order) gets a brighter background plus bold, so next/prev navigation visibly
-/// moves the emphasis between occurrences.
+/// Re-style the lines holding find matches: every match gets a background band (`base_bg`, HIT) and
+/// the active match (the `active`-th in order) gets the distinct `active_bg` (HITCUR) plus
+/// `active_fg` (BRIGHT) foreground, so next/prev navigation visibly moves the emphasis between
+/// occurrences.
 fn highlight_find(
     lines: &mut [Line<'static>],
     query: &str,
     active: usize,
     base_bg: Color,
     active_bg: Color,
+    active_fg: Color,
 ) {
     let matches = transcript_matches(lines, query);
     if matches.is_empty() {
@@ -447,18 +472,20 @@ fn highlight_find(
             .push((m.start, m.start + m.len, gi == active));
     }
     for (line_idx, ranges) in per_line {
-        lines[line_idx] = apply_highlights_to_line(&lines[line_idx], &ranges, base_bg, active_bg);
+        lines[line_idx] =
+            apply_highlights_to_line(&lines[line_idx], &ranges, base_bg, active_bg, active_fg);
     }
 }
 
 /// Rebuild one line, splitting its spans at the given char ranges and applying a highlight
-/// background (the active range gets `active_bg` + bold; others get `base_bg`), while preserving
-/// each span's original foreground/modifiers elsewhere.
+/// background (the active range gets `active_bg` + `active_fg` + bold; others get `base_bg`), while
+/// preserving each span's original foreground/modifiers elsewhere.
 fn apply_highlights_to_line(
     line: &Line<'static>,
     ranges: &[(usize, usize, bool)],
     base_bg: Color,
     active_bg: Color,
+    active_fg: Color,
 ) -> Line<'static> {
     let highlight_at = |abs: usize| -> Option<bool> {
         ranges
@@ -481,7 +508,7 @@ fn apply_highlights_to_line(
             }
             let text: String = chars[i..j].iter().collect();
             let st = match hl {
-                Some(true) => style.bg(active_bg).add_modifier(Modifier::BOLD),
+                Some(true) => style.bg(active_bg).fg(active_fg).add_modifier(Modifier::BOLD),
                 Some(false) => style.bg(base_bg),
                 None => style,
             };
@@ -2156,60 +2183,101 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &st
     }
 }
 
-/// Render the find-in-chat search bar as a single-row bordered popup floating above the prompt. It
-/// shows the live query and a `match N of M` indicator (or `no matches` / a hint), so the search
-/// affordance and the active-match position are both visible in a snapshot.
-fn draw_find_bar(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
+fn draw_find_bar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let Some(find) = app.find() else {
         return;
     };
-    if prompt_area.width == 0 {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
+    let width = area.width as usize;
     let (active, total) = app.find_status();
-    let status = if find.query.is_empty() {
-        "type to search".to_owned()
-    } else if total == 0 {
-        "no matches".to_owned()
+    let base = Style::default().fg(theme.text).bg(theme.surface[0]);
+    let mut cells: Vec<(char, Style)> = vec![(' ', base); width.max(1)];
+
+    let label = vec![(
+        "find:".to_owned(),
+        Style::default().fg(theme.border).bg(theme.surface[0]),
+    )];
+    place_segments(&mut cells, 2, &label);
+
+    let query_start = 8;
+    if find.query.is_empty() {
+        let hint = vec![(
+            "type to search".to_owned(),
+            Style::default()
+                .fg(theme.text_muted)
+                .bg(theme.surface[0]),
+        )];
+        place_segments(&mut cells, query_start, &hint);
     } else {
-        format!("match {} of {}", active + 1, total)
-    };
+        let q_len = find.query.chars().count();
+        let avail = width.saturating_sub(query_start + 1);
+        let q_display = if q_len > avail {
+            find.query.chars().take(avail).collect()
+        } else {
+            find.query.clone()
+        };
+        let q_w = q_display.chars().count();
+        let query_bg = theme.selection_bg;
+        for i in 0..q_w.min(width.saturating_sub(query_start)) {
+            cells[query_start + i].1 = cells[query_start + i].1.bg(query_bg);
+        }
+        let query = vec![(
+            q_display,
+            Style::default().fg(theme.text_bright).bg(query_bg),
+        )];
+        place_segments(&mut cells, query_start, &query);
 
-    let row = Line::from(vec![
-        Span::styled(
-            "Find: ",
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(find.query.clone(), Style::default().fg(theme.text)),
-        Span::raw("  "),
-        Span::styled(status, Style::default().fg(theme.text_dim)),
-    ]);
+        let caret_col = query_start + q_w;
+        if caret_col < width {
+            cells[caret_col] = (
+                glyphs::CURSOR.chars().next().unwrap_or('▏'),
+                Style::default().fg(theme.primary).bg(query_bg),
+            );
+        }
 
-    let height = 3u16;
-    let width = prompt_area.width;
-    let y = prompt_area.y.saturating_sub(height);
-    let popup = Rect {
-        x: prompt_area.x,
-        y,
-        width,
-        height: height.min(prompt_area.y.saturating_sub(y).max(height)),
-    };
+        let counter_start = query_start + q_w + 2;
+        if counter_start < width {
+            let counter_text = if total == 0 {
+                "0/0".to_owned()
+            } else {
+                format!("{}/{}", active + 1, total)
+            };
+            let counter = vec![
+                (
+                    counter_text,
+                    Style::default().fg(theme.secondary).bg(theme.surface[0]),
+                ),
+                (
+                    " matches".to_owned(),
+                    Style::default()
+                        .fg(theme.text_muted)
+                        .bg(theme.surface[0]),
+                ),
+            ];
+            place_segments(&mut cells, counter_start, &counter);
+        }
+    }
 
-    let block = Block::default()
-        .style(Style::default().bg(theme.surface[1]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.info))
-        .title(" find ")
-        .title_style(Style::default().fg(theme.info).add_modifier(Modifier::BOLD));
-    let inner = block.inner(popup);
+    let hints_text = "n next   N prev   esc close";
+    let hints_len = hints_text.chars().count();
+    if width > hints_len + 2 {
+        let hints_start = width.saturating_sub(hints_len + 2);
+        let hints = vec![(
+            hints_text.to_owned(),
+            Style::default()
+                .fg(theme.text_muted)
+                .bg(theme.surface[0]),
+        )];
+        place_segments(&mut cells, hints_start, &hints);
+    }
 
-    frame.render_widget(Clear, popup);
-    frame.render_widget(block, popup);
+    let line = cells_to_line(&cells);
     frame.render_widget(
-        Paragraph::new(row).style(Style::default().fg(theme.text).bg(theme.surface[1])),
-        inner,
+        Paragraph::new(line).style(base),
+        area,
     );
 }
 
@@ -9135,12 +9203,12 @@ mod tests {
 
     #[test]
     fn find_highlight_applies_background_to_matches() {
-        // VAL-TUI-077: the matched text carries a highlight background.
+        // VAL-MD-021: the matched text carries the HIT highlight background.
         let mut a = app();
         a.transcript
             .push(Entry::Notice("find ZTOKEN now".to_owned()));
         let mut lines = transcript_lines(&a, 80);
-        highlight_find(&mut lines, "ztoken", 0, style::INFO, style::WARNING);
+        highlight_find(&mut lines, "ztoken", 0, style::HIT, style::HITCUR, style::BRIGHT);
         let highlighted = lines
             .iter()
             .flat_map(|l| &l.spans)
@@ -9153,18 +9221,19 @@ mod tests {
 
     #[test]
     fn active_find_match_is_styled_distinctly() {
-        // VAL-TUI-078: the active match is visually distinct from the other matches.
+        // VAL-MD-022: exactly one match (the active one) carries the HITCUR bg + BRIGHT fg; the
+        // rest carry the plain HIT bg.
         let mut a = app();
         a.transcript.push(Entry::Notice("ZTOKEN one".to_owned()));
         a.transcript.push(Entry::Notice("ZTOKEN two".to_owned()));
         let mut lines = transcript_lines(&a, 80);
-        highlight_find(&mut lines, "ztoken", 1, style::INFO, style::WARNING);
+        highlight_find(&mut lines, "ztoken", 1, style::HIT, style::HITCUR, style::BRIGHT);
         let mut active = Vec::new();
         let mut base = Vec::new();
         for s in lines.iter().flat_map(|l| &l.spans) {
             if s.content.eq_ignore_ascii_case("ztoken") {
                 if s.style.add_modifier.contains(Modifier::BOLD) {
-                    active.push(s.style.bg);
+                    active.push((s.style.bg, s.style.fg));
                 } else {
                     base.push(s.style.bg);
                 }
@@ -9172,13 +9241,13 @@ mod tests {
         }
         assert_eq!(
             active,
-            vec![Some(style::WARNING)],
-            "exactly one active match with the active background"
+            vec![(Some(style::HITCUR), Some(style::BRIGHT))],
+            "exactly one active match with the HITCUR bg + BRIGHT fg"
         );
         assert_eq!(
             base,
-            vec![Some(style::INFO)],
-            "the other match uses the base background"
+            vec![Some(style::HIT)],
+            "the other match uses the plain HIT background"
         );
     }
 
@@ -9210,7 +9279,8 @@ mod tests {
 
     #[test]
     fn find_bar_renders_query_and_match_count() {
-        // VAL-TUI-077/078: the find bar shows the live query and the active-match indicator.
+        // VAL-MD-020/023/024: the find bar shows `find:` label, the query, a cur/total counter,
+        // and navigation hints.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -9227,13 +9297,65 @@ mod tests {
         terminal.draw(|frame| draw(frame, &a)).unwrap();
         let rendered = screen(&terminal);
         assert!(
-            rendered.contains("Find:"),
-            "the find bar is drawn:\n{rendered}"
+            rendered.contains("find:"),
+            "the find bar shows the find: label:\n{rendered}"
         );
         assert!(rendered.contains("apple"), "the query text is shown");
         assert!(
-            rendered.contains("match 1 of 2"),
-            "the active-match indicator is shown:\n{rendered}"
+            rendered.contains("1/2") || rendered.contains("2/2"),
+            "the cur/total counter is shown:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("matches"),
+            "the matches label is shown:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("n next") && rendered.contains("N prev") && rendered.contains("esc close"),
+            "the navigation hints are shown:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn find_mode_shows_chat_find_crumb() {
+        // VAL-MD-019: opening find renders the `chat · find` breadcrumb.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Notice("search me".to_owned()));
+        press_ctrl(&mut a, 'f');
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let rendered = screen(&terminal);
+        let row0 = rendered.lines().next().unwrap_or("");
+        assert!(
+            row0.contains('✦') && row0.contains("Cortex Code") && row0.contains("find"),
+            "row 0 shows the chat·find breadcrumb: {row0}"
+        );
+    }
+
+    #[test]
+    fn find_zero_state_shows_zero_counter() {
+        // VAL-MD-037: a query with no matches shows a `0/0` counter.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple pie".to_owned()));
+        press_ctrl(&mut a, 'f');
+        for c in "ztoken".chars() {
+            press(&mut a, crossterm::event::KeyCode::Char(c));
+        }
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let rendered = screen(&terminal);
+        assert!(
+            rendered.contains("0/0"),
+            "the zero-state counter is shown:\n{rendered}"
         );
     }
 

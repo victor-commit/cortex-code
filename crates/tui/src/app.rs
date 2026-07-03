@@ -8102,6 +8102,8 @@ impl App {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
                 KeyCode::Char('f') if ctrl => self.close_find(),
                 KeyCode::Esc => self.close_find(),
+                KeyCode::Char('n') if !ctrl && !alt => self.find_next(),
+                KeyCode::Char('N') if !ctrl && !alt => self.find_prev(),
                 KeyCode::Enter | KeyCode::Down => self.find_next(),
                 KeyCode::Up => self.find_prev(),
                 KeyCode::Backspace => self.find_backspace(),
@@ -9862,6 +9864,16 @@ fn parse_custom_theme_value(
         object,
         &["soft", "working_bg", "workingBand"],
         &mut theme.soft,
+    )?;
+    apply_color_key(
+        object,
+        &["search_hit", "searchHit", "hit"],
+        &mut theme.search_hit,
+    )?;
+    apply_color_key(
+        object,
+        &["search_hit_current", "searchHitCurrent", "hitCurrent"],
+        &mut theme.search_hit_current,
     )?;
 
     if let Some(surface) = object.get("surface").or_else(|| object.get("surfaces")) {

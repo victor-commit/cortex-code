@@ -207,6 +207,12 @@ pub const INLBG: Color = Color::Rgb(40, 34, 28);
 /// code-color exception to the mono-orange brand palette).
 pub const VAR: Color = Color::Rgb(156, 220, 254);
 
+/// Search-hit background (non-current match).
+pub const HIT: Color = Color::Rgb(70, 56, 30);
+
+/// Current search-hit background (orange-tinted, distinct from HIT).
+pub const HITCUR: Color = Color::Rgb(150, 92, 54);
+
 // ============================================================
 // THEME COLORS STRUCT - For future theme switching
 // ============================================================
@@ -256,6 +262,10 @@ pub struct ThemeColors {
     /// Very soft warm surface for the working/loading band (a tint just above the canvas); every
     /// theme defines a non-canvas value so the band never falls through to a default-black bar.
     pub soft: Color,
+    /// Search-hit background (non-current match).
+    pub search_hit: Color,
+    /// Current search-hit background (distinct from search_hit).
+    pub search_hit_current: Color,
 }
 
 impl ThemeColors {
@@ -282,6 +292,8 @@ impl ThemeColors {
             border_focus: ORANGE,
             card_border: BORDER_BRAND,
             soft: SOFT,
+            search_hit: HIT,
+            search_hit_current: HITCUR,
         }
     }
 
@@ -313,6 +325,8 @@ impl ThemeColors {
             border_focus: Color::Rgb(0, 150, 100),
             card_border: Color::Rgb(205, 205, 205),
             soft: Color::Rgb(240, 238, 232),
+            search_hit: Color::Rgb(100, 120, 90),
+            search_hit_current: Color::Rgb(0, 150, 100),
         }
     }
 
@@ -344,6 +358,8 @@ impl ThemeColors {
             border_focus: Color::Rgb(0, 200, 200),
             card_border: Color::Rgb(40, 80, 120),
             soft: Color::Rgb(18, 40, 64),
+            search_hit: Color::Rgb(30, 60, 90),
+            search_hit_current: Color::Rgb(0, 200, 200),
         }
     }
 
@@ -375,6 +391,8 @@ impl ThemeColors {
             border_focus: Color::Rgb(166, 226, 46),
             card_border: Color::Rgb(70, 71, 65),
             soft: Color::Rgb(50, 51, 44),
+            search_hit: Color::Rgb(60, 61, 54),
+            search_hit_current: Color::Rgb(166, 226, 46),
         }
     }
 
@@ -406,6 +424,8 @@ impl ThemeColors {
             border_focus: Color::Rgb(0, 122, 204),
             card_border: Color::Rgb(62, 62, 66),
             soft: Color::Rgb(42, 42, 40),
+            search_hit: Color::Rgb(60, 60, 50),
+            search_hit_current: Color::Rgb(0, 122, 204),
         }
     }
 
@@ -687,6 +707,8 @@ mod tests {
         assert_eq!(LNUM, Color::Rgb(110, 110, 118));
         assert_eq!(CODEBG, Color::Rgb(24, 24, 28));
         assert_eq!(INLBG, Color::Rgb(40, 34, 28));
+        assert_eq!(HIT, Color::Rgb(70, 56, 30));
+        assert_eq!(HITCUR, Color::Rgb(150, 92, 54));
     }
 
     #[test]
@@ -706,6 +728,15 @@ mod tests {
         assert_eq!(t.soft, SOFT, "working-band soft surface is the brand SOFT tint");
         assert_eq!(t.success, OKG);
         assert_eq!(t.error, ERR);
+        assert_eq!(t.search_hit, HIT, "search-hit bg is the brand HIT tint");
+        assert_eq!(
+            t.search_hit_current, HITCUR,
+            "current search-hit bg is the brand HITCUR orange tint"
+        );
+        assert_ne!(
+            t.search_hit, t.search_hit_current,
+            "the current match bg is visibly distinct from other matches"
+        );
         // `from_name("dark")` and the Default both resolve to the brand palette.
         assert_eq!(ThemeColors::from_name("dark"), t);
         assert_eq!(ThemeColors::default(), t);
@@ -749,6 +780,11 @@ mod tests {
             let _ = t.ghost;
             // The working-band soft surface is an explicit non-canvas tint (no black-bar fallthrough).
             assert_ne!(t.soft, t.background, "{name}: soft band surface is set");
+            // The current search-hit bg is always visibly distinct from the other-match bg.
+            assert_ne!(
+                t.search_hit, t.search_hit_current,
+                "{name}: current search-hit bg differs from the plain hit bg"
+            );
         }
         // `vscode` resolves to full chrome (a distinct background), not just a syntax theme.
         assert_eq!(
