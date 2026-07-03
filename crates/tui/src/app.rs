@@ -12468,7 +12468,7 @@ mod tests {
         assert!(
             a.transcript
                 .iter()
-                .any(|entry| matches!(entry, Entry::User(text) if text.contains("📎 image/png:"))),
+                .any(|entry| matches!(entry, Entry::User(text) if text.contains("PNG") && text.contains(".png"))),
             "user transcript entry surfaces the attachment reference"
         );
 

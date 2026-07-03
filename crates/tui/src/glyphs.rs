@@ -90,6 +90,8 @@ pub const MARK_ERROR: &str = "✗";
 pub const MARK_RUNNING: &str = "⚙";
 /// Faint inline separator.
 pub const SEPARATOR: &str = "·";
+/// Dimension separator (`W×H`) for image attachment metadata (multiplication sign, DejaVu-safe).
+pub const MULTIPLY: &str = "×";
 /// Ellipsis.
 pub const ELLIPSIS: &str = "…";
 /// Em dash — the "not applicable" placeholder (e.g. an MCP server with no tool count) and the
@@ -183,6 +185,7 @@ mod tests {
             MARK_ERROR,
             MARK_RUNNING,
             SEPARATOR,
+            MULTIPLY,
             ELLIPSIS,
             EM_DASH,
             SELECT_MARKER,

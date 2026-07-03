@@ -13,6 +13,7 @@ use tui_components::style;
 use tui_components::toast::ToastLevel;
 
 use crate::app::{App, AssistantTurn, DialogKind, DiffViewMode, Entry};
+use crate::attachments::InputAttachment;
 use crate::diff::FileDiff;
 use crate::glyphs;
 use crate::tool_card::{ToolCard, ToolStatus};
@@ -95,6 +96,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // `!` shell mode: wrap the conversation in the shared chrome under a `shell` crumb; the
         // shared status bar (which reads `manual · ! shell mode`) is drawn by the chrome.
         let body = crate::view::render_chrome(frame, area, app, "shell", &theme);
+        (body, false)
+    } else if !app.composer_attachments().is_empty() {
+        // Attachments staged: wrap the conversation in the shared chrome under an `attachments`
+        // crumb (perm_attach.png); the shared 3-zone status bar is drawn by the chrome.
+        let body = crate::view::render_chrome(frame, area, app, "attachments", &theme);
         (body, false)
     } else {
         (area, true)
@@ -195,12 +201,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 /// Number of text rows the prompt box should show (clamped to available height).
 fn prompt_rows(app: &App, total_height: u16) -> u16 {
-    let attachment_rows = if app.composer_attachments().is_empty() {
-        0
-    } else {
-        1
-    };
-    let logical = app.input.line_count().max(1) + attachment_rows;
+    let logical = app.input.line_count().max(1);
     // Leave room for at least one transcript row, the prompt borders, and the footer.
     let budget = total_height.saturating_sub(1 + 2 + 1).max(1) as usize;
     logical.min(MAX_PROMPT_ROWS).min(budget).max(1) as u16
@@ -345,6 +346,14 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
     }
     // The busy/working indicator is no longer appended to the scrollback: it renders as a dedicated
     // Working band fixed above the composer (see `draw`/`working_band_line`).
+    //
+    // Attachment cards: while files are staged in the composer, their cards render as the bottom
+    // block of the scrollback (a bordered card per file + an aggregate summary), so the attach state
+    // shows the files that will be sent — matching `perm_attach.png`. They are not transcript
+    // entries, so they are appended after the entry loop without an `entry_starts` slot.
+    if !app.composer_attachments().is_empty() {
+        push_attachment_cards(&mut lines, app.composer_attachments(), width, &theme);
+    }
     RenderedTranscript {
         lines,
         entry_starts,
@@ -900,6 +909,136 @@ fn push_diff_box(
             ),
         ]));
     }
+}
+
+/// Width (columns) of one attachment card (`perm_attach.png`: three 28-col cards tile the 88-col
+/// content width with a 2-col gap between them).
+const ATTACHMENT_CARD_WIDTH: usize = 28;
+/// Blank columns between adjacent attachment cards on a row.
+const ATTACHMENT_CARD_GAP: usize = 2;
+
+/// Append the attachment cards + aggregate summary for the staged composer attachments (the
+/// `perm_attach.png` attach state). Each card is a rounded bordered box holding an inverse AMBER
+/// type-badge pill, the filename in BRIGHT, and a DIM meta line (dimensions/pages/vector · size);
+/// cards tile side by side across the content width and wrap to further rows when there are more
+/// than fit. A `N attachments · <total size>` summary in DIM closes the block.
+fn push_attachment_cards(
+    lines: &mut Vec<Line<'static>>,
+    attachments: &[InputAttachment],
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    if attachments.is_empty() {
+        return;
+    }
+    let base = Style::default().bg(theme.background);
+    let content_width = width.saturating_sub(CONTENT_MARGIN * 2).max(1);
+    // Shrink the card to the content width on a narrow terminal so a single card always fits.
+    let card_w = ATTACHMENT_CARD_WIDTH.min(content_width).max(5);
+    let per_row = ((content_width + ATTACHMENT_CARD_GAP) / (card_w + ATTACHMENT_CARD_GAP)).max(1);
+
+    lines.push(Line::from(""));
+    for chunk in attachments.chunks(per_row) {
+        // Build all 5 rows of a card row in a shared cell buffer so the cards tile side by side
+        // (top border, badge+name, blank interior, meta, bottom border).
+        let mut rows: [Vec<(char, Style)>; 5] = std::array::from_fn(|_| vec![(' ', base); width]);
+        for (ci, attachment) in chunk.iter().enumerate() {
+            let cx = CONTENT_MARGIN + ci * (card_w + ATTACHMENT_CARD_GAP);
+            render_attachment_card(&mut rows, cx, card_w, attachment, theme, base);
+        }
+        for row in rows {
+            lines.push(cells_to_line(&row));
+        }
+    }
+
+    let total: u64 = attachments.iter().map(InputAttachment::byte_size).sum();
+    let count = attachments.len();
+    let noun = if count == 1 {
+        "attachment"
+    } else {
+        "attachments"
+    };
+    let summary = format!(
+        "{count} {noun} {} {}",
+        crate::glyphs::SEPARATOR,
+        crate::attachments::human_size(total)
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(summary, Style::default().fg(theme.text_dim).bg(theme.background)),
+    ]));
+    lines.push(Line::from(""));
+}
+
+/// Paint one attachment card into `rows` (a 5-row shared cell buffer) with its top-left corner at
+/// column `cx`. The card interior carries the canvas background on every cell (no unset bg), the
+/// badge is an inverse pill (AMBER text on the SELBG surface), the name is BRIGHT, and the meta is
+/// DIM — matching `perm_attach.png`.
+fn render_attachment_card(
+    rows: &mut [Vec<(char, Style)>; 5],
+    cx: usize,
+    card_w: usize,
+    attachment: &InputAttachment,
+    theme: &style::ThemeColors,
+    base: Style,
+) {
+    let width = rows[0].len();
+    let right = cx + card_w - 1;
+    if right >= width || card_w < 5 {
+        return;
+    }
+    let border = Style::default().fg(theme.border).bg(theme.background);
+    let hz = crate::glyphs::BOX_HORIZONTAL.chars().next().unwrap();
+    let vt = crate::glyphs::BOX_VERTICAL.chars().next().unwrap();
+
+    // Top + bottom rounded borders.
+    rows[0][cx] = (crate::glyphs::BOX_TOP_LEFT.chars().next().unwrap(), border);
+    rows[0][right] = (crate::glyphs::BOX_TOP_RIGHT.chars().next().unwrap(), border);
+    rows[4][cx] = (crate::glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(), border);
+    rows[4][right] = (crate::glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(), border);
+    for cell in rows[0].iter_mut().take(right).skip(cx + 1) {
+        *cell = (hz, border);
+    }
+    for cell in rows[4].iter_mut().take(right).skip(cx + 1) {
+        *cell = (hz, border);
+    }
+    // Vertical edges + explicit-bg interior on the three content rows.
+    for row in rows.iter_mut().take(4).skip(1) {
+        row[cx] = (vt, border);
+        row[right] = (vt, border);
+        for cell in row.iter_mut().take(right).skip(cx + 1) {
+            *cell = (' ', base);
+        }
+    }
+
+    let inner_left = cx + 2;
+    let inner_right = right - 1;
+    let inner_w = inner_right.saturating_sub(inner_left) + 1;
+
+    // Row 1: an inverse AMBER badge pill, then the filename in BRIGHT.
+    let badge = format!(" {} ", attachment.badge_label());
+    let badge_style = Style::default()
+        .fg(theme.secondary)
+        .bg(theme.surface[3])
+        .add_modifier(Modifier::BOLD);
+    place_segments(&mut rows[1], inner_left, &[(badge.clone(), badge_style)]);
+    let name_x = inner_left + badge.chars().count() + 1;
+    let name_room = inner_right.saturating_sub(name_x) + 1;
+    let name = clip_text(&attachment.file_name(), name_room);
+    place_segments(
+        &mut rows[1],
+        name_x,
+        &[(name, Style::default().fg(theme.text_bright).bg(theme.background))],
+    );
+
+    // Row 3: the meta line (descriptor · size) in DIM.
+    let meta = clip_text(&attachment.meta_line(), inner_w);
+    place_segments(
+        &mut rows[3],
+        inner_left,
+        &[(meta, Style::default().fg(theme.text_dim).bg(theme.background))],
+    );
 }
 
 /// The display verb for a tool card header (e.g. `read` → `Read`, `edit`/`apply_patch` → `Update`).
@@ -1464,30 +1603,9 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         return;
     }
 
-    let (attachment_area, input_area) = if app.composer_attachments().is_empty() {
-        (None, inner)
-    } else if inner.height > 1 {
-        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
-        (Some(rows[0]), rows[1])
-    } else {
-        (Some(inner), inner)
-    };
-
-    if let Some(attachment_area) = attachment_area {
-        let chips = app
-            .composer_attachments()
-            .iter()
-            .map(|attachment| format!("📎 {}", attachment.chip_label()))
-            .collect::<Vec<_>>()
-            .join("  ");
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                chips,
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-            )),
-            attachment_area,
-        );
-    }
+    // Staged attachments are shown as bordered cards in the transcript (the attach state), so the
+    // composer itself stays a clean input box — the whole inner area is the input region.
+    let input_area = inner;
 
     // Composer prefix at the left inner column (ORANGE): the `!` shell prompt in shell mode, else
     // the `▌ ›` accent edge + prompt glyph.
@@ -1562,6 +1680,8 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             "run another shell command…"
         } else if app.plan_mode() {
             "ask a question or refine the plan…"
+        } else if !app.composer_attachments().is_empty() {
+            "add a message, or drop more files…"
         } else if app.transcript.is_empty() {
             crate::motd::HOME_PLACEHOLDER
         } else {
@@ -7742,7 +7862,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_renders_attachment_chips_above_the_input() {
+    fn staged_attachments_render_cards_and_breadcrumb() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -7755,19 +7875,83 @@ mod tests {
         ));
         assert_eq!(a.composer_attachments().len(), 1, "attachment staged");
 
-        let backend = TestBackend::new(100, 20);
+        let backend = TestBackend::new(92, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &a)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let screen: String = buffer
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
+        let rows: Vec<String> = (0..buffer.area().height)
+            .map(|y| {
+                (0..buffer.area().width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect();
+        let screen = rows.join("\n");
+        let name = png.file_name().unwrap().to_string_lossy().into_owned();
+        // The card clips a long filename; assert on a visible prefix that survives the clip.
+        let name_prefix: String = name.chars().take(12).collect();
+
+        // VAL-PERM-041: the chrome breadcrumb reads `attachments`.
         assert!(
-            screen.contains("📎") && screen.contains("image/png"),
-            "composer chip line is visible in the prompt:\n{screen}"
+            rows[0].contains("Cortex Code") && rows[0].contains("attachments"),
+            "attachments breadcrumb on row 0:\n{}",
+            rows[0]
         );
+        // VAL-PERM-042/043: a card with a `PNG` type badge + the real filename.
+        assert!(
+            screen.contains("PNG") && screen.contains(&name_prefix),
+            "attachment card shows badge + filename:\n{screen}"
+        );
+        // VAL-PERM-042: rounded card chrome.
+        assert!(
+            screen.contains('╭') && screen.contains('╰'),
+            "card is drawn with rounded borders:\n{screen}"
+        );
+        // VAL-PERM-045: the aggregate summary line.
+        assert!(
+            screen.contains("1 attachment ") && screen.contains(" · "),
+            "aggregate summary present:\n{screen}"
+        );
+        // The emoji chip is gone (brand purity).
+        assert!(!screen.contains('📎'), "no emoji chip:\n{screen}");
+    }
+
+    #[test]
+    fn attachment_badge_is_an_inverse_amber_pill() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let png = temp_png();
+        a.set_input_value(&format!("/attach {}", png.display()));
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // VAL-PERM-043: the badge cells carry AMBER text on the SELBG surface (a filled pill), not
+        // plain text on the canvas.
+        let mut found_pill = false;
+        for y in 0..buffer.area().height {
+            for x in 0..buffer.area().width.saturating_sub(2) {
+                if buffer[(x, y)].symbol() == "P"
+                    && buffer[(x + 1, y)].symbol() == "N"
+                    && buffer[(x + 2, y)].symbol() == "G"
+                {
+                    let cell = &buffer[(x, y)];
+                    if cell.fg == theme.secondary && cell.bg == theme.surface[3] {
+                        found_pill = true;
+                    }
+                }
+            }
+        }
+        assert!(found_pill, "PNG badge is an inverse amber pill (amber fg on SELBG)");
     }
 
     #[test]
