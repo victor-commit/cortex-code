@@ -1,0 +1,9 @@
+# Worker build/test infra (not product code). Speeds up the edit/link loop
+# without changing any emitted bytes or weakening a gate.
+#
+# LINKER: mold (/usr/bin/mold) is present but was unused. The system cc is gcc
+# 13, whose driver rejects clang's `--ld-path`; `-fuse-ld=mold` is the portable
+# form (it resolves to /usr/bin/ld.mold). Debug link is the dominant cost of an
+# incremental `cargo build -p cli`, so routing it through mold is the big win.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

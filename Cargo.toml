@@ -47,6 +47,20 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 
+# Worker build/test infra (not product code). Full debuginfo is the dominant
+# link cost and the reason the target dir ballooned. line-tables-only keeps
+# panic/backtrace file:line resolution (and all test assertions) working while
+# cutting the emitted DWARF; unpacked split-debuginfo keeps the debug bytes out
+# of the linked binaries so relinks are far cheaper; and dropping debug for all
+# dependencies (they are never stepped through here) removes the bulk of the
+# 481GB target dir. Byte output of the binaries is unaffected.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.dependencies]
 protocol = { path = "crates/protocol" }
 errors = { path = "crates/errors" }

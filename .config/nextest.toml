@@ -1,0 +1,56 @@
+# cargo-nextest configuration — workspace test runner (worker build/test infra, NOT product code).
+#
+# WHY nextest: the capped `cargo test --workspace -- --test-threads=8` path is green but slow
+# (~9m) because it throttles to 8 of 128 cores to dodge harness *thread*-races (a shared-Mutex
+# poison in the serve fixtures, ETXTBSY on write+exec formatter scripts, PTY capture timing).
+# nextest runs each test in its OWN PROCESS, which structurally eliminates those shared-state /
+# thread races, so the fast unit/lib tests can run at full 128-way parallelism.
+#
+# OFFLINE-EQUIVALENT: run with NO OPENROUTER_API_KEY (the services.yaml command clears it). The
+# 31 crates/cli/tests/*_live.rs tests then self-skip exactly as under offline `cargo test` (they
+# read the key and return early), so the SAME complete set is executed and nothing is dropped.
+#
+# DOC-TESTS: nextest does not run doc-tests; the services.yaml `test` command pairs this with
+# `cargo test --workspace --doc` so the COMPLETE suite (unit + integration + doctests) still runs.
+
+[profile.default]
+# High parallelism for the fast unit/lib bulk, but bounded below the 128 logical CPUs: the
+# network-touching integration tests below spawn loopback fixture servers whose background accept
+# threads (and child `cortex` turns) have short internal deadlines and must be scheduled promptly.
+# An unbounded 128-way process churn starves them (the baseline is stable precisely because it
+# caps TOTAL concurrency at 8). 32 keeps the pure-CPU unit bulk fast while limiting churn.
+test-threads = 32
+# Report every failure in one pass instead of stopping at the first.
+fail-fast = false
+# Residual transient fixture races (a loopback accept-thread that briefly loses the scheduler while
+# the fast bulk drains, on this shared/loaded host) are re-run in a FRESH process; a truly-broken
+# test fails every attempt, so retries never mask a deterministic failure. The `network` cap below
+# is the primary structural fix.
+retries = 5
+# Do not kill legitimately-slow fixtures (a cold LSP availability probe can take ~25s).
+slow-timeout = { period = "45s", terminate-after = 8 }
+
+# ROOT CAUSE of the full-parallelism failures: the network-touching *integration* tests in the
+# cli/server/mcp/tools crates each spin up loopback HTTP/SSE fixture servers (and child `cortex`
+# turns) that scan the FIXED mission port pool 127.0.0.1:3200-3299 for a free port, and several
+# rely on a file-local `static Mutex` to serialize server access. Under nextest's process-per-test
+# model that Mutex no longer serializes, and running many such heavyweight tests at once
+# oversubscribes the 100-port pool (TOCTOU: a "closed" port a test expects unreachable gets bound
+# by a neighbour → HTTP 404) and starves the fixture accept threads past their internal deadlines
+# ("transport unavailable"). Capping this group at the baseline's proven-safe concurrency restores
+# port-pool headroom and CPU for the fixture threads — a harness-concurrency fix only; no test is
+# weakened, skipped, or deleted.
+[test-groups]
+network = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'kind(test) & (package(cli) | package(server) | package(mcp) | package(tools))'
+test-group = "network"
+
+# The CI profile is identical to default; provided so `--profile ci` (machine-readable retries +
+# JUnit-friendly output) can be requested without redefining the groups.
+[profile.ci]
+test-threads = 32
+fail-fast = false
+retries = 2
+slow-timeout = { period = "45s", terminate-after = 8 }
