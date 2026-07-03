@@ -9714,6 +9714,42 @@ mod tests {
     }
 
     #[test]
+    fn find_bar_opens_in_editing_mode_with_caret_and_hint() {
+        // VAL-MD-020/024: the find bar opens in EDITING mode (committed=false) and renders the `▏`
+        // caret after the query plus the `n next  N prev  esc close` hint — the bar is drawn
+        // identically in both modes, so committing does not change it.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Notice("registry schema".to_owned()));
+        press_ctrl(&mut a, 'f');
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(false),
+            "find opens in EDITING mode (committed=false)"
+        );
+        for c in "registry".chars() {
+            press(&mut a, crossterm::event::KeyCode::Char(c));
+        }
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let rendered = screen(&terminal);
+        assert!(
+            rendered.contains(crate::glyphs::CURSOR),
+            "the caret is rendered after the query:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("n next")
+                && rendered.contains("N prev")
+                && rendered.contains("esc close"),
+            "the navigation hint is rendered:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn find_mode_shows_chat_find_crumb() {
         // VAL-MD-019: opening find renders the `chat · find` breadcrumb.
         use ratatui::Terminal;

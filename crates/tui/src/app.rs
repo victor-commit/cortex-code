@@ -836,9 +836,11 @@ struct PromptHistoryStats {
 /// The open find-in-chat search bar: the live query, the active-match index, and the cached match
 /// count for the `match N of M` indicator.
 ///
-/// Find is opened with `Ctrl+F`; while open, typing edits the query, Enter/Down step to the next
-/// match, Up steps to the previous match, and Esc closes it. The query highlights every occurrence
-/// in the transcript and scrolls the active match into view.
+/// Find is opened with `Ctrl+F` in EDITING mode. While editing, every printable character (incl.
+/// `n`/`N`) types into the query with incremental highlight; Enter commits into NAV mode. In NAV
+/// mode `n` steps to the next match and `N` to the previous (both wrapping), while any other
+/// printable char or Backspace returns to EDITING and refines the query. Esc/Ctrl+F close it. The
+/// query highlights every occurrence in the transcript and scrolls the active match into view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FindState {
     /// The live search query.
@@ -847,6 +849,10 @@ pub struct FindState {
     pub active: usize,
     /// The number of matches for the current query (cached for the indicator and navigation).
     pub matches: usize,
+    /// Whether the query is committed: `false` while EDITING (every printable char, incl. `n`/`N`,
+    /// types into the query), `true` in NAV mode (`n`/`N` step matches). Defaults to `false` on open;
+    /// any edit (printable char or Backspace) returns it to EDITING.
+    pub committed: bool,
 }
 
 /// A short-lived probe for Esc-prefixed noisy arrow sequences (`Esc` + `[A`, `A[`, `Up`, ...).
@@ -7517,20 +7523,32 @@ impl App {
         self.find = None;
     }
 
-    /// Append a character to the find query and refresh the matches/highlight.
+    /// Append a character to the find query and refresh the matches/highlight. Typing always returns
+    /// the bar to EDITING mode so a refinement after a commit re-highlights incrementally.
     fn find_input(&mut self, c: char) {
         if let Some(find) = self.find.as_mut() {
             find.query.push(c);
             find.active = 0;
+            find.committed = false;
         }
         self.recompute_find();
     }
 
-    /// Delete the last character of the find query and refresh the matches/highlight.
+    /// Commit the current find query (Enter), switching from EDITING to NAV mode. Keeps the current
+    /// matches/highlight and the active (first) match so `n`/`N` can step through them.
+    fn commit_find(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.committed = true;
+        }
+    }
+
+    /// Delete the last character of the find query and refresh the matches/highlight. Editing the
+    /// query always returns the bar to EDITING mode.
     fn find_backspace(&mut self) {
         if let Some(find) = self.find.as_mut() {
             find.query.pop();
             find.active = 0;
+            find.committed = false;
         }
         self.recompute_find();
     }
@@ -8157,20 +8175,26 @@ impl App {
             return;
         }
 
-        // The find-in-chat search bar is modal while open: typing edits the query (re-highlighting
-        // matches), and match navigation is reserved to NON-letter keys so every printable
-        // character (including `n`/`N`) falls through to the query: Enter/Down step to the next
-        // match, Shift+Enter/Up to the previous, Ctrl+F or Esc close it, and Ctrl+C still quits so
-        // the user is never trapped.
+        // The find-in-chat search bar is modal while open, with a committed-vs-editing (vim/less)
+        // interaction so the `n next  N prev  esc close` hint is literally accurate WITHOUT shadowing
+        // typed letters. EDITING (committed=false): every printable char — including `n`/`N` — types
+        // into the query (incremental highlight) and Enter COMMITS. NAV (committed=true): `n` steps to
+        // the next match, `N` to the previous (both wrapping), while Backspace or any other printable
+        // char returns to EDITING and refines the query. Enter/Down step next and Up steps prev as
+        // ergonomic extras; Ctrl+F or Esc close it in both modes, and Ctrl+C still quits.
         if self.find.is_some() {
+            let committed = self.find.as_ref().is_some_and(|f| f.committed);
             match key.code {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
                 KeyCode::Char('f') if ctrl => self.close_find(),
                 KeyCode::Esc => self.close_find(),
                 KeyCode::Enter if shift => self.find_prev(),
+                KeyCode::Enter if !committed => self.commit_find(),
                 KeyCode::Enter | KeyCode::Down => self.find_next(),
                 KeyCode::Up => self.find_prev(),
                 KeyCode::Backspace => self.find_backspace(),
+                KeyCode::Char('n') if committed && !ctrl && !alt => self.find_next(),
+                KeyCode::Char('N') if committed && !ctrl && !alt => self.find_prev(),
                 KeyCode::Char(c) if !ctrl && !alt => self.find_input(c),
                 _ => {}
             }
@@ -15123,7 +15147,8 @@ mod tests {
 
     #[test]
     fn find_next_and_prev_move_the_active_match() {
-        // VAL-TUI-078: next/prev move the active match (wrapping at the ends).
+        // VAL-TUI-078: next/prev move the active match (wrapping at the ends). While EDITING, Down/Up
+        // navigate as ergonomic extras (Enter is reserved to commit into NAV mode).
         let mut a = app();
         a.transcript.push(Entry::Notice("apple one".to_owned()));
         a.transcript.push(Entry::Notice("apple two".to_owned()));
@@ -15135,8 +15160,8 @@ mod tests {
         assert_eq!(a.find_status(), (0, 3));
         a.on_key(key(KeyCode::Down));
         assert_eq!(a.find_status().0, 1, "Down advances to the next match");
-        a.on_key(key(KeyCode::Enter));
-        assert_eq!(a.find_status().0, 2, "Enter advances to the next match");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.find_status().0, 2, "Down advances again");
         a.on_key(key(KeyCode::Down));
         assert_eq!(a.find_status().0, 0, "next wraps back to the first match");
         a.on_key(key(KeyCode::Up));
@@ -15197,9 +15222,9 @@ mod tests {
     }
 
     #[test]
-    fn find_nav_uses_non_letter_keys_only() {
-        // Next/prev-match navigation is reserved to non-letter keys (Enter/Down next, Up prev),
-        // never n/N (which are reserved for typing).
+    fn find_editing_mode_letters_type_and_arrows_navigate() {
+        // In EDITING mode letters (incl. n/N) type into the query and are never consumed as
+        // navigation; Down/Up navigate matches as ergonomic extras.
         let mut a = app();
         a.transcript.push(Entry::Notice("nano one".to_owned()));
         a.transcript.push(Entry::Notice("nano two".to_owned()));
@@ -15208,13 +15233,122 @@ mod tests {
         for c in "nano".chars() {
             a.on_key(key(KeyCode::Char(c)));
         }
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("nano"),
+            "letters incl. n type into the query, never consumed as navigation"
+        );
         assert_eq!(a.find_status(), (0, 3), "three `nano` matches, active at 0");
         a.on_key(key(KeyCode::Down));
         assert_eq!(a.find_status().0, 1, "Down advances to the next match");
-        a.on_key(key(KeyCode::Enter));
-        assert_eq!(a.find_status().0, 2, "Enter advances to the next match");
         a.on_key(key(KeyCode::Up));
-        assert_eq!(a.find_status().0, 1, "Up steps to the previous match");
+        assert_eq!(a.find_status().0, 0, "Up steps to the previous match");
+    }
+
+    #[test]
+    fn find_commit_then_n_and_shift_n_navigate_wrapping() {
+        // After Enter commits the query, `n` advances and `N` retreats the active match (both
+        // wrapping), the cur counter changes, and the query itself is untouched by navigation.
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple one".to_owned()));
+        a.transcript.push(Entry::Notice("apple two".to_owned()));
+        a.transcript.push(Entry::Notice("apple three".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "apple".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status(), (0, 3), "editing highlights all three matches");
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(false),
+            "still EDITING before Enter"
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(true),
+            "Enter commits into NAV mode"
+        );
+        assert_eq!(
+            a.find_status(),
+            (0, 3),
+            "commit keeps the matches/highlight and the first active match"
+        );
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(a.find_status().0, 1, "n advances to the next match");
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(a.find_status().0, 2, "n advances again");
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(a.find_status().0, 0, "n wraps back to the first match");
+        a.on_key(key(KeyCode::Char('N')));
+        assert_eq!(a.find_status().0, 2, "N wraps to the last match");
+        a.on_key(key(KeyCode::Char('N')));
+        assert_eq!(a.find_status().0, 1, "N retreats to the previous match");
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("apple"),
+            "n/N navigate in NAV mode instead of typing into the query"
+        );
+    }
+
+    #[test]
+    fn find_nav_printable_char_reenters_editing() {
+        // In NAV mode a printable char (not n/N) or Backspace returns to EDITING and refines the
+        // query.
+        let mut a = app();
+        a.transcript.push(Entry::Notice("apple pie".to_owned()));
+        a.transcript.push(Entry::Notice("apple tart".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "apple".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.find().map(|f| f.committed), Some(true), "Enter commits");
+        a.on_key(key(KeyCode::Char(' ')));
+        a.on_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(false),
+            "typing a printable char re-enters EDITING"
+        );
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("apple p"),
+            "the typed characters refine the query"
+        );
+        assert_eq!(
+            a.find_status().1,
+            1,
+            "`apple p` now matches only `apple pie`"
+        );
+        // Backspace also re-enters EDITING and edits the query.
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.find().map(|f| f.committed), Some(true), "re-committed");
+        a.on_key(key(KeyCode::Backspace));
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(false),
+            "Backspace re-enters EDITING"
+        );
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("apple "),
+            "Backspace deletes the last query char"
+        );
+    }
+
+    #[test]
+    fn find_opens_in_editing_mode() {
+        // committed defaults to false on open (EDITING mode); see the ui.rs render test for the
+        // caret + hint rendering that stays identical in both modes.
+        let mut a = app();
+        a.transcript.push(Entry::Notice("registry schema".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(
+            a.find().map(|f| f.committed),
+            Some(false),
+            "committed defaults to false on open"
+        );
     }
 
     #[test]
