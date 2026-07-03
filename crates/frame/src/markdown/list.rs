@@ -58,7 +58,7 @@ use ratatui::text::{Line, Span};
 const MAX_DEPTH: usize = 10;
 
 /// Bullet characters by depth level
-const BULLETS: [&str; 4] = ["•", "◦", "▪", "▸"];
+const BULLETS: [&str; 4] = ["•", "◦", "▪", "·"];
 
 /// Spaces per indentation level
 const INDENT_WIDTH: usize = 2;
@@ -560,10 +560,10 @@ mod tests {
         assert_eq!(get_bullet(0), "•");
         assert_eq!(get_bullet(1), "◦");
         assert_eq!(get_bullet(2), "▪");
-        assert_eq!(get_bullet(3), "▸");
+        assert_eq!(get_bullet(3), "·");
         // Should cap at last bullet
-        assert_eq!(get_bullet(4), "▸");
-        assert_eq!(get_bullet(100), "▸");
+        assert_eq!(get_bullet(4), "·");
+        assert_eq!(get_bullet(100), "·");
     }
 
     #[test]

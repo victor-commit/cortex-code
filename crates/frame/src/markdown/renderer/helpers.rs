@@ -28,7 +28,7 @@ pub fn heading_level_to_u8(level: HeadingLevel) -> u8 {
 }
 
 /// Bullet characters by depth level.
-const BULLETS: [&str; 4] = ["•", "◦", "▪", "▸"];
+const BULLETS: [&str; 4] = ["•", "◦", "▪", "·"];
 
 /// Get bullet character for a depth level.
 pub fn get_bullet(depth: usize) -> &'static str {

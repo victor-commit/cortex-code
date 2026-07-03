@@ -102,6 +102,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // crumb (perm_attach.png); the shared 3-zone status bar is drawn by the chrome.
         let body = crate::view::render_chrome(frame, area, app, "attachments", &theme);
         (body, false)
+    } else if markdown_rendering_active(app) {
+        // A rendered/streaming markdown answer: wrap the conversation in the shared chrome under a
+        // `chat · rendering` crumb (markdown_stream.png); the shared 3-zone status bar (with the real
+        // model id) is drawn by the chrome, so the conversation draws no own footer.
+        let body = crate::view::render_chrome(frame, area, app, "chat · rendering", &theme);
+        (body, false)
     } else {
         (area, true)
     };
@@ -323,6 +329,7 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                 app.theme(),
                 &theme,
                 stream_caret && idx == last_idx,
+                app.is_busy() && idx == last_idx,
             ),
             Entry::Diff(diff) => push_diff(&mut lines, diff, &theme),
             Entry::Tool(card) => {
@@ -566,6 +573,7 @@ fn push_assistant(
     theme_name: &str,
     theme: &style::ThemeColors,
     caret: bool,
+    streaming: bool,
 ) {
     // Reasoning, when present, renders in a distinct dimmed/labeled region separate from the answer.
     // When absent, nothing is emitted (no empty-reasoning artifact).
@@ -587,35 +595,72 @@ fn push_assistant(
         lines.push(Line::from(""));
     }
 
-    // The assistant reply leads with a `✦` author mark (AMBER) at the content-left column, inline
-    // with the first line of the reply; wrapped/subsequent lines hang-indent under the text column
-    // (one column past the mark). The answer is markdown-rendered so headings, emphasis, lists,
-    // inline code, fenced code blocks, tables, and blockquotes display as structured elements, with
-    // plain prose promoted to BRIGHT to match the reply tone. Re-rendered every frame from the
-    // accumulated answer, so it updates incrementally as the turn streams.
+    // The assistant reply leads with a `✦` author mark (AMBER) at the content-left column. A plain
+    // prose reply renders inline with the first line (promoted to BRIGHT to match the reply tone),
+    // with wrapped lines hang-indented under the text column. A *structured* markdown answer
+    // (headings, lists, tables, blockquotes, fenced code) instead leads with a `✦ Cortex` author
+    // line and renders the markdown body beneath it in the theme's TXT prose tone, so headings sit
+    // BRIGHT above a GHOST rule, bullets carry `•` accents, inline code chips keep their explicit
+    // background, and bold spans stay distinctly brighter than body TXT. Re-rendered every frame
+    // from the accumulated answer, so it updates incrementally as the turn streams.
     let mark = Style::default().fg(theme.secondary);
     let text_indent = CONTENT_MARGIN + 2;
+    let structured = is_structured_markdown(&turn.answer);
+    let base_prose = if structured {
+        // Structured markdown keeps the theme's TXT body tone so headings/bold read as brighter.
+        frame::markdown::MarkdownTheme::from_name(theme_name)
+    } else {
+        // Plain prose is promoted to BRIGHT to match the conversational reply tone (VAL-CONV-018).
+        frame::markdown::MarkdownTheme::from_name(theme_name)
+            .with_text(Style::default().fg(theme.text_bright))
+    };
     let body_lines: Vec<Line<'static>> = if turn.answer.trim().is_empty() {
         vec![Line::from("")]
     } else {
         let md_width = width.saturating_sub(text_indent).clamp(1, u16::MAX as usize) as u16;
-        let renderer = frame::markdown::MarkdownRenderer::with_theme(
-            frame::markdown::MarkdownTheme::from_name(theme_name)
-                .with_text(Style::default().fg(theme.text_bright)),
-        )
-        .with_width(md_width);
+        let renderer = frame::markdown::MarkdownRenderer::with_theme(base_prose).with_width(md_width);
         renderer.render(&turn.answer)
     };
-    for (i, line) in body_lines.into_iter().enumerate() {
-        let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
-        if i == 0 {
-            spans.push(Span::raw(" ".repeat(CONTENT_MARGIN)));
-            spans.push(Span::styled(format!("{} ", crate::glyphs::BRAND_STAR), mark));
-        } else {
-            spans.push(Span::raw(" ".repeat(text_indent)));
+
+    if structured {
+        // Author line: `✦ Cortex` (✦ AMBER, `Cortex` BRIGHT), with the markdown block beneath it
+        // (all body rows hang-indented under the text column). While the turn is actively
+        // streaming, a DIM status suffix (`synthesizing answer…`) trails the name so the
+        // in-progress reply reads `✦ Cortex synthesizing answer…` (VAL-MD-002); it drops away once
+        // the turn completes, leaving the bare `✦ Cortex` label.
+        let mut author_spans = vec![
+            Span::raw(" ".repeat(CONTENT_MARGIN)),
+            Span::styled(format!("{} ", crate::glyphs::BRAND_STAR), mark),
+            Span::styled(
+                "Cortex".to_owned(),
+                Style::default().fg(theme.text_bright),
+            ),
+        ];
+        if streaming {
+            author_spans.push(Span::styled(
+                " synthesizing answer…".to_owned(),
+                Style::default().fg(theme.text_dim),
+            ));
         }
-        spans.extend(line.spans);
-        lines.push(Line::from(spans));
+        lines.push(Line::from(author_spans));
+        for line in body_lines {
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+            spans.push(Span::raw(" ".repeat(text_indent)));
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+    } else {
+        for (i, line) in body_lines.into_iter().enumerate() {
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+            if i == 0 {
+                spans.push(Span::raw(" ".repeat(CONTENT_MARGIN)));
+                spans.push(Span::styled(format!("{} ", crate::glyphs::BRAND_STAR), mark));
+            } else {
+                spans.push(Span::raw(" ".repeat(text_indent)));
+            }
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
     }
     // While the turn streams, a `▏` caret (ORANGE) trails the last line of the growing answer. The
     // caller passes `caret` only for the in-progress reply and only when the blink state is visible,
@@ -627,6 +672,52 @@ fn push_assistant(
         ));
     }
     lines.push(Line::from(""));
+}
+
+/// Whether the conversation is currently showing a rendered/streaming markdown answer, i.e. the
+/// most recent transcript entry is an assistant reply whose body is structured markdown AND the
+/// turn is still actively streaming. Drives the `chat · rendering` breadcrumb chrome (VAL-MD-001)
+/// only during the live streaming state, without disturbing static/loaded conversations.
+fn markdown_rendering_active(app: &App) -> bool {
+    app.is_busy()
+        && matches!(
+            app.transcript.last(),
+            Some(Entry::Assistant(turn)) if is_structured_markdown(&turn.answer)
+        )
+}
+
+/// Whether an assistant answer contains structured markdown (a heading, list, table, blockquote, or
+/// fenced code block) versus plain prose. Structured answers render under a `✦ Cortex` author line
+/// with the markdown body in the theme prose tone; plain prose keeps the inline `✦ <reply>` form.
+fn is_structured_markdown(answer: &str) -> bool {
+    answer.lines().any(|raw| {
+        let line = raw.trim_start();
+        // ATX heading (`# `..`###### `).
+        (line.starts_with('#')
+            && line.trim_start_matches('#').starts_with(' '))
+            // Fenced code block.
+            || line.starts_with("```")
+            // Blockquote.
+            || line.starts_with("> ")
+            // GFM table row / separator.
+            || line.starts_with('|')
+            // Unordered list item (`- `, `* `, `+ `).
+            || line.starts_with("- ")
+            || line.starts_with("* ")
+            || line.starts_with("+ ")
+            // Ordered list item (`N. ` / `N) `).
+            || ordered_list_marker(line)
+    })
+}
+
+/// Whether `line` begins with an ordered-list marker (`12. ` or `12) `).
+fn ordered_list_marker(line: &str) -> bool {
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return false;
+    }
+    let rest = &line[digits.len()..];
+    rest.starts_with(". ") || rest.starts_with(") ")
 }
 
 /// Append a file-change diff: a labeled marker line, then the colored unified-diff lines (file-path
@@ -6509,6 +6600,7 @@ mod tests {
             "dark",
             &style::ThemeColors::dark(),
             false,
+            false,
         );
         let text = rendered(&lines);
         // Markers are consumed; structured elements render.
@@ -6529,6 +6621,217 @@ mod tests {
     }
 
     #[test]
+    fn structured_markdown_renders_under_a_cortex_author_line() {
+        // VAL-MD-002/004: a structured markdown answer renders under a `✦ Cortex` author line
+        // (✦ AMBER, `Cortex` BRIGHT) with the markdown body beneath it; paragraph body text is TXT
+        // and inline bold is distinctly BRIGHT (brighter than the surrounding body).
+        let theme = style::ThemeColors::dark();
+        let mut lines = Vec::new();
+        let answer = "# Tool Registry\n\nThe registry resolves each tool to a **golden schema** before dispatch.";
+        push_assistant(
+            &mut lines,
+            &AssistantTurn {
+                reasoning: String::new(),
+                answer: answer.to_owned(),
+            },
+            80,
+            "dark",
+            &theme,
+            false,
+            false,
+        );
+
+        // Author line: `✦ Cortex` — the star is AMBER (secondary) and `Cortex` is BRIGHT.
+        let author = lines
+            .iter()
+            .find(|l| plain(l).contains("✦ Cortex"))
+            .expect("`✦ Cortex` author line");
+        let star = author
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('✦'))
+            .expect("star span");
+        assert_eq!(star.style.fg, Some(theme.secondary), "star is AMBER");
+        let name = author
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Cortex")
+            .expect("Cortex label span");
+        assert_eq!(name.style.fg, Some(theme.text_bright), "Cortex is BRIGHT");
+
+        // Body paragraph is TXT; the inline bold run is BRIGHT (distinct from body TXT).
+        let body_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("registry") || s.content.contains("The"))
+            .expect("body prose span");
+        assert_eq!(body_span.style.fg, Some(theme.text), "body prose is TXT");
+        let bold = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("golden"))
+            .expect("bold span");
+        assert_eq!(bold.style.fg, Some(theme.text_bright), "bold run is BRIGHT");
+        assert_ne!(
+            body_span.style.fg, bold.style.fg,
+            "bold is distinct from body prose"
+        );
+    }
+
+    #[test]
+    fn streaming_markdown_author_line_shows_synthesizing_status() {
+        // VAL-MD-002: while a structured markdown answer is actively streaming, the author line
+        // reads `✦ Cortex synthesizing answer…` (`Cortex` BRIGHT); once the turn completes the
+        // status suffix drops away, leaving the bare `✦ Cortex` label.
+        let theme = style::ThemeColors::dark();
+        let turn = AssistantTurn {
+            reasoning: String::new(),
+            answer: "# Tool Registry\n\n- registry.rs\n- schema.rs".to_owned(),
+        };
+
+        let mut streaming_lines = Vec::new();
+        push_assistant(&mut streaming_lines, &turn, 80, "dark", &theme, false, true);
+        let author = streaming_lines
+            .iter()
+            .find(|l| plain(l).contains("✦ Cortex"))
+            .expect("`✦ Cortex` author line");
+        assert!(
+            plain(author).contains("Cortex synthesizing answer…"),
+            "streaming status suffix present: {:?}",
+            plain(author)
+        );
+        let name = author
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Cortex")
+            .expect("Cortex label span");
+        assert_eq!(name.style.fg, Some(theme.text_bright), "Cortex is BRIGHT");
+
+        let mut idle_lines = Vec::new();
+        push_assistant(&mut idle_lines, &turn, 80, "dark", &theme, false, false);
+        let idle_author = idle_lines
+            .iter()
+            .find(|l| plain(l).contains("✦ Cortex"))
+            .expect("`✦ Cortex` author line");
+        assert!(
+            !plain(idle_author).contains("synthesizing"),
+            "no status suffix once the turn completes: {:?}",
+            plain(idle_author)
+        );
+    }
+
+    #[test]
+    fn plain_prose_reply_keeps_inline_star_without_cortex_label() {
+        // Regression guard for VAL-CONV-018: a plain (non-structured) reply keeps the inline
+        // `✦ <reply>` form (no `✦ Cortex` author line) with the body in BRIGHT.
+        let theme = style::ThemeColors::dark();
+        let mut lines = Vec::new();
+        push_assistant(
+            &mut lines,
+            &AssistantTurn {
+                reasoning: String::new(),
+                answer: "Sure, I'll cap the buffer and trim the oldest chunks.".to_owned(),
+            },
+            80,
+            "dark",
+            &theme,
+            false,
+            false,
+        );
+        let text = rendered(&lines);
+        assert!(!text.contains("✦ Cortex"), "no author label on plain prose:\n{text}");
+        let star_line = lines
+            .iter()
+            .find(|l| plain(l).contains("✦ Sure"))
+            .expect("inline `✦ <reply>` line");
+        assert!(
+            star_line
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(theme.text_bright)),
+            "plain reply body is BRIGHT"
+        );
+    }
+
+    #[test]
+    fn markdown_answer_shows_chat_rendering_breadcrumb() {
+        // VAL-MD-001: while a structured markdown answer is actively streaming, the screen wraps
+        // the conversation in the shared chrome with a `✦ Cortex Code · chat · rendering` header
+        // (✦ ORANGE, `Cortex Code` BRIGHT, ` · ` GHOST, trailing `rendering` AMBER). This is a
+        // streaming-state affordance only (VAL-CONV-021/063 lock the static `▲ N lines above`
+        // row-0 for a non-streaming/loaded conversation), so the turn must still be busy.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::User("show me the tool registry".to_owned()));
+        let (_tx, rx) = channel();
+        a.begin_turn("show me the tool registry".to_owned(), rx, flag());
+        if let Some(Entry::Assistant(turn)) = a.transcript.last_mut() {
+            turn.answer.push_str("# Tool Registry\n\n- registry.rs\n- schema.rs");
+        }
+        assert!(a.is_busy(), "the turn is streaming");
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
+        assert!(
+            row0.contains("Cortex Code") && row0.contains("chat") && row0.contains("rendering"),
+            "row 0 shows the chat·rendering breadcrumb: {row0:?}"
+        );
+        // The trailing `rendering` crumb is AMBER; `Cortex Code` is BRIGHT; the star is ORANGE.
+        let cell_fg = |needle: char| {
+            (0..92)
+                .map(|x| buffer[(x, 0)].clone())
+                .find(|c| c.symbol() == needle.to_string())
+                .map(|c| c.fg)
+        };
+        assert_eq!(cell_fg('✦'), Some(theme.primary), "star is ORANGE");
+        let r_cell = (0..92)
+            .map(|x| buffer[(x, 0)].clone())
+            .filter(|c| c.symbol() == "r")
+            .find(|c| c.fg == theme.secondary);
+        assert!(r_cell.is_some(), "the `rendering` crumb is AMBER");
+    }
+
+    #[test]
+    fn static_loaded_markdown_conversation_keeps_the_locked_scroll_marker() {
+        // VAL-MD-001 non-regression: a NON-streaming (static/loaded) conversation whose last entry
+        // is a completed structured-markdown answer must NOT show the `chat · rendering` breadcrumb
+        // — row 0 stays the locked `▲ N lines above` scroll marker (VAL-CONV-021/063) once the
+        // transcript overflows the viewport.
+        let mut a = app();
+        for i in 0..12 {
+            a.transcript.push(Entry::User(format!("question {i}")));
+            a.transcript.push(Entry::Assistant(AssistantTurn {
+                reasoning: String::new(),
+                answer: format!("plain reply {i}"),
+            }));
+        }
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "# Tool Registry\n\n- registry.rs\n- schema.rs".to_owned(),
+        }));
+        assert!(!a.is_busy(), "the conversation is static, not streaming");
+
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
+        assert!(
+            !row0.contains("chat") && !row0.contains("rendering"),
+            "no chat·rendering breadcrumb on a static conversation: {row0:?}"
+        );
+    }
+
+    #[test]
     fn reasoning_renders_in_a_labeled_region() {
         let mut lines = Vec::new();
         push_assistant(
@@ -6540,6 +6843,7 @@ mod tests {
             80,
             "dark",
             &style::ThemeColors::dark(),
+            false,
             false,
         );
         let text = rendered(&lines);
@@ -6560,6 +6864,7 @@ mod tests {
             80,
             "dark",
             &style::ThemeColors::dark(),
+            false,
             false,
         );
         let text = rendered(&lines);

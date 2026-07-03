@@ -362,7 +362,7 @@ mod tests {
         let lines = renderer.render(md);
         assert!(!lines.is_empty());
         let content: String = lines[0].spans.iter().map(|s| &*s.content).collect();
-        assert!(content.contains("This is a quote") || content.contains("│"));
+        assert!(content.contains("This is a quote") || content.contains("▎"));
     }
 
     #[test]
@@ -637,8 +637,8 @@ End."#;
         assert_eq!(get_bullet(0), "•");
         assert_eq!(get_bullet(1), "◦");
         assert_eq!(get_bullet(2), "▪");
-        assert_eq!(get_bullet(3), "▸");
-        assert_eq!(get_bullet(100), "▸"); // Should cap at last
+        assert_eq!(get_bullet(3), "·");
+        assert_eq!(get_bullet(100), "·"); // Should cap at last
     }
 
     // ============================================================

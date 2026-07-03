@@ -368,14 +368,14 @@ pub fn parse_inline_spans(text: &str, theme: &MarkdownTheme) -> Vec<Span<'static
 
 /// Render blockquote prefix for given depth.
 ///
-/// Creates a visual prefix for blockquotes using vertical bars.
+/// Creates a visual prefix for blockquotes using leading `▎` accent bars.
 /// Nested blockquotes get multiple bars.
 ///
 /// # Examples
 ///
-/// - depth=1: "│ "
-/// - depth=2: "│ │ "
-/// - depth=3: "│ │ │ "
+/// - depth=1: "▎ "
+/// - depth=2: "▎ ▎ "
+/// - depth=3: "▎ ▎ ▎ "
 ///
 /// # Arguments
 ///
@@ -397,7 +397,7 @@ pub fn render_blockquote_prefix(depth: usize, border_color: Color) -> Vec<Span<'
     let bar_style = Style::default().fg(border_color);
 
     for _ in 0..clamped_depth {
-        spans.push(Span::styled("│", bar_style));
+        spans.push(Span::styled("▎", bar_style));
         spans.push(Span::raw(" "));
     }
 
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(spans.len(), 2);
 
         // First span should be the bar
-        assert_eq!(spans[0].content.as_ref(), "│");
+        assert_eq!(spans[0].content.as_ref(), "▎");
         // Second span should be space
         assert_eq!(spans[1].content.as_ref(), " ");
     }
@@ -664,9 +664,9 @@ mod tests {
         let spans = render_blockquote_prefix(2, Color::Cyan);
         assert_eq!(spans.len(), 4);
 
-        assert_eq!(spans[0].content.as_ref(), "│");
+        assert_eq!(spans[0].content.as_ref(), "▎");
         assert_eq!(spans[1].content.as_ref(), " ");
-        assert_eq!(spans[2].content.as_ref(), "│");
+        assert_eq!(spans[2].content.as_ref(), "▎");
         assert_eq!(spans[3].content.as_ref(), " ");
     }
 
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(spans.len(), 6);
 
         for i in 0..3 {
-            assert_eq!(spans[i * 2].content.as_ref(), "│");
+            assert_eq!(spans[i * 2].content.as_ref(), "▎");
             assert_eq!(spans[i * 2 + 1].content.as_ref(), " ");
         }
     }

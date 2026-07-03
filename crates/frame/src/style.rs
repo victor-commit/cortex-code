@@ -203,6 +203,10 @@ pub const CODEBG: Color = Color::Rgb(24, 24, 28);
 /// Inline-code chip background.
 pub const INLBG: Color = Color::Rgb(40, 34, 28);
 
+/// Inline-code / code-chip foreground: the VS Code Dark+ variable light-blue (documented
+/// code-color exception to the mono-orange brand palette).
+pub const VAR: Color = Color::Rgb(156, 220, 254);
+
 // ============================================================
 // THEME COLORS STRUCT - For future theme switching
 // ============================================================

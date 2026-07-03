@@ -25,6 +25,42 @@ use crate::markdown::table::{TableBuilder, render_table_simple};
 use super::helpers::{get_bullet, heading_level_to_u8};
 use super::state::RenderState;
 
+/// Recolor an ordered-list item that follows the `term — description` shape so the leading term
+/// carries the accent tone and the ` — `/` – ` separator is ghosted, leaving the description in its
+/// original (body) style. Only a single plain content span is split (the common seeded case); items
+/// with richer inline markup are left untouched.
+fn split_term_description(
+    content: Vec<Span<'static>>,
+    term_style: Style,
+    sep_style: Style,
+) -> Vec<Span<'static>> {
+    if content.len() != 1 {
+        return content;
+    }
+    let span = &content[0];
+    let text = span.content.as_ref();
+    let sep = if text.contains(" — ") {
+        " — "
+    } else if text.contains(" – ") {
+        " – "
+    } else {
+        return content;
+    };
+    let Some(idx) = text.find(sep) else {
+        return content;
+    };
+    let term = text[..idx].to_string();
+    let desc = text[idx + sep.len()..].to_string();
+    if term.is_empty() || desc.is_empty() {
+        return content;
+    }
+    vec![
+        Span::styled(term, term_style),
+        Span::styled(sep.to_string(), sep_style),
+        Span::styled(desc, span.style),
+    ]
+}
+
 // ============================================================
 // Start tag handlers
 // ============================================================
@@ -134,12 +170,14 @@ impl<'a> RenderState<'a> {
         if let Some(level) = self.current_heading_level.take() {
             let style = self.renderer.theme.header_style(heading_level_to_u8(level));
 
-            // Apply heading style to all spans
+            // Apply heading style to all spans. The heading style is layered ON TOP of each span's
+            // own style so the heading tone (e.g. BRIGHT H1) wins over the inherited body text
+            // color while any inline emphasis modifiers are preserved.
             let spans: Vec<Span<'static>> = self
                 .current_spans
                 .drain(..)
                 .map(|mut s| {
-                    s.style = style.patch(s.style);
+                    s.style = s.style.patch(style);
                     s
                 })
                 .collect();
@@ -149,6 +187,19 @@ impl<'a> RenderState<'a> {
             final_spans.extend(spans);
 
             self.lines.push(Line::from(final_spans));
+
+            // A top-level heading is underscored by a full-width rule in the ghost tone directly
+            // beneath it (the H1 gets a horizontal rule instead of a text underline).
+            if heading_level_to_u8(level) == 1 {
+                let rule_width = self.renderer.width.saturating_sub(
+                    (self.blockquote_depth * 2) as u16,
+                );
+                let rule = "─".repeat(rule_width.max(1) as usize);
+                let mut rule_spans = self.get_blockquote_prefix();
+                rule_spans.push(Span::styled(rule, self.renderer.theme.heading_rule));
+                self.lines.push(Line::from(rule_spans));
+            }
+
             self.needs_newline = true;
         }
     }
@@ -224,8 +275,20 @@ impl<'a> RenderState<'a> {
             // Add marker
             spans.push(Span::styled(marker, marker_style));
 
-            // Add content
-            spans.append(&mut self.current_list_item);
+            // Add content. For an ordered `term — description` item, recolor the leading term and
+            // the ` — ` separator so numbered definition rows read `1. parse — decode …` with the
+            // term in the accent tone and the separator ghosted.
+            let content = std::mem::take(&mut self.current_list_item);
+            let content = if ctx.ordered {
+                split_term_description(
+                    content,
+                    theme.list_term,
+                    theme.list_separator,
+                )
+            } else {
+                content
+            };
+            spans.extend(content);
 
             self.lines.push(Line::from(spans));
         }

@@ -33,7 +33,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::style::{
-    AMBER, BORDER_BRAND, BRIGHT, CODEBG, DIM, FAINT, INLBG, OKG, ORANGE, ORANGE_D, PANEL2, TXT,
+    AMBER, BORDER_BRAND, BRIGHT, CODEBG, DIM, FAINT, GHOST, INLBG, OKG, ORANGE, ORANGE_D, PANEL2,
+    TXT, VAR,
 };
 
 /// Comprehensive theme configuration for markdown rendering.
@@ -97,6 +98,10 @@ pub struct MarkdownTheme {
     pub list_bullet: Style,
     /// Style for ordered list numbers
     pub list_number: Style,
+    /// Style for the leading term of a `term — description` list item.
+    pub list_term: Style,
+    /// Style for the ` — ` separator between a list item's term and description.
+    pub list_separator: Style,
     /// Style for checked task list items
     pub task_checked: Style,
     /// Style for unchecked task list items
@@ -127,6 +132,8 @@ pub struct MarkdownTheme {
     // ============================================================
     /// Style for horizontal rules
     pub hr: Style,
+    /// Style for the ghost rule drawn directly under an H1 heading.
+    pub heading_rule: Style,
     /// Style for normal/default text
     pub text: Style,
 
@@ -410,7 +417,7 @@ impl MarkdownTheme {
         Self {
             h1: Style::default()
                 .fg(Color::Rgb(0, 100, 70))
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
             h2: Style::default()
                 .fg(Color::Rgb(0, 100, 70))
                 .add_modifier(Modifier::BOLD),
@@ -450,6 +457,8 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::ITALIC),
             list_bullet: Style::default().fg(Color::Rgb(0, 100, 70)),
             list_number: Style::default().fg(Color::Rgb(0, 100, 70)),
+            list_term: Style::default().fg(Color::Rgb(0, 80, 60)),
+            list_separator: Style::default().fg(Color::Rgb(160, 160, 160)),
             task_checked: Style::default().fg(Color::Rgb(0, 150, 0)),
             task_unchecked: Style::default().fg(Color::Rgb(120, 120, 120)),
             table_border: Color::Rgb(0, 100, 70),
@@ -463,6 +472,7 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::UNDERLINED),
             link_url: Style::default().fg(Color::Rgb(120, 120, 120)),
             hr: Style::default().fg(Color::Rgb(200, 200, 200)),
+            heading_rule: Style::default().fg(Color::Rgb(200, 200, 200)),
             text: Style::default().fg(Color::Rgb(30, 30, 30)),
             syntax_theme: "light".to_string(),
         }
@@ -473,7 +483,7 @@ impl MarkdownTheme {
         Self {
             h1: Style::default()
                 .fg(Color::Rgb(0, 200, 200))
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
             h2: Style::default()
                 .fg(Color::Rgb(0, 200, 200))
                 .add_modifier(Modifier::BOLD),
@@ -513,6 +523,8 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::ITALIC),
             list_bullet: Style::default().fg(Color::Rgb(0, 200, 200)),
             list_number: Style::default().fg(Color::Rgb(0, 200, 200)),
+            list_term: Style::default().fg(Color::Rgb(100, 200, 220)),
+            list_separator: Style::default().fg(Color::Rgb(80, 110, 140)),
             task_checked: Style::default().fg(Color::Rgb(0, 220, 180)),
             task_unchecked: Style::default().fg(Color::Rgb(80, 110, 140)),
             table_border: Color::Rgb(0, 200, 200),
@@ -526,6 +538,7 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::UNDERLINED),
             link_url: Style::default().fg(Color::Rgb(80, 110, 140)),
             hr: Style::default().fg(Color::Rgb(40, 80, 120)),
+            heading_rule: Style::default().fg(Color::Rgb(40, 80, 120)),
             text: Style::default().fg(Color::Rgb(230, 240, 250)),
             syntax_theme: "ocean".to_string(),
         }
@@ -536,7 +549,7 @@ impl MarkdownTheme {
         Self {
             h1: Style::default()
                 .fg(Color::Rgb(166, 226, 46)) // Monokai green
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
             h2: Style::default()
                 .fg(Color::Rgb(166, 226, 46))
                 .add_modifier(Modifier::BOLD),
@@ -576,6 +589,8 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::ITALIC),
             list_bullet: Style::default().fg(Color::Rgb(249, 38, 114)),
             list_number: Style::default().fg(Color::Rgb(249, 38, 114)),
+            list_term: Style::default().fg(Color::Rgb(102, 217, 239)),
+            list_separator: Style::default().fg(Color::Rgb(117, 113, 94)),
             task_checked: Style::default().fg(Color::Rgb(166, 226, 46)),
             task_unchecked: Style::default().fg(Color::Rgb(117, 113, 94)),
             table_border: Color::Rgb(166, 226, 46),
@@ -589,6 +604,7 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::UNDERLINED),
             link_url: Style::default().fg(Color::Rgb(117, 113, 94)),
             hr: Style::default().fg(Color::Rgb(70, 71, 65)),
+            heading_rule: Style::default().fg(Color::Rgb(70, 71, 65)),
             text: Style::default().fg(Color::Rgb(248, 248, 242)),
             syntax_theme: "monokai".to_string(),
         }
@@ -599,7 +615,7 @@ impl MarkdownTheme {
         Self {
             h1: Style::default()
                 .fg(Color::Rgb(86, 156, 214))
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
             h2: Style::default()
                 .fg(Color::Rgb(86, 156, 214))
                 .add_modifier(Modifier::BOLD),
@@ -639,6 +655,8 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::ITALIC),
             list_bullet: Style::default().fg(Color::Rgb(0, 122, 204)),
             list_number: Style::default().fg(Color::Rgb(0, 122, 204)),
+            list_term: Style::default().fg(Color::Rgb(78, 201, 176)),
+            list_separator: Style::default().fg(Color::Rgb(110, 110, 110)),
             task_checked: Style::default().fg(Color::Rgb(137, 209, 133)),
             task_unchecked: Style::default().fg(Color::Rgb(110, 110, 110)),
             table_border: Color::Rgb(0, 122, 204),
@@ -652,6 +670,7 @@ impl MarkdownTheme {
                 .add_modifier(Modifier::UNDERLINED),
             link_url: Style::default().fg(Color::Rgb(110, 110, 110)),
             hr: Style::default().fg(Color::Rgb(62, 62, 66)),
+            heading_rule: Style::default().fg(Color::Rgb(62, 62, 66)),
             text: Style::default().fg(Color::Rgb(212, 212, 212)),
             syntax_theme: "vscode".to_string(),
         }
@@ -675,8 +694,8 @@ impl Default for MarkdownTheme {
         Self {
             // Headers - decreasing prominence from H1 to H6
             h1: Style::default()
-                .fg(ORANGE)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .fg(BRIGHT)
+                .add_modifier(Modifier::BOLD),
             h2: Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
             h3: Style::default()
                 .fg(AMBER)
@@ -691,7 +710,7 @@ impl Default for MarkdownTheme {
             strikethrough: Style::default()
                 .fg(DIM)
                 .add_modifier(Modifier::CROSSED_OUT),
-            code_inline: Style::default().fg(AMBER).bg(INLBG),
+            code_inline: Style::default().fg(VAR).bg(INLBG),
 
             // Code blocks
             code_block_bg: CODEBG,
@@ -706,6 +725,8 @@ impl Default for MarkdownTheme {
             // Lists
             list_bullet: Style::default().fg(ORANGE_D),
             list_number: Style::default().fg(ORANGE_D),
+            list_term: Style::default().fg(AMBER),
+            list_separator: Style::default().fg(GHOST),
             task_checked: Style::default().fg(OKG),
             task_unchecked: Style::default().fg(FAINT),
 
@@ -721,6 +742,7 @@ impl Default for MarkdownTheme {
 
             // Other elements
             hr: Style::default().fg(BORDER_BRAND),
+            heading_rule: Style::default().fg(GHOST),
             text: Style::default().fg(TXT),
 
             // Syntax binding: the default theme is the brand `dark` chrome.
@@ -737,8 +759,8 @@ mod tests {
     fn test_default_theme_creation() {
         let theme = MarkdownTheme::default();
 
-        // Verify header styles use the mono-orange brand palette.
-        assert_eq!(theme.h1.fg, Some(ORANGE));
+        // Verify header styles use the mono-orange brand palette (H1 is the BRIGHT wordmark tone).
+        assert_eq!(theme.h1.fg, Some(BRIGHT));
         assert_eq!(theme.h2.fg, Some(ORANGE));
         assert_eq!(theme.h3.fg, Some(AMBER));
         assert_eq!(theme.h4.fg, Some(AMBER));
@@ -761,9 +783,10 @@ mod tests {
     fn test_header_modifiers() {
         let theme = MarkdownTheme::default();
 
-        // H1 should have BOLD and UNDERLINED
+        // H1 is bold and is underscored by a separate GHOST rule line (no text underline).
         assert!(theme.h1.add_modifier.contains(Modifier::BOLD));
-        assert!(theme.h1.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!theme.h1.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(theme.heading_rule.fg, Some(GHOST));
 
         // H2 should have BOLD only
         assert!(theme.h2.add_modifier.contains(Modifier::BOLD));
@@ -797,7 +820,7 @@ mod tests {
     fn test_code_inline_has_background() {
         let theme = MarkdownTheme::default();
 
-        assert_eq!(theme.code_inline.fg, Some(AMBER));
+        assert_eq!(theme.code_inline.fg, Some(VAR));
         assert_eq!(theme.code_inline.bg, Some(INLBG));
     }
 
@@ -831,6 +854,8 @@ mod tests {
 
         assert_eq!(theme.list_bullet.fg, Some(ORANGE_D));
         assert_eq!(theme.list_number.fg, Some(ORANGE_D));
+        assert_eq!(theme.list_term.fg, Some(AMBER));
+        assert_eq!(theme.list_separator.fg, Some(GHOST));
         assert_eq!(theme.task_checked.fg, Some(OKG));
         assert_eq!(theme.task_unchecked.fg, Some(FAINT));
     }

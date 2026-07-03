@@ -177,11 +177,13 @@ pub fn render_chrome(
 }
 
 /// The wordmark header line: `✦` (ORANGE) + `Cortex Code` (BRIGHT) + ` · ` (GHOST) + crumb (AMBER),
-/// inset by [`VIEW_MARGIN`].
+/// inset by [`VIEW_MARGIN`]. A compound crumb (`chat · rendering`) renders its interior ` · `
+/// separators in the GHOST tone and only its trailing segment in AMBER, so the wave-6 breadcrumb
+/// reads `✦ Cortex Code · chat · rendering` with a single amber tail crumb.
 fn header_line(crumb: &str, width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let mut cells = vec![(' ', base); width.max(1)];
-    let segments: Vec<(String, Style)> = vec![
+    let mut segments: Vec<(String, Style)> = vec![
         (
             format!("{} ", glyphs::BRAND_STAR),
             Style::default().fg(theme.primary).bg(theme.background),
@@ -197,11 +199,22 @@ fn header_line(crumb: &str, width: usize, theme: &ThemeColors) -> Line<'static> 
             format!(" {} ", glyphs::SEPARATOR),
             Style::default().fg(theme.ghost).bg(theme.background),
         ),
-        (
-            crumb.to_owned(),
-            Style::default().fg(theme.secondary).bg(theme.background),
-        ),
     ];
+    // The crumb may itself carry ` · ` sub-separators; render the intermediate parts + separators
+    // in GHOST and only the final part in AMBER (the active crumb).
+    let amber = Style::default().fg(theme.secondary).bg(theme.background);
+    let ghost = Style::default().fg(theme.ghost).bg(theme.background);
+    let parts: Vec<&str> = crumb.split(" · ").collect();
+    let last = parts.len().saturating_sub(1);
+    for (i, part) in parts.iter().enumerate() {
+        segments.push((
+            (*part).to_owned(),
+            if i == last { amber } else { ghost },
+        ));
+        if i != last {
+            segments.push((format!(" {} ", glyphs::SEPARATOR), ghost));
+        }
+    }
     place_segments(&mut cells, VIEW_MARGIN as usize, &segments);
     cells_to_line(&cells)
 }
