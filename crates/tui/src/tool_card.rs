@@ -93,6 +93,12 @@ impl ToolCard {
             ToolStatus::Completed
         };
         self.duration_ms = Some(self.started.elapsed().as_millis() as u64);
+        
+        // Post-completion summary override for tools whose summary depends on the result
+        // (VAL-TOOL-024: todo summary is "{N} items · {M} in progress").
+        if self.name == "todo" && !is_error {
+            self.summary = todo_summary_from_output(&self.output);
+        }
     }
 }
 
@@ -189,7 +195,18 @@ pub fn summarize_args(name: &str, arguments: &str) -> String {
             _ => None,
         },
         "glob" | "list" => field("pattern").or_else(|| field("path")),
-        "bash" => field("command"),
+        "bash" => {
+            let cmd = field("command");
+            let is_background = value
+                .get("background")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            match (cmd, is_background) {
+                (Some(c), true) => Some(format!("{c} (background)")),
+                (Some(c), false) => Some(c),
+                _ => None,
+            }
+        }
         "webfetch" => field("url"),
         "websearch" => field("query"),
         "apply_patch" => field("patch")
@@ -286,6 +303,26 @@ fn truncate(text: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// Compute the todo card summary from the tool's output: "{N} items · {M} in progress"
+/// (VAL-TOOL-024). The output format from the todo tool is a numbered list where each line starts
+/// with `N. [status][priority] content`, or `(no todos)` when empty.
+fn todo_summary_from_output(output: &str) -> String {
+    if output.trim() == "(no todos)" {
+        return "0 items".to_owned();
+    }
+    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+    let total = lines.len();
+    let in_progress = lines
+        .iter()
+        .filter(|l| l.contains("[in_progress]"))
+        .count();
+    if in_progress > 0 {
+        format!("{total} items · {in_progress} in progress")
+    } else {
+        format!("{total} items")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +346,71 @@ mod tests {
     #[test]
     fn bash_summary_names_the_command() {
         assert_eq!(summarize_args("bash", r#"{"command":"ls -la"}"#), "ls -la");
+    }
+
+    #[test]
+    fn background_bash_summary_is_marked_background() {
+        // VAL-TOOL-023: a background bash call's summary marks the job as `(background)`.
+        assert_eq!(
+            summarize_args("bash", r#"{"command":"cargo build --release","background":true}"#),
+            "cargo build --release (background)"
+        );
+        // A foreground call (background false / absent) is the plain command.
+        assert_eq!(
+            summarize_args("bash", r#"{"command":"cargo test","background":false}"#),
+            "cargo test"
+        );
+    }
+
+    #[test]
+    fn websearch_summary_is_the_query() {
+        // VAL-TOOL-026: a websearch call's summary is the search query.
+        assert_eq!(
+            summarize_args("websearch", r#"{"query":"ratatui table widget"}"#),
+            "ratatui table widget"
+        );
+    }
+
+    #[test]
+    fn webfetch_summary_is_the_url() {
+        // VAL-TOOL-027: a webfetch call's summary is the fetched URL.
+        assert_eq!(
+            summarize_args("webfetch", r#"{"url":"https://docs.rs/ratatui/latest"}"#),
+            "https://docs.rs/ratatui/latest"
+        );
+    }
+
+    #[test]
+    fn todo_card_summary_is_computed_from_output_on_complete() {
+        // VAL-TOOL-024: a todo card's summary becomes `{N} items · {M} in progress`, derived from
+        // the tool result after completion.
+        let mut card = ToolCard::new("c", "todo", r#"{}"#);
+        card.complete(
+            &[ToolResultPart::text(
+                "1. [completed][medium] a\n2. [in_progress][high] b\n3. [pending][medium] c",
+            )],
+            false,
+        );
+        assert_eq!(card.summary, "3 items · 1 in progress");
+    }
+
+    #[test]
+    fn todo_card_summary_without_in_progress_omits_the_tail() {
+        let mut card = ToolCard::new("c", "todo", r#"{}"#);
+        card.complete(
+            &[ToolResultPart::text(
+                "1. [completed][medium] a\n2. [pending][medium] b",
+            )],
+            false,
+        );
+        assert_eq!(card.summary, "2 items");
+    }
+
+    #[test]
+    fn todo_card_summary_handles_empty_list() {
+        let mut card = ToolCard::new("c", "todo", r#"{}"#);
+        card.complete(&[ToolResultPart::text("(no todos)")], false);
+        assert_eq!(card.summary, "0 items");
     }
 
     #[test]

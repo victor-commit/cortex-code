@@ -726,29 +726,23 @@ fn push_tool(
 
         if let Some(diff) = card.diff.as_deref() {
             push_card_diff_rows(lines, diff, bx, bw, border_style, base, theme);
+        } else if card.name == "todo" {
+            // VAL-TOOL-025: todo items render with three-state markers: ✓ done (OKG green),
+            // ▶ in-progress (ORANGE), ○ pending (FAINT).
+            push_tool_todo_items(card, &interior_row, text_w, theme, lines);
         } else {
-            let body_style = match card.status {
-                ToolStatus::Failed => Style::default().fg(theme.error).bg(theme.background),
-                _ => Style::default().fg(theme.text).bg(theme.background),
-            };
-            let out_lines: Vec<&str> = card.output.lines().collect();
-            let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
-            for line in &out_lines[..shown] {
-                lines.push(interior_row(&[(clip_text(line, text_w), body_style)]));
-            }
-            if out_lines.len() > shown {
-                let overflow = format!(
-                    "{} ({} more {})",
-                    glyphs::ELLIPSIS,
-                    out_lines.len() - shown,
-                    overflow_noun(&card.name),
-                );
-                lines.push(interior_row(&[(overflow, header_style)]));
-            }
+            // Generic output: per-line with tool-specific coloring.
+            push_tool_generic_output(card, &interior_row, text_w, header_style, theme, lines);
         }
     } else {
         let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
-        lines.push(interior_row(&[("Ctrl+O to expand".to_owned(), hint_style)]));
+        let hint_text = if card.name == "bash" && card.summary.contains("(background)") {
+            // VAL-TOOL-023: background bash footer hint is "Ctrl+O to expand · esc to background".
+            "Ctrl+O to expand · esc to background".to_owned()
+        } else {
+            "Ctrl+O to expand".to_owned()
+        };
+        lines.push(interior_row(&[(hint_text, hint_style)]));
     }
 
     let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
@@ -759,6 +753,130 @@ fn push_tool(
     }
     lines.push(cells_to_line(&bottom));
     lines.push(Line::from(""));
+}
+
+/// Render the generic tool output payload: per-line with tool-specific coloring (bash success lines
+/// in OKG green per VAL-TOOL-022, failed tools in ERR red), truncated with an overflow row.
+fn push_tool_generic_output<F>(
+    card: &ToolCard,
+    interior_row: &F,
+    text_w: usize,
+    header_style: Style,
+    theme: &style::ThemeColors,
+    lines: &mut Vec<Line<'static>>,
+) where
+    F: Fn(&[(String, Style)]) -> Line<'static>,
+{
+    let out_lines: Vec<&str> = card.output.lines().collect();
+    let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
+    for line in &out_lines[..shown] {
+        let style = tool_output_line_style(&card.name, line, card.status, theme);
+        lines.push(interior_row(&[(clip_text(line, text_w), style)]));
+    }
+    if out_lines.len() > shown {
+        let overflow = format!(
+            "{} ({} more {})",
+            glyphs::ELLIPSIS,
+            out_lines.len() - shown,
+            overflow_noun(&card.name),
+        );
+        lines.push(interior_row(&[(overflow, header_style)]));
+    }
+}
+
+/// The style for one output line inside a tool card, with tool-specific semantic coloring:
+/// - bash (completed): a "test result: ok" success line is OKG green (VAL-TOOL-022), ordinary
+///   lines are TXT.
+/// - failed tools: all lines are ERR red.
+/// - default: TXT.
+fn tool_output_line_style(
+    tool_name: &str,
+    line: &str,
+    status: ToolStatus,
+    theme: &style::ThemeColors,
+) -> Style {
+    let bg = theme.background;
+    if status == ToolStatus::Failed {
+        return Style::default().fg(theme.error).bg(bg);
+    }
+    if tool_name == "bash" && is_shell_success_line(line.trim_start()) {
+        return Style::default().fg(theme.success).bg(bg);
+    }
+    Style::default().fg(theme.text).bg(bg)
+}
+
+/// Render the todo tool's expanded output as three-state item rows (VAL-TOOL-025): each item line
+/// from the todo tool output (`N. [status][priority] content`) is parsed and rendered with a
+/// state-colored marker: ✓ done (OKG green), ▶ in-progress (ORANGE), ○ pending (FAINT).
+fn push_tool_todo_items<F>(
+    card: &ToolCard,
+    interior_row: &F,
+    text_w: usize,
+    theme: &style::ThemeColors,
+    lines: &mut Vec<Line<'static>>,
+) where
+    F: Fn(&[(String, Style)]) -> Line<'static>,
+{
+    if card.output.trim() == "(no todos)" {
+        lines.push(interior_row(&[(
+            "(no todos)".to_owned(),
+            Style::default().fg(theme.text_dim).bg(theme.background),
+        )]));
+        return;
+    }
+    for line in card.output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Parse the todo tool output format: "N. [status][priority] content"
+        let (marker, marker_color, text_color, content) = parse_todo_item_line(line, theme);
+        let clipped = clip_text(&content, text_w.saturating_sub(2).max(1));
+        lines.push(interior_row(&[
+            (
+                format!("{marker} "),
+                Style::default().fg(marker_color).bg(theme.background),
+            ),
+            (
+                clipped,
+                Style::default().fg(text_color).bg(theme.background),
+            ),
+        ]));
+    }
+}
+
+/// Parse a todo tool output line ("N. [status][priority] content") and return the appropriate
+/// three-state marker, colors, and the content text.
+fn parse_todo_item_line(
+    line: &str,
+    theme: &style::ThemeColors,
+) -> (&'static str, Color, Color, String) {
+    // The todo tool output format: "1. [pending][medium] do the thing"
+    let after_dot = line.split_once(". ").map(|(_, rest)| rest).unwrap_or(line);
+    
+    let (marker, marker_color, text_color) = if after_dot.contains("[completed]") {
+        (glyphs::MARK_DONE, theme.success, theme.text_dim)
+    } else if after_dot.contains("[in_progress]") {
+        (
+            glyphs::DISCLOSURE_COLLAPSED,
+            theme.primary,
+            theme.text_bright,
+        )
+    } else if after_dot.contains("[cancelled]") {
+        (glyphs::MARK_ERROR, theme.text_muted, theme.text_muted)
+    } else {
+        // pending or unknown
+        (glyphs::DOT_HOLLOW, theme.ghost, theme.text)
+    };
+    
+    // Extract content after the status and priority brackets
+    let content = after_dot
+        .rsplit(']')
+        .next()
+        .unwrap_or(after_dot)
+        .trim()
+        .to_owned();
+    
+    (marker, marker_color, text_color, content)
 }
 
 /// Render an expanded diff card's payload rows *inside* the tool card's own box: one line-numbered
@@ -7135,6 +7253,191 @@ mod tests {
         assert_eq!(overflow_noun("read"), "lines");
         assert_eq!(overflow_noun("grep"), "lines");
         assert_eq!(overflow_noun("bash"), "lines");
+    }
+
+    #[test]
+    fn bash_card_summary_is_command_line() {
+        // VAL-TOOL-021: a bash card's summary row is the executed command line.
+        let card = tool_card("bash", r#"{"command":"cargo test --workspace"}"#);
+        assert_eq!(card.summary, "cargo test --workspace");
+    }
+
+    #[test]
+    fn bash_card_completed_shows_green_ok_line() {
+        // VAL-TOOL-022: a done bash card shows captured output with a success line
+        // (`test result: ok`) colored OKG green (the sanctioned output-coloring exception).
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("bash", r#"{"command":"cargo test"}"#);
+        card.complete(
+            &[protocol::ToolResultPart::text(
+                "running 3 tests\ntest result: ok. 3 passed; 0 failed",
+            )],
+            false,
+        );
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("test result: ok"), "success line present:\n{text}");
+        
+        // The "test result: ok" line is the only OKG-green span in the output.
+        let ok_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("test result: ok"))
+            .expect("success line span");
+        assert_eq!(
+            ok_span.style.fg,
+            Some(theme.success),
+            "success line is OKG green"
+        );
+        
+        // Other output lines are TXT, not green.
+        let running_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("running 3 tests"))
+            .expect("ordinary log span");
+        assert_eq!(running_span.style.fg, Some(theme.text), "log line is TXT");
+    }
+
+    #[test]
+    fn background_bash_card_shows_background_in_summary_and_special_hint() {
+        // VAL-TOOL-023: a background bash card carries the running chrome, its summary marks the
+        // job as "(background)", and its footer hint reads "Ctrl+O to expand · esc to background".
+        let theme = style::ThemeColors::dark();
+        let card = tool_card("bash", r#"{"command":"cargo build --release","background":true}"#);
+        assert_eq!(card.summary, "cargo build --release (background)");
+        assert_eq!(card.status, ToolStatus::Running);
+        
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+        let text = rendered(&lines);
+        assert!(
+            text.contains("cargo build --release (background)"),
+            "summary includes (background):\n{text}"
+        );
+        assert!(
+            text.contains("esc to background"),
+            "footer hint mentions esc to background:\n{text}"
+        );
+        assert!(
+            text.contains(glyphs::MARK_RUNNING),
+            "running card has the gear glyph:\n{text}"
+        );
+    }
+
+    #[test]
+    fn todo_card_summary_is_item_count_and_in_progress_count() {
+        // VAL-TOOL-024: a todo card's summary row is "{N} items · {M} in progress".
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("todo", r#"{}"#);
+        let output = "1. [completed][medium] cap the streaming buffer\n\
+                      2. [in_progress][high] write tests for the cap\n\
+                      3. [pending][medium] open a pull request";
+        card.complete(&[protocol::ToolResultPart::text(output)], false);
+        assert_eq!(card.summary, "3 items · 1 in progress");
+        
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+        let summary_text = plain(&lines[1]);
+        assert!(
+            summary_text.contains("3 items"),
+            "summary shows item count:\n{summary_text}"
+        );
+        assert!(
+            summary_text.contains("1 in progress"),
+            "summary shows in-progress count:\n{summary_text}"
+        );
+    }
+
+    #[test]
+    fn todo_card_body_shows_three_state_markers() {
+        // VAL-TOOL-025: a todo card's body lists each item with one of three distinct status markers:
+        // ✓ done in OKG green, ▶ in-progress in ORANGE, ○ pending in FAINT.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("todo", r#"{}"#);
+        let output = "1. [completed][medium] cap the streaming buffer\n\
+                      2. [in_progress][high] add a dropped-chunk counter\n\
+                      3. [pending][medium] write the regression test";
+        card.complete(&[protocol::ToolResultPart::text(output)], false);
+        
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        
+        // Each state marker appears with its color
+        assert!(text.contains(glyphs::MARK_DONE), "done marker ✓ present:\n{text}");
+        assert!(
+            text.contains(glyphs::DISCLOSURE_COLLAPSED),
+            "in-progress marker ▶ present:\n{text}"
+        );
+        assert!(text.contains(glyphs::DOT_HOLLOW), "pending marker ○ present:\n{text}");
+        
+        // The done item marker is OKG green
+        let done_marker = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains(glyphs::MARK_DONE))
+            .expect("done marker span");
+        assert_eq!(done_marker.style.fg, Some(theme.success), "done marker is OKG");
+        
+        // The in-progress marker is ORANGE
+        let progress_marker = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains(glyphs::DISCLOSURE_COLLAPSED))
+            .expect("in-progress marker span");
+        assert_eq!(
+            progress_marker.style.fg,
+            Some(theme.primary),
+            "in-progress marker is ORANGE"
+        );
+        
+        // The pending marker is FAINT (ghost)
+        let pending_marker = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains(glyphs::DOT_HOLLOW))
+            .expect("pending marker span");
+        assert_eq!(pending_marker.style.fg, Some(theme.ghost), "pending marker is FAINT");
+    }
+
+    #[test]
+    fn websearch_card_summary_is_query() {
+        // VAL-TOOL-026: a websearch card's summary is the search query.
+        let card = tool_card("websearch", r#"{"query":"ratatui table widget"}"#);
+        assert_eq!(card.summary, "ratatui table widget");
+    }
+
+    #[test]
+    fn websearch_card_expanded_rows_are_results_with_overflow() {
+        // VAL-TOOL-026: a websearch card's expanded output lists result rows followed by a
+        // "... (N more results)" overflow row (not "lines").
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("websearch", r#"{"query":"ratatui table widget"}"#);
+        let body: String = (0..MAX_TOOL_DETAIL_LINES + 4)
+            .map(|i| format!("Result {i}: ratatui docs page"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        card.complete(&[protocol::ToolResultPart::text(&body)], false);
+        
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("ratatui table widget"), "summary query:\n{text}");
+        assert!(text.contains("Result 0:"), "result rows present:\n{text}");
+        assert!(text.contains("(4 more results)"), "overflow reads results:\n{text}");
+        assert!(
+            !text.contains("more lines"),
+            "websearch overflow noun is results, not lines:\n{text}"
+        );
+    }
+
+    #[test]
+    fn webfetch_card_summary_is_url() {
+        // VAL-TOOL-027: a webfetch card's summary row is the fetched URL.
+        let card = tool_card("webfetch", r#"{"url":"https://docs.rs/ratatui/latest"}"#);
+        assert_eq!(card.summary, "https://docs.rs/ratatui/latest");
     }
 
     #[test]
