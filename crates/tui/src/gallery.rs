@@ -294,7 +294,8 @@ fn status_dots_line(_app: &App, width: usize, theme: &ThemeColors) -> Line<'stat
     cells_to_line(&cells)
 }
 
-/// Draw the gallery composer: a rounded box in the theme border color containing a `›` prompt glyph
+/// Draw the gallery composer: a rounded box in the theme's PRIMARY accent (`border_focus`)
+/// containing a `›` prompt glyph
 /// and the `what should we build today…` placeholder, both colored from the active theme
 /// (VAL-THEME-008). The box interior carries the theme background so it is never a black band.
 fn draw_composer(frame: &mut Frame, area: Rect, theme: &ThemeColors) {
@@ -305,7 +306,7 @@ fn draw_composer(frame: &mut Frame, area: Rect, theme: &ThemeColors) {
         .style(Style::default().bg(theme.background).fg(theme.text))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border));
+        .border_style(Style::default().fg(theme.border_focus));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {

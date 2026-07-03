@@ -1753,15 +1753,16 @@ fn composer_input_lines(
 }
 
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    // The composer is a plain rounded `ORANGE_D` box on the brand canvas (no title) in every state,
-    // including `!` shell mode — the shell affordance is carried by the `shell` breadcrumb, the
+    // The composer is a plain rounded box drawn in the theme's PRIMARY accent (`border_focus` —
+    // ORANGE on dark) on the brand canvas (no title) in every state, including `!` shell mode — the
+    // shell affordance is carried by the `shell` breadcrumb, the
     // `manual · ! shell mode` status bar, the `!` prompt prefix, and the shell placeholder/hints.
     let shell = app.shell_mode();
     let block = Block::default()
         .style(Style::default().bg(theme.background).fg(theme.text))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border));
+        .border_style(Style::default().fg(theme.border_focus));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -10121,8 +10122,9 @@ mod tests {
 
     #[test]
     fn composer_renders_rounded_orange_accent_and_prompt() {
-        // VAL-CONV-005: the composer is a fixed rounded ORANGE_D box above the status bar, with a
-        // `▌` ORANGE accent edge at the left inner column and a `›` ORANGE prompt glyph.
+        // VAL-CONV-005: the composer is a fixed rounded box above the status bar drawn in the
+        // theme's PRIMARY accent (border_focus — ORANGE on dark), with a `▌` ORANGE accent edge at
+        // the left inner column and a `›` ORANGE prompt glyph.
         let mut a = app();
         a.transcript.push(Entry::User("hi".to_owned())); // conversation screen
         let theme = style::ThemeColors::from_name(a.theme());
@@ -10146,7 +10148,7 @@ mod tests {
 
         for corner in ["╭", "╮", "╰", "╯"] {
             let cell = find(corner).unwrap_or_else(|| panic!("composer corner {corner} present"));
-            assert_eq!(cell.fg, theme.border, "composer border {corner} is ORANGE_D");
+            assert_eq!(cell.fg, theme.border_focus, "composer border {corner} is ORANGE");
         }
     }
 
