@@ -33,10 +33,12 @@ pub struct Mention {
 
 /// A human-readable language/type label for a file path, derived from its extension.
 ///
-/// Used as the left half of the `@`-file picker's `type · size` meta column (e.g. `rust`, `toml`).
-/// Common extensions map to a friendly language name; anything else falls back to the lowercased
-/// extension, or `file` when the path has no extension.
+/// A file-type helper of the mention module (e.g. `rust`, `toml`): common extensions map to a
+/// friendly language name; anything else falls back to the lowercased extension, or `file` when the
+/// path has no extension. Retained as part of the mention API and value-locked by its unit test; the
+/// `@`-mention popup itself now surfaces a `dir · size` meta column rather than a type label.
 #[must_use]
+#[allow(dead_code)]
 pub fn type_label(path: &str) -> String {
     let ext = Path::new(path)
         .extension()
@@ -77,7 +79,7 @@ pub fn type_label(path: &str) -> String {
 
 /// Format a byte count as a compact human-readable size (e.g. `0.7 KB`, `6.2 KB`, `1.2 MB`).
 ///
-/// Used as the right half of the `@`-file picker's `type · size` meta column. Sub-kilobyte files
+/// Used as the size half of the `@`-mention popup's `dir · size` meta column. Sub-kilobyte files
 /// still read in `KB` (`0.x KB`) to match the mockup's size column, which never shows raw bytes.
 #[must_use]
 pub fn format_size(bytes: u64) -> String {

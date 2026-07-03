@@ -1393,6 +1393,61 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// The composer's typed input rendered as styled lines. Text is BRIGHT (`base`); while the
+/// `@`-mention popup is open, the active `@<partial>` token on the cursor's line (the `@` plus the
+/// query typed up to the cursor) is drawn in AMBER (`theme.secondary`) so the in-progress mention
+/// reads as a distinct chip. Every other line, and the rest of the cursor's line, keep `base`.
+fn composer_input_lines(
+    app: &App,
+    base: Style,
+    theme: &style::ThemeColors,
+) -> Vec<Line<'static>> {
+    let amber = Style::default().fg(theme.secondary);
+    // The active token span on the cursor's line: `@`.. up to the cursor (chars), when a mention is
+    // open. `mention_query` guarantees the run starts at an `@` at a word boundary.
+    let mention_query = if app.mention_open() {
+        app.mention_query()
+    } else {
+        None
+    };
+    let token = mention_query.map(|query| {
+        let cursor = app.cursor();
+        let end = cursor.col;
+        let start = end.saturating_sub(query.chars().count() + 1);
+        (cursor.row, start, end)
+    });
+
+    app.input
+        .lines()
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            if let Some((trow, start, end)) = token {
+                let chars: Vec<char> = line.chars().collect();
+                if row == trow
+                    && end <= chars.len()
+                    && start < end
+                    && chars.get(start) == Some(&'@')
+                {
+                    let before: String = chars[..start].iter().collect();
+                    let tok: String = chars[start..end].iter().collect();
+                    let after: String = chars[end..].iter().collect();
+                    let mut spans = Vec::new();
+                    if !before.is_empty() {
+                        spans.push(Span::styled(before, base));
+                    }
+                    spans.push(Span::styled(tok, amber));
+                    if !after.is_empty() {
+                        spans.push(Span::styled(after, base));
+                    }
+                    return Line::from(spans);
+                }
+            }
+            Line::from(Span::styled(line.clone(), base))
+        })
+        .collect()
+}
+
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     // The composer is a plain rounded `ORANGE_D` box on the brand canvas (no title) in every state,
     // including `!` shell mode — the shell affordance is carried by the `shell` breadcrumb, the
@@ -1522,14 +1577,11 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         // An empty composer keeps the hardware cursor at the input start so a caret is still shown.
         frame.set_cursor_position((input_area.x, input_area.y));
     } else {
-        // Typed text renders in BRIGHT (replacing the FAINT placeholder).
+        // Typed text renders in BRIGHT (replacing the FAINT placeholder); while the `@`-mention
+        // popup is open the in-progress `@<partial>` token on the cursor's line is drawn in AMBER so
+        // the live mention chip reads apart from the surrounding prose.
         let bright = Style::default().fg(theme.text_bright);
-        let lines: Vec<Line> = app
-            .input
-            .lines()
-            .iter()
-            .map(|l| Line::from(Span::styled(l.clone(), bright)))
-            .collect();
+        let lines: Vec<Line> = composer_input_lines(app, bright, theme);
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme.background)),
             input_area,
@@ -1623,17 +1675,32 @@ fn palette_meta_row(
     Line::from(left)
 }
 
-/// The `type · size` meta string for a file path: its real type label and on-disk size (resolved
-/// against the working directory), or just the type when the size cannot be read.
+/// The file name (last path segment) shown as the left column of a `@`-mention row, e.g.
+/// `buffer.rs` for `crates/tui/src/buffer.rs`. Falls back to the whole path when it has no segment.
+fn mention_filename(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// The `dir · size` meta string for a file path: its parent directory (`.` at the repo root) and
+/// its real on-disk size (resolved against the working directory), or just the directory when the
+/// size cannot be read. Every row carries the same `dir · size` shape so the meta column is uniform.
 fn mention_meta(path: &str) -> String {
-    let type_label = crate::mention::type_label(path);
+    let dir = std::path::Path::new(path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or_else(|| ".".to_owned());
     let size = std::env::current_dir()
         .ok()
         .and_then(|cwd| std::fs::metadata(cwd.join(path)).ok())
         .map(|meta| crate::mention::format_size(meta.len()));
     match size {
-        Some(size) => format!("{type_label} {} {size}", crate::glyphs::SEPARATOR),
-        None => type_label,
+        Some(size) => format!("{dir} {} {size}", crate::glyphs::SEPARATOR),
+        None => dir,
     }
 }
 
@@ -1746,11 +1813,11 @@ fn draw_slash_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &styl
     );
 }
 
-/// Build the `@`-file palette rows for the current query, laid out for an `width`-column inner area,
-/// or `None` when the picker is closed. Each row shows a `▪` bullet (`ORANGE_D`, `AMBER` when
-/// selected) + the file path + a right-aligned `type · size` meta column (FAINT). The highlighted
-/// row is a full-width warm `SELBG` bar with a `›` ORANGE marker and a BRIGHT path. A query that
-/// matches no file yields a single graceful "no matching files" row.
+/// Build the `@`-file mention rows for the current query, laid out for an `width`-column inner area,
+/// or `None` when the picker is closed. Each row shows the file name + a right-aligned uniform
+/// `dir · size` meta column (FAINT). The highlighted row is a full-width warm `SELBG` bar with a `›`
+/// ORANGE marker and a BRIGHT file name. A query that matches no file yields a single graceful
+/// "no matching files" row.
 fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     let theme = style::ThemeColors::from_name(app.theme());
     if !app.mention_open() {
@@ -1770,11 +1837,12 @@ fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     let mut lines = Vec::with_capacity(matches.len());
     for (i, path) in matches.iter().enumerate() {
         let meta = mention_meta(path);
-        // Clip the path so the marker (2) + bullet (2) + a 2-col gap + meta + 1-col margin fit.
-        let path_budget = width
-            .saturating_sub(2 + 2 + meta.chars().count() + 2 + 1)
+        let name = mention_filename(path);
+        // Clip the file name so the marker (2) + a 2-col gap + meta + 1-col margin fit.
+        let name_budget = width
+            .saturating_sub(2 + meta.chars().count() + 2 + 1)
             .max(4);
-        let path_text = clip_cols(path, path_budget);
+        let name_text = clip_cols(&name, name_budget);
         if i == selected {
             let bg = palette_selection_bg(&theme);
             let on_bar = Style::default().bg(bg);
@@ -1784,11 +1852,7 @@ fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
                     Style::default().fg(theme.primary).bg(bg),
                 ),
                 Span::styled(
-                    format!("{} ", crate::glyphs::BULLET_SQUARE),
-                    Style::default().fg(theme.secondary).bg(bg),
-                ),
-                Span::styled(
-                    path_text,
+                    name_text,
                     Style::default()
                         .fg(theme.text_bright)
                         .bg(bg)
@@ -1800,11 +1864,7 @@ fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
         } else {
             let left = vec![
                 Span::raw("  "),
-                Span::styled(
-                    format!("{} ", crate::glyphs::BULLET_SQUARE),
-                    Style::default().fg(theme.border),
-                ),
-                Span::styled(path_text, Style::default().fg(theme.text)),
+                Span::styled(name_text, Style::default().fg(theme.text)),
             ];
             let meta_span = Span::styled(meta, Style::default().fg(theme.text_muted));
             lines.push(palette_meta_row(left, meta_span, width, Style::default()));
@@ -1813,9 +1873,10 @@ fn mention_menu_lines(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     Some(lines)
 }
 
-/// Render the `@`-file palette as a floating rounded dropdown anchored directly above the composer
-/// (same anchor/width/border as the `/` palette) with an AMBER `Add files` title-in-border over the
-/// near-black canvas, scrolling to keep the highlighted row visible when the match list is long.
+/// Render the `@`-file mention popup as a floating rounded dropdown anchored directly above the
+/// composer (same anchor/width/border as the `/` palette) with an AMBER `@ files` title-in-border
+/// and a right-aligned `<query> shown/total` match-count tag in the top border, over the near-black
+/// canvas, scrolling to keep the highlighted row visible when the match list is long.
 fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::ThemeColors) {
     if prompt_area.width < 2 {
         return;
@@ -1849,7 +1910,7 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &st
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
-        .title(" Add files ")
+        .title(" @ files ")
         .title_style(
             Style::default()
                 .fg(theme.secondary)
@@ -1863,6 +1924,33 @@ fn draw_mention_menu(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &st
         Paragraph::new(shown).style(Style::default().fg(theme.text).bg(theme.background)),
         inner,
     );
+
+    // Right-aligned match-count tag in the top border: the live query and `shown/total` file counts
+    // (FAINT), so the popup advertises how many workspace files match what has been typed.
+    let query = app.mention_query().unwrap_or_default();
+    let matched = app.mention_matches().len();
+    let total = app.mention_file_total();
+    let count = if query.is_empty() {
+        format!(" {matched}/{total} ")
+    } else {
+        format!(" {query}  {matched}/{total} ")
+    };
+    let count_len = count.chars().count() as u16;
+    if count_len + 4 <= popup.width {
+        let count_area = Rect {
+            x: popup.x + popup.width - 1 - count_len,
+            y: popup.y,
+            width: count_len,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                count,
+                Style::default().fg(theme.text_muted).bg(theme.background),
+            ))),
+            count_area,
+        );
+    }
 }
 
 /// Render the find-in-chat search bar as a single-row bordered popup floating above the prompt. It
@@ -7205,9 +7293,10 @@ mod tests {
     }
 
     #[test]
-    fn mention_palette_rows_show_bullet_meta_and_selection_bar() {
-        // VAL-CONV-039/040: each row shows a `▪` bullet + path + right-aligned `type · size` meta;
-        // the selected row is a full-width SELBG bar with a `›` marker, AMBER bullet, and BRIGHT path.
+    fn mention_rows_show_filename_dir_size_meta_and_selection_bar() {
+        // VAL-PERM-034/035: each `@`-mention row shows a file name + a right-aligned uniform
+        // `dir · size` meta (no bullet); the selected row is a full-width SELBG bar with a `›`
+        // ORANGE marker and a BRIGHT file name.
         let mut a = app();
         let theme = style::ThemeColors::from_name(a.theme());
         a.on_key(crossterm::event::KeyEvent::new(
@@ -7215,27 +7304,117 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         let width = 80usize;
-        let rows = mention_menu_lines(&a, width).expect("file palette open");
-        assert!(!rows.is_empty(), "the @ palette lists real workspace files");
+        let rows = mention_menu_lines(&a, width).expect("file mention popup open");
+        assert!(!rows.is_empty(), "the @ popup lists real workspace files");
 
         let sel = &rows[0];
         assert_eq!(sel.spans[0].content, "› ");
         assert_eq!(sel.spans[0].style.fg, Some(theme.primary));
         assert_eq!(sel.spans[0].style.bg, Some(theme.surface[3]));
-        assert_eq!(sel.spans[1].content, "▪ ");
-        assert_eq!(sel.spans[1].style.fg, Some(theme.secondary), "selected bullet is AMBER");
-        assert_eq!(sel.spans[2].style.fg, Some(theme.text_bright), "selected path is BRIGHT");
+        assert_eq!(sel.spans[1].style.fg, Some(theme.text_bright), "selected file name is BRIGHT");
+        assert_eq!(sel.spans[1].style.bg, Some(theme.surface[3]));
+        assert!(
+            !sel.spans[1].content.contains('/'),
+            "the left column is the file name, not the full path: {:?}",
+            sel.spans[1].content
+        );
         assert_eq!(sel.width(), width, "selection bar spans the full inner width");
-        // The meta column (FAINT) sits just before the one-column right margin.
+        // The meta column (FAINT) sits just before the one-column right margin and is `dir · size`.
         let meta = &sel.spans[sel.spans.len() - 2];
         assert_eq!(meta.style.fg, Some(theme.text_muted));
+        assert!(
+            meta.content.contains(crate::glyphs::SEPARATOR),
+            "meta is the uniform `dir · size` form: {:?}",
+            meta.content
+        );
+        // The `▪` bullet from the interim wave-0 design is gone.
+        assert!(
+            !rows.iter().any(|row| row.spans.iter().any(|s| s.content.contains('▪'))),
+            "no `▪` bullet in the refined mention rows"
+        );
 
         if rows.len() > 1 {
             let other = &rows[1];
-            assert_eq!(other.spans[1].content, "▪ ");
-            assert_eq!(other.spans[1].style.fg, Some(theme.border), "idle bullet is ORANGE_D");
+            assert_eq!(other.spans[0].content, "  ", "idle rows have no `›` marker");
+            assert_eq!(other.spans[1].style.fg, Some(theme.text));
             assert_eq!(other.spans[1].style.bg, None);
+            let other_meta = &other.spans[other.spans.len() - 2];
+            assert!(
+                other_meta.content.contains(crate::glyphs::SEPARATOR),
+                "every row carries the `dir · size` meta: {:?}",
+                other_meta.content
+            );
         }
+    }
+
+    #[test]
+    fn mention_popup_shows_at_files_title_and_count_tag() {
+        // VAL-PERM-032/033: the `@`-mention popup is a bordered box above the composer whose top
+        // border carries the `@ files` title and a right-aligned `shown/total` match-count tag.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        let theme = style::ThemeColors::from_name(a.theme());
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('@'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.mention_open(), "the `@` popup is open");
+        let matched = a.mention_matches().len();
+        let total = a.mention_file_total();
+        assert!(total > 0, "the popup is choosing from real workspace files");
+
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(screen.contains("@ files"), "`@ files` title-in-border:\n{screen}");
+        let tag = format!("{matched}/{total}");
+        assert!(screen.contains(&tag), "the `{tag}` count tag rides the top border:\n{screen}");
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|c| c.symbol() == "╭" && c.fg == theme.border),
+            "the popup has a rounded ORANGE_D border"
+        );
+    }
+
+    #[test]
+    fn composer_renders_the_active_mention_token_in_amber() {
+        // VAL-PERM-036: while the popup is open the composer draws the in-progress `@<partial>`
+        // token in AMBER, with the surrounding prose staying BRIGHT.
+        let mut a = app();
+        let theme = style::ThemeColors::from_name(a.theme());
+        for ch in "look @Ca".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        assert!(a.mention_open(), "the `@` popup is open while typing the token");
+        assert_eq!(a.mention_query().as_deref(), Some("Ca"));
+
+        let base = Style::default().fg(theme.text_bright);
+        let lines = composer_input_lines(&a, base, &theme);
+        let spans: Vec<_> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+        let token = spans
+            .iter()
+            .find(|s| s.content == "@Ca")
+            .expect("the `@Ca` token is its own span");
+        assert_eq!(token.style.fg, Some(theme.secondary), "the mention token is AMBER");
+        let prose = spans
+            .iter()
+            .find(|s| s.content.contains("look"))
+            .expect("the leading prose is present");
+        assert_eq!(prose.style.fg, Some(theme.text_bright), "prose stays BRIGHT");
     }
 
     #[test]

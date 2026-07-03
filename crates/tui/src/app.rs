@@ -3200,6 +3200,14 @@ impl App {
         if len == 0 { 0 } else { raw.min(len - 1) }
     }
 
+    /// The total number of workspace files the open picker is choosing from (before filtering), or
+    /// `0` when the picker is closed. Paired with [`Self::mention_matches`] it drives the popup's
+    /// `shown/total` match-count tag.
+    #[must_use]
+    pub fn mention_file_total(&self) -> usize {
+        self.mention.as_ref().map_or(0, |picker| picker.files.len())
+    }
+
     /// Recompute the picker's open state after a prompt edit: open it (loading the file list) when
     /// the cursor enters a mention fragment, keep it open and reset the highlight while the fragment
     /// is edited, and close it when the cursor leaves the fragment.
