@@ -748,10 +748,19 @@ fn push_tool(
         // while collapsed — an ERR-red `error` header, the first diagnostic line in ERR red, and a
         // FAINT `Ctrl+O for detail` hint pointing at the full expanded output.
         push_tool_error_preview(card, &interior_row, text_w, theme, lines);
+    } else if card.is_background_running() {
+        // VAL-TOOL-023: a live background bash card streams its in-progress output rows (the tail
+        // of the job log) in the collapsed body, above the `esc to background` footer hint, while
+        // it keeps the ORANGE running chrome until the job's pid exits.
+        push_tool_background_stream(card, &interior_row, text_w, theme, lines);
     } else {
         let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
-        let hint_text = if card.name == "bash" && card.summary.contains("(background)") {
-            // VAL-TOOL-023: background bash footer hint is "Ctrl+O to expand · esc to background".
+        let hint_text = if card.status == ToolStatus::Running
+            && card.name == "bash"
+            && card.summary.contains("(background)")
+        {
+            // VAL-TOOL-023: background bash footer hint is "Ctrl+O to expand · esc to background"
+            // while the job is still running; once it completes the card reverts to the plain hint.
             "Ctrl+O to expand · esc to background".to_owned()
         } else {
             "Ctrl+O to expand".to_owned()
@@ -818,6 +827,39 @@ fn push_tool_error_preview<F>(
     }
     let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
     lines.push(interior_row(&[("Ctrl+O for detail".to_owned(), hint_style)]));
+}
+
+/// The number of trailing in-progress output rows shown in a live background bash card's collapsed
+/// body, keeping the streaming card compact while it tails the job log (VAL-TOOL-023).
+const BG_STREAM_ROWS: usize = 3;
+
+/// Render a live background bash card's collapsed body (VAL-TOOL-023): the last few non-empty rows
+/// of the tailed job log in DIM text, followed by the `Ctrl+O to expand · esc to background` footer
+/// hint. Every cell carries the explicit canvas background via `interior_row`.
+fn push_tool_background_stream<F>(
+    card: &ToolCard,
+    interior_row: &F,
+    text_w: usize,
+    theme: &style::ThemeColors,
+    lines: &mut Vec<Line<'static>>,
+) where
+    F: Fn(&[(String, Style)]) -> Line<'static>,
+{
+    let body_style = Style::default().fg(theme.text_dim).bg(theme.background);
+    let out_lines: Vec<&str> = card
+        .output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let start = out_lines.len().saturating_sub(BG_STREAM_ROWS);
+    for line in &out_lines[start..] {
+        lines.push(interior_row(&[(clip_text(line, text_w), body_style)]));
+    }
+    let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
+    lines.push(interior_row(&[(
+        "Ctrl+O to expand · esc to background".to_owned(),
+        hint_style,
+    )]));
 }
 
 /// The style for one output line inside a tool card, with tool-specific semantic coloring:
@@ -7488,6 +7530,34 @@ mod tests {
         assert!(
             text.contains(glyphs::MARK_RUNNING),
             "running card has the gear glyph:\n{text}"
+        );
+    }
+
+    #[test]
+    fn live_background_bash_card_streams_tailed_output_rows_in_the_collapsed_body() {
+        // VAL-TOOL-023: a live background bash card (running, with a tracked pid) streams its
+        // in-progress output rows in the collapsed body, above the `esc to background` footer.
+        use std::path::PathBuf;
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("bash", r#"{"command":"cargo build --release","background":true}"#);
+        card.start_background(4242, PathBuf::from("/tmp/cortex-bg.log"));
+        card.output = "Compiling cortex v0.1.0\n   Compiling deps\n    Building [===>   ]".to_owned();
+        assert_eq!(card.status, ToolStatus::Running);
+
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+        let text = rendered(&lines);
+        assert!(
+            text.contains("Building [===>"),
+            "the collapsed body shows the latest streamed output row:\n{text}"
+        );
+        assert!(
+            text.contains("esc to background"),
+            "the streaming card keeps the background footer hint:\n{text}"
+        );
+        assert!(
+            text.contains(glyphs::MARK_RUNNING),
+            "the streaming card keeps the running gear glyph:\n{text}"
         );
     }
 

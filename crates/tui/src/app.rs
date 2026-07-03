@@ -2215,6 +2215,39 @@ impl App {
         true
     }
 
+    /// Tail every backgrounded `bash` card's on-disk log into its body, and transition it to
+    /// [`ToolStatus`](crate::tool_card::ToolStatus)`::Completed` once its process id has exited
+    /// (VAL-TOOL-023): a background job keeps live-streaming its real output instead of freezing on
+    /// the static "job started" acknowledgement. A job's pid goes away either because the command
+    /// finished naturally or because [`crate::turn`] reaped it by pid at the end of the turn that
+    /// spawned it (`background_jobs().shutdown()`); either way this observes the same signal
+    /// (`/proc/<pid>` gone) and finalizes the card from the same tailed content. Returns whether any
+    /// card changed — the event loop already redraws unconditionally each iteration, so this is
+    /// informational only.
+    pub fn poll_background_jobs(&mut self) -> bool {
+        let mut changed = false;
+        for entry in &mut self.transcript {
+            let Entry::Tool(card) = entry else { continue };
+            if !card.is_background_running() {
+                continue;
+            }
+            let (Some(log_path), Some(pid)) = (card.bg_log.clone(), card.bg_pid) else {
+                continue;
+            };
+            let tailed = redaction::redact(&tail_background_log(&log_path));
+            if background_pid_alive(pid) {
+                if card.output != tailed {
+                    card.output = tailed;
+                    changed = true;
+                }
+            } else {
+                card.complete_background(tailed);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Apply server-created messages for the attached session from the shared database.
     ///
     /// The server persists user messages when a remote turn starts and assistant messages when it
@@ -2469,6 +2502,13 @@ impl App {
 
     /// Transition the running tool card matching `id` to its terminal (completed/failed) state,
     /// recording the result text. The most recent matching card wins so re-used ids never collide.
+    ///
+    /// A successful backgrounded `bash` result (VAL-TOOL-023: summary marked `(background)`) is the
+    /// job-started acknowledgement, not a finished result — the card is instead handed its log path
+    /// and pid via [`ToolCard::start_background`] and stays [`ToolStatus::Running`], so
+    /// [`App::poll_background_jobs`] can tail the live log until the job's process actually exits.
+    /// A result whose text doesn't carry a parseable `pid:`/`output:` pair (unexpected shape) falls
+    /// back to completing normally, so the card never hangs running with nothing to poll.
     fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
         let mut lsp_candidate: Option<(String, String, String)> = None;
         if let Some(card) = self
@@ -2480,7 +2520,15 @@ impl App {
                 _ => None,
             })
         {
-            card.complete(parts, is_error);
+            let is_background_bash =
+                !is_error && card.name == "bash" && card.summary.contains("(background)");
+            let bg_job = is_background_bash
+                .then(|| crate::tool_card::text_from_parts(parts))
+                .and_then(|text| crate::tool_card::parse_background_job(&text));
+            match bg_job {
+                Some((pid, log_path)) => card.start_background(pid, log_path),
+                None => card.complete(parts, is_error),
+            }
             // The card summary is the tool's target (the path for write/edit, the first patch file
             // for apply_patch), used to attribute headerless `Diagnostic::render()` rows.
             lsp_candidate = Some((card.name.clone(), card.summary.clone(), card.output.clone()));
@@ -9158,6 +9206,20 @@ fn skill_source_label(source: &Path, cwd: Option<&Path>) -> String {
     if is_project { "project" } else { "builtin" }.to_owned()
 }
 
+/// The current content of a backgrounded `bash` job's log file, read fresh each poll so the card
+/// always shows the job's live output. A missing/unreadable log (e.g. the job hasn't written
+/// anything yet) reads as empty rather than an error.
+fn tail_background_log(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Whether a background job's process is still alive, checked via `/proc/<pid>` — the same
+/// liveness probe `crates/tools/src/bash/jobs.rs` uses, so a card and the registry agree on when a
+/// job has exited. Linux-only (matches the target sandbox and the background-job feature itself).
+fn background_pid_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
 /// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
 /// mockup label): the default model reads `default · fast`, reasoning models read `reasoning`, free
 /// models read `free`, and the rest fall back to a capability word.
@@ -11640,6 +11702,98 @@ mod tests {
         let card = last_tool(&a);
         assert_eq!(card.status, ToolStatus::Completed);
         assert!(card.output.contains("fn main"));
+    }
+
+    #[test]
+    fn background_bash_card_streams_while_running_then_completes_on_pid_exit() {
+        // VAL-TOOL-023: a background bash tool result does not complete the card — it keeps the
+        // ORANGE running chrome, streams the tailed job log into its body while the process lives,
+        // and transitions to done (with the final tailed output) once the job's pid exits.
+        use crate::tool_card::ToolStatus;
+
+        // A real short-lived child stands in for the background job's process so `/proc/<pid>`
+        // liveness is exercised for real; a temp file stands in for the job's streamed log.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a stand-in background process");
+        let pid = child.id();
+        let log = std::env::temp_dir().join(format!("cortex-bgstream-test-{pid}.log"));
+        std::fs::write(&log, "Compiling cortex v0.1.0\n").expect("seed the job log");
+
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("build in the background".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "bg".to_owned(),
+            name: "bash".to_owned(),
+            arguments: r#"{"command":"cargo build --release","background":true}"#.to_owned(),
+        }))
+        .unwrap();
+        // The bash tool's background-start acknowledgement carries the pid + log path.
+        let ack = format!(
+            "[background job started]\njob id: bash-1\npid: {pid}\ncwd: /tmp\noutput: {}\n\
+             The command is running in the background.",
+            log.display()
+        );
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "bg".to_owned(),
+            name: "bash".to_owned(),
+            parts: vec![tool_part(&ack)],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        // The result did NOT complete the card: it stays running, marked (background), and tracks
+        // the job's pid/log so it can be tailed.
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Running, "background card stays running");
+        assert!(card.summary.contains("(background)"), "summary: {}", card.summary);
+        assert_eq!(card.bg_pid, Some(pid));
+        assert_eq!(card.bg_log.as_deref(), Some(log.as_path()));
+
+        // While the process is alive, polling tails the log into the card body (live streaming).
+        std::fs::write(&log, "Compiling cortex v0.1.0\n   Compiling deps\n")
+            .expect("append to the job log");
+        a.poll_background_jobs();
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Running, "still running while the pid is alive");
+        assert!(
+            card.output.contains("Compiling deps"),
+            "the streamed body tails the log: {}",
+            card.output
+        );
+
+        // The job produces its final output, then its process exits (reaped).
+        std::fs::write(&log, "Compiling cortex v0.1.0\n   Compiling deps\n    Finished release\n")
+            .expect("finalize the job log");
+        child.kill().expect("kill the stand-in process");
+        child.wait().expect("reap the stand-in process");
+        for _ in 0..200 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Now polling sees the pid gone and transitions the card to done with the final output.
+        a.poll_background_jobs();
+        let card = last_tool(&a);
+        assert_eq!(
+            card.status,
+            ToolStatus::Completed,
+            "the card completes once the job's pid exits"
+        );
+        assert!(card.bg_pid.is_none(), "a completed job is no longer polled");
+        assert!(card.duration_ms.is_some(), "completion records a duration");
+        assert!(
+            card.output.contains("Finished release"),
+            "the final body is the last tailed content: {}",
+            card.output
+        );
+
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]

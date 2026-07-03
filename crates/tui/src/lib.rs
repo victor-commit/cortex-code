@@ -421,6 +421,11 @@ fn event_loop<B: Backend + Write>(
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
 
+        // Tail every backgrounded `bash` card's log into its body and complete it once the job's
+        // pid has exited, so a running background card stays live-updating instead of the static
+        // "job started" acknowledgement (VAL-TOOL-023).
+        app.poll_background_jobs();
+
         // Apply MCP live catalogue events (notably `mcp.tools.changed`) so an open `/mcp` view is
         // refreshed from the manager's current tool set without relaunching the TUI.
         app.poll_mcp();

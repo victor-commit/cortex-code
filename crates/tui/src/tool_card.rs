@@ -9,6 +9,7 @@
 //! renders a distinct error state when the tool fails (VAL-TUI-027). Rendering to `ratatui` lines
 //! lives in [`crate::ui`]; this module owns the data model and the argument/output summarization.
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use protocol::ToolResultPart;
@@ -48,6 +49,15 @@ pub struct ToolCard {
     /// Its presence turns the card into an expandable diff card: a `▶`/`▼` disclosure gutter with a
     /// boxed, line-numbered red/green diff revealed when the card is expanded.
     pub diff: Option<Box<crate::diff::FileDiff>>,
+    /// For a backgrounded `bash` job (VAL-TOOL-023), the on-disk log file its combined
+    /// stdout/stderr streams to. Set by [`ToolCard::start_background`] instead of completing the
+    /// card, so [`crate::app::App::poll_background_jobs`] can tail it into `output` while the card
+    /// stays [`ToolStatus::Running`]. Kept (not cleared) once the job finishes, so the card still
+    /// knows which log it streamed.
+    pub bg_log: Option<PathBuf>,
+    /// For a backgrounded `bash` job, the OS process id tracked to detect when the job exits.
+    /// `None` once the job has completed (or for any card that was never backgrounded).
+    pub bg_pid: Option<u32>,
     /// When the call started, used to measure [`ToolCard::duration_ms`] on completion.
     started: Instant,
 }
@@ -69,6 +79,8 @@ impl ToolCard {
             duration_ms: None,
             diff_stat,
             diff: None,
+            bg_log: None,
+            bg_pid: None,
             started: Instant::now(),
         }
     }
@@ -99,6 +111,54 @@ impl ToolCard {
         if self.name == "todo" && !is_error {
             self.summary = todo_summary_from_output(&self.output);
         }
+    }
+
+    /// Attach a backgrounded `bash` job's process id and on-disk log path, so the card stays
+    /// [`ToolStatus::Running`] (rather than completing on the "job started" acknowledgement) while
+    /// [`crate::app::App::poll_background_jobs`] tails the log into `output` each frame
+    /// (VAL-TOOL-023).
+    pub fn start_background(&mut self, pid: u32, log_path: PathBuf) {
+        self.bg_pid = Some(pid);
+        self.bg_log = Some(log_path);
+    }
+
+    /// Transition a backgrounded card to [`ToolStatus::Completed`] once its process id has exited,
+    /// recording the final tailed log content. `bg_log` is kept so the card remembers which log it
+    /// streamed; `bg_pid` is cleared so [`App::poll_background_jobs`](crate::app::App::poll_background_jobs)
+    /// stops polling it.
+    pub fn complete_background(&mut self, final_output: String) {
+        self.output = final_output;
+        self.status = ToolStatus::Completed;
+        self.duration_ms = Some(self.started.elapsed().as_millis() as u64);
+        self.bg_pid = None;
+    }
+
+    /// Whether this card is a backgrounded `bash` job still being polled (running with a tracked
+    /// pid), the seam [`push_tool`](crate::ui::push_tool) uses to keep the "esc to background"
+    /// footer hint scoped to the live window.
+    pub fn is_background_running(&self) -> bool {
+        self.status == ToolStatus::Running && self.bg_pid.is_some()
+    }
+}
+
+/// Parse the `pid`/`output` fields from a `bash` background-job start acknowledgement into the
+/// `(pid, log_path)` a card needs to keep streaming. Returns `None` when either field is
+/// missing/unparseable, so the caller can fall back to completing the card normally.
+#[must_use]
+pub fn parse_background_job(text: &str) -> Option<(u32, PathBuf)> {
+    let mut pid: Option<u32> = None;
+    let mut log_path: Option<PathBuf> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("pid:") {
+            pid = rest.trim().parse::<u32>().ok();
+        } else if let Some(rest) = line.strip_prefix("output:") {
+            log_path = Some(PathBuf::from(rest.trim()));
+        }
+    }
+    match (pid, log_path) {
+        (Some(pid), Some(path)) => Some((pid, path)),
+        _ => None,
     }
 }
 
