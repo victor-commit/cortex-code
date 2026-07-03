@@ -577,4 +577,316 @@ mod tests {
         assert_eq!(light_kw, Color::Rgb(0, 0, 200), "light `fn` keyword is blue");
         assert_ne!(dark_kw, light_kw, "syntax palette follows the chrome theme");
     }
+
+    /// The foreground of the first cell of the first occurrence of `needle` in the buffer.
+    fn token_fg(buf: &Buffer, needle: &str) -> Color {
+        for y in 0..buf.area.height {
+            let row = row_text(buf, y);
+            if let Some(idx) = row.find(needle) {
+                let col = row[..idx].chars().count() as u16;
+                return buf[(col, y)].fg;
+            }
+        }
+        Color::Reset
+    }
+
+    /// The `(row, col)` of the first cell of the first occurrence of `needle`.
+    fn token_pos(buf: &Buffer, needle: &str) -> Option<(u16, u16)> {
+        for y in 0..buf.area.height {
+            let row = row_text(buf, y);
+            if let Some(idx) = row.find(needle) {
+                return Some((y, row[..idx].chars().count() as u16));
+            }
+        }
+        None
+    }
+
+    /// The foreground colors of every `●` status-dot cell in the buffer, in column order.
+    fn status_dot_fgs(buf: &Buffer) -> Vec<Color> {
+        let mut out = Vec::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].symbol() == "●" {
+                    out.push(buf[(x, y)].fg);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn monokai_theme_uses_the_monokai_chrome_palette() {
+        // VAL-THEME-017: Monokai `#272822` background, lime-green primary accents (`#a6e22e`),
+        // cyan secondary accents (`#66d9ef`), off-white body text.
+        let buf = render("monokai");
+        let star = &buf[(MARGIN as u16, 0)];
+        assert_eq!(star.symbol(), "✦");
+        assert_eq!(star.fg, Color::Rgb(166, 226, 46), "monokai primary is lime-green");
+        assert_eq!(star.bg, Color::Rgb(39, 40, 34), "monokai background #272822");
+        // The assistant `✦` mark carries the cyan secondary accent.
+        let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
+        assert_eq!(
+            buf[(MARGIN as u16, ay)].fg,
+            Color::Rgb(102, 217, 239),
+            "monokai secondary accent (cyan) on the assistant mark"
+        );
+        // Body text is the off-white monokai text tone.
+        assert_eq!(
+            token_fg(&buf, "here is"),
+            Color::Rgb(255, 255, 250),
+            "monokai bright body text"
+        );
+    }
+
+    #[test]
+    fn monokai_code_block_uses_the_monokai_syntax_palette() {
+        // VAL-THEME-018: pink/magenta keywords (`#f92672`), lime function names (`#a6e22e`), cyan
+        // types (`#66d9ef`), plus a muted comment — a varied palette, not a uniform block.
+        let buf = render("monokai");
+        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(249, 38, 114), "monokai keyword pink");
+        assert_eq!(token_fg(&buf, "validate"), Color::Rgb(166, 226, 46), "monokai function lime");
+        assert_eq!(token_fg(&buf, "bool"), Color::Rgb(102, 217, 239), "monokai type cyan");
+        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(230, 219, 116), "monokai string yellow");
+        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(117, 113, 94), "monokai comment muted");
+        // Distinct token colors prove the block is not washed-out/uniform.
+        let (kw, func, cmt) = (
+            token_fg(&buf, "fn "),
+            token_fg(&buf, "validate"),
+            token_fg(&buf, "// name"),
+        );
+        assert_ne!(kw, func);
+        assert_ne!(kw, cmt);
+        assert_ne!(func, cmt);
+    }
+
+    #[test]
+    fn ocean_theme_uses_the_ocean_chrome_palette() {
+        // VAL-THEME-019: dark navy background (`#0a192f`), cyan primary accents (`#00c8c8`),
+        // lighter-cyan secondary, near-white body text.
+        let buf = render("ocean");
+        let star = &buf[(MARGIN as u16, 0)];
+        assert_eq!(star.symbol(), "✦");
+        assert_eq!(star.fg, Color::Rgb(0, 200, 200), "ocean primary is cyan");
+        assert_eq!(star.bg, Color::Rgb(10, 25, 47), "ocean navy background #0a192f");
+        let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
+        assert_eq!(
+            buf[(MARGIN as u16, ay)].fg,
+            Color::Rgb(100, 200, 220),
+            "ocean secondary accent (lighter cyan) on the assistant mark"
+        );
+        assert_eq!(
+            token_fg(&buf, "here is"),
+            Color::Rgb(240, 248, 255),
+            "ocean near-white body text"
+        );
+    }
+
+    #[test]
+    fn ocean_code_block_uses_the_ocean_syntax_palette() {
+        // VAL-THEME-020: cyan keywords/types, a soft-green `"tool"` string, and a muted blue-grey
+        // `// name` comment on the navy code surface.
+        let buf = render("ocean");
+        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(0, 200, 200), "ocean keyword cyan");
+        assert_eq!(token_fg(&buf, "bool"), Color::Rgb(120, 210, 230), "ocean type cyan");
+        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(130, 220, 170), "ocean string soft-green");
+        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(80, 110, 140), "ocean comment blue-grey");
+        let (kw, st, cmt) = (
+            token_fg(&buf, "fn "),
+            token_fg(&buf, "tool"),
+            token_fg(&buf, "// name"),
+        );
+        assert_ne!(kw, st);
+        assert_ne!(kw, cmt);
+        assert_ne!(st, cmt);
+    }
+
+    #[test]
+    fn vscode_theme_uses_the_neutral_vscode_chrome_palette() {
+        // VAL-THEME-021: neutral `#1e1e1e` chrome, VS Code blue primary accents (`#007ACC`),
+        // neutral grey secondary, light body text.
+        let buf = render("vscode");
+        let star = &buf[(MARGIN as u16, 0)];
+        assert_eq!(star.symbol(), "✦");
+        assert_eq!(star.fg, Color::Rgb(0, 122, 204), "vscode primary is VS Code blue #007ACC");
+        assert_eq!(star.bg, Color::Rgb(30, 30, 30), "vscode neutral background #1e1e1e");
+        let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
+        assert_eq!(
+            buf[(MARGIN as u16, ay)].fg,
+            Color::Rgb(86, 156, 214),
+            "vscode secondary accent on the assistant mark"
+        );
+        assert_eq!(
+            token_fg(&buf, "here is"),
+            Color::Rgb(255, 255, 255),
+            "vscode bright body text"
+        );
+    }
+
+    #[test]
+    fn vscode_code_block_uses_the_vscode_dark_plus_syntax_palette() {
+        // VAL-THEME-022: VS Code Dark+ — blue keywords (`#569CD6`), yellow function names
+        // (`#DCDCAA`), an orange-brown `"tool"` string (`#CE9178`), and a green `// name` comment
+        // (`#6A9955`); varied, NOT a washed-out uniformly-green block.
+        let buf = render("vscode");
+        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(86, 156, 214), "vscode keyword blue #569CD6");
+        assert_eq!(token_fg(&buf, "validate"), Color::Rgb(220, 220, 170), "vscode function yellow #DCDCAA");
+        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(206, 145, 120), "vscode string orange-brown #CE9178");
+        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(106, 153, 85), "vscode comment green #6A9955");
+        let colors = [
+            token_fg(&buf, "fn "),
+            token_fg(&buf, "validate"),
+            token_fg(&buf, "tool"),
+            token_fg(&buf, "// name"),
+        ];
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(colors[i], colors[j], "vscode syntax palette is varied, not uniform");
+            }
+        }
+    }
+
+    #[test]
+    fn non_default_dark_themes_have_no_black_bars() {
+        // VAL-THEME-023: under monokai/ocean/vscode (dark but not (0,0,0)) every cell of the
+        // canonical screen carries that theme's explicit background — no cell falls through to
+        // terminal-default black.
+        for name in ["monokai", "ocean", "vscode"] {
+            let buf = render(name);
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    let cell = &buf[(x, y)];
+                    assert_ne!(
+                        cell.bg,
+                        Color::Reset,
+                        "{name}: cell ({x},{y}) has an explicit bg (no default-black bar)"
+                    );
+                    match cell.bg {
+                        Color::Rgb(0, 0, 0) => {
+                            panic!("{name}: cell ({x},{y}) bg is pure black (a black bar)")
+                        }
+                        Color::Rgb(..) => {}
+                        other => panic!("{name}: cell ({x},{y}) bg {other:?} is not explicit RGB"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switching_themes_preserves_the_canonical_layout() {
+        // VAL-THEME-002: switching themes leaves the layout identical in structure/geometry — the
+        // same regions appear in the same rows/columns; only colors differ.
+        let mut header_rows = Vec::new();
+        let mut rule_rows = Vec::new();
+        let mut user_pos = Vec::new();
+        let mut asst_pos = Vec::new();
+        let mut code_pos = Vec::new();
+        let mut dots_rows = Vec::new();
+        let mut bar_rows = Vec::new();
+        for name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            let buf = render(name);
+            header_rows.push(token_pos(&buf, "✦ Cortex Code").map(|(y, _)| y));
+            rule_rows.push({
+                let mut r = None;
+                for y in 0..buf.area.height {
+                    if row_text(&buf, y).chars().filter(|&c| c == '─').count() >= 80 {
+                        r = Some(y);
+                        break;
+                    }
+                }
+                r
+            });
+            user_pos.push(token_pos(&buf, "› you"));
+            asst_pos.push(token_pos(&buf, "here is the schema"));
+            code_pos.push(token_pos(&buf, "fn validate"));
+            dots_rows.push(token_pos(&buf, "valid").map(|(y, _)| y));
+            bar_rows.push(token_pos(&buf, "? for help").map(|(y, _)| y));
+        }
+        // Every region resolves to the SAME position across all five themes.
+        for (label, v) in [
+            ("header row", header_rows),
+            ("dots row", dots_rows),
+            ("status-bar row", bar_rows),
+            ("rule row", rule_rows),
+        ] {
+            assert!(v[0].is_some(), "{label} present");
+            assert!(v.iter().all(|p| *p == v[0]), "{label} identical across themes: {v:?}");
+        }
+        for (label, v) in [
+            ("user line", user_pos),
+            ("assistant line", asst_pos),
+            ("code block", code_pos),
+        ] {
+            assert!(v[0].is_some(), "{label} present");
+            assert!(v.iter().all(|p| *p == v[0]), "{label} row/col identical across themes: {v:?}");
+        }
+    }
+
+    #[test]
+    fn switching_themes_recolors_chrome_and_syntax_consistently() {
+        // VAL-THEME-003/004/010: every chrome element is recolored to the active theme in one pass
+        // (no region left in another theme's colors), and the code-block syntax palette follows the
+        // chrome theme, differing per theme.
+        let expected_primary = [
+            ("dark", Color::Rgb(232, 146, 86)),
+            ("light", Color::Rgb(0, 150, 100)),
+            ("monokai", Color::Rgb(166, 226, 46)),
+            ("ocean", Color::Rgb(0, 200, 200)),
+            ("vscode", Color::Rgb(0, 122, 204)),
+        ];
+        let expected_keyword = [
+            ("dark", Color::Rgb(232, 146, 86)),
+            ("light", Color::Rgb(0, 0, 200)),
+            ("monokai", Color::Rgb(249, 38, 114)),
+            ("ocean", Color::Rgb(0, 200, 200)),
+            ("vscode", Color::Rgb(86, 156, 214)),
+        ];
+        let mut primaries = Vec::new();
+        let mut keywords = Vec::new();
+        for ((name, prim), (_, kw)) in expected_primary.iter().zip(expected_keyword.iter()) {
+            let buf = render(name);
+            // Chrome: the header star + composer prompt + user `›` all carry the active primary.
+            let star = &buf[(MARGIN as u16, 0)];
+            assert_eq!(star.fg, *prim, "{name}: header wordmark recolored to the theme primary");
+            let (uy, ux) = token_pos(&buf, "› you").expect("user line");
+            assert_eq!(buf[(ux, uy)].fg, *prim, "{name}: user `›` mark uses the theme primary");
+            // Syntax follows the chrome theme.
+            assert_eq!(token_fg(&buf, "fn "), *kw, "{name}: code keyword follows the chrome theme");
+            primaries.push(*prim);
+            keywords.push(*kw);
+        }
+        // Per-theme distinctness (VAL-THEME-010): keyword colors are not one shared set.
+        for i in 0..keywords.len() {
+            for j in (i + 1)..keywords.len() {
+                assert_ne!(keywords[i], keywords[j], "syntax keyword colors differ per theme");
+            }
+        }
+    }
+
+    #[test]
+    fn three_semantic_status_dots_render_in_every_theme() {
+        // VAL-THEME-007: the status-dots row shows exactly three labeled dots (`● valid`,
+        // `● 82% ctx`, `● 1 error`) whose success/warning/error tones are all distinct and legible
+        // (never equal to the theme background) in every theme.
+        for name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            let buf = render(name);
+            let theme = ThemeColors::from_name(name);
+            let dots = status_dot_fgs(&buf);
+            assert_eq!(dots.len(), 3, "{name}: exactly three status dots");
+            assert_eq!(dots[0], theme.success, "{name}: first dot is the success tone");
+            assert_eq!(dots[1], theme.warning, "{name}: second dot is the warning tone");
+            assert_eq!(dots[2], theme.error, "{name}: third dot is the error tone");
+            // All three tones are distinct and none is washed out into the background.
+            assert_ne!(dots[0], dots[1], "{name}: success != warning");
+            assert_ne!(dots[1], dots[2], "{name}: warning != error");
+            assert_ne!(dots[0], dots[2], "{name}: success != error");
+            for (i, d) in dots.iter().enumerate() {
+                assert_ne!(*d, theme.background, "{name}: dot {i} is legible against the background");
+            }
+            let text = all_text(&buf);
+            assert!(text.contains("valid"), "{name}: `valid` label");
+            assert!(text.contains("82% ctx"), "{name}: `82% ctx` label");
+            assert!(text.contains("1 error"), "{name}: `1 error` label");
+        }
+    }
 }
