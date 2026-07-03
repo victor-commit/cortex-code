@@ -138,6 +138,26 @@ impl TurnDispatcher {
         self
     }
 
+    /// Attach the `task` tool and the surface-owned durable subagent runner.
+    ///
+    /// Mirrors the headless bridge (`RegistryDispatcher::with_task_runner`): `targets` must already
+    /// be permission-filtered to exactly the subagent types this parent may spawn; when the set is
+    /// empty the task tool is omitted entirely (the model is not offered a delegation that could
+    /// never spawn anything). With it attached, a live TUI turn can delegate to a permitted subagent
+    /// via the shared [`subagent_runner`] runner.
+    #[must_use]
+    pub fn with_task_runner(
+        mut self,
+        targets: Vec<tools::TaskTarget>,
+        runner: Arc<dyn tools::TaskRunner>,
+    ) -> Self {
+        if !targets.is_empty() {
+            self.registry.register_task(targets);
+            self.context = self.context.with_task_runner(runner);
+        }
+        self
+    }
+
     /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
     /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
     fn mcp_definitions(&self) -> Vec<ToolDef> {
@@ -693,6 +713,43 @@ mod tests {
         assert!(
             wired.definitions().iter().any(|def| def.name == "websearch"),
             "with_websearch must advertise the websearch tool so the model can search this turn"
+        );
+    }
+
+    struct StubTaskRunner;
+
+    impl tools::TaskRunner for StubTaskRunner {
+        fn run_task<'a>(&'a self, _request: tools::TaskRequest) -> BoxFuture<'a, tools::ToolOutput> {
+            Box::pin(async { tools::ToolOutput::text("stub subagent result") })
+        }
+    }
+
+    #[test]
+    fn with_task_runner_advertises_the_tool_only_when_targets_are_non_empty() {
+        let dir = scratch_dir("task-runner");
+        let (tx, _rx) = channel();
+        let plain = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
+        assert!(
+            !plain.definitions().iter().any(|def| def.name == "task"),
+            "task must be omitted from a default TUI turn (no runner attached)"
+        );
+
+        let (tx, _rx) = channel();
+        let empty_targets = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx)
+            .with_task_runner(Vec::new(), Arc::new(StubTaskRunner));
+        assert!(
+            !empty_targets.definitions().iter().any(|def| def.name == "task"),
+            "task must stay omitted when the permission-filtered target list is empty"
+        );
+
+        let (tx, _rx) = channel();
+        let wired = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx).with_task_runner(
+            vec![tools::TaskTarget::new("explore", "read-only investigation")],
+            Arc::new(StubTaskRunner),
+        );
+        assert!(
+            wired.definitions().iter().any(|def| def.name == "task"),
+            "with_task_runner must advertise the task tool once a permitted target is attached"
         );
     }
 

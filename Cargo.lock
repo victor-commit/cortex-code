@@ -598,6 +598,7 @@ dependencies = [
  "server",
  "settings",
  "skills",
+ "subagent_runner",
  "tokio",
  "toml",
  "tools",
@@ -3033,6 +3034,7 @@ dependencies = [
  "serde_json",
  "settings",
  "skills",
+ "subagent_runner",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -3259,6 +3261,32 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "subagent_runner"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "checkpoints",
+ "db",
+ "engine",
+ "errors",
+ "events",
+ "format",
+ "futures-util",
+ "llm",
+ "lsp",
+ "permissions",
+ "policy",
+ "protocol",
+ "providers",
+ "redaction",
+ "serde_json",
+ "settings",
+ "tokio",
+ "toml",
+ "tools",
 ]
 
 [[package]]
@@ -3832,6 +3860,7 @@ dependencies = [
  "serde_json",
  "settings",
  "skills",
+ "subagent_runner",
  "tokio",
  "toml",
  "tools",

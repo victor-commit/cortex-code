@@ -1,0 +1,35 @@
+[package]
+name = "subagent_runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+protocol = { workspace = true }
+errors = { workspace = true }
+events = { workspace = true }
+redaction = { workspace = true }
+settings = { workspace = true }
+db = { workspace = true }
+llm = { workspace = true }
+providers = { workspace = true }
+engine = { workspace = true }
+tools = { workspace = true }
+permissions = { workspace = true }
+policy = { workspace = true }
+checkpoints = { workspace = true }
+format = { workspace = true }
+lsp = { workspace = true }
+audit = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }
+serde_json = { workspace = true }

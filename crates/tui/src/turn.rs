@@ -28,9 +28,7 @@ use engine::{
 use events::Event;
 use llm::Message;
 use redaction::guard_outbound;
-#[allow(dead_code)]
-#[path = "../../cli/src/custom_agents.rs"]
-mod custom_agents;
+use subagent_runner::custom_agents;
 
 /// A message published by the turn worker for the UI thread to apply.
 #[derive(Debug)]
@@ -181,7 +179,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             let mutation_hooks =
                                 Arc::new(crate::format_bridge::PostMutationHooks::with_config(
                                     cwd.clone(),
-                                    setup.formatter_config,
+                                    setup.formatter_config.clone(),
                                     lsp_hooks.clone(),
                                 ));
                             // Open the shared shadow store and begin a turn recorder so each file
@@ -207,11 +205,11 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 tx_events.clone(),
                             )
                             .with_audit(audit_sink.clone())
-                            .with_permissions(engine)
+                            .with_permissions(engine.clone())
                             .with_hooks(mutation_hooks)
                             .with_lsp_service(lsp_hooks.clone())
                             .with_skills(setup.skills.clone());
-                            if let Some(db_path) = db_path {
+                            if let Some(db_path) = db_path.clone() {
                                 dispatcher = dispatcher.with_todo_store(Arc::new(
                                     crate::tooling::DurableTodos::new(db_path),
                                 ));
@@ -226,6 +224,18 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             }
                             if let Some(config) = setup.websearch.clone() {
                                 dispatcher = dispatcher.with_websearch(config);
+                            }
+                            // Advertise the `task`/subagent tool this turn, gated exactly like
+                            // headless `cortex run`: build the permission-filtered catalogue over
+                            // the discovered agents (only `task:<agent>` allows are offered), and
+                            // attach the SHARED durable subagent runner so a delegation spawns a
+                            // real child turn. Requires a durable session DB (child sessions persist
+                            // there); an ephemeral turn omits the tool, just like the todo store.
+                            let task_runner =
+                                build_task_runner(&setup, &engine, &cwd, &session_id, &audit_sink,
+                                    db_path.as_ref());
+                            if let Some((targets, runner)) = task_runner {
+                                dispatcher = dispatcher.with_task_runner(targets, runner);
                             }
                             let runner = SessionRunner::default();
                             if let Some(remote) = &remote {
@@ -407,6 +417,13 @@ struct TurnSetup {
     skills: Vec<skills::Skill>,
     plugin_hooks: plugins::PluginEventHooks,
     websearch: Option<tools::WebSearchConfig>,
+    /// Custom agents discovered this turn, used to build the permitted subagent catalogue so the
+    /// `task` tool advertises exactly the subagent types this parent may spawn.
+    discovered_agents: custom_agents::Discovery,
+    /// Rendered project-memory block, forwarded to a subagent child turn's system context.
+    project_memory: Option<String>,
+    /// Config inputs resolved this turn, reused when narrowing a subagent child's permissions.
+    config_inputs: settings::ConfigInputs,
 }
 
 fn build_turn(
@@ -500,10 +517,11 @@ fn build_turn(
     let compaction = compaction_policy(&model);
     let model_id = model.model_id;
     let history = sanitize_history_media_parts_for_protocol(history, protocol);
+    let project_memory_block = project_memory.render();
     let system = render_system_context(
         &model_id,
         &agent,
-        project_memory.render(),
+        project_memory_block.clone(),
         &discovered_skill_list,
     );
     let mut turn = Turn::new(&model_id, system, prompt)
@@ -534,7 +552,54 @@ fn build_turn(
         skills: discovered_skill_list,
         plugin_hooks,
         websearch,
+        discovered_agents,
+        project_memory: project_memory_block,
+        config_inputs: inputs,
     })
+}
+
+/// Build the permitted subagent catalogue and the shared durable `task` runner for this turn, or
+/// `None` when the turn advertises no `task` tool.
+///
+/// Mirrors the headless `cortex run` wiring (`permitted_catalog` + `CliTaskRunner` via the shared
+/// [`subagent_runner`] crate): the catalogue is filtered through the parent permission engine so
+/// only `task:<agent>` allows are offered, and the runner carries the parent's provider, audit sink,
+/// durable DB, cwd, session/model, permission cap, and formatter/LSP/config/project-memory context.
+/// Returns `None` when the turn has no durable session DB (a subagent child persists its own durable
+/// session there, like the todo store) or when no subagent target is permitted.
+fn build_task_runner(
+    setup: &TurnSetup,
+    engine: &Arc<permissions::PermissionEngine>,
+    cwd: &std::path::Path,
+    session_id: &str,
+    audit: &Arc<audit::AuditSink>,
+    db_path: Option<&PathBuf>,
+) -> Option<(Vec<tools::TaskTarget>, Arc<dyn tools::TaskRunner>)> {
+    let db_path = db_path?;
+    let catalog = subagent_runner::permitted_catalog(&setup.discovered_agents, Some(engine));
+    if catalog.targets.is_empty() {
+        return None;
+    }
+    let runner = catalog.runner(subagent_runner::CliTaskRunnerConfig {
+        provider: setup.provider.clone(),
+        // The TUI does not audit-wrap its primary-turn provider or run plugin request-shaping
+        // middleware, so a subagent child mirrors that: no extra provider audit, no plugin wrapper.
+        provider_audit: None,
+        plugin_provider: None,
+        audit: audit.clone(),
+        db_path: db_path.clone(),
+        cwd: cwd.to_path_buf(),
+        parent_session_id: session_id.to_owned(),
+        parent_cap: Some(engine.ruleset().clone()),
+        parent_model_id: setup.model_id.clone(),
+        formatter_config: setup.formatter_config.clone(),
+        lsp_config: lsp::LspConfigSet::defaults(),
+        config_inputs: setup.config_inputs.clone(),
+        project_memory: setup.project_memory.clone(),
+        bus: Arc::new(events::EventBus::new()),
+    });
+    let targets = catalog.targets.clone();
+    Some((targets, runner as Arc<dyn tools::TaskRunner>))
 }
 
 fn validate_user_media_parts_for_model(

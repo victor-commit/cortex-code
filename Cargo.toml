@@ -21,6 +21,7 @@ members = [
     "crates/skills",
     "crates/memory",
     "crates/tools",
+    "crates/subagent_runner",
     "crates/tui-core",
     "crates/tui-buffer",
     "crates/tui-text",
@@ -67,6 +68,7 @@ audit = { path = "crates/audit" }
 skills = { path = "crates/skills" }
 memory = { path = "crates/memory" }
 tools = { path = "crates/tools" }
+subagent_runner = { path = "crates/subagent_runner" }
 tui-core = { path = "crates/tui-core" }
 tui-buffer = { path = "crates/tui-buffer" }
 tui-text = { path = "crates/tui-text" }

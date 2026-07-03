@@ -28,6 +28,7 @@ llm = { workspace = true }
 providers = { workspace = true }
 engine = { workspace = true }
 tools = { workspace = true }
+subagent_runner = { workspace = true }
 permissions = { workspace = true }
 policy = { workspace = true }
 checkpoints = { workspace = true }

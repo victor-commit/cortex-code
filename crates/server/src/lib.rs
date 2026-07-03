@@ -52,9 +52,7 @@ use tools::{ToolContext, ToolRegistry};
 mod auth_ext;
 mod catalog_ext;
 mod config_ext;
-#[allow(dead_code)]
-#[path = "../../cli/src/custom_agents.rs"]
-mod custom_agents;
+use subagent_runner::custom_agents;
 mod file_ext;
 mod find_ext;
 #[allow(dead_code)]

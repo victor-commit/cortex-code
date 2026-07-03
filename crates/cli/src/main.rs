@@ -8,7 +8,6 @@ mod checkpoint;
 mod cli;
 mod completion_cmd;
 mod config;
-mod custom_agents;
 mod custom_modes;
 mod debug_cmd;
 mod env_cmd;
@@ -52,6 +51,11 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use errors::Exit;
 use events::{Event, EventBus, LifecyclePhase, Surface};
+
+// `custom_agents` was promoted into the shared `subagent_runner` crate (so the TUI can reuse it
+// without a cli<->tui cycle). Re-export it under `crate::custom_agents` so existing call sites
+// resolve unchanged.
+pub(crate) use subagent_runner::custom_agents;
 
 use crate::cli::{Cli, Command};
 use crate::observe::{CounterSink, LogSink};

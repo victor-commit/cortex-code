@@ -695,7 +695,9 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             Some(task_catalog.runner(crate::subagent::CliTaskRunnerConfig {
                 provider: provider_base.clone(),
                 provider_audit: provider_audit.clone(),
-                plugin_state: plugin_state.clone(),
+                plugin_provider: Some(std::sync::Arc::new(
+                    crate::subagent::PluginProviderWrapper::new(plugin_state.clone()),
+                )),
                 audit: audit_sink.clone(),
                 db_path: db_path.clone(),
                 cwd: cwd.clone(),
