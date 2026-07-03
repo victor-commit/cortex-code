@@ -28,6 +28,32 @@ use tui_syntax::{Highlighter, LanguageConfig};
 // Language Registration
 // ============================================================================
 
+/// Returns the tree-sitter-rust highlights query with two upstream defects patched so that bare
+/// SCREAMING_SNAKE_CASE identifiers classify as `constant`.
+///
+/// The vendored `tree_sitter_rust::HIGHLIGHTS_QUERY` (tree-sitter-rust 0.24.2) has two defects that
+/// together prevent all-caps names (e.g. `REGISTRY`) from ever getting the theme's constant color:
+///  1. the `@constant` rule regex ends in a stray apostrophe (`^[A-Z][A-Z\d_]+$'`) so it never
+///     matches any identifier;
+///  2. a generic `@constructor` rule (`^[A-Z]`) also matches all-caps names, and because the
+///     highlighter resolves an overlap by the longest capture *name* (`constructor` > `constant`)
+///     and no theme styles `constructor`, the name falls back to plain text.
+///
+/// The vendored const cannot be edited, so patch its string at registration: drop the stray
+/// apostrophe and narrow the constructor regex to `^[A-Z][a-z]` (CamelCase `Some`/`None`/`Ok` still
+/// tag `@constructor`; all-caps identifiers no longer shadow `@constant`).
+fn patched_rust_highlights_query() -> String {
+    tree_sitter_rust::HIGHLIGHTS_QUERY
+        .replace(
+            r#"(#match? @constant "^[A-Z][A-Z\\d_]+$'")"#,
+            r#"(#match? @constant "^[A-Z][A-Z\\d_]+$")"#,
+        )
+        .replace(
+            r#"(#match? @constructor "^[A-Z]")"#,
+            r#"(#match? @constructor "^[A-Z][a-z]")"#,
+        )
+}
+
 /// Register commonly used languages for syntax highlighting.
 ///
 /// This registers the high-priority grammar set used by markdown fenced code blocks in the TUI.
@@ -47,11 +73,12 @@ pub fn register_common_languages(highlighter: &Highlighter) {
         tree_sitter_bash::LANGUAGE.into(),
         tree_sitter_bash::HIGHLIGHT_QUERY,
     );
+    let rust_query = patched_rust_highlights_query();
     register_language(
         highlighter,
         "rust",
         tree_sitter_rust::LANGUAGE.into(),
-        tree_sitter_rust::HIGHLIGHTS_QUERY,
+        &rust_query,
     );
     register_language(
         highlighter,
@@ -795,5 +822,114 @@ mod tests {
         assert!(highlighter.has_language("c"));
         assert!(highlighter.has_language("cpp"));
         assert!(highlighter.has_language("java"));
+    }
+
+    #[test]
+    fn patched_rust_query_removes_apostrophe_and_narrows_constructor() {
+        let patched = patched_rust_highlights_query();
+
+        // Both string replacements actually applied (guards against a silent no-op if the vendored
+        // bytes ever change).
+        assert_ne!(
+            patched,
+            tree_sitter_rust::HIGHLIGHTS_QUERY,
+            "patched query must differ from the vendored one"
+        );
+        // The stray apostrophe that neutered @constant is gone; the corrected regex is present.
+        assert!(
+            !patched.contains(r#"^[A-Z][A-Z\\d_]+$'"#),
+            "stray apostrophe removed from the @constant regex"
+        );
+        assert!(patched.contains(r#"(#match? @constant "^[A-Z][A-Z\\d_]+$")"#));
+        // The generic constructor regex is narrowed so all-caps names no longer shadow @constant.
+        assert!(
+            !patched.contains(r#"(#match? @constructor "^[A-Z]")"#),
+            "the broad ^[A-Z] constructor regex is narrowed"
+        );
+        assert!(patched.contains(r#"(#match? @constructor "^[A-Z][a-z]")"#));
+    }
+
+    #[test]
+    fn rust_screaming_snake_case_is_constant_across_themes() {
+        use tui_syntax::Theme;
+        use tui_text::Color;
+
+        // `REGISTRY` (bare SCREAMING_SNAKE_CASE) must classify as @constant; the CamelCase
+        // constructors `Some`/`None` must stay @constructor (which no theme styles → plain).
+        let snippet = "fn check(n: u32) -> u32 {\n    if REGISTRY.has(n) {\n        return 1;\n    }\n    let opt = None;\n    let ctor = Some;\n    0\n}\n";
+
+        // (chrome name, expected constant color): monokai purple #ae81ff (VAL-THEME-018),
+        // vscode light-blue #4fc1ff (VAL-THEME-022).
+        for (chrome, expect_constant) in [
+            ("monokai", Color::from_rgb_u8(0xAE, 0x81, 0xFF)),
+            ("vscode", Color::from_rgb_u8(0x4F, 0xC1, 0xFF)),
+        ] {
+            let highlighter = Highlighter::new();
+            register_common_languages(&highlighter);
+            highlighter.set_theme(Theme::from_chrome_name(chrome));
+
+            let highlighted = highlighter
+                .highlight(snippet, "rust")
+                .expect("patched rust query compiles against the grammar and highlights");
+            let spans = highlighted.spans();
+
+            let registry = spans
+                .iter()
+                .find(|s| s.text == "REGISTRY")
+                .unwrap_or_else(|| panic!("{chrome}: REGISTRY span present"));
+            assert_eq!(
+                registry.capture.as_deref(),
+                Some("constant"),
+                "{chrome}: REGISTRY is tagged @constant (not @constructor / plain)"
+            );
+            assert_eq!(
+                registry.style.fg,
+                Some(expect_constant),
+                "{chrome}: REGISTRY renders in the theme's constant color"
+            );
+
+            for ctor in ["Some", "None"] {
+                let span = spans
+                    .iter()
+                    .find(|s| s.text == ctor)
+                    .unwrap_or_else(|| panic!("{chrome}: {ctor} span present"));
+                assert_eq!(
+                    span.capture.as_deref(),
+                    Some("constructor"),
+                    "{chrome}: {ctor} still resolves to @constructor"
+                );
+                assert_eq!(
+                    span.style.fg, None,
+                    "{chrome}: {ctor} constructor is unstyled (no theme styles @constructor)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rust_camelcase_constructors_not_treated_as_constant() {
+        use tui_syntax::Theme;
+
+        // Regression guard for the narrowed constructor regex: `Ok` (CamelCase) must NOT be tagged
+        // @constant even though it starts uppercase; a genuine all-caps constant `MAX` must be.
+        let snippet = "fn f() -> u32 {\n    let _ = Ok;\n    MAX\n}\n";
+        let highlighter = Highlighter::new();
+        register_common_languages(&highlighter);
+        highlighter.set_theme(Theme::vscode_dark());
+
+        let highlighted = highlighter.highlight(snippet, "rust").expect("highlight ok");
+        let spans = highlighted.spans();
+
+        let ok = spans
+            .iter()
+            .find(|s| s.text == "Ok")
+            .expect("Ok span present");
+        assert_eq!(ok.capture.as_deref(), Some("constructor"));
+
+        let max = spans
+            .iter()
+            .find(|s| s.text == "MAX")
+            .expect("MAX span present");
+        assert_eq!(max.capture.as_deref(), Some("constant"));
     }
 }

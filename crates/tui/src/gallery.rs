@@ -649,6 +649,13 @@ mod tests {
         assert_eq!(token_fg(&buf, "bool"), Color::Rgb(102, 217, 239), "monokai type cyan");
         assert_eq!(token_fg(&buf, "tool"), Color::Rgb(230, 219, 116), "monokai string yellow");
         assert_eq!(token_fg(&buf, "// name"), Color::Rgb(117, 113, 94), "monokai comment muted");
+        // VAL-THEME-018: the bare SCREAMING_SNAKE_CASE `REGISTRY` classifies as `constant` and gets
+        // the monokai constant purple (#ae81ff), not the default/plain fallback.
+        assert_eq!(
+            token_fg(&buf, "REGISTRY"),
+            Color::Rgb(174, 129, 255),
+            "monokai constant purple #ae81ff"
+        );
         // Distinct token colors prove the block is not washed-out/uniform.
         let (kw, func, cmt) = (
             token_fg(&buf, "fn "),
@@ -733,6 +740,13 @@ mod tests {
         assert_eq!(token_fg(&buf, "validate"), Color::Rgb(220, 220, 170), "vscode function yellow #DCDCAA");
         assert_eq!(token_fg(&buf, "tool"), Color::Rgb(206, 145, 120), "vscode string orange-brown #CE9178");
         assert_eq!(token_fg(&buf, "// name"), Color::Rgb(106, 153, 85), "vscode comment green #6A9955");
+        // VAL-THEME-022: the bare SCREAMING_SNAKE_CASE `REGISTRY` classifies as `constant` and gets
+        // the VS Code Dark+ light-blue constant (#4fc1ff) — NOT constant.builtin blue (#569CD6).
+        assert_eq!(
+            token_fg(&buf, "REGISTRY"),
+            Color::Rgb(79, 193, 255),
+            "vscode constant light-blue #4fc1ff"
+        );
         let colors = [
             token_fg(&buf, "fn "),
             token_fg(&buf, "validate"),
