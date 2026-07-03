@@ -146,10 +146,12 @@ fn fenced_code_block_renders_in_distinct_container() {
     let text = flatten(&lines);
 
     assert!(!text.contains("```"), "fence markers consumed:\n{text}");
-    // Distinct container: box-drawing borders.
+    // Distinct container: a header bar carrying the language tag + copy affordance, on top of
+    // line-numbered code rows (a solid CODEBG panel, not box-drawing).
+    let header: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(
-        text.contains('┌') && text.contains('└') && text.contains('│'),
-        "bordered container:\n{text}"
+        header.contains("rust") && header.contains("copy"),
+        "header bar with lang tag + copy affordance:\n{text}"
     );
     // Content preserved including indentation.
     assert!(text.contains("fn main()"), "code content present:\n{text}");
@@ -160,8 +162,16 @@ fn fenced_code_block_renders_in_distinct_container() {
         }),
         "indentation preserved (4 leading spaces):\n{text}"
     );
-    // Multi-line: top border + 3 code lines + bottom border = at least 5 lines.
-    assert!(lines.len() >= 5, "multi-line block:\n{text}");
+    // Right-justified line-number gutter present on the code rows.
+    assert!(
+        lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.starts_with("1 fn main()")
+        }),
+        "line-number gutter present:\n{text}"
+    );
+    // Multi-line: header bar + 3 code lines = at least 4 lines.
+    assert!(lines.len() >= 4, "multi-line block:\n{text}");
 }
 
 // VAL-TUI-094: tables and blockquotes render as structured elements, raw markup consumed.

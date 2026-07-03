@@ -114,6 +114,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // status bar), so the conversation draws no own footer.
         let body = crate::view::render_chrome(frame, area, app, "chat · find", &theme);
         (body, false)
+    } else if code_answer_active(app) {
+        // A settled answer containing a fenced code block: wrap the conversation in the shared
+        // chrome under a `chat · code` crumb (markdown_code.png) with the trailing `code` crumb in
+        // AMBER; the shared 3-zone status bar is drawn by the chrome, so the conversation draws no
+        // own footer.
+        let body = crate::view::render_chrome(frame, area, app, "chat · code", &theme);
+        (body, false)
     } else {
         (area, true)
     };
@@ -711,6 +718,31 @@ fn markdown_rendering_active(app: &App) -> bool {
             app.transcript.last(),
             Some(Entry::Assistant(turn)) if is_structured_markdown(&turn.answer)
         )
+}
+
+/// Whether the conversation is showing a settled answer whose body contains a fenced code block,
+/// i.e. the turn has finished streaming and the most recent substantive transcript entry is an
+/// assistant reply carrying a ``` fence. Trailing system `Notice` entries (e.g. the `Switched to
+/// session` line a loaded session appends) are transparent so a seeded/loaded code answer still
+/// resolves. Drives the static `chat · code` breadcrumb chrome (VAL-MD-011); it is the settled
+/// counterpart of `markdown_rendering_active` (the streaming `chat · rendering` crumb takes
+/// precedence while a turn is still live), so the two are mutually exclusive.
+fn code_answer_active(app: &App) -> bool {
+    if app.is_busy() {
+        return false;
+    }
+    app.transcript
+        .iter()
+        .rev()
+        .find(|entry| !matches!(entry, Entry::Notice(_)))
+        .is_some_and(|entry| {
+            matches!(entry, Entry::Assistant(turn) if answer_has_code_block(&turn.answer))
+        })
+}
+
+/// Whether an assistant answer contains at least one fenced code block (a ``` fence line).
+fn answer_has_code_block(answer: &str) -> bool {
+    answer.lines().any(|raw| raw.trim_start().starts_with("```"))
 }
 
 /// Whether an assistant answer contains structured markdown (a heading, list, table, blockquote, or
@@ -6864,6 +6896,73 @@ mod tests {
             .filter(|c| c.symbol() == "r")
             .find(|c| c.fg == theme.secondary);
         assert!(r_cell.is_some(), "the `rendering` crumb is AMBER");
+    }
+
+    #[test]
+    fn code_block_answer_shows_chat_code_breadcrumb() {
+        // VAL-MD-011: a settled (non-streaming) answer containing a fenced code block wraps the
+        // conversation in the shared chrome with a `✦ Cortex Code · chat · code` header (✦ ORANGE,
+        // `Cortex Code` BRIGHT, ` · ` GHOST, trailing `code` crumb AMBER). The turn is finished, so
+        // this is the settled counterpart of the streaming `chat · rendering` crumb.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::User("show me the validator".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "Here is the validator:\n\n```rust\nfn main() {}\n```".to_owned(),
+        }));
+        assert!(!a.is_busy(), "the turn has finished streaming");
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
+        assert!(
+            row0.contains("Cortex Code") && row0.contains("chat") && row0.contains("code"),
+            "row 0 shows the chat·code breadcrumb: {row0:?}"
+        );
+        // The star is ORANGE and the trailing `code` crumb is AMBER.
+        let star_fg = (0..92)
+            .map(|x| buffer[(x, 0)].clone())
+            .find(|c| c.symbol() == "✦")
+            .map(|c| c.fg);
+        assert_eq!(star_fg, Some(theme.primary), "star is ORANGE");
+        // The `code` crumb is the last AMBER run on the row: its `d` cell is AMBER.
+        let d_cell = (0..92)
+            .map(|x| buffer[(x, 0)].clone())
+            .filter(|c| c.symbol() == "d")
+            .find(|c| c.fg == theme.secondary);
+        assert!(d_cell.is_some(), "the `code` crumb is AMBER");
+    }
+
+    #[test]
+    fn plain_prose_answer_shows_no_chat_code_breadcrumb() {
+        // VAL-MD-011 non-regression: a settled answer with no fenced code block must NOT show the
+        // `chat · code` crumb.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::User("hello".to_owned()));
+        a.transcript.push(Entry::Assistant(AssistantTurn {
+            reasoning: String::new(),
+            answer: "Just some plain prose, no code here.".to_owned(),
+        }));
+
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
+        assert!(
+            !row0.contains("chat · code"),
+            "no chat·code breadcrumb on a plain-prose answer: {row0:?}"
+        );
     }
 
     #[test]

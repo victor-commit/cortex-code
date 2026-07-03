@@ -511,11 +511,11 @@ impl Default for ThemeColors {
 pub struct CortexStyle;
 
 impl CortexStyle {
-    /// Default style: primary text on void background.
+    /// Default style: primary text on the brand canvas background.
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn default() -> Style {
-        Style::default().fg(TEXT).bg(VOID)
+        Style::default().fg(TXT).bg(CANVAS)
     }
 
     /// Header style: bright white bold text for titles and headers.
@@ -575,16 +575,16 @@ impl CortexStyle {
         Style::default().fg(HIGHLIGHT).add_modifier(Modifier::BOLD)
     }
 
-    /// User message style: cyan primary text.
+    /// User message style: brand orange primary text.
     #[inline]
     pub fn user_message() -> Style {
-        Style::default().fg(CYAN_PRIMARY)
+        Style::default().fg(ORANGE)
     }
 
-    /// Assistant message style: sky blue text.
+    /// Assistant message style: brand amber text.
     #[inline]
     pub fn assistant_message() -> Style {
-        Style::default().fg(SKY_BLUE)
+        Style::default().fg(AMBER)
     }
 
     /// System message style: muted italic text for informational system messages.
@@ -601,10 +601,10 @@ impl CortexStyle {
         Style::default().fg(ERROR).add_modifier(Modifier::ITALIC)
     }
 
-    /// Code style: electric blue text on surface background.
+    /// Code style: brand variable-blue text on the inline-code background.
     #[inline]
     pub fn code() -> Style {
-        Style::default().fg(ELECTRIC_BLUE).bg(SURFACE_1)
+        Style::default().fg(VAR).bg(INLBG)
     }
 
     /// Border style: standard border color.

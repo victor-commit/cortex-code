@@ -82,6 +82,8 @@ pub struct MarkdownTheme {
     pub code_block_text: Style,
     /// Style for the language tag in code blocks
     pub code_lang_tag: Style,
+    /// Style for the right-justified line-number gutter in code blocks
+    pub code_line_number: Style,
 
     // ============================================================
     // Blockquotes
@@ -263,6 +265,13 @@ impl MarkdownTheme {
     #[must_use]
     pub fn with_code_lang_tag(mut self, style: Style) -> Self {
         self.code_lang_tag = style;
+        self
+    }
+
+    /// Sets the code line-number gutter style.
+    #[must_use]
+    pub fn with_code_line_number(mut self, style: Style) -> Self {
+        self.code_line_number = style;
         self
     }
 
@@ -451,6 +460,7 @@ impl MarkdownTheme {
             code_lang_tag: Style::default()
                 .fg(Color::Rgb(50, 100, 200))
                 .add_modifier(Modifier::ITALIC),
+            code_line_number: Style::default().fg(Color::Rgb(160, 160, 160)),
             blockquote_border: Color::Rgb(0, 100, 70),
             blockquote_text: Style::default()
                 .fg(Color::Rgb(80, 80, 80))
@@ -517,6 +527,7 @@ impl MarkdownTheme {
             code_lang_tag: Style::default()
                 .fg(Color::Rgb(100, 180, 255))
                 .add_modifier(Modifier::ITALIC),
+            code_line_number: Style::default().fg(Color::Rgb(80, 110, 140)),
             blockquote_border: Color::Rgb(0, 180, 180),
             blockquote_text: Style::default()
                 .fg(Color::Rgb(140, 170, 200))
@@ -583,6 +594,7 @@ impl MarkdownTheme {
             code_lang_tag: Style::default()
                 .fg(Color::Rgb(102, 217, 239))
                 .add_modifier(Modifier::ITALIC),
+            code_line_number: Style::default().fg(Color::Rgb(117, 113, 94)),
             blockquote_border: Color::Rgb(166, 226, 46),
             blockquote_text: Style::default()
                 .fg(Color::Rgb(117, 113, 94))
@@ -649,6 +661,7 @@ impl MarkdownTheme {
             code_lang_tag: Style::default()
                 .fg(Color::Rgb(86, 156, 214))
                 .add_modifier(Modifier::ITALIC),
+            code_line_number: Style::default().fg(Color::Rgb(133, 133, 133)),
             blockquote_border: Color::Rgb(0, 122, 204),
             blockquote_text: Style::default()
                 .fg(Color::Rgb(150, 150, 150))
@@ -717,6 +730,7 @@ impl Default for MarkdownTheme {
             code_block_border: BORDER_BRAND,
             code_block_text: Style::default().fg(TXT),
             code_lang_tag: Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
+            code_line_number: Style::default().fg(FAINT),
 
             // Blockquotes
             blockquote_border: ORANGE_D,
@@ -832,6 +846,26 @@ mod tests {
         assert_eq!(theme.code_block_border, BORDER_BRAND);
         assert_eq!(theme.code_block_text.fg, Some(TXT));
         assert!(theme.code_lang_tag.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn code_line_number_uses_faint_on_default_theme() {
+        // The markdown_code spec renders the line-number gutter in FAINT on the brand dark theme.
+        let theme = MarkdownTheme::default();
+        assert_eq!(theme.code_line_number.fg, Some(FAINT));
+    }
+
+    #[test]
+    fn every_theme_sets_a_code_line_number_color() {
+        for theme in [
+            MarkdownTheme::dark(),
+            MarkdownTheme::light(),
+            MarkdownTheme::ocean_dark(),
+            MarkdownTheme::monokai(),
+            MarkdownTheme::vscode(),
+        ] {
+            assert!(theme.code_line_number.fg.is_some());
+        }
     }
 
     #[test]

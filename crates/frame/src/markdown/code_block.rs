@@ -45,27 +45,14 @@ use ratatui::text::{Line, Span};
 use std::sync::Arc;
 use tui_syntax::{HighlightSpan, Highlighter};
 
-use crate::style::{BORDER, INFO, SURFACE_0, TEXT};
+use crate::style::{BORDER_BRAND, CODEBG, FAINT, TXT};
 
 // ============================================================
-// Border Characters
+// Copy affordance
 // ============================================================
 
-/// Box-drawing characters for code block borders.
-pub mod border {
-    /// Top-left corner: `┌`
-    pub const TOP_LEFT: char = '┌';
-    /// Top-right corner: `┐`
-    pub const TOP_RIGHT: char = '┐';
-    /// Bottom-left corner: `└`
-    pub const BOTTOM_LEFT: char = '└';
-    /// Bottom-right corner: `┘`
-    pub const BOTTOM_RIGHT: char = '┘';
-    /// Horizontal line: `─`
-    pub const HORIZONTAL: char = '─';
-    /// Vertical line: `│`
-    pub const VERTICAL: char = '│';
-}
+/// The copy hint shown at the right of a code-block header bar.
+const COPY_HINT: &str = "copy ^C";
 
 // ============================================================
 // CodeBlockRenderer
@@ -73,41 +60,44 @@ pub mod border {
 
 /// Renderer for code blocks with syntax highlighting.
 ///
-/// This renderer provides bordered code blocks with:
-/// - Language tag in the top border
-/// - Syntax highlighting for known languages
-/// - Optional line numbers
-/// - Consistent styling from the Cortex theme
+/// This renderer draws a fenced code block as a solid `CODEBG` panel (no box-drawing border):
+/// - a header bar carrying the language tag (left) and a copy affordance (right)
+/// - content rows with a right-justified line-number gutter and syntax highlighting
+/// - every emitted cell carries an explicit background so the panel stays a solid filled
+///   rectangle on any theme (never a terminal-default black bar on a light theme)
 #[derive(Debug, Clone)]
 pub struct CodeBlockRenderer {
     /// The syntax highlighter.
     highlighter: Arc<Highlighter>,
-    /// Color for borders.
+    /// Color for the header/gutter accents (kept for API compatibility).
     border_color: Color,
-    /// Background color for code content.
+    /// Background color for the whole code panel.
     background_color: Color,
     /// Style for unhighlighted text.
     text_style: Style,
-    /// Style for the language tag.
+    /// Style for the language tag (and the copy affordance) in the header bar.
     lang_tag_style: Style,
-    /// Whether to show line numbers.
+    /// Style for the right-justified line-number gutter.
+    line_number_style: Style,
+    /// Whether to show the line-number gutter.
     show_line_numbers: bool,
 }
 
 impl CodeBlockRenderer {
-    /// Creates a new code block renderer with default styling.
+    /// Creates a new code block renderer with default (brand) styling.
     pub fn new(highlighter: Arc<Highlighter>) -> Self {
         Self {
             highlighter,
-            border_color: BORDER,
-            background_color: SURFACE_0,
-            text_style: Style::default().fg(TEXT),
-            lang_tag_style: Style::default().fg(INFO).add_modifier(Modifier::ITALIC),
+            border_color: BORDER_BRAND,
+            background_color: CODEBG,
+            text_style: Style::default().fg(TXT),
+            lang_tag_style: Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
+            line_number_style: Style::default().fg(FAINT),
             show_line_numbers: false,
         }
     }
 
-    /// Sets the border color.
+    /// Sets the border/accent color.
     pub fn with_border_color(mut self, color: Color) -> Self {
         self.border_color = color;
         self
@@ -131,103 +121,79 @@ impl CodeBlockRenderer {
         self
     }
 
-    /// Enables or disables line numbers.
+    /// Sets the line-number gutter style.
+    pub fn with_line_number_style(mut self, style: Style) -> Self {
+        self.line_number_style = style;
+        self
+    }
+
+    /// Enables or disables the line-number gutter.
     pub fn with_line_numbers(mut self, show: bool) -> Self {
         self.show_line_numbers = show;
         self
     }
 
-    /// Renders a code block with borders.
+    /// Renders a code block as a solid `CODEBG` panel.
     ///
     /// The output format is:
     /// ```text
-    /// ┌─ rust ───────────────────────────┐
-    /// │ fn main() {                      │
-    /// │     println!("Hello, world!");   │
-    /// │ }                                │
-    /// └──────────────────────────────────┘
+    ///  rust                                          copy ^C
+    ///  1 use serde_json::Value;
+    ///  2
+    ///  3 /// validate args against the tool schema
     /// ```
     pub fn render(&self, code: &str, language: Option<&str>, max_width: u16) -> Vec<Line<'static>> {
-        // Every emitted cell (borders, language tag, code, padding) carries an explicit background
-        // so non-black themes (e.g. light) never show the terminal default behind the box.
-        let border_style = Style::default()
-            .fg(self.border_color)
-            .bg(self.background_color);
-        let bg_style = Style::default().bg(self.background_color);
+        let bg = self.background_color;
+        let bg_style = Style::default().bg(bg);
+        // The header language tag + copy affordance are forced onto the panel background so they
+        // never fall through to a terminal-default black bar on a light theme.
+        let lang_style = self.lang_tag_style.patch(bg_style);
+        let lnum_style = self.line_number_style.patch(bg_style);
 
-        // Highlight the code
-        let mut highlighted_lines =
+        let total_width = (max_width.max(8) as usize).max(COPY_HINT.len() + 4);
+
+        // Highlight the code into per-line span vectors.
+        let highlighted_lines =
             highlight_code(&self.highlighter, code, language, self.text_style);
+        let line_count = highlighted_lines.len();
 
-        // Add line numbers if enabled
-        if self.show_line_numbers {
-            highlighted_lines = render_with_line_numbers(
-                highlighted_lines,
-                Style::default()
-                    .fg(self.border_color)
-                    .add_modifier(Modifier::DIM),
-            );
-        }
+        // Right-justified gutter width from the largest line number.
+        let number_width = if self.show_line_numbers {
+            line_count.max(1).to_string().len()
+        } else {
+            0
+        };
 
-        // Calculate content width (inside borders)
-        // Account for "│ " prefix and " │" suffix (4 chars total)
-        let content_width = max_width.saturating_sub(4) as usize;
+        let mut lines = Vec::with_capacity(line_count + 1);
 
-        // Find the maximum line width to determine box width
-        let max_line_width = highlighted_lines
-            .iter()
-            .map(|spans| spans_width(spans))
-            .max()
-            .unwrap_or(0)
-            .min(content_width);
+        // Header bar: language tag (left) + copy affordance (right), on CODEBG.
+        lines.push(render_header(language, total_width, bg_style, lang_style));
 
-        // Use the larger of max_line_width or a minimum width for the language tag
-        let lang_min_width = language.map(|l| l.len() + 3).unwrap_or(0); // " rust "
-        let box_content_width = max_line_width.max(lang_min_width).max(10);
-        let box_width = (box_content_width + 4) as u16; // Add border chars
-
-        let mut lines = Vec::with_capacity(highlighted_lines.len() + 2);
-
-        // Top border with language tag
-        lines.push(render_top_border(
-            language,
-            box_width,
-            border_style,
-            self.lang_tag_style,
-            bg_style,
-        ));
-
-        // Content lines
-        for spans in highlighted_lines {
-            lines.push(render_content_line(
+        // Content rows: gutter + syntax spans, padded to the panel width on CODEBG.
+        for (idx, spans) in highlighted_lines.into_iter().enumerate() {
+            lines.push(render_code_row(
                 spans,
-                box_width,
-                border_style,
+                idx + 1,
+                number_width,
+                total_width,
                 bg_style,
+                lnum_style,
             ));
         }
-
-        // Bottom border
-        lines.push(render_bottom_border(box_width, border_style));
 
         lines
     }
 
-    /// Renders code without borders (just highlighted lines).
+    /// Renders code without the panel chrome (just highlighted lines).
     ///
-    /// Useful when you want syntax highlighting without the box decoration.
+    /// Useful when you want syntax highlighting without the header bar / gutter panel.
     pub fn render_bare(&self, code: &str, language: Option<&str>) -> Vec<Line<'static>> {
         let mut highlighted_lines =
             highlight_code(&self.highlighter, code, language, self.text_style);
 
         // Add line numbers if enabled
         if self.show_line_numbers {
-            highlighted_lines = render_with_line_numbers(
-                highlighted_lines,
-                Style::default()
-                    .fg(self.border_color)
-                    .add_modifier(Modifier::DIM),
-            );
+            highlighted_lines = render_with_line_numbers(highlighted_lines, self.line_number_style);
         }
 
         highlighted_lines.into_iter().map(Line::from).collect()
@@ -489,144 +455,82 @@ fn split_highlighted_spans_by_line(
 }
 
 // ============================================================
-// Border Rendering Helpers
+// Header and Row Rendering
 // ============================================================
 
-/// Renders the top border line with optional language tag.
+/// Renders the header bar: language tag (left) + copy affordance (right), on CODEBG.
 ///
-/// Format: `┌─ rust ───────────────────────────┐`
-fn render_top_border(
+/// Format: `rust                                          copy ^C`
+fn render_header(
     language: Option<&str>,
-    width: u16,
-    border_style: Style,
-    lang_style: Style,
+    width: usize,
     bg_style: Style,
+    lang_style: Style,
 ) -> Line<'static> {
-    let width = width as usize;
-    // Force the code background onto the language tag so it does not fall through to black.
-    let lang_style = lang_style.patch(bg_style);
+    use unicode_width::UnicodeWidthStr;
 
-    if width < 4 {
-        return Line::from(vec![Span::styled(
-            format!("{}{}", border::TOP_LEFT, border::TOP_RIGHT),
-            border_style,
-        )]);
+    let lang_text = language.unwrap_or("");
+    let lang_len = UnicodeWidthStr::width(lang_text);
+    let copy_len = UnicodeWidthStr::width(COPY_HINT);
+
+    // Compute fill to right-justify the copy hint.
+    let fill_len = width.saturating_sub(lang_len).saturating_sub(copy_len);
+
+    let mut spans = Vec::with_capacity(3);
+    if !lang_text.is_empty() {
+        spans.push(Span::styled(lang_text.to_string(), lang_style));
     }
-
-    let mut spans = Vec::new();
-
-    // Top-left corner
-    spans.push(Span::styled(border::TOP_LEFT.to_string(), border_style));
-
-    if let Some(lang) = language {
-        // "─ rust "
-        let lang_part = format!("{} {} ", border::HORIZONTAL, lang);
-        let lang_len = lang_part.chars().count();
-
-        spans.push(Span::styled(border::HORIZONTAL.to_string(), border_style));
-        spans.push(Span::styled(format!(" {} ", lang), lang_style));
-
-        // Fill remaining with horizontal lines
-        let remaining = width.saturating_sub(2 + lang_len);
-        if remaining > 0 {
-            spans.push(Span::styled(
-                border::HORIZONTAL.to_string().repeat(remaining),
-                border_style,
-            ));
-        }
-    } else {
-        // No language tag - just horizontal lines
-        let horizontal_count = width.saturating_sub(2);
-        spans.push(Span::styled(
-            border::HORIZONTAL.to_string().repeat(horizontal_count),
-            border_style,
-        ));
+    if fill_len > 0 {
+        spans.push(Span::styled(" ".repeat(fill_len), bg_style));
     }
-
-    // Top-right corner
-    spans.push(Span::styled(border::TOP_RIGHT.to_string(), border_style));
+    spans.push(Span::styled(COPY_HINT.to_string(), lang_style));
 
     Line::from(spans)
 }
 
-/// Renders a content line with side borders.
+/// Renders one code row: line-number gutter (right-justified) + syntax spans, padded to width.
 ///
-/// Format: `│ content here                     │`
-fn render_content_line(
-    spans: Vec<Span<'static>>,
-    width: u16,
-    border_style: Style,
+/// Format: `  1 use serde_json::Value;`
+fn render_code_row(
+    code_spans: Vec<Span<'static>>,
+    line_num: usize,
+    number_width: usize,
+    total_width: usize,
     bg_style: Style,
+    lnum_style: Style,
 ) -> Line<'static> {
-    let width = width as usize;
+    let mut result = Vec::with_capacity(code_spans.len() + 3);
 
-    if width < 4 {
-        return Line::from(vec![
-            Span::styled(border::VERTICAL.to_string(), border_style),
-            Span::styled(border::VERTICAL.to_string(), border_style),
-        ]);
+    // Line-number gutter (right-justified) with a single trailing space separating it from code.
+    if number_width > 0 {
+        let num_str = format!("{:>width$} ", line_num, width = number_width);
+        result.push(Span::styled(num_str, lnum_style));
     }
 
-    // Calculate current content width
-    let content_width = spans_width(&spans);
-    let inner_width = width.saturating_sub(4); // Account for "│ " and " │"
-
-    let mut result = Vec::with_capacity(spans.len() + 4);
-
-    // Left border with space
-    result.push(Span::styled(format!("{} ", border::VERTICAL), border_style));
-
-    // Content spans, each forced onto the code background so no syntax cell falls through to the
-    // terminal default (which would render as a black bar on light/non-black themes).
-    for mut span in spans {
+    // Syntax spans, each forced onto the CODEBG so no token falls through to the terminal default.
+    let code_width = spans_width(&code_spans);
+    for mut span in code_spans {
         span.style = span.style.patch(bg_style);
         result.push(span);
     }
 
-    // Padding to fill width
-    let padding_needed = inner_width.saturating_sub(content_width);
-    if padding_needed > 0 {
-        result.push(Span::styled(" ".repeat(padding_needed), bg_style));
+    // Padding to fill the panel width so the CODEBG rectangle is solid on every theme.
+    let consumed = number_width + usize::from(number_width > 0) + code_width;
+    let pad = total_width.saturating_sub(consumed);
+    if pad > 0 {
+        result.push(Span::styled(" ".repeat(pad), bg_style));
     }
-
-    // Right border with space
-    result.push(Span::styled(format!(" {}", border::VERTICAL), border_style));
 
     Line::from(result)
 }
 
-/// Renders the bottom border line.
-///
-/// Format: `└──────────────────────────────────┘`
-fn render_bottom_border(width: u16, border_style: Style) -> Line<'static> {
-    let width = width as usize;
-
-    if width < 2 {
-        return Line::from(vec![Span::styled(
-            border::BOTTOM_LEFT.to_string(),
-            border_style,
-        )]);
-    }
-
-    let horizontal_count = width.saturating_sub(2);
-
-    Line::from(vec![
-        Span::styled(border::BOTTOM_LEFT.to_string(), border_style),
-        Span::styled(
-            border::HORIZONTAL.to_string().repeat(horizontal_count),
-            border_style,
-        ),
-        Span::styled(border::BOTTOM_RIGHT.to_string(), border_style),
-    ])
-}
-
 // ============================================================
-// Line Number Rendering
+// Line Number Gutter (for render_bare)
 // ============================================================
 
-/// Adds line numbers to highlighted lines.
+/// Adds line numbers to highlighted lines (for `render_bare` when line numbers are enabled).
 ///
-/// Format: `  1 │ content`
+/// Format: `  1 content`
 fn render_with_line_numbers(
     lines: Vec<Vec<Span<'static>>>,
     line_number_style: Style,
@@ -639,12 +543,7 @@ fn render_with_line_numbers(
         .enumerate()
         .map(|(idx, mut spans)| {
             let line_num = idx + 1;
-            let prefix = format!(
-                "{:>width$} {} ",
-                line_num,
-                border::VERTICAL,
-                width = number_width
-            );
+            let prefix = format!("{:>width$} ", line_num, width = number_width);
 
             let mut new_spans = Vec::with_capacity(spans.len() + 1);
             new_spans.push(Span::styled(prefix, line_number_style));
@@ -687,8 +586,8 @@ mod tests {
         let renderer = create_test_renderer();
         let lines = renderer.render("hello world", None, 40);
 
-        // Should have top border, content, bottom border
-        assert_eq!(lines.len(), 3);
+        // Header bar + one content row.
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
@@ -720,10 +619,12 @@ mod tests {
         let renderer = create_test_renderer();
         let lines = renderer.render("fn main() {}", Some("rust"), 40);
 
-        // Check top border contains language
-        let top_line = &lines[0];
-        let top_content: String = top_line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(top_content.contains("rust"));
+        // The header bar (first line) carries the language tag.
+        let header_line = &lines[0];
+        let header_content: String =
+            header_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(header_content.contains("rust"));
+        assert!(header_content.contains("copy"));
     }
 
     #[test]
@@ -732,8 +633,8 @@ mod tests {
         let code = "line 1\nline 2\nline 3";
         let lines = renderer.render(code, None, 40);
 
-        // Top border + 3 content lines + bottom border
-        assert_eq!(lines.len(), 5);
+        // Header bar + 3 content rows.
+        assert_eq!(lines.len(), 4);
     }
 
     #[test]
@@ -742,8 +643,8 @@ mod tests {
         // "unknown_lang" is not registered, should fall back to plain text
         let lines = renderer.render("some code", Some("unknown_lang"), 40);
 
-        // Should still render successfully
-        assert_eq!(lines.len(), 3);
+        // Header bar + one content row.
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
@@ -751,7 +652,7 @@ mod tests {
         let renderer = create_test_renderer();
         let lines = renderer.render_bare("line 1\nline 2", None);
 
-        // Should have 2 lines, no borders
+        // Should have 2 lines, no header/gutter chrome.
         assert_eq!(lines.len(), 2);
     }
 
@@ -772,8 +673,8 @@ mod tests {
         let renderer = create_test_renderer();
         let lines = renderer.render("", None, 40);
 
-        // Should have top border, one empty content line, bottom border
-        assert_eq!(lines.len(), 3);
+        // Header bar + one empty content row.
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
@@ -872,8 +773,8 @@ mod tests {
         let code = "let emoji = '🦀';\nlet chinese = '中文';";
         let lines = renderer.render(code, None, 60);
 
-        // Should render without panicking
-        assert!(lines.len() >= 3);
+        // Should render without panicking: header bar + 2 content rows.
+        assert_eq!(lines.len(), 3);
     }
 
     #[test]
@@ -883,25 +784,60 @@ mod tests {
 
         // Very narrow
         let lines = renderer.render(code, None, 10);
-        assert!(lines.len() >= 3);
+        assert!(lines.len() >= 2);
 
         // Normal
         let lines = renderer.render(code, None, 80);
-        assert!(lines.len() >= 3);
+        assert!(lines.len() >= 2);
 
         // Very wide
         let lines = renderer.render(code, None, 200);
-        assert!(lines.len() >= 3);
+        assert!(lines.len() >= 2);
     }
 
     #[test]
-    fn test_border_characters() {
-        assert_eq!(border::TOP_LEFT, '┌');
-        assert_eq!(border::TOP_RIGHT, '┐');
-        assert_eq!(border::BOTTOM_LEFT, '└');
-        assert_eq!(border::BOTTOM_RIGHT, '┘');
-        assert_eq!(border::HORIZONTAL, '─');
-        assert_eq!(border::VERTICAL, '│');
+    fn header_bar_shows_lang_left_and_copy_hint_right() {
+        let bg_style = Style::default().bg(CODEBG);
+        let lang_style = Style::default().fg(FAINT);
+        let line = render_header(Some("rust"), 40, bg_style, lang_style);
+
+        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.starts_with("rust"));
+        assert!(content.trim_end().ends_with(COPY_HINT));
+        // The whole header fills the panel width so CODEBG stays solid.
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(content.width(), 40);
+    }
+
+    #[test]
+    fn header_bar_without_language_still_shows_copy_hint() {
+        let bg_style = Style::default().bg(CODEBG);
+        let lang_style = Style::default().fg(FAINT);
+        let line = render_header(None, 30, bg_style, lang_style);
+
+        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.trim_end().ends_with(COPY_HINT));
+    }
+
+    #[test]
+    fn code_row_has_right_justified_line_number_gutter() {
+        let bg_style = Style::default().bg(CODEBG);
+        let lnum_style = Style::default().fg(FAINT);
+        let line = render_code_row(
+            vec![Span::raw("hello")],
+            7,
+            2,
+            30,
+            bg_style,
+            lnum_style,
+        );
+
+        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        // Line number 7 right-justified into a 2-wide gutter, then a space, then code.
+        assert!(content.starts_with(" 7 hello"));
+        // Row fills the panel width.
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(content.width(), 30);
     }
 
     #[test]
@@ -924,58 +860,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_top_border_without_language() {
-        let border_style = Style::default();
-        let lang_style = Style::default();
-        let bg_style = Style::default();
-        let line = render_top_border(None, 20, border_style, lang_style, bg_style);
-
-        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.starts_with('┌'));
-        assert!(content.ends_with('┐'));
-    }
-
-    #[test]
-    fn test_render_top_border_with_language() {
-        let border_style = Style::default();
-        let lang_style = Style::default();
-        let bg_style = Style::default();
-        let line = render_top_border(Some("rust"), 30, border_style, lang_style, bg_style);
-
-        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.contains("rust"));
-        assert!(content.starts_with('┌'));
-        assert!(content.ends_with('┐'));
-    }
-
-    #[test]
-    fn test_render_bottom_border() {
-        use unicode_width::UnicodeWidthStr;
-
-        let border_style = Style::default();
-        let line = render_bottom_border(20, border_style);
-
-        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.starts_with('└'));
-        assert!(content.ends_with('┘'));
-        // Check display width, not byte length (box-drawing chars are multi-byte)
-        assert_eq!(content.width(), 20);
-    }
-
-    #[test]
-    fn test_render_content_line() {
-        let spans = vec![Span::raw("hello")];
-        let border_style = Style::default();
-        let bg_style = Style::default();
-        let line = render_content_line(spans, 20, border_style, bg_style);
-
-        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.starts_with('│'));
-        assert!(content.ends_with('│'));
-        assert!(content.contains("hello"));
-    }
-
-    #[test]
     fn test_line_numbers_format() {
         let lines = vec![
             vec![Span::raw("line 1")],
@@ -986,10 +870,9 @@ mod tests {
 
         assert_eq!(numbered.len(), 3);
 
-        // Check first line has line number 1
+        // Check first line has line number 1 in the gutter (no box border).
         let first: String = numbered[0].iter().map(|s| s.content.as_ref()).collect();
-        assert!(first.contains("1"));
-        assert!(first.contains("│"));
+        assert!(first.starts_with("1 "));
     }
 
     #[test]

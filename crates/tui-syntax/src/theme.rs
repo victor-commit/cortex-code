@@ -334,9 +334,10 @@ impl Theme {
             "light" => Self::light(),
             "monokai" => Self::monokai(),
             "ocean" | "ocean_dark" => Self::ocean(),
-            "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode_dark(),
-            // The brand `dark` theme (and any unknown name) uses the orange-tinted brand syntax.
-            _ => Self::cortex_dark(),
+            // The brand `dark` chrome (and the `vscode` chrome, and any unknown name) wraps a real
+            // VS Code Dark+ token set for code blocks (the documented syntax exception): keywords
+            // blue, strings orange-brown, comments green, functions yellow.
+            _ => Self::vscode_dark(),
         }
     }
 
@@ -573,7 +574,7 @@ mod tests {
     #[test]
     fn from_chrome_name_binds_distinct_syntax_palettes() {
         // Each chrome theme resolves to a syntax theme; the keyword color differs across themes so
-        // a fenced code block looks different under dark vs light/monokai/ocean/vscode.
+        // a fenced code block looks different under dark vs light/monokai/ocean.
         let dark = Theme::from_chrome_name("dark");
         let light = Theme::from_chrome_name("light");
         let monokai = Theme::from_chrome_name("monokai");
@@ -585,17 +586,18 @@ mod tests {
         assert_ne!(kw(&dark), kw(&light));
         assert_ne!(kw(&dark), kw(&monokai));
         assert_ne!(kw(&dark), kw(&ocean));
-        assert_ne!(kw(&dark), kw(&vscode));
 
-        // The brand dark syntax has the expected orange keyword and a green number.
-        assert_eq!(dark.get("keyword").fg, Some(Color::from_rgb_u8(232, 146, 86)));
+        // The brand dark chrome wraps a real VS Code Dark+ token set: blue keywords (#569CD6),
+        // orange-brown strings, green comments, yellow functions (VAL-MD-016, VAL-MD-017).
+        assert_eq!(dark.get("keyword").fg, Some(Color::from_rgb_u8(86, 156, 214)));
+        assert_eq!(vscode.get("keyword").fg, dark.get("keyword").fg);
         assert_ne!(
             dark.get("keyword").fg,
             dark.get("string").fg,
             "multiple distinct token colors"
         );
 
-        // Unknown names fall back to the brand dark syntax.
+        // Unknown names fall back to vscode_dark.
         assert_eq!(
             Theme::from_chrome_name("nonexistent").get("keyword").fg,
             dark.get("keyword").fg

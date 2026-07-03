@@ -3,17 +3,14 @@
 //! Clean-room original (Apache-2.0).
 //!
 //! Each test asserts *observable* rendered output: distinct syntax colors appear on language
-//! tokens, partial/streaming blocks stay legible (bordered, no raw escapes), and unknown
-//! languages degrade gracefully to a plain bordered container.
+//! tokens, partial/streaming blocks stay legible (a solid CODEBG panel, no raw escapes), and
+//! unknown languages degrade gracefully to a plain line-numbered panel.
 
 use frame::markdown::render_markdown;
 use ratatui::text::Line;
 use std::collections::BTreeSet;
 
 const W: u16 = 80;
-
-/// Box-drawing characters used by the code-block container.
-const BORDER_CHARS: &[char] = &['┌', '┐', '└', '┘', '─', '│'];
 
 /// Flatten rendered lines into a single string (one rendered line per text line).
 fn flatten(lines: &[Line<'static>]) -> String {
@@ -29,29 +26,32 @@ fn flatten(lines: &[Line<'static>]) -> String {
         .join("\n")
 }
 
-/// The interior content lines of a bordered code block (top + bottom borders stripped).
+/// The code rows of a fenced block (the leading header bar stripped).
 fn content_lines<'a>(lines: &'a [Line<'static>]) -> &'a [Line<'static>] {
-    if lines.len() >= 2 {
-        &lines[1..lines.len() - 1]
-    } else {
+    if lines.is_empty() {
         lines
+    } else {
+        &lines[1..]
     }
 }
 
-/// Collect distinct foreground colors of "token" spans inside a code block: spans whose trimmed
-/// content is non-empty and is not a border/structural glyph. Colors are keyed by their debug
-/// form so the set is comparable regardless of `Color` variant.
+/// The header-bar text of a rendered code block (language tag + copy affordance).
+fn header_text(lines: &[Line<'static>]) -> String {
+    lines
+        .first()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .unwrap_or_default()
+}
+
+/// Collect distinct foreground colors of "token" spans inside a code block. The first span of each
+/// code row is the line-number gutter, so it is skipped; the remainder are the syntax spans. Colors
+/// are keyed by their debug form so the set is comparable regardless of `Color` variant.
 fn distinct_token_colors(lines: &[Line<'static>]) -> BTreeSet<String> {
     let mut colors = BTreeSet::new();
     for line in content_lines(lines) {
-        for span in &line.spans {
+        for span in line.spans.iter().skip(1) {
             let content = span.content.as_ref();
-            let trimmed = content.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Skip pure border/structural spans (the "│ " frame).
-            if trimmed.chars().all(|c| BORDER_CHARS.contains(&c)) {
+            if content.trim().is_empty() {
                 continue;
             }
             if let Some(fg) = span.style.fg {
@@ -77,11 +77,12 @@ fn rust_code_block_has_multiple_distinct_syntax_colors() {
     let lines = render_markdown(md, W);
     let text = flatten(&lines);
 
-    // Fences consumed, distinct bordered container.
+    // Fences consumed, rendered in a distinct panel (header bar + line-numbered rows).
     assert!(!text.contains("```"), "fence markers consumed:\n{text}");
+    let header = header_text(&lines);
     assert!(
-        text.contains('┌') && text.contains('└') && text.contains('│'),
-        "bordered container:\n{text}"
+        header.contains("rust") && header.contains("copy"),
+        "header bar with lang tag + copy affordance:\n{text}"
     );
     // Content preserved.
     assert!(text.contains("fn main()"), "code content present:\n{text}");
@@ -104,9 +105,10 @@ fn bash_code_block_has_multiple_distinct_syntax_colors() {
     let text = flatten(&lines);
 
     assert!(!text.contains("```"), "fence markers consumed:\n{text}");
+    let header = header_text(&lines);
     assert!(
-        text.contains('┌') && text.contains('└') && text.contains('│'),
-        "bordered container:\n{text}"
+        header.contains("bash") && header.contains("copy"),
+        "header bar with lang tag + copy affordance:\n{text}"
     );
     assert!(text.contains("for"), "code content present:\n{text}");
 
@@ -193,8 +195,8 @@ fn common_language_fences_render_non_plain_styles() {
         let colors = distinct_token_colors(&lines);
 
         assert!(
-            text.contains('┌') && text.contains('└') && text.contains('│'),
-            "expected bordered code block for language '{language}':\n{text}"
+            header_text(&lines).contains("copy"),
+            "expected code panel header bar for language '{language}':\n{text}"
         );
         assert!(
             colors.len() >= min_colors,
@@ -241,10 +243,11 @@ fn fence_info_strings_with_attributes_use_language_renderer() {
         let lines = render_markdown(&md, W);
         let colors = distinct_token_colors(&lines);
         let text = flatten(&lines);
+        let header = header_text(&lines);
 
         assert!(
-            text.contains(&format!("┌─ {expected_label}")),
-            "expected normalized code-fence label '{expected_label}' for info '{fence_info}':\n{text}"
+            header.contains(expected_label),
+            "expected normalized code-fence label '{expected_label}' in the header for info '{fence_info}':\n{text}"
         );
         assert!(
             colors.len() >= min_colors,
@@ -262,14 +265,17 @@ fn partial_code_block_is_legible_and_final_is_formatted() {
     let partial_lines = render_markdown(partial, W);
     let partial_text = flatten(&partial_lines);
 
-    // Legible bordered render with no raw escapes bleeding into the frame.
+    // Legible panel render with no raw escapes bleeding into the frame.
     assert!(
         !has_raw_escape(&partial_lines),
         "no raw ANSI escape bytes in the partial render:\n{partial_text}"
     );
     assert!(
-        partial_text.contains('┌') && partial_text.contains('│'),
-        "partial block is shown in a bordered container:\n{partial_text}"
+        partial_lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("rust") && t.contains("copy")
+        }),
+        "partial block is shown in a code panel with a header bar:\n{partial_text}"
     );
     assert!(
         partial_text.contains("fn main()"),
@@ -279,14 +285,17 @@ fn partial_code_block_is_legible_and_final_is_formatted() {
         !partial_text.contains("```"),
         "no literal fence leaks into the partial render:\n{partial_text}"
     );
-    // Every code-frame line is a complete bordered row (starts with a border glyph), i.e. the
+    // Every code row is a complete line-numbered row (starts with the gutter digit), i.e. the
     // partial block is not a half-built line.
     for line in content_lines(&partial_lines) {
         let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
         if s.contains("fn main()") || s.contains("let x") {
             assert!(
-                s.trim_start().starts_with('│'),
-                "code line is framed by the left border:\n{s:?}"
+                s.trim_start()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit()),
+                "code row is prefixed by a line-number gutter:\n{s:?}"
             );
         }
     }
@@ -301,8 +310,11 @@ fn partial_code_block_is_legible_and_final_is_formatted() {
         "no raw escapes in the final render:\n{final_text}"
     );
     assert!(
-        final_text.contains('┌') && final_text.contains('└') && final_text.contains('│'),
-        "final block is a complete bordered container:\n{final_text}"
+        final_lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("rust") && t.contains("copy")
+        }),
+        "final block is a complete code panel:\n{final_text}"
     );
     assert!(
         !final_text.contains("```"),
@@ -321,7 +333,7 @@ fn partial_code_block_is_legible_and_final_is_formatted() {
     );
 }
 
-// Unknown languages degrade gracefully to a plain bordered container (no panic, no corruption).
+// Unknown languages degrade gracefully to a plain line-numbered panel (no panic, no corruption).
 #[test]
 fn unknown_language_degrades_to_plain_bordered_block() {
     let md = "```wat-lang\nsome arbitrary text\nmore text\n```";
@@ -331,11 +343,12 @@ fn unknown_language_degrades_to_plain_bordered_block() {
     assert!(!has_raw_escape(&lines), "no raw escapes:\n{text}");
     assert!(!text.contains("```"), "fences consumed:\n{text}");
     assert!(
-        text.contains('┌') && text.contains('└') && text.contains('│'),
-        "unknown language still renders in a bordered container:\n{text}"
+        header_text(&lines).contains("copy"),
+        "unknown language still renders in a code panel:\n{text}"
     );
     assert!(
         text.contains("some arbitrary text") && text.contains("more text"),
         "content preserved verbatim:\n{text}"
     );
 }
+

@@ -623,12 +623,11 @@ impl<'a> RenderState<'a> {
 
     /// Render the current code block, syntax-highlighting it when the fence language maps to a
     /// registered tree-sitter grammar (common high-priority languages). Unknown languages, and
-    /// partial blocks whose language has no grammar, degrade gracefully to the plain bordered
-    /// container.
+    /// partial blocks whose language has no grammar, degrade gracefully to the plain container.
     ///
-    /// Highlighting produces styled ratatui spans inside the same `┌─┐ │ │ └─┘` frame the plain
-    /// fallback uses, so partial/streaming code stays legible (no raw escapes) and reflows into
-    /// the correctly-formatted final block once the fence closes.
+    /// Highlighting produces styled ratatui spans inside the same header-bar + line-number panel
+    /// the plain fallback uses, so partial/streaming code stays legible (no raw escapes) and
+    /// reflows into the correctly-formatted final block once the fence closes.
     pub(super) fn render_code_block(&self) -> Vec<Line<'static>> {
         use crate::markdown::code_block::CodeBlockRenderer;
         use crate::markdown::languages::{get_default_highlighter, normalize_language_name};
@@ -646,9 +645,11 @@ impl<'a> RenderState<'a> {
                         .with_border_color(self.renderer.theme.code_block_border)
                         .with_background(self.renderer.theme.code_block_bg)
                         .with_text_style(self.renderer.theme.code_block_text)
-                        .with_lang_tag_style(self.renderer.theme.code_lang_tag);
+                        .with_lang_tag_style(self.renderer.theme.code_lang_tag)
+                        .with_line_number_style(self.renderer.theme.code_line_number)
+                        .with_line_numbers(true);
                     // Trim a single trailing newline so the closing fence does not add a blank
-                    // content row inside the box.
+                    // content row inside the panel.
                     let code = self
                         .code_buffer
                         .strip_suffix('\n')
@@ -661,74 +662,59 @@ impl<'a> RenderState<'a> {
         self.render_simple_code_block()
     }
 
-    /// Render a code block in a distinct box-drawing container (no syntax highlighting).
+    /// Render a code block as a solid `CODEBG` panel with no syntax highlighting.
     ///
-    /// The opening/closing ``` fences are consumed: the language (if any) becomes a tag in the
-    /// top border and the code is framed by `┌─┐ │ │ └─┘`, preserving each line's indentation.
-    /// Used as the fallback for unknown languages and partial streaming blocks.
+    /// The opening/closing ``` fences are consumed: a header bar carries the language tag (left)
+    /// and a copy affordance (right), and each code row is prefixed by a right-justified
+    /// line-number gutter. Used as the fallback for unknown languages and partial streaming blocks.
     pub(super) fn render_simple_code_block(&self) -> Vec<Line<'static>> {
-        // Every cell (borders, language tag, code, padding) carries the code background so a
+        // Every cell (header, gutter, code, padding) carries the code background so a
         // light/non-black theme never shows the terminal default as a black bar.
         let bg = self.renderer.theme.code_block_bg;
-        let style = self.renderer.theme.code_block_text.bg(bg);
-        let border_style = Style::default()
-            .fg(self.renderer.theme.code_block_border)
-            .bg(bg);
+        let bg_style = Style::default().bg(bg);
+        let text_style = self.renderer.theme.code_block_text.bg(bg);
         let lang_style = self.renderer.theme.code_lang_tag.bg(bg);
+        let lnum_style = self.renderer.theme.code_line_number.bg(bg);
 
-        let total_width = self.renderer.width.max(4) as usize;
-        // Inside-the-box content width, after "│ " (2) and " │" (2).
-        let content_cap = total_width.saturating_sub(4).max(1);
+        const COPY_HINT: &str = "copy ^C";
+        let total_width = (self.renderer.width.max(8) as usize).max(COPY_HINT.len() + 4);
 
         let code_lines: Vec<&str> = self.code_buffer.lines().collect();
-        let max_line_width = code_lines
-            .iter()
-            .map(|l| UnicodeWidthStr::width(*l))
-            .max()
-            .unwrap_or(0)
-            .min(content_cap);
-        let lang_min_width = self
-            .code_language
-            .as_deref()
-            .map(|l| UnicodeWidthStr::width(l) + 3)
-            .unwrap_or(0);
-        let inner_width = max_line_width.max(lang_min_width).max(10).min(content_cap);
+        let line_count = code_lines.len().max(1);
+        let number_width = line_count.to_string().len();
 
-        let mut lines = Vec::with_capacity(code_lines.len() + 2);
+        let mut lines = Vec::with_capacity(code_lines.len() + 1);
 
-        // Top border: ┌─ lang ───────────┐  (or ┌────────────┐ with no language).
-        let mut top = vec![Span::styled("┌".to_string(), border_style)];
-        if let Some(lang) = self.code_language.as_deref() {
-            top.push(Span::styled("─".to_string(), border_style));
-            top.push(Span::styled(format!(" {} ", lang), lang_style));
-            let used = 1 + UnicodeWidthStr::width(lang) + 2; // "─" + " lang "
-            let remaining = (inner_width + 2).saturating_sub(used);
-            if remaining > 0 {
-                top.push(Span::styled("─".repeat(remaining), border_style));
-            }
-        } else {
-            top.push(Span::styled("─".repeat(inner_width + 2), border_style));
+        // Header bar: language tag (left) + copy affordance (right), on CODEBG.
+        let lang_text = self.code_language.as_deref().unwrap_or("");
+        let lang_len = UnicodeWidthStr::width(lang_text);
+        let copy_len = UnicodeWidthStr::width(COPY_HINT);
+        let fill = total_width.saturating_sub(lang_len).saturating_sub(copy_len);
+        let mut header = Vec::with_capacity(3);
+        if !lang_text.is_empty() {
+            header.push(Span::styled(lang_text.to_string(), lang_style));
         }
-        top.push(Span::styled("┐".to_string(), border_style));
-        lines.push(Line::from(top));
+        if fill > 0 {
+            header.push(Span::styled(" ".repeat(fill), bg_style));
+        }
+        header.push(Span::styled(COPY_HINT.to_string(), lang_style));
+        lines.push(Line::from(header));
 
-        // Content lines, each framed by side borders, padded to inner_width.
-        for code_line in &code_lines {
+        // Content rows: right-justified line-number gutter + code, padded to the panel width.
+        for (idx, code_line) in code_lines.iter().enumerate() {
+            let gutter = format!("{:>width$} ", idx + 1, width = number_width);
             let line_width = UnicodeWidthStr::width(*code_line);
-            let pad = inner_width.saturating_sub(line_width);
-            lines.push(Line::from(vec![
-                Span::styled("│ ".to_string(), border_style),
-                Span::styled((*code_line).to_string(), style),
-                Span::styled(" ".repeat(pad), style),
-                Span::styled(" │".to_string(), border_style),
-            ]));
+            let consumed = number_width + 1 + line_width;
+            let pad = total_width.saturating_sub(consumed);
+            let mut row = vec![
+                Span::styled(gutter, lnum_style),
+                Span::styled((*code_line).to_string(), text_style),
+            ];
+            if pad > 0 {
+                row.push(Span::styled(" ".repeat(pad), bg_style));
+            }
+            lines.push(Line::from(row));
         }
-
-        // Bottom border.
-        lines.push(Line::from(Span::styled(
-            format!("└{}┘", "─".repeat(inner_width + 2)),
-            border_style,
-        )));
 
         lines
     }
