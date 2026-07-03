@@ -146,16 +146,23 @@ fn has_visible_cells(filtered_snapshot: &str) -> bool {
         .any(|ch| !ch.is_whitespace() && ch != '█' && ch != '▏')
 }
 
-fn wait_for_contains(session: &str, needle: &str, timeout: Duration) -> bool {
+/// Poll the trimmed snapshot until it contains `needle`, returning the matching snapshot so the
+/// caller can assert against the exact screen the poll matched. This avoids racing a transient cue:
+/// a follow-up snapshot can arrive after the cue's display window has expired, dropping it.
+fn wait_for_contains_snapshot(session: &str, needle: &str, timeout: Duration) -> Option<String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
         let screen = snapshot(session, &["--trim"]);
         if screen.contains(needle) {
-            return true;
+            return Some(screen);
         }
         std::thread::sleep(Duration::from_millis(120));
     }
-    false
+    None
+}
+
+fn wait_for_contains(session: &str, needle: &str, timeout: Duration) -> bool {
+    wait_for_contains_snapshot(session, needle, timeout).is_some()
 }
 
 /// Whether a standalone provider *group header* row is present in a picker snapshot: the bare
@@ -362,11 +369,12 @@ events = ["error"]
             .success()
     );
     assert!(tuistory(&session, &["press", "enter"]).status.success());
-    assert!(
-        wait_for_contains(&session, "attention error", Duration::from_secs(20)),
-        "error turns should trigger documented visual attention cue when enabled"
-    );
-    let enabled_screen = snapshot(&session, &["--trim"]);
+    let enabled_screen = wait_for_contains_snapshot(
+        &session,
+        "attention error",
+        Duration::from_secs(20),
+    )
+    .expect("error turns should trigger documented visual attention cue when enabled");
     assert!(
         enabled_screen.contains("attention error"),
         "enabled run should expose the attention cue in the captured screen:\n{enabled_screen}"
