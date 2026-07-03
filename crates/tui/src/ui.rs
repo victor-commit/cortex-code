@@ -80,6 +80,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // chrome under a `plan mode` breadcrumb (and gains an amber footer banner above the composer).
     let split = sidebar_split(app, area);
     let plan_mode = app.plan_mode();
+    let shell_mode = app.shell_mode();
     let (main_area, own_footer) = if let Some(split) = split {
         // Draw the breadcrumb header + rule + full-width status bar; the conversation only uses the
         // returned left region (the sidebar box occupies the right region).
@@ -89,6 +90,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // Plan mode: wrap the conversation in the shared chrome under a `plan mode` crumb; the shared
         // status bar (which reads `read-only · plan`) is drawn by the chrome, so no own footer.
         let body = crate::view::render_chrome(frame, area, app, "plan mode", &theme);
+        (body, false)
+    } else if shell_mode {
+        // `!` shell mode: wrap the conversation in the shared chrome under a `shell` crumb; the
+        // shared status bar (which reads `manual · ! shell mode`) is drawn by the chrome.
+        let body = crate::view::render_chrome(frame, area, app, "shell", &theme);
         (body, false)
     } else {
         (area, true)
@@ -1066,32 +1072,110 @@ fn push_notice(
     lines.push(Line::from(""));
 }
 
-/// Append a `!` shell-mode command and its output: a `$ command` header (distinct from chat) then
-/// the captured output, dimmed on success and red-styled when the command failed.
+/// Whether an output line is a command/test success summary — the brand's success signal, rendered
+/// in green ONLY when the command succeeded (so green stays success-only, VAL-PERM-028/052). The
+/// canonical form is the Rust/cargo test summary `test result: ok …`.
+fn is_shell_success_line(trimmed: &str) -> bool {
+    trimmed.starts_with("test result: ok")
+}
+
+/// Whether an output line is an error indication (a failed command's stderr/exit markers), rendered
+/// in ERR red so a non-zero run reads as an error rather than an ordinary log line (VAL-PERM-052).
+fn is_shell_error_line(trimmed: &str) -> bool {
+    trimmed.starts_with("[stderr]")
+        || trimmed.starts_with("[exit code:")
+        || trimmed.starts_with("test result: FAILED")
+        || trimmed.starts_with("failed to run command")
+}
+
+/// The style for one line inside the shell `output` pane: OKG green for a success summary line (only
+/// when the command succeeded), ERR red for a failed command's error/exit lines, and DIM grey for
+/// ordinary log lines. Every cell carries an explicit background.
+fn shell_line_style(line: &str, success: bool, theme: &style::ThemeColors) -> Style {
+    let bg = theme.background;
+    let trimmed = line.trim_start();
+    if success && is_shell_success_line(trimmed) {
+        Style::default().fg(theme.success).bg(bg)
+    } else if !success && is_shell_error_line(trimmed) {
+        Style::default().fg(theme.error).bg(bg)
+    } else {
+        Style::default().fg(theme.text_dim).bg(bg)
+    }
+}
+
+/// Append a `!` shell-mode command and its output. The command line renders as `! <command>` (`!`
+/// ORANGE, command BRIGHT); the captured output is shown inside a rounded ORANGE_D pane whose top
+/// border embeds the AMBER title `output`. Ordinary log lines are DIM, a `test result: ok …` success
+/// summary is OKG green (success-only), and a failed command's error/exit lines are ERR red.
 fn push_shell(
     lines: &mut Vec<Line<'static>>,
     outcome: &crate::shell::ShellOutcome,
     width: usize,
     theme: &style::ThemeColors,
 ) {
-    let prompt_style = Style::default()
-        .fg(theme.warning)
+    // Command line: `! <command>` at the content margin (`!` ORANGE, command BRIGHT).
+    let bang = Style::default()
+        .fg(theme.primary)
         .add_modifier(Modifier::BOLD);
     lines.push(Line::from(vec![
-        Span::styled("$ ", prompt_style),
-        Span::styled(
-            outcome.command.clone(),
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-        ),
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(format!("{} ", glyphs::SHELL_PREFIX), bang),
+        Span::styled(outcome.command.clone(), Style::default().fg(theme.text_bright)),
     ]));
-    let body = if outcome.success {
-        Style::default().fg(theme.text_dim)
-    } else {
-        Style::default().fg(theme.error)
-    };
-    for wrapped in wrap(&outcome.output, width) {
-        lines.push(Line::from(Span::styled(wrapped, body)));
+
+    let bx = CONTENT_MARGIN;
+    let right = width.saturating_sub(CONTENT_MARGIN);
+    // Too narrow for a bordered pane: fall back to plain lines with the same semantic coloring.
+    if right <= bx + 4 {
+        for raw in outcome.output.split('\n') {
+            let style = shell_line_style(raw, outcome.success, theme);
+            lines.push(Line::from(Span::styled(clip_text(raw, width), style)));
+        }
+        lines.push(Line::from(""));
+        return;
     }
+    let bw = right - bx;
+    let inner_w = bw.saturating_sub(4); // border + one padding column on each side
+    let base = Style::default().bg(theme.background);
+    let border_style = Style::default().fg(theme.border).bg(theme.background);
+
+    // Top border with the AMBER `output` title embedded: `╭─ output ─────╮`.
+    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
+    top[bx] = (glyphs::BOX_TOP_LEFT.chars().next().unwrap(), border_style);
+    top[bx + bw - 1] = (glyphs::BOX_TOP_RIGHT.chars().next().unwrap(), border_style);
+    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    place_segments(
+        &mut top,
+        bx + 2,
+        &[(
+            " output ".to_owned(),
+            Style::default().fg(theme.secondary).bg(theme.background),
+        )],
+    );
+    lines.push(cells_to_line(&top));
+
+    // Content rows on the near-black interior, one per output line (clipped to the inner width).
+    let origin = bx + 2;
+    for raw in outcome.output.split('\n') {
+        let mut cells: Vec<(char, Style)> = vec![(' ', base); width];
+        cells[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        cells[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        let text = clip_text(raw, inner_w);
+        let style = shell_line_style(&text, outcome.success, theme);
+        place_segments(&mut cells, origin, &[(text, style)]);
+        lines.push(cells_to_line(&cells));
+    }
+
+    // Bottom border: `╰────────╯`.
+    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
+    bottom[bx] = (glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(), border_style);
+    bottom[bx + bw - 1] = (glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(), border_style);
+    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    lines.push(cells_to_line(&bottom));
     lines.push(Line::from(""));
 }
 
@@ -1310,25 +1394,15 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
-    // Shell mode wears a distinct title and border color so it is unmistakably set apart from chat.
+    // The composer is a plain rounded `ORANGE_D` box on the brand canvas (no title) in every state,
+    // including `!` shell mode — the shell affordance is carried by the `shell` breadcrumb, the
+    // `manual · ! shell mode` status bar, the `!` prompt prefix, and the shell placeholder/hints.
     let shell = app.shell_mode();
-    // The composer is a plain rounded `ORANGE_D` box on the brand canvas (no title); shell mode is
-    // the one exception, wearing a distinct title + warning border so it is unmistakably set apart.
-    let mut block = Block::default()
+    let block = Block::default()
         .style(Style::default().bg(theme.background).fg(theme.text))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border));
-    if shell {
-        block = block
-            .title(" ! shell ")
-            .title_style(
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .border_style(Style::default().fg(theme.warning));
-    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -1360,15 +1434,21 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         );
     }
 
-    // Composer accent edge `▌` + `›` prompt glyph at the left inner column (both ORANGE).
+    // Composer prefix at the left inner column (ORANGE): the `!` shell prompt in shell mode, else
+    // the `▌ ›` accent edge + prompt glyph.
     let accent = Style::default().fg(theme.primary);
     let prefix_w = inner.width.min(3);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
+    let prefix_line = if shell {
+        Line::from(vec![Span::styled(crate::glyphs::SHELL_PREFIX, accent)])
+    } else {
+        Line::from(vec![
             Span::styled(crate::glyphs::ACCENT_BAR, accent),
             Span::raw(" "),
             Span::styled(crate::glyphs::PROMPT, accent),
-        ])),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(prefix_line),
         Rect {
             x: inner.x,
             y: input_area.y,
@@ -1378,10 +1458,12 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     );
 
     // Right-aligned FAINT action hint on the input row (reserved out of the text region). The hint
-    // tracks the composer's active state: a shell command or an open `/` palette both submit with
-    // `↵`, an open `@` palette inserts the highlighted file with `⇥`, and the plain chat composer
-    // sends with `↵`.
-    let hint = if shell || app.slash_menu_open() {
+    // tracks the composer's active state: shell mode advertises `↵ to send · esc to exit`, an open
+    // `/` palette submits with `↵`, an open `@` palette inserts the highlighted file with `⇥`, and
+    // the plain chat composer sends with `↵`.
+    let hint = if shell {
+        format!("{} to send · esc to exit", crate::glyphs::KEY_ENTER)
+    } else if app.slash_menu_open() {
         format!("{} run   esc dismiss", crate::glyphs::KEY_ENTER)
     } else if app.mention_open() {
         format!("{} insert   esc dismiss", crate::glyphs::KEY_TAB)
@@ -1407,9 +1489,9 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
         0
     };
 
-    // The text region begins after the `▌ › ` prefix (4 columns) so typed text and the caret sit at
-    // the input column and continuation lines hang under it.
-    let prefix = 4u16;
+    // The text region begins after the prefix so typed text and the caret sit at the input column
+    // and continuation lines hang under it: `▌ › ` is 4 columns in chat, `! ` is 2 in shell mode.
+    let prefix = if shell { 2u16 } else { 4u16 };
     let text_x = inner.x + prefix.min(inner.width);
     let text_w = inner.width.saturating_sub(prefix + hint_reserve).max(1);
     let input_area = Rect {
@@ -1422,7 +1504,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     let value = app.input_value();
     if value.is_empty() {
         let placeholder = if shell {
-            "run a shell command…"
+            "run another shell command…"
         } else if app.plan_mode() {
             "ask a question or refine the plan…"
         } else if app.transcript.is_empty() {
@@ -4364,21 +4446,30 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
 
     // Center zone: `auto` (AMBER head) + ` (high)` (FAINT tail) + ` · ` (GHOST) + permission (DIM),
     // centered so its midpoint sits at the terminal's horizontal center. In plan mode the permission
-    // word reads `read-only · plan` instead of `allow all commands` (VAL-PERM-017).
-    let permission = if app.plan_mode() {
-        "read-only · plan"
+    // word reads `read-only · plan` instead of `allow all commands` (VAL-PERM-017); in `!` shell mode
+    // the autonomy head reads `manual` and the permission word reads `! shell mode` (VAL-PERM-024).
+    let center: Vec<(String, Style)> = if app.shell_mode() && !app.plan_mode() {
+        vec![
+            ("manual".to_owned(), Style::default().fg(theme.secondary)),
+            (" · ".to_owned(), Style::default().fg(theme.ghost)),
+            (
+                "! shell mode".to_owned(),
+                Style::default().fg(theme.text_dim),
+            ),
+        ]
     } else {
-        "allow all commands"
+        let permission = if app.plan_mode() {
+            "read-only · plan"
+        } else {
+            "allow all commands"
+        };
+        vec![
+            ("auto".to_owned(), Style::default().fg(theme.secondary)),
+            (" (high)".to_owned(), Style::default().fg(theme.text_muted)),
+            (" · ".to_owned(), Style::default().fg(theme.ghost)),
+            (permission.to_owned(), Style::default().fg(theme.text_dim)),
+        ]
     };
-    let center: Vec<(String, Style)> = vec![
-        ("auto".to_owned(), Style::default().fg(theme.secondary)),
-        (" (high)".to_owned(), Style::default().fg(theme.text_muted)),
-        (" · ".to_owned(), Style::default().fg(theme.ghost)),
-        (
-            permission.to_owned(),
-            Style::default().fg(theme.text_dim),
-        ),
-    ];
     let center_len: usize = center.iter().map(|(t, _)| t.chars().count()).sum();
     let center_start = w.saturating_sub(center_len) / 2;
     place_segments(&mut cells, center_start, &center);
@@ -7280,7 +7371,8 @@ mod tests {
 
     #[test]
     fn shell_entry_renders_command_and_output() {
-        // VAL-TUI-056: a shell-mode command and its output render in the transcript.
+        // VAL-PERM-025/026/027: a shell-mode command renders as `! <command>` above a bordered
+        // `output` pane containing the real command output.
         let mut a = app();
         a.transcript.push(Entry::Shell(crate::shell::ShellOutcome {
             command: "echo cortex-shell-ok".to_owned(),
@@ -7289,12 +7381,156 @@ mod tests {
         }));
         let text = rendered(&transcript_lines(&a, 80));
         assert!(
-            text.contains("$ echo cortex-shell-ok"),
-            "command header shown:\n{text}"
+            text.contains("! echo cortex-shell-ok"),
+            "command line shown with the `!` prefix:\n{text}"
+        );
+        assert!(
+            text.contains("output"),
+            "output pane title-in-border present:\n{text}"
         );
         assert!(
             text.contains("cortex-shell-ok"),
             "command output shown:\n{text}"
+        );
+        // The output pane is a rounded box.
+        assert!(
+            text.contains('╭') && text.contains('╰'),
+            "output pane has rounded borders:\n{text}"
+        );
+    }
+
+    #[test]
+    fn shell_output_pane_colors_command_success_and_logs() {
+        // VAL-PERM-025/027/028: the `!` prefix is ORANGE, the command is BRIGHT, ordinary log lines
+        // are DIM, and a `test result: ok` success summary is the sole green line in the pane.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Shell(crate::shell::ShellOutcome {
+            command: "cargo test".to_owned(),
+            output: "Compiling cortex-core\ntest result: ok. 3 passed; 0 failed".to_owned(),
+            success: true,
+        }));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let fg_of = |needle: &str| cell_at(&buffer, needle).map(|c| c.fg);
+        assert_eq!(fg_of("!"), Some(theme.primary), "`!` prefix is ORANGE");
+        assert_eq!(
+            fg_of("cargo test"),
+            Some(theme.text_bright),
+            "command text is BRIGHT"
+        );
+        assert_eq!(
+            fg_of("Compiling cortex-core"),
+            Some(theme.text_dim),
+            "ordinary log line is DIM"
+        );
+        assert_eq!(
+            fg_of("test result: ok"),
+            Some(theme.success),
+            "the success summary line is green"
+        );
+        // Green is success-only: no other non-success text in the pane is green.
+        assert_ne!(
+            fg_of("Compiling cortex-core"),
+            Some(theme.success),
+            "ordinary log text is not green"
+        );
+    }
+
+    #[test]
+    fn shell_failed_command_shows_error_not_success() {
+        // VAL-PERM-052: a non-zero command surfaces a red error line and never a green success line.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Shell(crate::shell::ShellOutcome {
+            command: "exit 3".to_owned(),
+            output: "[exit code: 3]".to_owned(),
+            success: false,
+        }));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        assert_eq!(
+            cell_at(&buffer, "[exit code: 3]").map(|c| c.fg),
+            Some(theme.error),
+            "the failing exit line is red"
+        );
+        assert!(
+            !buffer.content().iter().any(|c| c.fg == theme.success),
+            "no green success line for a failed command"
+        );
+    }
+
+    #[test]
+    fn shell_mode_status_bar_reads_manual_shell_mode() {
+        // VAL-PERM-023/024: entering `!` shell mode shows the `shell` breadcrumb and a status bar
+        // center reading `manual · ! shell mode` (replacing the normal autonomy/permission text).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.shell_mode(), "shell mode engaged");
+
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row0 = buf_row(&buffer, 0);
+        let last = buf_row(&buffer, 29);
+        assert!(row0.contains("shell"), "breadcrumb crumb is `shell`:\n{row0}");
+        assert!(
+            last.contains("manual") && last.contains("! shell mode"),
+            "status bar reads the shell state:\n{last}"
+        );
+        assert!(
+            !last.contains("allow all commands"),
+            "normal permission text is replaced in shell mode:\n{last}"
+        );
+    }
+
+    #[test]
+    fn shell_mode_composer_shows_bang_prefix_placeholder_and_hints() {
+        // VAL-PERM-029: the shell composer shows an orange `!` prefix, the shell placeholder, and
+        // the `↵ to send · esc to exit` hints.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let backend = TestBackend::new(92, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            screen.contains("run another shell command"),
+            "shell placeholder shown:\n{screen}"
+        );
+        assert!(
+            screen.contains("to send") && screen.contains("esc to exit"),
+            "shell send/exit hints shown:\n{screen}"
         );
     }
 

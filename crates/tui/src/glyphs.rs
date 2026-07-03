@@ -20,6 +20,8 @@
 pub const BRAND_STAR: &str = "✦";
 /// Prompt / user mark / selection marker (ORANGE).
 pub const PROMPT: &str = "›";
+/// Shell-mode prompt / command prefix (`!`, ORANGE) used by the `!` shell surface.
+pub const SHELL_PREFIX: &str = "!";
 
 // --- Composer accents / cursor ---
 
@@ -154,6 +156,7 @@ mod tests {
         let scalars = [
             BRAND_STAR,
             PROMPT,
+            SHELL_PREFIX,
             ACCENT_BAR,
             CURSOR,
             KEY_ENTER,
