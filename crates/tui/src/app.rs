@@ -8158,15 +8158,16 @@ impl App {
         }
 
         // The find-in-chat search bar is modal while open: typing edits the query (re-highlighting
-        // matches), Enter/Down step to the next match, Up to the previous, Ctrl+F or Esc close it,
-        // and Ctrl+C still quits so the user is never trapped.
+        // matches), and match navigation is reserved to NON-letter keys so every printable
+        // character (including `n`/`N`) falls through to the query: Enter/Down step to the next
+        // match, Shift+Enter/Up to the previous, Ctrl+F or Esc close it, and Ctrl+C still quits so
+        // the user is never trapped.
         if self.find.is_some() {
             match key.code {
                 KeyCode::Char('c') if ctrl => self.should_quit = true,
                 KeyCode::Char('f') if ctrl => self.close_find(),
                 KeyCode::Esc => self.close_find(),
-                KeyCode::Char('n') if !ctrl && !alt => self.find_next(),
-                KeyCode::Char('N') if !ctrl && !alt => self.find_prev(),
+                KeyCode::Enter if shift => self.find_prev(),
                 KeyCode::Enter | KeyCode::Down => self.find_next(),
                 KeyCode::Up => self.find_prev(),
                 KeyCode::Backspace => self.find_backspace(),
@@ -15160,6 +15161,60 @@ mod tests {
             a.on_key(key(KeyCode::Backspace));
         }
         assert_eq!(a.find_status().1, 2, "back to `ap` matches both again");
+    }
+
+    #[test]
+    fn find_query_accepts_letters_n_and_uppercase_n() {
+        // Regression: `n`/`N` must NOT be swallowed by match navigation — every printable letter
+        // (including n/N) falls through to the live query so terms like `connection` are typeable.
+        let mut a = app();
+        a.transcript
+            .push(Entry::Notice("open a new connection now".to_owned()));
+        a.transcript
+            .push(Entry::Notice("Nginx CONNECTION pool".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "connection".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("connection"),
+            "the full query (incl. its 'n's) lands in the find input"
+        );
+        assert_eq!(
+            a.find_status().1,
+            2,
+            "the match count updates for a query containing n/N (case-insensitive)"
+        );
+
+        // An uppercase N is equally typeable (never treated as prev-match navigation).
+        a.on_key(key(KeyCode::Char('N')));
+        assert_eq!(
+            a.find().map(|f| f.query.as_str()),
+            Some("connectionN"),
+            "an uppercase N is typed into the query, not consumed as prev-nav"
+        );
+    }
+
+    #[test]
+    fn find_nav_uses_non_letter_keys_only() {
+        // Next/prev-match navigation is reserved to non-letter keys (Enter/Down next, Up prev),
+        // never n/N (which are reserved for typing).
+        let mut a = app();
+        a.transcript.push(Entry::Notice("nano one".to_owned()));
+        a.transcript.push(Entry::Notice("nano two".to_owned()));
+        a.transcript.push(Entry::Notice("nano three".to_owned()));
+        a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in "nano".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.find_status(), (0, 3), "three `nano` matches, active at 0");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.find_status().0, 1, "Down advances to the next match");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.find_status().0, 2, "Enter advances to the next match");
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.find_status().0, 1, "Up steps to the previous match");
     }
 
     #[test]

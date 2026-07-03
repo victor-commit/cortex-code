@@ -2275,7 +2275,7 @@ fn draw_find_bar(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeC
             find.query.clone()
         };
         let q_w = q_display.chars().count();
-        let query_bg = theme.selection_bg;
+        let query_bg = theme.surface[3];
         for i in 0..q_w.min(width.saturating_sub(query_start)) {
             cells[query_start + i].1 = cells[query_start + i].1.bg(query_bg);
         }
@@ -9663,6 +9663,53 @@ mod tests {
         assert!(
             rendered.contains("n next") && rendered.contains("N prev") && rendered.contains("esc close"),
             "the navigation hints are shown:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn find_query_field_uses_selbg_background() {
+        // VAL-MD-020: the typed query renders BRIGHT text on the SELBG field (theme.surface[3]),
+        // never on theme.selection_bg (ORANGE).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app();
+        a.transcript.push(Entry::Notice("connection pool".to_owned()));
+        press_ctrl(&mut a, 'f');
+        for c in "connection".chars() {
+            press(&mut a, crossterm::event::KeyCode::Char(c));
+        }
+
+        let theme = style::ThemeColors::from_name(a.theme());
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // The query glyphs sit on the SELBG field, in BRIGHT — not on the ORANGE selection bg.
+        let query_cell = buffer
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "c" && c.bg == theme.surface[3]);
+        assert!(
+            query_cell.is_some(),
+            "the query field background is theme.surface[3] (SELBG)"
+        );
+        assert_eq!(
+            query_cell.unwrap().fg,
+            theme.text_bright,
+            "the query text is BRIGHT on the SELBG field"
+        );
+        assert_ne!(
+            theme.surface[3], theme.selection_bg,
+            "SELBG (surface[3]) is distinct from the ORANGE selection_bg"
+        );
+        assert!(
+            !buffer
+                .content()
+                .iter()
+                .any(|c| c.symbol() == "c" && c.bg == theme.selection_bg),
+            "no query glyph renders on the ORANGE selection_bg"
         );
     }
 
