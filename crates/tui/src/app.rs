@@ -40,6 +40,10 @@ use crate::turn::TurnMessage;
 /// bare `@`) cannot build an unbounded row list; the popup scrolls within this set.
 const MENTION_MATCH_LIMIT: usize = 200;
 
+/// The dim reason shown on the plan-mode `blocked` banner when a shell/build command is hard-denied
+/// while planning (the read-only plan agent disables the local shell).
+pub(crate) const SHELL_BLOCKED_WHILE_PLANNING: &str = "shell is disabled while planning";
+
 /// How long a transient toast stays on screen before it auto-dismisses. Short enough to read as a
 /// momentary notification, long enough to be seen; the same window is used for every level so the
 /// auto-dismiss timing is predictable.
@@ -156,6 +160,10 @@ pub enum Entry {
     Notice(String),
     /// A command run in `!` shell mode, rendered as a `$ command` header followed by its output.
     Shell(crate::shell::ShellOutcome),
+    /// A shell/build command that was hard-denied while plan mode is active, rendered as a red
+    /// `▌ blocked` banner naming the command and a dim reason (`shell is disabled while planning`).
+    /// The command is NOT executed; the banner is the only trace it leaves.
+    Blocked { command: String, reason: String },
     /// The `/help` command reference: the built-in slash commands and keybindings, rendered as a
     /// distinct panel. Its content is generated at render time from the command registry, so the
     /// entry itself carries no data.
@@ -7879,6 +7887,9 @@ impl App {
                     "### Shell: `{}`\n\n```\n{}\n```\n\n",
                     outcome.command, outcome.output
                 )),
+                Entry::Blocked { command, reason } => {
+                    out.push_str(&format!("> Blocked: `{command}` — {reason}\n\n"))
+                }
                 Entry::Help => {}
                 Entry::Error(text) => out.push_str(&format!("> Error: {text}\n\n")),
             }
@@ -8393,6 +8404,14 @@ impl App {
         self.shell_mode
     }
 
+    /// Whether plan mode is active — the read-only `plan` agent, which hard-denies edits and shell
+    /// so the agent can only investigate and propose a plan. Drives the plan-mode chrome/breadcrumb,
+    /// the amber footer banner, the `read-only · plan` status word, and the local shell hard-deny.
+    #[must_use]
+    pub fn plan_mode(&self) -> bool {
+        self.status.agent == "plan"
+    }
+
     /// Run the typed shell-mode command (Enter): execute it locally in the working directory and
     /// record its output in the transcript, then clear the prompt while staying in shell mode so
     /// further commands can be run. An empty command is a no-op.
@@ -8400,6 +8419,19 @@ impl App {
         let command = self.input.value();
         let command = command.trim();
         if command.is_empty() {
+            return;
+        }
+        // Plan mode is read-only: the local shell is hard-denied exactly like the model's bash tool,
+        // so a command typed in `!` shell mode is NOT executed — it surfaces a red `blocked` banner
+        // and returns to the plan composer instead of running.
+        if self.plan_mode() {
+            self.transcript.push(Entry::Blocked {
+                command: command.to_owned(),
+                reason: SHELL_BLOCKED_WHILE_PLANNING.to_owned(),
+            });
+            self.input.set_value("");
+            self.shell_mode = false;
+            self.pin_to_bottom();
             return;
         }
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -8486,6 +8518,7 @@ fn entry_copy_text(entry: &Entry) -> String {
         }
         Entry::Notice(text) | Entry::Error(text) => text.clone(),
         Entry::Shell(outcome) => format!("$ {}\n{}", outcome.command, outcome.output),
+        Entry::Blocked { command, reason } => format!("blocked: {command} — {reason}"),
         Entry::Help => "Help — commands & keybindings".to_owned(),
     }
 }
@@ -10818,6 +10851,71 @@ mod tests {
         assert!(
             !matches!(a.transcript.last(), Some(Entry::Shell(_))),
             "no shell entry for an empty command"
+        );
+    }
+
+    #[test]
+    fn plan_mode_is_the_read_only_plan_agent() {
+        // VAL-PERM-015/017: plan mode is exactly the read-only `plan` agent; the default build agent
+        // is not plan mode.
+        let mut a = app();
+        assert!(!a.plan_mode(), "the default build agent is not plan mode");
+        a.status.agent = "plan".to_owned();
+        assert!(a.plan_mode(), "the plan agent is plan mode");
+        a.status.agent = "explore".to_owned();
+        assert!(!a.plan_mode(), "explore is read-only but not the plan banner");
+    }
+
+    #[test]
+    fn plan_mode_hard_denies_a_shell_command_with_a_blocked_banner() {
+        // VAL-PERM-019/020: a `!` shell command issued while planning is NOT executed — it surfaces a
+        // `blocked` banner naming the command + the dim reason, and leaves no shell output entry.
+        let mut a = app();
+        a.status.agent = "plan".to_owned();
+        a.on_key(key(KeyCode::Char('!')));
+        assert!(a.shell_mode(), "shell mode engaged");
+        type_str(&mut a, "cargo build --release");
+        a.on_key(key(KeyCode::Enter));
+
+        assert!(
+            !a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Shell(_))),
+            "the command must NOT run while planning (no shell output entry)"
+        );
+        let blocked = a
+            .transcript
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Blocked { command, reason } => Some((command.clone(), reason.clone())),
+                _ => None,
+            })
+            .expect("a blocked banner is surfaced");
+        assert_eq!(blocked.0, "cargo build --release", "the banner names the command");
+        assert_eq!(
+            blocked.1, SHELL_BLOCKED_WHILE_PLANNING,
+            "the banner carries the dim while-planning reason"
+        );
+        assert!(!a.shell_mode(), "the composer returns to the plan state");
+        assert_eq!(a.input_value(), "", "the blocked command is cleared");
+    }
+
+    #[test]
+    fn exiting_plan_mode_reenables_the_shell() {
+        // VAL-PERM-022: once plan mode is left (switch back to build), a `!` shell command runs again
+        // (it is no longer hard-blocked by plan mode).
+        let mut a = app();
+        a.status.agent = "plan".to_owned();
+        a.status.agent = "build".to_owned();
+        assert!(!a.plan_mode(), "precondition: back in build");
+        a.on_key(key(KeyCode::Char('!')));
+        type_str(&mut a, "echo hi");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::Shell(outcome)) if outcome.command == "echo hi"),
+            "the shell command runs once plan mode is exited: {:?}",
+            a.transcript.last()
         );
     }
 

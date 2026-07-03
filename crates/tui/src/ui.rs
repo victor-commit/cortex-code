@@ -76,13 +76,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // When the sidebar is open the screen splits into a live conversation on the LEFT and the
     // sidebar column on the RIGHT, wrapped in the shared `✦ Cortex Code · <panel>` chrome (header +
     // rule + a full-width status bar). Otherwise the conversation spans the full width and draws its
-    // own one-line status bar.
+    // own one-line status bar — except in plan mode, which wraps the conversation in the same shared
+    // chrome under a `plan mode` breadcrumb (and gains an amber footer banner above the composer).
     let split = sidebar_split(app, area);
+    let plan_mode = app.plan_mode();
     let (main_area, own_footer) = if let Some(split) = split {
         // Draw the breadcrumb header + rule + full-width status bar; the conversation only uses the
         // returned left region (the sidebar box occupies the right region).
         crate::view::render_chrome(frame, area, app, app.sidebar_panel().crumb(), &theme);
         (split.conversation, false)
+    } else if plan_mode {
+        // Plan mode: wrap the conversation in the shared chrome under a `plan mode` crumb; the shared
+        // status bar (which reads `read-only · plan`) is drawn by the chrome, so no own footer.
+        let body = crate::view::render_chrome(frame, area, app, "plan mode", &theme);
+        (body, false)
     } else {
         (area, true)
     };
@@ -96,24 +103,38 @@ pub fn draw(frame: &mut Frame, app: &App) {
     } else {
         0
     };
-    // In the split the status bar is the full-width bar drawn by the shared chrome, so the
-    // conversation column does not reserve a footer row of its own.
+    // In plan mode a persistent amber footer banner sits directly above the composer, separated from
+    // it by one blank gap row (band-style: banner row + gap row), when there is room to keep at least
+    // one transcript row.
+    let plan_banner_rows: u16 =
+        if plan_mode && main_area.height > prompt_rows + 2 + band_rows + 1 + 2 {
+            2
+        } else {
+            0
+        };
+    // In the split (or plan chrome) the status bar is the full-width bar drawn by the shared chrome,
+    // so the conversation column does not reserve a footer row of its own.
     let footer_rows: u16 = if own_footer { 1 } else { 0 };
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(band_rows),
+        Constraint::Length(plan_banner_rows),
         Constraint::Length(prompt_rows + 2),
         Constraint::Length(footer_rows),
     ])
     .split(main_area);
     let transcript_area = chunks[0];
     let band_area = chunks[1];
-    let prompt_area = chunks[2];
-    let footer_area = chunks[3];
+    let plan_banner_area = chunks[2];
+    let prompt_area = chunks[3];
+    let footer_area = chunks[4];
 
     draw_transcript(frame, app, transcript_area, &theme);
     if band_rows > 0 {
         draw_working_band(frame, app, band_area, &theme);
+    }
+    if plan_banner_rows > 0 {
+        draw_plan_banner(frame, plan_banner_area, &theme);
     }
     draw_prompt(frame, app, prompt_area, &theme);
     if own_footer {
@@ -309,6 +330,9 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
             }
             Entry::Notice(message) => push_notice(&mut lines, message, width, &theme),
             Entry::Shell(outcome) => push_shell(&mut lines, outcome, width, &theme),
+            Entry::Blocked { command, reason } => {
+                push_blocked(&mut lines, command, reason, width, &theme);
+            }
             Entry::Help => push_help(&mut lines, app, &theme),
             Entry::Error(message) => push_error(&mut lines, message, width, &theme),
         }
@@ -1071,7 +1095,68 @@ fn push_shell(
     lines.push(Line::from(""));
 }
 
-/// The keybindings shown in the `/help` reference, paired with what each does.
+/// Append the plan-mode `blocked` banner for a shell/build command hard-denied while planning: a
+/// full-width rounded box (content-margin inset) whose single content row reads
+/// `▌ blocked  <command>  —  <reason>` with the `▌` edge + `blocked` word in DENY red (ERR), the
+/// command in BRIGHT, and the reason in DIM. Distinct in hue from the amber plan-mode footer banner
+/// (VAL-PERM-019/021).
+fn push_blocked(
+    lines: &mut Vec<Line<'static>>,
+    command: &str,
+    reason: &str,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    let bx = CONTENT_MARGIN;
+    let right = width.saturating_sub(CONTENT_MARGIN);
+    if right <= bx + 4 {
+        return;
+    }
+    let bw = right - bx;
+    let base = Style::default().bg(theme.background);
+    let border_style = Style::default().fg(theme.border).bg(theme.background);
+    let deny = Style::default().fg(theme.error).bg(theme.background);
+    let deny_bold = deny.add_modifier(Modifier::BOLD);
+    let cmd_style = Style::default().fg(theme.text_bright).bg(theme.background);
+    let reason_style = Style::default().fg(theme.text_dim).bg(theme.background);
+    let sep_style = Style::default().fg(theme.ghost).bg(theme.background);
+
+    // Top border `╭────────╮`.
+    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
+    top[bx] = (glyphs::BOX_TOP_LEFT.chars().next().unwrap(), border_style);
+    top[bx + bw - 1] = (glyphs::BOX_TOP_RIGHT.chars().next().unwrap(), border_style);
+    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    lines.push(cells_to_line(&top));
+
+    // Content row: `│ ▌ blocked  <command>  —  <reason> │` on the canvas background.
+    let mut row: Vec<(char, Style)> = vec![(' ', base); width];
+    row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+    row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+    let origin = bx + 2;
+    let inner_room = (bx + bw - 1).saturating_sub(origin + 1);
+    let segments: Vec<(String, Style)> = vec![
+        (format!("{} ", glyphs::ACCENT_BAR), deny),
+        ("blocked".to_owned(), deny_bold),
+        ("  ".to_owned(), base),
+        (clip_text(command, inner_room), cmd_style),
+        (format!("  {}  ", glyphs::EM_DASH), sep_style),
+        (reason.to_owned(), reason_style),
+    ];
+    place_segments(&mut row, origin, &segments);
+    lines.push(cells_to_line(&row));
+
+    // Bottom border `╰────────╯`.
+    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
+    bottom[bx] = (glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(), border_style);
+    bottom[bx + bw - 1] = (glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(), border_style);
+    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    lines.push(cells_to_line(&bottom));
+    lines.push(Line::from(""));
+}
 const KEYBINDINGS: &[(&str, &str)] = &[
     ("Enter", "Send the prompt / run the highlighted command"),
     ("Shift+Enter", "Insert a newline without sending"),
@@ -1338,6 +1423,8 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     if value.is_empty() {
         let placeholder = if shell {
             "run a shell command…"
+        } else if app.plan_mode() {
+            "ask a question or refine the plan…"
         } else if app.transcript.is_empty() {
             crate::motd::HOME_PLACEHOLDER
         } else {
@@ -4138,6 +4225,53 @@ fn draw_working_band(frame: &mut Frame, app: &App, area: Rect, theme: &style::Th
     );
 }
 
+/// Render the persistent plan-mode footer banner on the first row of `area` (the second row is the
+/// gap to the composer). Shown while plan mode is active, directly above the composer.
+fn draw_plan_banner(frame: &mut Frame, area: Rect, theme: &style::ThemeColors) {
+    if area.height == 0 {
+        return;
+    }
+    let banner_row = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    let line = plan_banner_line(area.width as usize, theme);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.background)),
+        banner_row,
+    );
+}
+
+/// Build the plan-mode footer banner line: an AMBER `▌` edge + `plan mode` (AMBER) + a GHOST `·`
+/// separator + a FAINT read-only note (`read-only — edits & shell paused.  ⇥ switch to build to
+/// apply.`), inset by [`CONTENT_MARGIN`]. Amber hue keeps it distinct from the red `blocked` banner
+/// (VAL-PERM-016/021). Every cell carries the explicit canvas background.
+pub fn plan_banner_line(width: usize, theme: &style::ThemeColors) -> Line<'static> {
+    let w = width.max(1);
+    let base = Style::default().fg(theme.text).bg(theme.background);
+    let mut cells: Vec<(char, Style)> = vec![(' ', base); w];
+    let amber = Style::default().fg(theme.secondary).bg(theme.background);
+    let faint = Style::default().fg(theme.text_muted).bg(theme.background);
+    let ghost = Style::default().fg(theme.ghost).bg(theme.background);
+    let segments: Vec<(String, Style)> = vec![
+        (format!("{} ", glyphs::ACCENT_BAR), amber),
+        ("plan mode".to_owned(), amber),
+        (format!(" {} ", glyphs::SEPARATOR), ghost),
+        (
+            format!("read-only {} edits & shell paused.  ", glyphs::EM_DASH),
+            faint,
+        ),
+        (
+            format!("{} switch to build to apply.", glyphs::KEY_TAB),
+            faint,
+        ),
+    ];
+    place_segments(&mut cells, CONTENT_MARGIN, &segments);
+    cells_to_line(&cells)
+}
+
 /// Build the Working band line: a breathing spinner (ORANGE) + `Working` (BRIGHT) + ` · ` (FAINT) +
 /// a dynamic detail label (DIM), with a right-aligned `<N>s · esc to interrupt` (FAINT), all on the
 /// `SOFT` band surface. Every cell carries the explicit `soft` background so the band reads as a
@@ -4229,13 +4363,19 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
     place_segments(&mut cells, 2, &left);
 
     // Center zone: `auto` (AMBER head) + ` (high)` (FAINT tail) + ` · ` (GHOST) + permission (DIM),
-    // centered so its midpoint sits at the terminal's horizontal center.
+    // centered so its midpoint sits at the terminal's horizontal center. In plan mode the permission
+    // word reads `read-only · plan` instead of `allow all commands` (VAL-PERM-017).
+    let permission = if app.plan_mode() {
+        "read-only · plan"
+    } else {
+        "allow all commands"
+    };
     let center: Vec<(String, Style)> = vec![
         ("auto".to_owned(), Style::default().fg(theme.secondary)),
         (" (high)".to_owned(), Style::default().fg(theme.text_muted)),
         (" · ".to_owned(), Style::default().fg(theme.ghost)),
         (
-            "allow all commands".to_owned(),
+            permission.to_owned(),
             Style::default().fg(theme.text_dim),
         ),
     ];
@@ -7932,6 +8072,170 @@ mod tests {
         let model_cols: String = row[w - 2 - model_w..w - 2].iter().collect();
         assert_eq!(model_cols, model, "the model id is flush right");
     }
+
+    #[test]
+    fn plan_mode_status_bar_center_reads_read_only_plan() {
+        // VAL-PERM-017: in plan mode the status-bar center permission word is `read-only · plan`
+        // (DIM), replacing the normal `allow all commands`, while `auto (high)` is unchanged.
+        let mut a = app();
+        a.status.agent = "plan".to_owned();
+        let theme = style::ThemeColors::from_name(a.theme());
+        let line = status_bar_line(&a, 92);
+        let text = plain(&line);
+        assert!(
+            text.contains("auto (high) · read-only · plan"),
+            "center shows the plan permission state:\n{text}"
+        );
+        assert!(
+            !text.contains("allow all commands"),
+            "the normal permission word is gone in plan mode:\n{text}"
+        );
+        let fg_of = |needle: &str| {
+            line.spans
+                .iter()
+                .find(|s| s.content.as_ref() == needle)
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(
+            fg_of("read-only · plan"),
+            Some(theme.text_dim),
+            "the plan permission word is DIM"
+        );
+    }
+
+    #[test]
+    fn plan_banner_line_is_amber_edge_plus_faint_note() {
+        // VAL-PERM-016: the footer banner is an amber `▌` edge + `plan mode` (AMBER) followed by a
+        // faint read-only note; amber keeps it distinct from the red blocked banner (VAL-PERM-021).
+        let theme = style::ThemeColors::dark();
+        let line = plan_banner_line(92, &theme);
+        let text = plain(&line);
+        assert!(text.contains("▌"), "the accent edge glyph is present:\n{text}");
+        assert!(text.contains("plan mode"), "the plan-mode label is present:\n{text}");
+        assert!(
+            text.contains("read-only — edits & shell paused."),
+            "the read-only note is present:\n{text}"
+        );
+        assert!(
+            text.contains("⇥ switch to build to apply."),
+            "the switch-to-build hint is present:\n{text}"
+        );
+        let amber = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("plan mode"))
+            .expect("plan mode span");
+        assert_eq!(amber.style.fg, Some(theme.secondary), "`plan mode` is AMBER");
+        let note = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("read-only"))
+            .expect("note span");
+        assert_eq!(note.style.fg, Some(theme.text_muted), "the note is FAINT grey");
+        // The amber banner hue must differ from the red blocked hue.
+        assert_ne!(theme.secondary, theme.error, "amber banner != red blocked");
+    }
+
+    #[test]
+    fn blocked_banner_is_a_red_marker_word_with_dim_reason_in_a_box() {
+        // VAL-PERM-019/021: the blocked banner is a bordered box whose row shows a red `▌` + red
+        // `blocked`, the command in BRIGHT, and a DIM reason.
+        let theme = style::ThemeColors::dark();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        push_blocked(
+            &mut lines,
+            "cargo build --release",
+            crate::app::SHELL_BLOCKED_WHILE_PLANNING,
+            92,
+            &theme,
+        );
+        let joined: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains('╭') && joined.contains('╰'), "rounded box:\n{joined}");
+        assert!(joined.contains("blocked"), "the blocked word:\n{joined}");
+        assert!(
+            joined.contains("cargo build --release"),
+            "the command is named:\n{joined}"
+        );
+        assert!(
+            joined.contains("shell is disabled while planning"),
+            "the dim reason is shown:\n{joined}"
+        );
+        // The content row carries the red marker/word, bright command, and dim reason as distinct
+        // style runs.
+        let content = lines
+            .iter()
+            .find(|l| plain(l).contains("blocked"))
+            .expect("content row");
+        let fg_of = |needle: &str| {
+            content
+                .spans
+                .iter()
+                .find(|s| s.content.contains(needle))
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(fg_of("blocked"), Some(theme.error), "`blocked` is DENY red");
+        assert_eq!(
+            fg_of("cargo build --release"),
+            Some(theme.text_bright),
+            "the command is BRIGHT"
+        );
+        assert_eq!(
+            fg_of("shell is disabled while planning"),
+            Some(theme.text_dim),
+            "the reason is DIM"
+        );
+    }
+
+    #[test]
+    fn plan_mode_draws_chrome_banner_and_placeholder() {
+        // VAL-PERM-015/016/017: entering plan mode wraps the conversation in the shared chrome under
+        // a `plan mode` breadcrumb, shows the amber footer banner above the composer, the plan
+        // composer placeholder, and the `read-only · plan` status bar; a normal build screen shows
+        // none of these.
+        let mut a = app();
+        a.status.agent = "plan".to_owned();
+        a.transcript.push(Entry::User("add the buffer cap and build it".to_owned()));
+        let buf = draw_92x30(&a);
+
+        let row0 = buf_row(&buf, 0);
+        assert!(row0.contains('✦'), "breadcrumb star on row 0:\n{row0}");
+        assert!(row0.contains("Cortex Code"), "breadcrumb wordmark:\n{row0}");
+        assert!(row0.contains("plan mode"), "breadcrumb crumb is `plan mode`:\n{row0}");
+
+        let screen = buf_text(&buf);
+        assert!(
+            screen.contains("read-only — edits & shell paused."),
+            "the amber footer banner is present:\n{screen}"
+        );
+        assert!(
+            screen.contains("read-only · plan"),
+            "the status bar reads the plan permission state:\n{screen}"
+        );
+
+        // A normal (build) conversation shows neither the plan crumb nor the plan banner.
+        let mut b = app();
+        b.transcript.push(Entry::User("hello".to_owned()));
+        let build_screen = buf_text(&draw_92x30(&b));
+        assert!(!build_screen.contains("plan mode"), "no plan crumb on the build screen");
+        assert!(
+            !build_screen.contains("edits & shell paused"),
+            "no plan banner on the build screen"
+        );
+    }
+
+    #[test]
+    fn plan_mode_composer_shows_the_plan_placeholder() {
+        // VAL-PERM-015: the plan composer placeholder invites a question/plan refinement (distinct
+        // from the home/reply placeholders).
+        let mut a = app();
+        a.status.agent = "plan".to_owned();
+        let screen = buf_text(&draw_92x30(&a));
+        assert!(
+            screen.contains("ask a question or refine the plan"),
+            "the plan composer placeholder is shown:\n{screen}"
+        );
+    }
+
 
     #[test]
     fn composer_renders_rounded_orange_accent_and_prompt() {
