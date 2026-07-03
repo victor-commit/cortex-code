@@ -224,6 +224,9 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             if let Some(manager) = &mcp_manager {
                                 dispatcher = dispatcher.with_mcp(manager.clone());
                             }
+                            if let Some(config) = setup.websearch.clone() {
+                                dispatcher = dispatcher.with_websearch(config);
+                            }
                             let runner = SessionRunner::default();
                             if let Some(remote) = &remote {
                                 remote.publish_started();
@@ -403,6 +406,7 @@ struct TurnSetup {
     formatter_config: format::FormatterConfig,
     skills: Vec<skills::Skill>,
     plugin_hooks: plugins::PluginEventHooks,
+    websearch: Option<tools::WebSearchConfig>,
 }
 
 fn build_turn(
@@ -442,6 +446,11 @@ fn build_turn(
     let effective = settings::load(inputs.clone()).map_err(|err| err.to_string())?;
     let formatter_config = format::FormatterConfig::from_table(effective.table())
         .map_err(|message| format!("invalid formatter config: {message}"))?;
+    // Gate the real `websearch` tool exactly like headless `cortex run`: it is advertised this turn
+    // only when `[websearch] enabled = true` (or `CORTEX_WEBSEARCH_ENABLED`) resolves a config,
+    // otherwise it stays absent (the observable default-off policy).
+    let websearch = tools::WebSearchConfig::from_effective(&effective)
+        .map_err(|err| format!("invalid websearch config: {err}"))?;
     let provider_config = providers::ProviderConfigSet::from_table(effective.table())
         .map_err(|err| format!("invalid provider configuration: {err}"))?;
     let plugin_config =
@@ -524,6 +533,7 @@ fn build_turn(
         formatter_config,
         skills: discovered_skill_list,
         plugin_hooks,
+        websearch,
     })
 }
 

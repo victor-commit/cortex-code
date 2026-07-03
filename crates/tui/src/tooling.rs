@@ -17,7 +17,10 @@ use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::McpManager;
 use protocol::TodoItem;
-use tools::{BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry};
+use tools::{
+    BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry,
+    WebSearchConfig,
+};
 
 use crate::diff::compute_file_diff;
 use crate::turn::TurnMessage;
@@ -121,6 +124,17 @@ impl TurnDispatcher {
     #[must_use]
     pub fn with_skills(mut self, skills: Vec<skills::Skill>) -> Self {
         self.registry.register_skills(skills);
+        self
+    }
+
+    /// Attach the real `websearch` tool after the turn config has explicitly enabled a provider.
+    ///
+    /// Mirrors the headless bridge: with no call to this method `websearch` is omitted from the
+    /// advertised tool set, so the default-off policy holds for a live TUI turn too. Once
+    /// `[websearch] enabled = true` resolves a config, the model can search the web this turn.
+    #[must_use]
+    pub fn with_websearch(mut self, config: WebSearchConfig) -> Self {
+        self.registry.register_websearch(config);
         self
     }
 
@@ -660,6 +674,25 @@ mod tests {
         assert!(
             !skill.description.contains("TUI-SKILL-SECRET"),
             "guidance remains isolated until the skill tool is called"
+        );
+    }
+
+    #[test]
+    fn with_websearch_advertises_the_tool_and_default_omits_it() {
+        let dir = scratch_dir("websearch");
+        let (tx, _rx) = channel();
+        let plain = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
+        assert!(
+            !plain.definitions().iter().any(|def| def.name == "websearch"),
+            "websearch must be omitted from a default TUI turn (default-off policy)"
+        );
+
+        let (tx, _rx) = channel();
+        let wired = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx)
+            .with_websearch(tools::WebSearchConfig::duckduckgo());
+        assert!(
+            wired.definitions().iter().any(|def| def.name == "websearch"),
+            "with_websearch must advertise the websearch tool so the model can search this turn"
         );
     }
 

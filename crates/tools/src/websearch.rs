@@ -14,6 +14,7 @@ use redaction::guard_outbound;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::{Value, json};
+use settings::{ConfigError, EffectiveConfig};
 use url::Url;
 
 use crate::output::{OutputLimits, bound_output};
@@ -182,6 +183,173 @@ impl WebSearchConfig {
     #[must_use]
     pub fn max_results(&self) -> usize {
         self.max_results
+    }
+
+    /// Resolve the optional websearch config from merged settings, shared by every surface.
+    ///
+    /// With no explicit enable flag this returns `None`, so the tool is omitted from the advertised
+    /// set (the observable default-off policy). A truthy `[websearch] enabled` (or
+    /// `CORTEX_WEBSEARCH_ENABLED`) materializes a real provider-backed config, reading `provider`
+    /// (default `duckduckgo`, else `brave`), `api_key`, `endpoint`, `max_results`, and `timeout_ms`
+    /// from either the flat `websearch_*` keys or the nested `[websearch]` table.
+    ///
+    /// # Errors
+    /// Returns a [`ConfigError`] when an enabled config names an unknown provider or holds a value
+    /// of the wrong type/range for one of the websearch keys.
+    pub fn from_effective(effective: &EffectiveConfig) -> Result<Option<Self>, ConfigError> {
+        if !websearch_enabled(effective)? {
+            return Ok(None);
+        }
+
+        let provider_name = top_level_string(effective, "websearch_provider")
+            .or_else(|| websearch_table_string(effective, "provider"))
+            .unwrap_or_else(|| "duckduckgo".to_owned());
+        let provider = WebSearchProvider::from_name(&provider_name).map_err(|message| {
+            ConfigError::TypeMismatch {
+                key: "websearch.provider".to_owned(),
+                expected: "`duckduckgo` or `brave`",
+                found: message,
+            }
+        })?;
+
+        let api_key = top_level_string(effective, "websearch_api_key")
+            .or_else(|| top_level_string(effective, "websearch_key"))
+            .or_else(|| websearch_table_string(effective, "api_key"))
+            .or_else(|| websearch_table_string(effective, "key"))
+            .or_else(|| provider_string(effective, provider.as_str(), "api_key"))
+            .or_else(|| provider_string(effective, provider.as_str(), "key"));
+        let endpoint = top_level_string(effective, "websearch_endpoint")
+            .or_else(|| websearch_table_string(effective, "endpoint"));
+        let max_results = match config_usize(
+            effective.get("websearch_max_results"),
+            "websearch_max_results",
+        )? {
+            Some(value) => Some(value),
+            None => config_usize(
+                websearch_table_value(effective, "max_results"),
+                "websearch.max_results",
+            )?,
+        };
+        let timeout_ms = match config_u64(
+            effective.get("websearch_timeout_ms"),
+            "websearch_timeout_ms",
+        )? {
+            Some(value) => Some(value),
+            None => config_u64(
+                websearch_table_value(effective, "timeout_ms"),
+                "websearch.timeout_ms",
+            )?,
+        };
+
+        let config = Self::new(provider)
+            .with_api_key(api_key)
+            .with_timeout(timeout_ms)
+            .with_max_results(max_results)
+            .map_err(|message| ConfigError::TypeMismatch {
+                key: "websearch.max_results".to_owned(),
+                expected: "an integer from 1 to 10",
+                found: message,
+            })?
+            .with_endpoint(endpoint)
+            .map_err(|message| ConfigError::TypeMismatch {
+                key: "websearch.endpoint".to_owned(),
+                expected: "an absolute http:// or https:// URL",
+                found: message,
+            })?;
+        Ok(Some(config))
+    }
+}
+
+fn websearch_enabled(effective: &EffectiveConfig) -> Result<bool, ConfigError> {
+    if let Some(value) = effective.get("websearch_enabled") {
+        return config_bool(value, "websearch_enabled");
+    }
+    if let Some(value) = websearch_table_value(effective, "enabled") {
+        return config_bool(value, "websearch.enabled");
+    }
+    Ok(false)
+}
+
+fn websearch_table_value<'a>(effective: &'a EffectiveConfig, key: &str) -> Option<&'a toml::Value> {
+    effective.get("websearch").and_then(|table| table.get(key))
+}
+
+fn websearch_table_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    websearch_table_value(effective, key)
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+        .map(str::to_owned)
+}
+
+/// A non-empty top-level string config value (trimmed), or `None`.
+fn top_level_string(effective: &EffectiveConfig, key: &str) -> Option<String> {
+    effective
+        .get(key)
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+        .map(str::to_owned)
+}
+
+/// A non-empty string value under a `[provider.<name>]` table (trimmed), or `None`.
+fn provider_string(effective: &EffectiveConfig, provider_name: &str, key: &str) -> Option<String> {
+    effective
+        .get("provider")
+        .and_then(|provider| provider.get(provider_name))
+        .and_then(|provider| provider.get(key))
+        .and_then(|value| value.as_str())
+        .and_then(non_empty)
+        .map(str::to_owned)
+}
+
+fn config_bool(value: &toml::Value, key: &str) -> Result<bool, ConfigError> {
+    match value {
+        toml::Value::Boolean(value) => Ok(*value),
+        toml::Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "" | "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(ConfigError::TypeMismatch {
+                key: key.to_owned(),
+                expected: "a boolean or truthy/falsy string",
+                found: value.to_owned(),
+            }),
+        },
+        other => Err(ConfigError::TypeMismatch {
+            key: key.to_owned(),
+            expected: "a boolean or truthy/falsy string",
+            found: format!("a {}", other.type_str()),
+        }),
+    }
+}
+
+fn config_usize(value: Option<&toml::Value>, key: &str) -> Result<Option<usize>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    config_u64(Some(value), key).map(|value| value.map(|value| value as usize))
+}
+
+fn config_u64(value: Option<&toml::Value>, key: &str) -> Result<Option<u64>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        toml::Value::Integer(value) if *value >= 0 => Ok(Some(*value as u64)),
+        toml::Value::String(value) => {
+            value
+                .trim()
+                .parse::<u64>()
+                .map(Some)
+                .map_err(|_| ConfigError::TypeMismatch {
+                    key: key.to_owned(),
+                    expected: "a non-negative integer",
+                    found: value.to_owned(),
+                })
+        }
+        other => Err(ConfigError::TypeMismatch {
+            key: key.to_owned(),
+            expected: "a non-negative integer",
+            found: format!("a {}", other.type_str()),
+        }),
     }
 }
 
@@ -989,6 +1157,60 @@ mod tests {
             WebSearchProvider::Brave
         );
         assert!(WebSearchProvider::from_name("nope").is_err());
+    }
+
+    fn effective_from(body: &str) -> settings::EffectiveConfig {
+        let base = std::env::temp_dir().join(format!(
+            "cortex-websearch-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = base.join("proj");
+        std::fs::create_dir_all(&proj).expect("create proj dir");
+        std::fs::write(proj.join("cortex.toml"), body).expect("write cortex.toml");
+        let inputs = settings::ConfigInputs {
+            home: Some(base),
+            xdg_config_home: None,
+            cwd: proj,
+            env: Vec::new(),
+            cli_overrides: std::collections::BTreeMap::new(),
+        };
+        settings::load(inputs).expect("load settings")
+    }
+
+    #[test]
+    fn from_effective_is_default_off_and_gates_on_the_enable_flag() {
+        // Default-off: with no [websearch] table the tool config is never materialized.
+        assert!(
+            WebSearchConfig::from_effective(&effective_from(
+                "model = \"google/gemini-2.5-flash\"\n"
+            ))
+            .expect("resolve")
+            .is_none(),
+            "websearch must be default-off with no provider enabled"
+        );
+
+        // Enabled: a truthy [websearch] table materializes a real provider-backed config.
+        let config = WebSearchConfig::from_effective(&effective_from(
+            "[websearch]\nenabled = true\nprovider = \"duckduckgo\"\nmax_results = 4\n",
+        ))
+        .expect("resolve")
+        .expect("websearch config");
+        assert_eq!(config.provider(), WebSearchProvider::DuckDuckGo);
+        assert_eq!(config.max_results(), 4);
+        assert!(!config.has_api_key());
+
+        // A bad provider name is a typed config error naming the offending key.
+        let err = WebSearchConfig::from_effective(&effective_from(
+            "[websearch]\nenabled = true\nprovider = \"bogus\"\n",
+        ))
+        .expect_err("bad provider should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("websearch.provider"), "{rendered}");
+        assert!(rendered.contains("duckduckgo") && rendered.contains("brave"), "{rendered}");
     }
 
     #[test]
