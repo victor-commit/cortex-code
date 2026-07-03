@@ -172,10 +172,17 @@ pub fn summarize_args(name: &str, arguments: &str) -> String {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     };
+    // The file tools accept `path`/`file_path`/`filePath` interchangeably, so the summary resolves
+    // the target path from any of them (VAL-TOOL-015/016/017).
+    let path_field = || {
+        field("path")
+            .or_else(|| field("file_path"))
+            .or_else(|| field("filePath"))
+    };
 
     let summary = match name {
-        "read" => field("path"),
-        "write" | "edit" => field("path"),
+        "read" => path_field(),
+        "write" | "edit" => path_field(),
         "grep" | "search" => match (field("pattern"), field("path")) {
             (Some(p), Some(path)) => Some(format!("{p} in {path}")),
             (Some(p), None) => Some(p),
@@ -185,7 +192,11 @@ pub fn summarize_args(name: &str, arguments: &str) -> String {
         "bash" => field("command"),
         "webfetch" => field("url"),
         "websearch" => field("query"),
-        "apply_patch" => field("patch").map(|p| first_patch_target(&p)),
+        "apply_patch" => field("patch")
+            .or_else(|| field("patchText"))
+            .or_else(|| field("patch_text"))
+            .or_else(|| field("input"))
+            .map(|p| first_patch_target(&p)),
         _ => None,
     };
 

@@ -641,6 +641,19 @@ fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff, theme: &style::The
     lines.push(Line::from(""));
 }
 
+/// The plural noun for a tool card's `… (N more <noun>)` expanded-output overflow row. The unit is
+/// per-tool so the overflow reads naturally against the payload shape: `glob` lists matched paths so
+/// it reports `matches` (VAL-TOOL-020) and `websearch` lists results so it reports `results`
+/// (VAL-TOOL-026); everything else (numbered `read` output, `grep` `path:line:` hits, generic
+/// output) counts `lines` (VAL-TOOL-011/015/019).
+fn overflow_noun(name: &str) -> &'static str {
+    match name {
+        "glob" | "list" => "matches",
+        "websearch" => "results",
+        _ => "lines",
+    }
+}
+
 /// Append an agent tool call as a fully-closed rounded-rectangle card. The label rides the top
 /// border as `{glyph} {name} · {state}` (VAL-TOOL-001/002), tinted uniformly by the status accent:
 /// running `⚙` ORANGE, done `✓` OKG-green, error `✗` ERR-red (VAL-TOOL-003/004/005/006). The first
@@ -724,8 +737,12 @@ fn push_tool(
                 lines.push(interior_row(&[(clip_text(line, text_w), body_style)]));
             }
             if out_lines.len() > shown {
-                let overflow =
-                    format!("{} ({} more lines)", glyphs::ELLIPSIS, out_lines.len() - shown);
+                let overflow = format!(
+                    "{} ({} more {})",
+                    glyphs::ELLIPSIS,
+                    out_lines.len() - shown,
+                    overflow_noun(&card.name),
+                );
                 lines.push(interior_row(&[(overflow, header_style)]));
             }
         }
@@ -6977,6 +6994,147 @@ mod tests {
         let first_at = text.find("first.rs").expect("first card present");
         let second_at = text.find("second").expect("second card present");
         assert!(first_at < second_at, "cards stack in invocation order:\n{text}");
+    }
+
+    #[test]
+    fn read_card_summary_is_path_and_expanded_output_is_numbered() {
+        // VAL-TOOL-015: a read card's summary is the target path, and its expanded output payload is
+        // the real tool's numbered source lines (`N: …`) with a `… (N more lines)` overflow row.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("read", r#"{"path":"crates/tui/src/ui.rs"}"#);
+        assert_eq!(card.summary, "crates/tui/src/ui.rs");
+        let body: String = (1..=MAX_TOOL_DETAIL_LINES + 5)
+            .map(|i| format!("{i}: source line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        card.complete(&[protocol::ToolResultPart::text(&body)], false);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("crates/tui/src/ui.rs"), "summary path:\n{text}");
+        assert!(text.contains("1: source line 1"), "numbered rows:\n{text}");
+        assert!(text.contains("2: source line 2"), "numbered rows:\n{text}");
+        assert!(text.contains("(5 more lines)"), "read overflow reads lines:\n{text}");
+    }
+
+    #[test]
+    fn edit_write_apply_patch_summaries_are_the_file_path() {
+        // VAL-TOOL-016/017/018: the edit/write/apply_patch summary row is the edited/written/patched
+        // file path (the collapsed form shows that path + the expand hint).
+        let theme = style::ThemeColors::dark();
+        let patch = "*** Update File: crates/engine/src/stream.rs\n@@\n-old\n+new";
+        let cases = [
+            (
+                "edit",
+                r#"{"path":"crates/engine/src/runner.rs","oldString":"a","newString":"b"}"#
+                    .to_owned(),
+                "crates/engine/src/runner.rs",
+            ),
+            (
+                "write",
+                r#"{"path":"crates/engine/tests/cap.rs","content":"x\ny"}"#.to_owned(),
+                "crates/engine/tests/cap.rs",
+            ),
+            (
+                "apply_patch",
+                serde_json::json!({ "patch": patch }).to_string(),
+                "crates/engine/src/stream.rs",
+            ),
+        ];
+        for (name, args, expected_path) in cases {
+            let mut card = tool_card(name, &args);
+            card.complete(&[protocol::ToolResultPart::text("ok")], false);
+            assert_eq!(card.summary, expected_path, "{name} summary is the file path");
+            let mut lines = Vec::new();
+            push_tool(&mut lines, &card, 92, false, &theme);
+            let summary_text = plain(&lines[1]);
+            assert!(
+                summary_text.contains(expected_path),
+                "{name} summary row shows the path:\n{summary_text}"
+            );
+            assert!(
+                rendered(&lines).contains("Ctrl+O to expand"),
+                "{name} collapsed shows the expand hint"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_patch_summary_resolves_every_patch_key_alias() {
+        // VAL-TOOL-018: the patched-file summary holds regardless of which patch key alias the model
+        // uses (the tool accepts patch/patchText/patch_text/input).
+        let patch = "*** Add File: src/new_mod.rs\n@@\n+content";
+        for key in ["patch", "patchText", "patch_text", "input"] {
+            let args = serde_json::json!({ key: patch }).to_string();
+            let card = tool_card("apply_patch", &args);
+            assert_eq!(card.summary, "src/new_mod.rs", "alias {key} resolves the target");
+        }
+    }
+
+    #[test]
+    fn grep_card_summary_and_expanded_rows_are_path_line_match() {
+        // VAL-TOOL-019: a grep card's summary reads `{pattern} in {path}`, and its expanded output
+        // lists the real `path:line: matched-text` hit rows.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("grep", r#"{"pattern":"ToolStatus","path":"crates/tui"}"#);
+        assert_eq!(card.summary, "ToolStatus in crates/tui");
+        card.complete(
+            &[protocol::ToolResultPart::text(
+                "crates/tui/src/ui.rs:20: use crate::tool_card::ToolStatus;\n\
+                 crates/tui/src/tool_card.rs:16: pub enum ToolStatus {",
+            )],
+            false,
+        );
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("ToolStatus in crates/tui"), "grep summary:\n{text}");
+        assert!(
+            text.contains("crates/tui/src/ui.rs:20: use crate::tool_card::ToolStatus;"),
+            "path:line: match row:\n{text}"
+        );
+        assert!(
+            text.contains("crates/tui/src/tool_card.rs:16: pub enum ToolStatus {"),
+            "second hit row:\n{text}"
+        );
+    }
+
+    #[test]
+    fn glob_card_summary_is_pattern_and_overflow_reads_matches() {
+        // VAL-TOOL-020: a glob card's summary is the glob pattern, its expanded output lists matched
+        // paths, and a truncated body ends in a `… (N more matches)` overflow row (not `lines`).
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("glob", r#"{"pattern":"**/*.rs"}"#);
+        assert_eq!(card.summary, "**/*.rs");
+        let body: String = (0..MAX_TOOL_DETAIL_LINES + 8)
+            .map(|i| format!("crates/pkg{i}/src/lib.rs"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        card.complete(&[protocol::ToolResultPart::text(&body)], false);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("**/*.rs"), "glob summary is the pattern:\n{text}");
+        assert!(text.contains("crates/pkg0/src/lib.rs"), "matched-path rows:\n{text}");
+        let overflow = lines
+            .iter()
+            .find(|l| plain(l).contains("more matches"))
+            .expect("a `more matches` overflow row");
+        let over_text = plain(overflow);
+        assert!(over_text.contains(crate::glyphs::ELLIPSIS), "ellipsis prefix: {over_text:?}");
+        assert!(over_text.contains("(8 more matches)"), "match count: {over_text:?}");
+        assert!(!text.contains("more lines"), "glob overflow noun is matches, not lines:\n{text}");
+    }
+
+    #[test]
+    fn overflow_noun_is_per_tool() {
+        // VAL-TOOL-011/020/026: the overflow unit is chosen per tool.
+        assert_eq!(overflow_noun("glob"), "matches");
+        assert_eq!(overflow_noun("list"), "matches");
+        assert_eq!(overflow_noun("websearch"), "results");
+        assert_eq!(overflow_noun("read"), "lines");
+        assert_eq!(overflow_noun("grep"), "lines");
+        assert_eq!(overflow_noun("bash"), "lines");
     }
 
     #[test]
