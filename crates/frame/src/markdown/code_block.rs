@@ -81,6 +81,9 @@ pub struct CodeBlockRenderer {
     line_number_style: Style,
     /// Whether to show the line-number gutter.
     show_line_numbers: bool,
+    /// The right-aligned hint shown in the header bar. `None` uses the default `copy ^C` affordance;
+    /// `Some(text)` overrides it (the Wave-7 themes gallery passes `theme: <name>`).
+    right_hint: Option<String>,
 }
 
 impl CodeBlockRenderer {
@@ -94,6 +97,7 @@ impl CodeBlockRenderer {
             lang_tag_style: Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
             line_number_style: Style::default().fg(FAINT),
             show_line_numbers: false,
+            right_hint: None,
         }
     }
 
@@ -133,6 +137,13 @@ impl CodeBlockRenderer {
         self
     }
 
+    /// Overrides the header's right-aligned hint (default `copy ^C`). The Wave-7 themes gallery uses
+    /// this to show a `theme: <name>` tag instead of the copy affordance.
+    pub fn with_right_hint(mut self, hint: impl Into<String>) -> Self {
+        self.right_hint = Some(hint.into());
+        self
+    }
+
     /// Renders a code block as a solid `CODEBG` panel.
     ///
     /// The output format is:
@@ -167,7 +178,13 @@ impl CodeBlockRenderer {
         let mut lines = Vec::with_capacity(line_count + 1);
 
         // Header bar: language tag (left) + copy affordance (right), on CODEBG.
-        lines.push(render_header(language, total_width, bg_style, lang_style));
+        lines.push(render_header(
+            language,
+            self.right_hint.as_deref(),
+            total_width,
+            bg_style,
+            lang_style,
+        ));
 
         // Content rows: gutter + syntax spans, padded to the panel width on CODEBG.
         for (idx, spans) in highlighted_lines.into_iter().enumerate() {
@@ -203,6 +220,39 @@ impl CodeBlockRenderer {
     pub fn highlighter(&self) -> &Highlighter {
         &self.highlighter
     }
+}
+
+/// Render the Wave-7 themes-gallery canonical code block for `theme_name`.
+///
+/// This is the single production render path the gallery screen uses for its fenced Rust snippet.
+/// It resolves the theme's code-block surface/tag/gutter colors from [`crate::MarkdownTheme`] and
+/// its syntax palette from [`tui_syntax::Theme::gallery`] (so the `dark` snippet uses the
+/// mono-orange brand syntax while `light`/`monokai`/`ocean`/`vscode` use their own palettes), draws
+/// the language tag on the left and a right-aligned `theme: <name>` hint (replacing `copy ^C`), and
+/// forces an explicit background on every cell so a light theme never shows a black bar.
+#[must_use]
+pub fn render_gallery_code_block(
+    code: &str,
+    language: &str,
+    theme_name: &str,
+    max_width: u16,
+) -> Vec<Line<'static>> {
+    use crate::markdown::MarkdownTheme;
+    use crate::markdown::languages::{get_default_highlighter, normalize_language_name};
+
+    let md = MarkdownTheme::from_name(theme_name);
+    let syntax = tui_syntax::Theme::gallery(theme_name);
+    let highlighter = Arc::new(get_default_highlighter().themed_clone(syntax));
+    let canonical = normalize_language_name(language).unwrap_or("rust");
+    let renderer = CodeBlockRenderer::new(highlighter)
+        .with_background(md.code_block_bg)
+        .with_border_color(md.code_block_border)
+        .with_text_style(md.code_block_text)
+        .with_lang_tag_style(md.code_lang_tag)
+        .with_line_number_style(md.code_line_number)
+        .with_line_numbers(true)
+        .with_right_hint(format!("theme: {theme_name}"));
+    renderer.render(code, Some(canonical), max_width)
 }
 
 // ============================================================
@@ -458,11 +508,13 @@ fn split_highlighted_spans_by_line(
 // Header and Row Rendering
 // ============================================================
 
-/// Renders the header bar: language tag (left) + copy affordance (right), on CODEBG.
+/// Renders the header bar: language tag (left) + a right-aligned hint (`copy ^C` by default, or the
+/// caller's `right_hint` such as the gallery's `theme: <name>`), on CODEBG.
 ///
 /// Format: `rust                                          copy ^C`
 fn render_header(
     language: Option<&str>,
+    right_hint: Option<&str>,
     width: usize,
     bg_style: Style,
     lang_style: Style,
@@ -470,11 +522,12 @@ fn render_header(
     use unicode_width::UnicodeWidthStr;
 
     let lang_text = language.unwrap_or("");
+    let hint_text = right_hint.unwrap_or(COPY_HINT);
     let lang_len = UnicodeWidthStr::width(lang_text);
-    let copy_len = UnicodeWidthStr::width(COPY_HINT);
+    let hint_len = UnicodeWidthStr::width(hint_text);
 
-    // Compute fill to right-justify the copy hint.
-    let fill_len = width.saturating_sub(lang_len).saturating_sub(copy_len);
+    // Compute fill to right-justify the hint.
+    let fill_len = width.saturating_sub(lang_len).saturating_sub(hint_len);
 
     let mut spans = Vec::with_capacity(3);
     if !lang_text.is_empty() {
@@ -483,7 +536,7 @@ fn render_header(
     if fill_len > 0 {
         spans.push(Span::styled(" ".repeat(fill_len), bg_style));
     }
-    spans.push(Span::styled(COPY_HINT.to_string(), lang_style));
+    spans.push(Span::styled(hint_text.to_string(), lang_style));
 
     Line::from(spans)
 }
@@ -799,7 +852,7 @@ mod tests {
     fn header_bar_shows_lang_left_and_copy_hint_right() {
         let bg_style = Style::default().bg(CODEBG);
         let lang_style = Style::default().fg(FAINT);
-        let line = render_header(Some("rust"), 40, bg_style, lang_style);
+        let line = render_header(Some("rust"), None, 40, bg_style, lang_style);
 
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.starts_with("rust"));
@@ -810,10 +863,25 @@ mod tests {
     }
 
     #[test]
+    fn header_bar_right_hint_overrides_copy_affordance() {
+        // The Wave-7 gallery passes a `theme: <name>` right hint instead of `copy ^C`.
+        let bg_style = Style::default().bg(CODEBG);
+        let lang_style = Style::default().fg(FAINT);
+        let line = render_header(Some("rust"), Some("theme: dark"), 40, bg_style, lang_style);
+
+        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.starts_with("rust"));
+        assert!(content.trim_end().ends_with("theme: dark"));
+        assert!(!content.contains(COPY_HINT), "copy affordance replaced by the theme tag");
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(content.width(), 40);
+    }
+
+    #[test]
     fn header_bar_without_language_still_shows_copy_hint() {
         let bg_style = Style::default().bg(CODEBG);
         let lang_style = Style::default().fg(FAINT);
-        let line = render_header(None, 30, bg_style, lang_style);
+        let line = render_header(None, None, 30, bg_style, lang_style);
 
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.trim_end().ends_with(COPY_HINT));

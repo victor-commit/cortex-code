@@ -81,7 +81,7 @@ pub mod table;
 pub mod theme;
 
 // Re-exports for convenient access
-pub use code_block::{CodeBlockRenderer, IncrementalCodeBlock};
+pub use code_block::{CodeBlockRenderer, IncrementalCodeBlock, render_gallery_code_block};
 pub use inline::{InlineStyleStack, parse_inline_spans, render_blockquote_prefix, render_hr};
 pub use languages::{get_default_highlighter, normalize_language_name};
 pub use list::{ListContext, ListItem, render_list_item};

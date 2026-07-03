@@ -12,6 +12,7 @@ mod brand;
 mod checkpoint;
 mod diff;
 mod format_bridge;
+mod gallery;
 mod glyphs;
 mod keybind;
 mod lsp_bridge;

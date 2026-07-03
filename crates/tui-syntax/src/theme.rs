@@ -341,6 +341,24 @@ impl Theme {
         }
     }
 
+    /// Resolves the syntax palette for the Wave-7 themes gallery's canonical code block.
+    ///
+    /// This differs from [`Self::from_chrome_name`] on the `dark` theme only: the gallery's `dark`
+    /// snippet uses the mono-orange brand syntax ([`Self::cortex_dark`] — orange keywords, amber
+    /// identifiers) per the gallery design (VAL-THEME-014), whereas the ordinary in-chat code block
+    /// binds `dark` to VS Code Dark+ (blue keywords). The `vscode` theme uses VS Code Dark+
+    /// (VAL-THEME-022); light/monokai/ocean match their chrome palettes.
+    pub fn gallery(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "light" => Self::light(),
+            "monokai" => Self::monokai(),
+            "ocean" | "ocean_dark" => Self::ocean(),
+            "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode_dark(),
+            // The brand `dark` gallery snippet uses the mono-orange brand syntax palette.
+            _ => Self::cortex_dark(),
+        }
+    }
+
     /// Creates a Monokai-inspired theme.
     pub fn monokai() -> Self {
         let mut theme = Self::new();
@@ -602,6 +620,45 @@ mod tests {
             Theme::from_chrome_name("nonexistent").get("keyword").fg,
             dark.get("keyword").fg
         );
+    }
+
+    #[test]
+    fn gallery_dark_uses_orange_keywords_and_vscode_uses_blue() {
+        // The gallery's `dark` snippet uses the mono-orange brand syntax (orange keywords), which
+        // is DISTINCT from the in-chat code block that binds `dark` to VS Code Dark+ blue keywords
+        // (VAL-THEME-014 vs VAL-MD-016).
+        let gallery_dark = Theme::gallery("dark");
+        assert_eq!(
+            gallery_dark.get("keyword").fg,
+            Some(Color::from_rgb_u8(232, 146, 86)),
+            "gallery dark keyword is brand ORANGE"
+        );
+        assert_ne!(
+            gallery_dark.get("keyword").fg,
+            Theme::from_chrome_name("dark").get("keyword").fg,
+            "gallery dark diverges from the in-chat dark syntax"
+        );
+        // vscode gallery keyword is VS Code Dark+ blue (VAL-THEME-022).
+        assert_eq!(
+            Theme::gallery("vscode").get("keyword").fg,
+            Some(Color::from_rgb_u8(86, 156, 214)),
+            "gallery vscode keyword is VS Code blue"
+        );
+        // light gallery keyword is blue (VAL-THEME-016).
+        assert_eq!(
+            Theme::gallery("light").get("keyword").fg,
+            Some(Color::from_rgb_u8(0, 0, 200)),
+            "gallery light keyword is blue"
+        );
+        // Every gallery theme's keyword differs from its comment (multiple distinct colors).
+        for name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            let t = Theme::gallery(name);
+            assert_ne!(
+                t.get("keyword").fg,
+                t.get("comment").fg,
+                "{name}: keyword and comment are distinct colors"
+            );
+        }
     }
 
     #[test]

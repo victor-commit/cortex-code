@@ -58,6 +58,10 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Open the theme picker",
     },
     SlashCommand {
+        name: "theme-gallery",
+        description: "Preview the active theme on a canonical screen",
+    },
+    SlashCommand {
         name: "status",
         description: "Open the status view",
     },
