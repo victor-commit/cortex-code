@@ -331,7 +331,6 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                     card,
                     width,
                     app.tool_card_expanded(card),
-                    app.tool_spinner_glyph(),
                     &theme,
                 );
             }
@@ -642,183 +641,126 @@ fn push_diff(lines: &mut Vec<Line<'static>>, diff: &FileDiff, theme: &style::The
     lines.push(Line::from(""));
 }
 
-/// Append an agent tool call as an inline scrollback card: a status dot, the verb + target on the
-/// header row with a right-aligned meta column, and a `└ <result>` connector line below it. A
-/// running card swaps the `●` dot for a rotating spinner and a `running` meta; a completed card
-/// keeps the `●` ORANGE dot with a derived metric/duration meta; a failed card uses the error accent
-/// and surfaces the failure message on the connector. When expanded (Ctrl+O) the full output is
-/// revealed indented under the header.
+/// Append an agent tool call as a fully-closed rounded-rectangle card. The label rides the top
+/// border as `{glyph} {name} · {state}` (VAL-TOOL-001/002), tinted uniformly by the status accent:
+/// running `⚙` ORANGE, done `✓` OKG-green, error `✗` ERR-red (VAL-TOOL-003/004/005/006). The first
+/// interior row is the per-tool summary (VAL-TOOL-008); a collapsed card follows it with a FAINT
+/// `Ctrl+O to expand` hint and no payload (VAL-TOOL-009), while an expanded card replaces the hint
+/// with a DIM `output` header and its payload rows (VAL-TOOL-010), diff-carrying cards revealing a
+/// red/green line-numbered diff whose +/- coloring is confined to the payload (VAL-TOOL-031).
 fn push_tool(
     lines: &mut Vec<Line<'static>>,
     card: &ToolCard,
     width: usize,
     expanded: bool,
-    spinner: Option<&str>,
     theme: &style::ThemeColors,
 ) {
-    let w = width.max(1);
-    // Status dot/glyph: a rotating spinner while running (a single static frame when not animating),
-    // the `●` ORANGE dot when done, and the `●` dot in the error accent when failed.
-    let glyph = match card.status {
-        ToolStatus::Running => spinner.unwrap_or(crate::glyphs::SPINNER_ROTATE[0]),
-        _ => crate::glyphs::DOT_FILLED,
-    };
-    let dot_style = match card.status {
-        ToolStatus::Failed => Style::default().fg(theme.error),
-        _ => Style::default().fg(theme.primary),
-    };
-    let verb = tool_verb(&card.name);
-    let verb_style = Style::default()
-        .fg(theme.text_bright)
-        .add_modifier(Modifier::BOLD);
-    let target_style = Style::default().fg(theme.text_dim);
-    let faint = Style::default().fg(theme.text_muted);
-
-    // Header row laid out in a cell buffer so the meta column right-aligns and the target clips
-    // before colliding with it (a ≥2-col gap is preserved between target and meta).
-    let base = Style::default().fg(theme.text);
-    let mut cells: Vec<(char, Style)> = vec![(' ', base); w];
-    let meta = tool_meta_segments(card, theme);
-    let meta_w: usize = meta.iter().map(|(t, _)| t.chars().count()).sum();
-    let meta_start = w.saturating_sub(CONTENT_MARGIN + meta_w);
-    place_segments(&mut cells, meta_start, &meta);
-
-    // A card carrying a diff renders a `▶`/`▼` disclosure gutter at the content margin (AMBER),
-    // shifting the `●` dot + verb + target one slot right (to CX+2). The header is otherwise
-    // identical whether collapsed or expanded, so the two forms round-trip with a stable header.
-    let content_shift = if card.diff.is_some() { 2 } else { 0 };
-    if card.diff.is_some() {
-        let disclosure = if expanded {
-            crate::glyphs::DISCLOSURE_EXPANDED
-        } else {
-            crate::glyphs::DISCLOSURE_COLLAPSED
-        };
-        place_segments(
-            &mut cells,
-            CONTENT_MARGIN,
-            &[(format!("{disclosure} "), Style::default().fg(theme.secondary))],
-        );
+    let bx = CONTENT_MARGIN;
+    let right = width.saturating_sub(CONTENT_MARGIN);
+    if right <= bx + 4 {
+        lines.push(Line::from(""));
+        return;
     }
-    let content_start = CONTENT_MARGIN + content_shift;
+    let bw = right - bx;
+    let inner_w = bw.saturating_sub(4);
+    let base = Style::default().bg(theme.background);
 
-    let verb_len = verb.chars().count();
-    // content_start + "● " (2) + verb, then a space before the target.
-    let target_col = content_start + 2 + verb_len + 1;
-    let target_room = meta_start.saturating_sub(target_col + 2);
-    let target = clip_text(&card.summary, target_room);
-    let left: Vec<(String, Style)> = vec![
-        (format!("{glyph} "), dot_style),
-        (verb, verb_style),
-        (
-            if target.is_empty() {
-                String::new()
-            } else {
-                format!(" {target}")
-            },
-            target_style,
-        ),
-    ];
-    place_segments(&mut cells, content_start, &left);
-    lines.push(cells_to_line(&cells));
-
-    // Connector row: `  └ <result>` in FAINT (the error message in the error accent when failed).
-    let connector_indent = content_start + 2;
-    let result_room = w.saturating_sub(connector_indent + 2 + CONTENT_MARGIN).max(1);
-    let result = clip_text(&tool_result_summary(card), result_room);
-    let result_style = if matches!(card.status, ToolStatus::Failed) {
-        Style::default().fg(theme.error)
-    } else {
-        faint
+    let (accent, glyph, state_word) = match card.status {
+        ToolStatus::Running => (theme.primary, glyphs::MARK_RUNNING, "running"),
+        ToolStatus::Completed => (theme.success, glyphs::MARK_DONE, "done"),
+        ToolStatus::Failed => (theme.error, glyphs::MARK_ERROR, "error"),
     };
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(connector_indent)),
-        Span::styled(format!("{} ", crate::glyphs::TOOL_CONNECTOR), faint),
-        Span::styled(result, result_style),
-    ]));
+    let border_style = Style::default().fg(accent).bg(theme.background);
+    let label_style = Style::default().fg(accent).bg(theme.background);
 
-    // Expanded (Ctrl+O): a diff card unfolds a boxed, line-numbered red/green diff titled with the
-    // target file; any other card reveals its full output indented under the header.
+    let title = format!("{} {} {} {}", glyph, card.name, glyphs::SEPARATOR, state_word);
+    let title_text = format!(" {} ", clip_text(&title, inner_w.saturating_sub(4)));
+
+    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
+    top[bx] = (glyphs::BOX_TOP_LEFT.chars().next().unwrap(), border_style);
+    top[bx + bw - 1] = (glyphs::BOX_TOP_RIGHT.chars().next().unwrap(), border_style);
+    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    place_segments(&mut top, bx + 2, &[(title_text, label_style)]);
+    lines.push(cells_to_line(&top));
+
+    let origin = bx + 2;
+    let text_w = inner_w.saturating_sub(2);
+
+    let summary_text = clip_text(&card.summary, text_w);
+    let mut summary_row: Vec<(char, Style)> = vec![(' ', base); width];
+    summary_row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+    summary_row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+    place_segments(
+        &mut summary_row,
+        origin,
+        &[(summary_text, Style::default().fg(theme.text).bg(theme.background))],
+    );
+    lines.push(cells_to_line(&summary_row));
+
+    let interior_row = |seg: &[(String, Style)]| -> Line<'static> {
+        let mut row: Vec<(char, Style)> = vec![(' ', base); width];
+        row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        place_segments(&mut row, origin, seg);
+        cells_to_line(&row)
+    };
+
     if expanded {
+        let header_style = Style::default().fg(theme.text_dim).bg(theme.background);
+        lines.push(interior_row(&[("output".to_owned(), header_style)]));
+
         if let Some(diff) = card.diff.as_deref() {
-            push_diff_box(lines, diff, w, theme);
-        } else if !card.output.is_empty() {
-            let body_indent = CONTENT_MARGIN + 4;
+            push_card_diff_rows(lines, diff, bx, bw, border_style, base, theme);
+        } else {
             let body_style = match card.status {
-                ToolStatus::Failed => Style::default().fg(theme.error),
-                _ => Style::default().fg(theme.text),
+                ToolStatus::Failed => Style::default().fg(theme.error).bg(theme.background),
+                _ => Style::default().fg(theme.text).bg(theme.background),
             };
             let out_lines: Vec<&str> = card.output.lines().collect();
             let shown = out_lines.len().min(MAX_TOOL_DETAIL_LINES);
             for line in &out_lines[..shown] {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(body_indent)),
-                    Span::styled((*line).to_owned(), body_style),
-                ]));
+                lines.push(interior_row(&[(clip_text(line, text_w), body_style)]));
             }
             if out_lines.len() > shown {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(body_indent)),
-                    Span::styled(
-                        format!("{} ({} more lines)", crate::glyphs::ELLIPSIS, out_lines.len() - shown),
-                        faint,
-                    ),
-                ]));
+                let overflow =
+                    format!("{} ({} more lines)", glyphs::ELLIPSIS, out_lines.len() - shown);
+                lines.push(interior_row(&[(overflow, header_style)]));
             }
         }
+    } else {
+        let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
+        lines.push(interior_row(&[("Ctrl+O to expand".to_owned(), hint_style)]));
     }
 
+    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
+    bottom[bx] = (glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(), border_style);
+    bottom[bx + bw - 1] = (glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(), border_style);
+    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
+        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
+    }
+    lines.push(cells_to_line(&bottom));
     lines.push(Line::from(""));
 }
 
-/// Render the boxed body of an expanded diff card: a rounded `ORANGE_D` frame whose top border
-/// embeds the target filename as an AMBER title, then one line-numbered row per diff line. Each row
-/// is a cell buffer so the per-line background (`ADD_BG`/`DEL_BG` for additions/deletions, none for
-/// context) fills the whole box interior; the right-justified line number sits in `LNUM`, the
-/// `+`/`-`/space sign at a fixed sign column, and the code text at a fixed code column.
-fn push_diff_box(
+/// Render an expanded diff card's payload rows *inside* the tool card's own box: one line-numbered
+/// row per diff line, carried on the card's accent border. Each row is a cell buffer so the per-line
+/// background (`ADD_BG`/`DEL_BG` for additions/deletions, none for context) fills the box interior;
+/// the right-justified line number sits in `LNUM`, the `+`/`-`/space sign at a fixed sign column,
+/// and the code text at a fixed code column. This keeps diff +/- coloring confined to the expanded
+/// payload (VAL-TOOL-031) while the surrounding card chrome stays mono-orange + grey.
+fn push_card_diff_rows(
     lines: &mut Vec<Line<'static>>,
     diff: &FileDiff,
-    width: usize,
+    bx: usize,
+    bw: usize,
+    border_style: Style,
+    base: Style,
     theme: &style::ThemeColors,
 ) {
-    // The box is inset under the header (`bx = CX + 4`) and stops a content margin short of the
-    // right edge, matching the diff-expanded reference geometry.
-    let bx = CONTENT_MARGIN + 4;
-    let right = width.saturating_sub(CONTENT_MARGIN);
-    if right <= bx + 4 {
-        return;
-    }
-    let bw = right - bx;
-    let inner_w = bw - 2;
-    let base = Style::default().bg(theme.background);
-    let border_style = Style::default().fg(theme.border).bg(theme.background);
-    let title = &diff.path;
-
-    // Top border with the filename embedded as a title: `╭─ <path> ─────╮`.
-    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
-    top[bx] = (
-        crate::glyphs::BOX_TOP_LEFT.chars().next().unwrap(),
-        border_style,
-    );
-    top[bx + bw - 1] = (
-        crate::glyphs::BOX_TOP_RIGHT.chars().next().unwrap(),
-        border_style,
-    );
-    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
-        *cell = (
-            crate::glyphs::BOX_HORIZONTAL.chars().next().unwrap(),
-            border_style,
-        );
-    }
-    let title_text = format!(" {} ", clip_text(title, inner_w.saturating_sub(4)));
-    place_segments(
-        &mut top,
-        bx + 2,
-        &[(title_text, Style::default().fg(theme.secondary).bg(theme.background))],
-    );
-    lines.push(cells_to_line(&top));
-
-    // Diff rows, numbered sequentially from each hunk's new-file start line.
+    let width = base_width(bx, bw);
+    let origin = bx + 2;
     let mut shown = 0usize;
     let mut truncated = false;
     'outer: for hunk in &diff.hunks {
@@ -833,13 +775,8 @@ fn push_diff_box(
                 break 'outer;
             }
             let (sign, fg, row_bg) = match dline.kind {
-                crate::diff::DiffLineKind::Added => {
-                    ('+', style::ADD_FG, Some(style::ADD_BG))
-                }
-                crate::diff::DiffLineKind::Removed => {
-                    ('-', style::DEL_FG, Some(style::DEL_BG))
-                }
-                // Header lines never reach a hunk body; treat them as context defensively.
+                crate::diff::DiffLineKind::Added => ('+', style::ADD_FG, Some(style::ADD_BG)),
+                crate::diff::DiffLineKind::Removed => ('-', style::DEL_FG, Some(style::DEL_BG)),
                 crate::diff::DiffLineKind::Context | crate::diff::DiffLineKind::Header => {
                     (' ', theme.text_dim, None)
                 }
@@ -847,32 +784,18 @@ fn push_diff_box(
             let row_bg_color = row_bg.unwrap_or(theme.background);
             let row_style = Style::default().fg(fg).bg(row_bg_color);
             let mut cells: Vec<(char, Style)> = vec![(' ', base); width];
-            // Fill the box interior with the row background so the color spans the full inner width.
             for cell in cells.iter_mut().take(bx + bw - 1).skip(bx + 1) {
                 *cell = (' ', row_style);
             }
-            cells[bx] = (
-                crate::glyphs::BOX_VERTICAL.chars().next().unwrap(),
-                border_style,
-            );
-            cells[bx + bw - 1] = (
-                crate::glyphs::BOX_VERTICAL.chars().next().unwrap(),
-                border_style,
-            );
-            // Content origin one space in from the border; line number rjust(3), sign at +6, code
-            // at +8 (see design-system §2.8).
-            let origin = bx + 2;
+            cells[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+            cells[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
             let lnum = format!("{:>3}", start + i);
             place_segments(
                 &mut cells,
                 origin,
                 &[(lnum, Style::default().fg(style::LNUM).bg(row_bg_color))],
             );
-            place_segments(
-                &mut cells,
-                origin + 6,
-                &[(sign.to_string(), row_style)],
-            );
+            place_segments(&mut cells, origin + 6, &[(sign.to_string(), row_style)]);
             let code_col = origin + 8;
             let code_room = (bx + bw - 1).saturating_sub(code_col + 1);
             let code = clip_text(&dline.content, code_room);
@@ -881,34 +804,26 @@ fn push_diff_box(
             shown += 1;
         }
     }
-
-    // Bottom border: `╰────────╯`.
-    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
-    bottom[bx] = (
-        crate::glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(),
-        border_style,
-    );
-    bottom[bx + bw - 1] = (
-        crate::glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(),
-        border_style,
-    );
-    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
-        *cell = (
-            crate::glyphs::BOX_HORIZONTAL.chars().next().unwrap(),
-            border_style,
-        );
-    }
-    lines.push(cells_to_line(&bottom));
-
     if truncated {
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(bx + 2)),
-            Span::styled(
-                format!("{} more diff lines", crate::glyphs::ELLIPSIS),
-                Style::default().fg(theme.text_muted),
-            ),
-        ]));
+        let mut row: Vec<(char, Style)> = vec![(' ', base); width];
+        row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+        place_segments(
+            &mut row,
+            origin,
+            &[(
+                format!("{} more diff lines", glyphs::ELLIPSIS),
+                Style::default().fg(theme.text_muted).bg(theme.background),
+            )],
+        );
+        lines.push(cells_to_line(&row));
     }
+}
+
+/// The full row width implied by a box at `bx` spanning `bw` columns (`bx + bw`), used to size the
+/// cell buffers for interior rows.
+fn base_width(bx: usize, bw: usize) -> usize {
+    bx + bw
 }
 
 /// Width (columns) of one attachment card (`perm_attach.png`: three 28-col cards tile the 88-col
@@ -1039,142 +954,6 @@ fn render_attachment_card(
         inner_left,
         &[(meta, Style::default().fg(theme.text_dim).bg(theme.background))],
     );
-}
-
-/// The display verb for a tool card header (e.g. `read` → `Read`, `edit`/`apply_patch` → `Update`).
-fn tool_verb(name: &str) -> String {
-    match name {
-        "read" => "Read".to_owned(),
-        "write" => "Write".to_owned(),
-        "edit" | "multiedit" | "apply_patch" => "Update".to_owned(),
-        "bash" => "Bash".to_owned(),
-        "grep" => "Grep".to_owned(),
-        "search" => "Search".to_owned(),
-        "glob" => "Glob".to_owned(),
-        "list" => "List".to_owned(),
-        "webfetch" => "Fetch".to_owned(),
-        "websearch" => "Search".to_owned(),
-        "task" => "Task".to_owned(),
-        "todo" => "Todo".to_owned(),
-        "lsp" => "Lsp".to_owned(),
-        "question" => "Question".to_owned(),
-        other => {
-            let mut chars = other.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        }
-    }
-}
-
-/// The metric a completed tool card summarizes in its meta column / connector.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ToolMetric {
-    /// Lines read (read).
-    Lines,
-    /// Search matches (grep/search).
-    Matches,
-    /// Listed entries (glob/list).
-    Items,
-    /// Added/removed line counts (write/edit/apply_patch).
-    Diff,
-    /// No headline metric (bash and other tools) — duration only.
-    None,
-}
-
-/// The headline metric class for a tool by name.
-fn tool_metric(name: &str) -> ToolMetric {
-    match name {
-        "read" => ToolMetric::Lines,
-        "grep" | "search" => ToolMetric::Matches,
-        "glob" | "list" => ToolMetric::Items,
-        "write" | "edit" | "multiedit" | "apply_patch" => ToolMetric::Diff,
-        _ => ToolMetric::None,
-    }
-}
-
-/// The number of non-empty output lines a card produced (its headline count for read/grep/glob).
-fn tool_output_count(card: &ToolCard) -> usize {
-    card.output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count()
-}
-
-/// Format a duration in milliseconds for the meta tail: `<N>ms` under a second, else `<N.N>s`.
-fn format_duration(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    }
-}
-
-/// The right-aligned meta column segments for a tool card: `running`/`error` words while in flight,
-/// otherwise the headline metric (`<N> lines`, `+N -N`, …) plus a `· <N>ms` duration tail. The diff
-/// `+N`/`-N` counts are the only non-orange foregrounds a card emits.
-fn tool_meta_segments(card: &ToolCard, theme: &style::ThemeColors) -> Vec<(String, Style)> {
-    let faint = Style::default().fg(theme.text_muted);
-    match card.status {
-        ToolStatus::Running => vec![("running".to_owned(), Style::default().fg(theme.secondary))],
-        ToolStatus::Failed => vec![("error".to_owned(), Style::default().fg(theme.error))],
-        ToolStatus::Completed => {
-            let mut segs: Vec<(String, Style)> = Vec::new();
-            match tool_metric(&card.name) {
-                ToolMetric::Lines => {
-                    segs.push((format!("{} lines", card.output.lines().count()), faint));
-                }
-                ToolMetric::Matches => {
-                    segs.push((format!("{} matches", tool_output_count(card)), faint));
-                }
-                ToolMetric::Items => {
-                    segs.push((format!("{} items", tool_output_count(card)), faint));
-                }
-                ToolMetric::Diff => {
-                    if let Some((added, removed)) = card.diff_stat {
-                        segs.push((format!("+{added}"), Style::default().fg(theme.success)));
-                        segs.push((" ".to_owned(), faint));
-                        segs.push((format!("-{removed}"), Style::default().fg(theme.error)));
-                    }
-                }
-                ToolMetric::None => {}
-            }
-            if let Some(ms) = card.duration_ms {
-                if !segs.is_empty() {
-                    segs.push((" · ".to_owned(), faint));
-                }
-                segs.push((format_duration(ms), faint));
-            }
-            if segs.is_empty() {
-                segs.push(("done".to_owned(), faint));
-            }
-            segs
-        }
-    }
-}
-
-/// The `└ <result>` connector text for a tool card: a derived metric phrase for completed read/
-/// search/list tools, the first real output line otherwise, and the failure/placeholder line for
-/// failed/running calls.
-fn tool_result_summary(card: &ToolCard) -> String {
-    let first_out = card
-        .output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty());
-    match card.status {
-        ToolStatus::Failed => first_out.unwrap_or("error").to_owned(),
-        ToolStatus::Running => first_out.unwrap_or("running…").to_owned(),
-        ToolStatus::Completed => match tool_metric(&card.name) {
-            ToolMetric::Lines => format!("{} lines read", card.output.lines().count()),
-            ToolMetric::Matches => format!("{} matches", tool_output_count(card)),
-            ToolMetric::Items => format!("{} items", tool_output_count(card)),
-            _ => first_out
-                .map(str::to_owned)
-                .unwrap_or_else(|| card.summary.clone()),
-        },
-    }
 }
 
 /// Truncate `text` to at most `max` display columns, appending an ellipsis when shortened.
@@ -6391,51 +6170,49 @@ mod tests {
 
     #[test]
     fn tool_card_colors_follow_theme_semantics() {
+        // VAL-TOOL-003/004/005/006: the status accent (running ORANGE, done OKG, error ERR)
+        // uniformly tints the top-border label glyph + name + state word.
         let theme = style::ThemeColors::ocean_dark();
-        let dot_fg = |line: &Line, glyph: &str| -> Option<Color> {
+        let glyph_fg = |line: &Line, glyph: &str| -> Option<Color> {
             line.spans
                 .iter()
                 .find(|s| s.content.contains(glyph))
                 .and_then(|s| s.style.fg)
         };
 
-        // Running: a rotating spinner dot in the brand primary (ORANGE), with a `running` meta.
+        // Running: `⚙` gear on an ORANGE (brand primary) border/label, with the `running` word.
         let running = tool_card("read", r#"{"path":"a.txt"}"#);
         let mut running_lines = Vec::new();
-        push_tool(
-            &mut running_lines,
-            &running,
-            80,
-            false,
-            Some(crate::glyphs::SPINNER_ROTATE[0]),
-            &theme,
-        );
+        push_tool(&mut running_lines, &running, 80, false, &theme);
         assert_eq!(
-            dot_fg(&running_lines[0], crate::glyphs::SPINNER_ROTATE[0]),
+            glyph_fg(&running_lines[0], crate::glyphs::MARK_RUNNING),
             Some(theme.primary)
         );
         assert!(rendered(&running_lines).contains("running"));
+        assert!(rendered(&running_lines).contains(crate::glyphs::MARK_RUNNING));
 
-        // Completed: the `●` dot stays in the brand primary (no running spinner).
+        // Completed: `✓` on the OKG success accent, with the `done` word (no `running`).
         let mut completed = tool_card("read", r#"{"path":"a.txt"}"#);
         completed.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut completed_lines = Vec::new();
-        push_tool(&mut completed_lines, &completed, 80, false, None, &theme);
+        push_tool(&mut completed_lines, &completed, 80, false, &theme);
         assert_eq!(
-            dot_fg(&completed_lines[0], crate::glyphs::DOT_FILLED),
-            Some(theme.primary)
+            glyph_fg(&completed_lines[0], crate::glyphs::MARK_DONE),
+            Some(theme.success)
         );
+        assert!(rendered(&completed_lines).contains("done"));
         assert!(!rendered(&completed_lines).contains("running"));
 
-        // Failed: the dot adopts the error accent.
+        // Failed: `✗` on the ERR accent, with the `error` word.
         let mut failed = tool_card("read", r#"{"path":"a.txt"}"#);
         failed.complete(&[protocol::ToolResultPart::text("boom")], true);
         let mut failed_lines = Vec::new();
-        push_tool(&mut failed_lines, &failed, 80, false, None, &theme);
+        push_tool(&mut failed_lines, &failed, 80, false, &theme);
         assert_eq!(
-            dot_fg(&failed_lines[0], crate::glyphs::DOT_FILLED),
+            glyph_fg(&failed_lines[0], crate::glyphs::MARK_ERROR),
             Some(theme.error)
         );
+        assert!(rendered(&failed_lines).contains("error"));
     }
 
     #[test]
@@ -6764,133 +6541,184 @@ mod tests {
         ToolCard::new("call_1", name, args)
     }
 
-    /// The foreground of the first span containing `glyph` in `line` (the status dot's color).
-    fn dot_fg(line: &Line, glyph: &str) -> Option<Color> {
-        line.spans
+    /// The `(text, fg)` of the top-border label span (the span holding the tool name) of a card,
+    /// for label-accent assertions.
+    fn card_label_span(lines: &[Line]) -> (String, Option<Color>) {
+        let top = &lines[0];
+        let span = top
+            .spans
             .iter()
-            .find(|s| s.content.contains(glyph))
-            .and_then(|s| s.style.fg)
+            .find(|s| s.content.contains(crate::glyphs::SEPARATOR) || s.content.trim().len() > 2)
+            .expect("a label span on the top border");
+        (span.content.to_string(), span.style.fg)
     }
 
     #[test]
-    fn running_tool_card_renders_label_and_summary() {
-        // VAL-CONV-022/026: the card shows a rotating spinner dot, the verb + target, and `running`.
+    fn running_tool_card_is_a_closed_box_with_running_label() {
+        // VAL-TOOL-001/002/003: the card is a closed rounded rectangle whose top border carries
+        // `⚙ read · running` in the ORANGE accent; the summary is the target path.
+        let theme = style::ThemeColors::dark();
         let card = tool_card("read", r#"{"path":"src/main.rs"}"#);
         let mut lines = Vec::new();
-        push_tool(
-            &mut lines,
-            &card,
-            80,
-            false,
-            Some(crate::glyphs::SPINNER_ROTATE[0]),
-            &style::ThemeColors::dark(),
-        );
+        push_tool(&mut lines, &card, 80, false, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("Read"), "verb labeled:\n{text}");
-        assert!(text.contains("running"), "running status:\n{text}");
+        // Top-border label `⚙ read · running`.
+        let top = plain(&lines[0]);
+        assert!(top.contains(crate::glyphs::BOX_TOP_LEFT), "top-left corner:\n{top}");
+        assert!(top.contains(crate::glyphs::BOX_TOP_RIGHT), "top-right corner:\n{top}");
+        assert!(top.contains(crate::glyphs::MARK_RUNNING), "gear glyph:\n{top}");
+        assert!(top.contains("read"), "tool name:\n{top}");
+        assert!(top.contains("running"), "state word:\n{top}");
+        // The label rides the border in the ORANGE accent.
+        let (label, fg) = card_label_span(&lines);
+        assert!(label.contains("running"), "label text: {label:?}");
+        assert_eq!(fg, Some(theme.primary), "running label is ORANGE");
+        // Summary is the target path.
         assert!(text.contains("src/main.rs"), "target summary:\n{text}");
-        // The leading dot is the rotating spinner glyph while running, not the `●` done dot.
+        // Bottom border closes the box.
         assert!(
-            text.contains(crate::glyphs::SPINNER_ROTATE[0]),
-            "running spinner dot:\n{text}"
+            plain(lines.last().unwrap()).is_empty(),
+            "trailing gap row after the card"
         );
-        // The connector line is present.
-        assert!(text.contains(crate::glyphs::TOOL_CONNECTOR), "connector:\n{text}");
+        assert!(
+            lines.iter().any(|l| plain(l).contains(crate::glyphs::BOX_BOTTOM_LEFT)),
+            "bottom-left corner:\n{text}"
+        );
     }
 
     #[test]
     fn completed_tool_card_shows_done_state() {
-        // VAL-CONV-022/027: a completed card keeps the `●` dot and shows a derived meta, no spinner.
+        // VAL-TOOL-004: a completed card carries `✓ grep · done` in the OKG accent, no `running`.
+        let theme = style::ThemeColors::dark();
         let mut card = tool_card("grep", r#"{"pattern":"TODO","path":"src"}"#);
         card.complete(&[protocol::ToolResultPart::text("src/a.rs:1: TODO")], false);
         let mut lines = Vec::new();
-        push_tool(
-            &mut lines,
-            &card,
-            80,
-            false,
-            None,
-            &style::ThemeColors::dark(),
-        );
-        let text = rendered(&lines);
-        assert!(text.contains("Grep"), "verb labeled:\n{text}");
-        assert!(text.contains(crate::glyphs::DOT_FILLED), "done dot:\n{text}");
-        assert!(!text.contains("running"), "no longer running:\n{text}");
-        // grep summarizes its result as a match count on the connector.
-        assert!(text.contains("1 matches"), "match count meta:\n{text}");
+        push_tool(&mut lines, &card, 80, false, &theme);
+        let top = plain(&lines[0]);
+        assert!(top.contains("grep"), "tool name:\n{top}");
+        assert!(top.contains(crate::glyphs::MARK_DONE), "done check:\n{top}");
+        assert!(top.contains("done"), "done word:\n{top}");
+        assert!(!top.contains("running"), "no longer running:\n{top}");
+        let (_, fg) = card_label_span(&lines);
+        assert_eq!(fg, Some(theme.success), "done label is OKG-green");
     }
 
     #[test]
-    fn read_card_meta_shows_lines_and_duration() {
-        // VAL-CONV-024: the Read card meta is `<N> lines · <N>ms`.
+    fn collapsed_card_summary_then_expand_hint_no_payload() {
+        // VAL-TOOL-008/009: the first interior row is the summary (TXT), followed by a FAINT
+        // `Ctrl+O to expand` hint and NO output payload.
+        let theme = style::ThemeColors::dark();
         let mut card = tool_card("read", r#"{"path":"stream_processor.rs"}"#);
         card.complete(
-            &[protocol::ToolResultPart::text("line1\nline2\nline3")],
+            &[protocol::ToolResultPart::text("1: use ratatui;\n2: fn main() {}")],
             false,
         );
-        card.duration_ms = Some(8);
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, None, &style::ThemeColors::dark());
+        push_tool(&mut lines, &card, 92, false, &theme);
+        // Summary row is the target path in TXT.
+        let summary = &lines[1];
+        let summary_text: String = summary.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(summary_text.contains("stream_processor.rs"), "summary: {summary_text:?}");
+        let path_span = summary
+            .spans
+            .iter()
+            .find(|s| s.content.contains("stream_processor.rs"))
+            .expect("summary span");
+        assert_eq!(path_span.style.fg, Some(theme.text), "summary is TXT");
+        // Expand hint in FAINT, and NO payload.
         let text = rendered(&lines);
-        assert!(text.contains("3 lines"), "line count meta:\n{text}");
-        assert!(text.contains("8ms"), "duration meta:\n{text}");
-        assert!(text.contains("3 lines read"), "connector summary:\n{text}");
+        assert!(text.contains("Ctrl+O to expand"), "expand hint:\n{text}");
+        let hint_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("Ctrl+O to expand"))
+            .expect("hint span");
+        assert_eq!(hint_span.style.fg, Some(theme.text_muted), "hint is FAINT");
+        assert!(!text.contains("output"), "no output header while collapsed:\n{text}");
+        assert!(!text.contains("use ratatui"), "no payload while collapsed:\n{text}");
     }
 
     #[test]
-    fn update_card_diff_meta_is_green_and_red() {
-        // VAL-CONV-025: the Update card meta shows `+N` (GREEN) and `-N` (RED) followed by `· <N>ms`,
-        // and those are the only non-orange foregrounds on the card.
+    fn expanded_card_shows_output_header_and_payload() {
+        // VAL-TOOL-010: expanding replaces the hint with a DIM `output` header + payload rows (TXT).
         let theme = style::ThemeColors::dark();
-        let mut card = tool_card(
-            "edit",
-            r#"{"path":"stream_processor.rs","oldString":"a\nb","newString":"x\ny\nz"}"#,
-        );
+        let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
         card.complete(
-            &[protocol::ToolResultPart::text("edit: replaced 1 occurrence")],
+            &[protocol::ToolResultPart::text("1: use ratatui;\n2: fn main() {}")],
             false,
         );
-        card.duration_ms = Some(22);
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, None, &theme);
-        let header = &lines[0];
-        let plus = header
-            .spans
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("output"), "output header:\n{text}");
+        let header_span = lines
             .iter()
-            .find(|s| s.content.starts_with('+'))
-            .expect("a +N segment");
-        let minus = header
-            .spans
-            .iter()
-            .find(|s| s.content.starts_with('-'))
-            .expect("a -N segment");
-        assert_eq!(plus.content, "+3");
-        assert_eq!(plus.style.fg, Some(theme.success), "additions are GREEN");
-        assert_eq!(minus.content, "-2");
-        assert_eq!(minus.style.fg, Some(theme.error), "removals are RED");
-        assert!(rendered(&lines).contains("22ms"), "duration meta present");
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("output"))
+            .expect("output header span");
+        assert_eq!(header_span.style.fg, Some(theme.text_dim), "output header is DIM");
+        assert!(text.contains("use ratatui"), "payload row revealed:\n{text}");
+        assert!(!text.contains("Ctrl+O to expand"), "no hint while expanded:\n{text}");
+    }
 
-        // The +N/-N counts are the only non-orange-family foregrounds on the header row.
-        let neutral = [
-            theme.primary,
-            theme.secondary,
-            theme.text,
-            theme.text_dim,
-            theme.text_muted,
-            theme.text_bright,
-        ];
-        for span in &header.spans {
-            if span.content.starts_with('+') || span.content.starts_with('-') {
-                continue;
-            }
-            if let Some(fg) = span.style.fg {
-                assert!(
-                    neutral.contains(&fg),
-                    "non-+/- span {:?} uses a non-orange fg {fg:?}",
-                    span.content
-                );
-            }
+    #[test]
+    fn truncated_output_ends_in_dim_overflow_line() {
+        // VAL-TOOL-011: an over-long expanded output ends in a DIM `… (N more lines)` row.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
+        let body: String = (1..=MAX_TOOL_DETAIL_LINES + 10)
+            .map(|i| format!("{i}: line"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        card.complete(&[protocol::ToolResultPart::text(&body)], false);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let overflow = lines
+            .iter()
+            .find(|l| plain(l).contains("more lines"))
+            .expect("an overflow row");
+        let over_text = plain(overflow);
+        assert!(over_text.contains(crate::glyphs::ELLIPSIS), "ellipsis prefix: {over_text:?}");
+        assert!(over_text.contains("(10 more lines)"), "count: {over_text:?}");
+        let over_span = overflow
+            .spans
+            .iter()
+            .find(|s| s.content.contains("more lines"))
+            .expect("overflow span");
+        assert_eq!(over_span.style.fg, Some(theme.text_dim), "overflow is DIM");
+    }
+
+    #[test]
+    fn card_body_is_clipped_inside_the_right_bar() {
+        // VAL-TOOL-012: a very long summary is clipped (with `…`) so no content touches or overruns
+        // the right `│` bar; the card stays rectangular.
+        let theme = style::ThemeColors::dark();
+        let long = "x".repeat(500);
+        let args = serde_json::json!({ "command": long }).to_string();
+        let mut card = tool_card("bash", &args);
+        card.complete(&[protocol::ToolResultPart::text("ok")], false);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+        // Every rendered card line is exactly the same display width and ends in a border/space,
+        // never in payload text bleeding past the right bar.
+        let widths: Vec<usize> = lines
+            .iter()
+            .filter(|l| !plain(l).is_empty())
+            .map(|l| plain(l).chars().count())
+            .collect();
+        // The right border sits at column `width - CONTENT_MARGIN - 1`; all box rows share it.
+        let border_col = 92 - CONTENT_MARGIN - 1;
+        for line in lines.iter().filter(|l| !plain(l).is_empty()) {
+            let chars: Vec<char> = plain(line).chars().collect();
+            assert!(
+                chars.get(border_col) == Some(&'│')
+                    || chars.get(border_col) == Some(&'╮')
+                    || chars.get(border_col) == Some(&'╯'),
+                "right bar at col {border_col}: {:?}",
+                plain(line)
+            );
         }
+        assert!(!widths.is_empty(), "the card rendered some rows");
     }
 
     /// A completed `edit` card with a real diff attached (1 deletion, 2 additions), for the
@@ -6914,47 +6742,15 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_diff_card_shows_disclosure_summary_and_no_body() {
-        // VAL-CONV-043/044/045: collapsed shows a `▶` disclosure (never `▸`/`▾`) at the margin, the
-        // `●` dot shifted right + `Update <target>`, `+N -N · <N>ms` meta and a `└` summary, and
-        // renders NO boxed diff body.
+    fn collapsed_diff_card_shows_summary_and_no_diff_body() {
+        // A collapsed diff-carrying card shows the summary + expand hint and renders NO diff rows.
         let theme = style::ThemeColors::dark();
         let card = diff_card();
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, None, &theme);
-
-        let header = plain(&lines[0]);
-        assert!(
-            header.contains(crate::glyphs::DISCLOSURE_COLLAPSED),
-            "collapsed disclosure `▶`:\n{header}"
-        );
-        assert!(
-            !header.contains(crate::glyphs::DISCLOSURE_EXPANDED),
-            "no `▼` while collapsed:\n{header}"
-        );
-        assert!(header.contains(crate::glyphs::DOT_FILLED), "`●` dot:\n{header}");
-        assert!(header.contains("Update"), "verb:\n{header}");
-        assert!(header.contains("stream_processor.rs"), "target:\n{header}");
-        assert!(header.contains("+2") && header.contains("-1"), "diff meta:\n{header}");
-        assert!(header.contains("22ms"), "duration meta:\n{header}");
-
-        // The disclosure glyph is AMBER (theme.secondary).
-        let disc = lines[0]
-            .spans
-            .iter()
-            .find(|s| s.content.contains(crate::glyphs::DISCLOSURE_COLLAPSED))
-            .expect("a disclosure span");
-        assert_eq!(disc.style.fg, Some(theme.secondary), "disclosure is AMBER");
-
+        push_tool(&mut lines, &card, 92, false, &theme);
         let text = rendered(&lines);
-        assert!(text.contains(crate::glyphs::TOOL_CONNECTOR), "connector `└`:\n{text}");
-        // No thin triangles anywhere.
-        assert!(!text.contains('▸') && !text.contains('▾'), "no thin triangles:\n{text}");
-        // No boxed body while collapsed: no box frame and no diff code content.
-        assert!(
-            !text.contains(crate::glyphs::BOX_TOP_LEFT),
-            "collapsed renders no diff box:\n{text}"
-        );
+        assert!(text.contains("stream_processor.rs"), "summary target:\n{text}");
+        assert!(text.contains("Ctrl+O to expand"), "expand hint:\n{text}");
         assert!(
             !text.contains("new_a") && !text.contains("old_a"),
             "collapsed hides the diff body:\n{text}"
@@ -6962,42 +6758,18 @@ mod tests {
     }
 
     #[test]
-    fn expanded_diff_card_unfolds_boxed_titled_diff() {
-        // VAL-CONV-046/047/048: expanded shows a `▼` disclosure, a rounded box titled with the
-        // filename, and rows with right-justified LNUM line numbers, a sign column, and code.
+    fn expanded_diff_card_reveals_line_numbered_diff_rows() {
+        // VAL-TOOL-031: an expanded diff card reveals red/green line-numbered rows *inside* the
+        // card box (not a separate frame), with the diff +/- coloring confined to the payload.
         let theme = style::ThemeColors::dark();
         let card = diff_card();
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, true, None, &theme);
-
-        let header = plain(&lines[0]);
-        assert!(
-            header.contains(crate::glyphs::DISCLOSURE_EXPANDED),
-            "expanded disclosure `▼`:\n{header}"
-        );
-        assert!(
-            !header.contains(crate::glyphs::DISCLOSURE_COLLAPSED),
-            "no `▶` while expanded:\n{header}"
-        );
-
+        push_tool(&mut lines, &card, 92, true, &theme);
         let text = rendered(&lines);
-        assert!(text.contains(crate::glyphs::BOX_TOP_LEFT), "box top corner:\n{text}");
-        assert!(text.contains(crate::glyphs::BOX_BOTTOM_LEFT), "box bottom corner:\n{text}");
-        // The box top border embeds the filename as a title.
-        let title_line = lines
-            .iter()
-            .find(|l| plain(l).contains(crate::glyphs::BOX_TOP_LEFT))
-            .expect("a titled top border");
-        assert!(
-            plain(title_line).contains("stream_processor.rs"),
-            "filename title-in-border:\n{}",
-            plain(title_line)
-        );
-        // The diff code content is revealed.
+        assert!(text.contains("output"), "output header:\n{text}");
         assert!(text.contains("new_a") && text.contains("new_b"), "additions shown:\n{text}");
         assert!(text.contains("old_a"), "deletion shown:\n{text}");
-
-        // At least one row carries a right-justified line number in the LNUM tone.
+        // A row carries a right-justified line number in the LNUM tone.
         let has_lnum = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -7007,12 +6779,12 @@ mod tests {
 
     #[test]
     fn expanded_diff_rows_use_red_and_green_backgrounds() {
-        // VAL-CONV-049/050: deletion rows use DEL_FG/DEL_BG, addition rows ADD_FG/ADD_BG, and
-        // context rows carry no diff background.
+        // The only non-mono-orange coloring is inside the expanded diff payload: deletion rows use
+        // DEL_FG/DEL_BG, addition rows ADD_FG/ADD_BG, context rows carry no diff background.
         let theme = style::ThemeColors::dark();
         let card = diff_card();
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, true, None, &theme);
+        push_tool(&mut lines, &card, 92, true, &theme);
 
         let added = lines
             .iter()
@@ -7050,25 +6822,27 @@ mod tests {
     }
 
     #[test]
-    fn diff_card_header_is_stable_across_toggle() {
-        // VAL-CONV-052: toggling collapsed<->expanded keeps the header line identical apart from
-        // the disclosure glyph itself.
+    fn card_label_accent_is_stable_across_toggle() {
+        // VAL-TOOL-032: toggling collapsed<->expanded keeps the top-border label (glyph + name +
+        // state accent) identical; only the body below changes.
         let theme = style::ThemeColors::dark();
         let card = diff_card();
         let mut collapsed = Vec::new();
-        push_tool(&mut collapsed, &card, 92, false, None, &theme);
+        push_tool(&mut collapsed, &card, 92, false, &theme);
         let mut expanded = Vec::new();
-        push_tool(&mut expanded, &card, 92, true, None, &theme);
+        push_tool(&mut expanded, &card, 92, true, &theme);
 
-        let collapsed_header =
-            plain(&collapsed[0]).replacen(crate::glyphs::DISCLOSURE_COLLAPSED, "", 1);
-        let expanded_header =
-            plain(&expanded[0]).replacen(crate::glyphs::DISCLOSURE_EXPANDED, "", 1);
         assert_eq!(
-            collapsed_header, expanded_header,
-            "header text is stable across the toggle"
+            plain(&collapsed[0]),
+            plain(&expanded[0]),
+            "top-border label is stable across the toggle"
         );
-        // The expanded form is strictly taller (it adds the boxed body).
+        assert_eq!(
+            card_label_span(&collapsed).1,
+            card_label_span(&expanded).1,
+            "label accent is stable across the toggle"
+        );
+        // The expanded form is strictly taller (it adds the diff body).
         assert!(
             expanded.len() > collapsed.len(),
             "expanded adds a diff body: {} vs {}",
@@ -7079,8 +6853,8 @@ mod tests {
 
     #[test]
     fn tool_card_expands_to_reveal_output_then_collapses() {
-        // VAL-CONV-023 + expand: collapsed shows the connector summary (not the raw output);
-        // expanding (Ctrl+O) reveals the full output indented under the header.
+        // VAL-TOOL-009/010/032: collapsed hides the raw output behind the summary + hint; expanding
+        // (Ctrl+O) reveals the full output under an `output` header, and the two forms round-trip.
         let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
         card.complete(
             &[protocol::ToolResultPart::text("1: secret detail line")],
@@ -7088,34 +6862,19 @@ mod tests {
         );
 
         let mut collapsed = Vec::new();
-        push_tool(
-            &mut collapsed,
-            &card,
-            80,
-            false,
-            None,
-            &style::ThemeColors::dark(),
-        );
+        push_tool(&mut collapsed, &card, 80, false, &style::ThemeColors::dark());
         let collapsed_text = rendered(&collapsed);
         assert!(
             !collapsed_text.contains("secret detail line"),
             "collapsed hides output:\n{collapsed_text}"
         );
-        // The collapsed card always carries a `└ <summary>` connector line.
         assert!(
-            collapsed_text.contains(crate::glyphs::TOOL_CONNECTOR),
-            "collapsed shows the connector:\n{collapsed_text}"
+            collapsed_text.contains("Ctrl+O to expand"),
+            "collapsed shows the expand hint:\n{collapsed_text}"
         );
 
         let mut expanded = Vec::new();
-        push_tool(
-            &mut expanded,
-            &card,
-            80,
-            true,
-            None,
-            &style::ThemeColors::dark(),
-        );
+        push_tool(&mut expanded, &card, 80, true, &style::ThemeColors::dark());
         let expanded_text = rendered(&expanded);
         assert!(
             expanded_text.contains("secret detail line"),
@@ -7123,7 +6882,7 @@ mod tests {
         );
         assert!(
             expanded_text.contains("a.txt"),
-            "expanded still shows target:\n{expanded_text}"
+            "expanded still shows the summary target:\n{expanded_text}"
         );
         // The expanded card occupies strictly more lines than the collapsed one.
         assert!(
@@ -7136,8 +6895,8 @@ mod tests {
 
     #[test]
     fn failed_tool_card_renders_distinct_error_state() {
-        // A failed call shows a distinct error accent, surfaces the failure message on the
-        // connector, and colors its dot differently from a completed card.
+        // VAL-TOOL-005: a failed call carries `✗ read · error` in the ERR accent, distinct in hue
+        // from a completed card, and surfaces the failure message in the expanded output.
         let theme = style::ThemeColors::dark();
         let mut failed = tool_card("read", r#"{"path":"nope.txt"}"#);
         failed.complete(
@@ -7145,112 +6904,79 @@ mod tests {
             true,
         );
         let mut lines = Vec::new();
-        push_tool(&mut lines, &failed, 80, false, None, &theme);
+        push_tool(&mut lines, &failed, 80, true, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("error"), "error meta:\n{text}");
+        let top = plain(&lines[0]);
+        assert!(top.contains(crate::glyphs::MARK_ERROR), "error mark:\n{top}");
+        assert!(top.contains("error"), "error word:\n{top}");
         assert!(
             text.contains("file not found"),
-            "failure message shown on the connector:\n{text}"
+            "failure message shown in the payload:\n{text}"
         );
+        assert_eq!(card_label_span(&lines).1, Some(theme.error), "error label is ERR");
 
         let mut ok = tool_card("read", r#"{"path":"a.txt"}"#);
         ok.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut ok_lines = Vec::new();
-        push_tool(&mut ok_lines, &ok, 80, false, None, &theme);
-
+        push_tool(&mut ok_lines, &ok, 80, false, &theme);
         assert_eq!(
-            dot_fg(&lines[0], crate::glyphs::DOT_FILLED),
-            Some(theme.error)
-        );
-        assert_eq!(
-            dot_fg(&ok_lines[0], crate::glyphs::DOT_FILLED),
-            Some(theme.primary)
+            card_label_span(&ok_lines).1,
+            Some(theme.success),
+            "a completed card's label is OKG (distinct from error)"
         );
     }
 
     #[test]
-    fn inline_tool_card_header_and_connector_layout() {
-        // VAL-CONV-022/023: `● verb target` header with a right-aligned meta, then a `└ <summary>`
-        // FAINT connector line below it.
+    fn card_frame_uses_only_safe_glyphs() {
+        // VAL-TOOL-007: the card frame uses only DejaVu-safe glyphs — rounded box drawing plus the
+        // status marks — with no braille anywhere (in particular a running card uses `⚙`, never a
+        // braille spinner frame).
         let theme = style::ThemeColors::dark();
-        let mut card = tool_card("read", r#"{"path":"stream_processor.rs"}"#);
-        card.complete(&[protocol::ToolResultPart::text("alpha\nbeta")], false);
-        card.duration_ms = Some(8);
-        let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, None, &theme);
-
-        let header = &lines[0];
-        let dot = header
-            .spans
-            .iter()
-            .find(|s| s.content.contains(crate::glyphs::DOT_FILLED))
-            .expect("status dot");
-        assert_eq!(dot.style.fg, Some(theme.primary), "dot is ORANGE");
-        let verb = header
-            .spans
-            .iter()
-            .find(|s| s.content.contains("Read"))
-            .expect("verb");
-        assert_eq!(verb.style.fg, Some(theme.text_bright), "verb is BRIGHT");
-        let target = header
-            .spans
-            .iter()
-            .find(|s| s.content.contains("stream_processor.rs"))
-            .expect("target");
-        assert_eq!(target.style.fg, Some(theme.text_dim), "target is DIM");
-
-        // The meta column is right-aligned with a 2-col margin before the right edge.
-        let header_text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            header_text.ends_with("8ms  "),
-            "meta is flush-right with a 2-col margin: {header_text:?}"
-        );
-
-        // Connector: `└ <summary>` in FAINT.
-        let connector = &lines[1];
-        let conn = connector
-            .spans
-            .iter()
-            .find(|s| s.content.contains(crate::glyphs::TOOL_CONNECTOR))
-            .expect("connector glyph");
-        assert_eq!(conn.style.fg, Some(theme.text_muted), "connector is FAINT");
-        let conn_text: String = connector.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(conn_text.contains("2 lines read"), "connector summary: {conn_text:?}");
+        for (name, args, complete_err) in [
+            ("bash", r#"{"command":"cargo build"}"#, None),
+            ("read", r#"{"path":"a.txt"}"#, Some(false)),
+            ("read", r#"{"path":"a.txt"}"#, Some(true)),
+        ] {
+            let mut card = tool_card(name, args);
+            if let Some(is_err) = complete_err {
+                card.complete(&[protocol::ToolResultPart::text("out")], is_err);
+            }
+            let mut lines = Vec::new();
+            push_tool(&mut lines, &card, 92, false, &theme);
+            let text = rendered(&lines);
+            assert!(
+                !crate::glyphs::contains_braille(&text),
+                "no braille in a card frame:\n{text}"
+            );
+            assert!(!text.contains('▸') && !text.contains('▾'), "no thin triangles:\n{text}");
+        }
     }
 
     #[test]
-    fn running_bash_card_uses_rotate_spinner_and_running_meta() {
-        // VAL-CONV-026/027: a running card swaps `●` for a `◐◑◒◓` spinner and shows `running`.
+    fn cards_stack_as_separate_boxes_in_transcript_order() {
+        // VAL-TOOL-013: multiple tool cards in one turn render as separate stacked closed boxes in
+        // invocation order, each its own frame (not merged).
         let theme = style::ThemeColors::dark();
-        let card = tool_card("bash", r#"{"command":"cargo test streaming"}"#);
+        let mut first = tool_card("read", r#"{"path":"first.rs"}"#);
+        first.complete(&[protocol::ToolResultPart::text("a")], false);
+        let mut second = tool_card("grep", r#"{"pattern":"TODO","path":"second"}"#);
+        second.complete(&[protocol::ToolResultPart::text("second:1: TODO")], false);
         let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, Some("◑"), &theme);
-        let header = &lines[0];
-        let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("Bash"), "verb: {text:?}");
-        assert!(text.contains("cargo test streaming"), "target: {text:?}");
-        assert!(text.contains('◑'), "rotate spinner dot: {text:?}");
-        assert!(
-            !text.contains(crate::glyphs::DOT_FILLED),
-            "no done dot while running: {text:?}"
-        );
-        let meta = header
-            .spans
+        push_tool(&mut lines, &first, 92, false, &theme);
+        push_tool(&mut lines, &second, 92, false, &theme);
+        let text = rendered(&lines);
+        // Two top borders and two bottom borders → two distinct closed boxes.
+        let tops = lines.iter().filter(|l| plain(l).contains(crate::glyphs::BOX_TOP_LEFT)).count();
+        let bottoms = lines
             .iter()
-            .find(|s| s.content.contains("running"))
-            .expect("running meta");
-        assert_eq!(meta.style.fg, Some(theme.secondary), "running meta is AMBER");
-    }
-
-    #[test]
-    fn running_card_without_spinner_falls_back_to_static_rotate_frame() {
-        // A static (non-animated) running card still shows the first rotate frame `◐`.
-        let theme = style::ThemeColors::dark();
-        let card = tool_card("bash", r#"{"command":"ls"}"#);
-        let mut lines = Vec::new();
-        push_tool(&mut lines, &card, 92, false, None, &theme);
-        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains(crate::glyphs::SPINNER_ROTATE[0]), "static ◐: {text:?}");
+            .filter(|l| plain(l).contains(crate::glyphs::BOX_BOTTOM_LEFT))
+            .count();
+        assert_eq!(tops, 2, "two top borders:\n{text}");
+        assert_eq!(bottoms, 2, "two bottom borders:\n{text}");
+        // Order preserved: `first.rs` appears before `second`.
+        let first_at = text.find("first.rs").expect("first card present");
+        let second_at = text.find("second").expect("second card present");
+        assert!(first_at < second_at, "cards stack in invocation order:\n{text}");
     }
 
     #[test]
