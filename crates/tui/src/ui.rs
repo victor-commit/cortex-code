@@ -720,7 +720,16 @@ fn push_tool(
         cells_to_line(&row)
     };
 
-    if expanded {
+    if card.name == "question" && card.status == ToolStatus::Running {
+        // VAL-TOOL-030: a running `question` card is awaiting the user's answer — its summary is the
+        // question text and its body is a single DIM awaiting-answer line (no output section or
+        // expand hint, since there is no result yet).
+        let awaiting_style = Style::default().fg(theme.text_dim).bg(theme.background);
+        lines.push(interior_row(&[(
+            format!("waiting for your answer{}", glyphs::ELLIPSIS),
+            awaiting_style,
+        )]));
+    } else if expanded {
         let header_style = Style::default().fg(theme.text_dim).bg(theme.background);
         lines.push(interior_row(&[("output".to_owned(), header_style)]));
 
@@ -734,6 +743,11 @@ fn push_tool(
             // Generic output: per-line with tool-specific coloring.
             push_tool_generic_output(card, &interior_row, text_w, header_style, theme, lines);
         }
+    } else if card.status == ToolStatus::Failed {
+        // VAL-TOOL-029: a failed card (e.g. an `lsp` diagnostics query) previews the error inline
+        // while collapsed — an ERR-red `error` header, the first diagnostic line in ERR red, and a
+        // FAINT `Ctrl+O for detail` hint pointing at the full expanded output.
+        push_tool_error_preview(card, &interior_row, text_w, theme, lines);
     } else {
         let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
         let hint_text = if card.name == "bash" && card.summary.contains("(background)") {
@@ -782,6 +796,28 @@ fn push_tool_generic_output<F>(
         );
         lines.push(interior_row(&[(overflow, header_style)]));
     }
+}
+
+/// Render the collapsed error preview of a failed tool card (VAL-TOOL-029): an ERR-red `error`
+/// header followed by the first non-empty diagnostic line (also ERR red), then a FAINT
+/// `Ctrl+O for detail` hint. This gives a failure (e.g. an `lsp` diagnostics error) an at-a-glance
+/// diagnostic without expanding, while the full output stays behind Ctrl+O.
+fn push_tool_error_preview<F>(
+    card: &ToolCard,
+    interior_row: &F,
+    text_w: usize,
+    theme: &style::ThemeColors,
+    lines: &mut Vec<Line<'static>>,
+) where
+    F: Fn(&[(String, Style)]) -> Line<'static>,
+{
+    let err_style = Style::default().fg(theme.error).bg(theme.background);
+    lines.push(interior_row(&[("error".to_owned(), err_style)]));
+    if let Some(first) = card.output.lines().find(|line| !line.trim().is_empty()) {
+        lines.push(interior_row(&[(clip_text(first, text_w), err_style)]));
+    }
+    let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
+    lines.push(interior_row(&[("Ctrl+O for detail".to_owned(), hint_style)]));
 }
 
 /// The style for one output line inside a tool card, with tool-specific semantic coloring:
@@ -7059,6 +7095,135 @@ mod tests {
             Some(theme.success),
             "a completed card's label is OKG (distinct from error)"
         );
+    }
+
+    #[test]
+    fn task_subagent_card_summary_and_expanded_result() {
+        // VAL-TOOL-028: a `task` (subagent) card's summary is the delegated objective, and its
+        // expanded output is the subagent's result summary followed by a `… (N more lines)` row.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card(
+            "task",
+            r#"{"subagent_type":"explore","prompt":"where are tool cards rendered?"}"#,
+        );
+        let mut result = String::from(
+            "push_tool() in crates/tui/src/ui.rs builds the card lines;\n\
+             the data model is crates/tui/src/tool_card.rs.\n",
+        );
+        for i in 0..MAX_TOOL_DETAIL_LINES {
+            result.push_str(&format!("detail line {i}\n"));
+        }
+        card.complete(&[protocol::ToolResultPart::text(&result)], false);
+
+        // Collapsed: `✓ task · done` header + the objective summary.
+        let mut collapsed = Vec::new();
+        push_tool(&mut collapsed, &card, 92, false, &theme);
+        let top = plain(&collapsed[0]);
+        assert!(top.contains("task") && top.contains("done"), "task done header:\n{top}");
+        assert!(
+            rendered(&collapsed).contains("explore: where are tool cards rendered?"),
+            "summary is the delegated objective:\n{}",
+            rendered(&collapsed)
+        );
+
+        // Expanded: `output` header, the result summary lines, and a `… (N more lines)` overflow row.
+        let mut expanded = Vec::new();
+        push_tool(&mut expanded, &card, 92, true, &theme);
+        let text = rendered(&expanded);
+        assert!(text.contains("output"), "output header:\n{text}");
+        assert!(text.contains("push_tool()"), "result summary shown:\n{text}");
+        assert!(
+            text.contains("more lines)"),
+            "overflow row summarizes the remaining lines:\n{text}"
+        );
+    }
+
+    #[test]
+    fn lsp_failure_renders_red_error_card_with_inline_diagnostic() {
+        // VAL-TOOL-029: a failed `lsp` card shows the ERR chrome (`✗ lsp · error`), a
+        // `diagnostics {path}` summary, an ERR-red `error` header, the first diagnostic line in ERR
+        // red, and a FAINT `Ctrl+O for detail` hint — all while collapsed.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("lsp", r#"{"action":"documentSymbols","filePath":"crates/tui"}"#);
+        card.complete(
+            &[protocol::ToolResultPart::text(
+                "ui.rs:560:21 mismatched types: expected &str, found String\nsecond diagnostic line",
+            )],
+            true,
+        );
+        assert_eq!(card.summary, "diagnostics crates/tui");
+
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+
+        // Header: `✗ lsp · error` in the ERR accent.
+        let top = plain(&lines[0]);
+        assert!(top.contains(crate::glyphs::MARK_ERROR), "error mark:\n{top}");
+        assert!(top.contains("lsp") && top.contains("error"), "lsp error header:\n{top}");
+        assert_eq!(card_label_span(&lines).1, Some(theme.error), "error label is ERR red");
+
+        // Summary + inline error preview.
+        let text = rendered(&lines);
+        assert!(text.contains("diagnostics crates/tui"), "summary:\n{text}");
+        // The `error` header row is ERR red.
+        let error_header = lines
+            .iter()
+            .find(|l| plain(l).trim() == format!("{} error", crate::glyphs::BOX_VERTICAL).trim());
+        let error_span_fg = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.trim() == "error")
+            .and_then(|s| s.style.fg);
+        assert!(error_header.is_some() || error_span_fg.is_some(), "an `error` header row:\n{text}");
+        assert_eq!(error_span_fg, Some(theme.error), "`error` header is ERR red");
+        // The first diagnostic line is shown in ERR red.
+        let diag_fg = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("mismatched types"))
+            .and_then(|s| s.style.fg);
+        assert_eq!(diag_fg, Some(theme.error), "first diagnostic line is ERR red:\n{text}");
+        // A FAINT `Ctrl+O for detail` hint, not the plain expand hint.
+        assert!(text.contains("Ctrl+O for detail"), "detail hint:\n{text}");
+        assert!(!text.contains("Ctrl+O to expand"), "not the plain expand hint:\n{text}");
+        assert!(!crate::glyphs::contains_braille(&text), "no braille:\n{text}");
+    }
+
+    #[test]
+    fn question_running_card_awaits_the_answer() {
+        // VAL-TOOL-030: a running `question` card carries the running chrome (`⚙ question ·
+        // running`), a summary that is the question text, and a DIM/FAINT awaiting-answer line.
+        let theme = style::ThemeColors::dark();
+        let card = tool_card(
+            "question",
+            r#"{"questions":[{"prompt":"Default provider: Anthropic or OpenAI?","options":["Anthropic","OpenAI"]}]}"#,
+        );
+        // A question card is surfaced while its call is still running (awaiting the answer).
+        assert_eq!(card.status, ToolStatus::Running);
+
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, false, &theme);
+
+        // Header: `⚙ question · running` in the ORANGE (primary) accent.
+        let top = plain(&lines[0]);
+        assert!(top.contains(crate::glyphs::MARK_RUNNING), "gear glyph:\n{top}");
+        assert!(top.contains("question") && top.contains("running"), "running header:\n{top}");
+        assert_eq!(card_label_span(&lines).1, Some(theme.primary), "running label is ORANGE");
+
+        // Summary is the question; body is the awaiting-answer line in DIM (no expand hint).
+        let text = rendered(&lines);
+        assert!(
+            text.contains("Default provider: Anthropic or OpenAI?"),
+            "summary is the question:\n{text}"
+        );
+        let awaiting_fg = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("waiting for your answer"))
+            .and_then(|s| s.style.fg);
+        assert_eq!(awaiting_fg, Some(theme.text_dim), "awaiting line is DIM:\n{text}");
+        assert!(!text.contains("Ctrl+O to expand"), "no expand hint while awaiting:\n{text}");
+        assert!(!crate::glyphs::contains_braille(&text), "no braille:\n{text}");
     }
 
     #[test]

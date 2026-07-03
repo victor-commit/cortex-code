@@ -209,6 +209,40 @@ pub fn summarize_args(name: &str, arguments: &str) -> String {
         }
         "webfetch" => field("url"),
         "websearch" => field("query"),
+        // A subagent delegation's summary is the delegated objective: `{subagent}: {prompt}`
+        // (VAL-TOOL-028). The subagent type accepts the real `subagent_type`/`subagentType`/`agent`
+        // aliases; when the prompt is absent (e.g. a `task_id` resume) the agent name alone stands in.
+        "task" => {
+            let agent = field("subagent_type")
+                .or_else(|| field("subagentType"))
+                .or_else(|| field("agent"));
+            let prompt = field("prompt").or_else(|| field("description"));
+            match (agent, prompt) {
+                (Some(a), Some(p)) => Some(format!("{a}: {p}")),
+                (Some(a), None) => Some(a),
+                (None, Some(p)) => Some(p),
+                _ => None,
+            }
+        }
+        // An lsp diagnostics query summarizes as `diagnostics {target}` (VAL-TOOL-029), where the
+        // target is the queried file (any path alias) or the workspace-symbol query, defaulting to
+        // `workspace` for a workspace-wide request.
+        "lsp" => {
+            let target = field("filePath")
+                .or_else(|| field("file_path"))
+                .or_else(|| field("path"))
+                .or_else(|| field("query"))
+                .unwrap_or_else(|| "workspace".to_owned());
+            Some(format!("diagnostics {target}"))
+        }
+        // A user-facing question's summary is the (first) question prompt (VAL-TOOL-030).
+        "question" => value
+            .get("questions")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(|first| first.get("prompt"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         "apply_patch" => field("patch")
             .or_else(|| field("patchText"))
             .or_else(|| field("patch_text"))
@@ -411,6 +445,63 @@ mod tests {
         let mut card = ToolCard::new("c", "todo", r#"{}"#);
         card.complete(&[ToolResultPart::text("(no todos)")], false);
         assert_eq!(card.summary, "0 items");
+    }
+
+    #[test]
+    fn task_summary_is_the_subagent_objective() {
+        // VAL-TOOL-028: a task (subagent) card's summary is `{subagent}: {prompt}` — the delegated
+        // objective, resolved from the real subagent_type/prompt argument shape.
+        assert_eq!(
+            summarize_args(
+                "task",
+                r#"{"subagent_type":"explore","prompt":"where are tool cards rendered?"}"#
+            ),
+            "explore: where are tool cards rendered?"
+        );
+        // The compatibility aliases (`subagentType`/`agent`) resolve the same way.
+        assert_eq!(
+            summarize_args("task", r#"{"agent":"plan","prompt":"design the flow"}"#),
+            "plan: design the flow"
+        );
+        // A resume-only call (no prompt) falls back to the agent name alone.
+        assert_eq!(
+            summarize_args("task", r#"{"subagent_type":"explore","task_id":"t1"}"#),
+            "explore"
+        );
+    }
+
+    #[test]
+    fn lsp_summary_is_diagnostics_of_the_target() {
+        // VAL-TOOL-029: an lsp card's summary is `diagnostics {target}`, where the target is the
+        // queried file path (any alias) and the workspace fallback for a query-only request.
+        assert_eq!(
+            summarize_args("lsp", r#"{"action":"documentSymbols","filePath":"crates/tui"}"#),
+            "diagnostics crates/tui"
+        );
+        assert_eq!(
+            summarize_args("lsp", r#"{"action":"definition","path":"src/main.rs"}"#),
+            "diagnostics src/main.rs"
+        );
+        assert_eq!(
+            summarize_args("lsp", r#"{"action":"workspaceSymbols","query":"ToolCard"}"#),
+            "diagnostics ToolCard"
+        );
+        assert_eq!(
+            summarize_args("lsp", r#"{"action":"workspaceSymbols"}"#),
+            "diagnostics workspace"
+        );
+    }
+
+    #[test]
+    fn question_summary_is_the_first_prompt() {
+        // VAL-TOOL-030: a question card's summary is the (first) question's prompt text.
+        assert_eq!(
+            summarize_args(
+                "question",
+                r#"{"questions":[{"prompt":"Default provider: Anthropic or OpenAI?","options":["Anthropic","OpenAI"]}]}"#
+            ),
+            "Default provider: Anthropic or OpenAI?"
+        );
     }
 
     #[test]
