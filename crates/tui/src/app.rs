@@ -1052,6 +1052,10 @@ pub struct App {
     /// While set it takes over the whole frame with the shared view chrome and is modal: Esc closes
     /// it back to the conversation. See [`crate::view`].
     active_view: Option<crate::view::ViewKind>,
+    /// Whether the Wave-7 themes-gallery canonical screen (`/theme-gallery`) is open. While set it
+    /// takes over the whole frame with the fixed-structure gallery layout and is modal: Esc closes
+    /// it back to the conversation. See [`crate::gallery`].
+    theme_gallery_open: bool,
     /// The `/status` view's data, snapshotted when the view opens (a git subprocess + store reads
     /// are too costly to repeat every redraw). Rebuilt on each `/status` open.
     status_snapshot: Option<crate::view::StatusData>,
@@ -1297,6 +1301,7 @@ impl App {
             dialog: None,
             diff_viewer: None,
             active_view: None,
+            theme_gallery_open: false,
             status_snapshot: None,
             timeline_snapshot: Vec::new(),
             queue_snapshot: Vec::new(),
@@ -1856,6 +1861,14 @@ impl App {
     /// auto-dismiss on a timer regardless of whether the user is interacting.
     pub fn tick_toasts(&mut self) {
         self.toasts.retain(|toast| !toast.is_expired());
+    }
+
+    /// Test-only: drop every active toast immediately. Used by rendering tests that reach a panel
+    /// via a panel-switch (which pops a transient `Sidebar: …` toast) so the incidental toast band
+    /// does not overlay the panel chrome under assertion.
+    #[cfg(test)]
+    pub(crate) fn clear_toasts_for_test(&mut self) {
+        self.toasts.clear();
     }
 
     /// Expire or resolve any active Esc-prefix probe on the event-loop tick so buffered text is
@@ -3955,6 +3968,7 @@ impl App {
             "variant" => self.open_variants_dialog(),
             "themes" => self.open_themes_dialog(),
             "theme" => self.open_themes_dialog(),
+            "theme-gallery" => self.open_theme_gallery(),
             "attach" => self.open_attachments_dialog(),
             "paste" => {
                 let _ = self.attach_from_clipboard_image();
@@ -4872,6 +4886,48 @@ impl App {
     /// Close the open full-screen view, returning to the conversation and its composer chrome.
     fn close_active_view(&mut self) {
         self.active_view = None;
+    }
+
+    /// Open the Wave-7 themes-gallery canonical screen (`/theme-gallery`). It is modal like a
+    /// full-screen view, so any other transient overlays are closed first; the same active theme is
+    /// used to render it, so switching the theme while it is open re-renders it in the new palette.
+    fn open_theme_gallery(&mut self) {
+        self.close_slash_menu();
+        self.close_mention();
+        if self.dialog.is_some() {
+            self.close_dialog();
+        }
+        if self.diff_viewer.is_some() {
+            self.close_diff_viewer();
+        }
+        if self.palette.is_some() {
+            self.close_palette();
+        }
+        self.active_view = None;
+        self.theme_gallery_open = true;
+    }
+
+    /// Whether the themes-gallery screen is currently open (for rendering).
+    #[must_use]
+    pub fn theme_gallery_open(&self) -> bool {
+        self.theme_gallery_open
+    }
+
+    /// Close the themes-gallery screen, returning to the conversation.
+    fn close_theme_gallery(&mut self) {
+        self.theme_gallery_open = false;
+    }
+
+    /// Key handling for the open themes-gallery screen. It is modal: Esc closes it back to the
+    /// conversation and `Ctrl+C` still quits so the user is never trapped. Other keys are swallowed.
+    fn on_theme_gallery_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            self.close_theme_gallery();
+        }
     }
 
     /// Key handling for an open full-screen view. The view is modal: Esc closes it back to the
@@ -8031,6 +8087,13 @@ impl App {
                     self.run_keybind_action(action);
                 }
             }
+            return;
+        }
+
+        // The Wave-7 themes-gallery screen takes over the frame while open: it is modal so the
+        // prompt is not edited beneath it. Esc closes it back to the conversation; Ctrl+C quits.
+        if self.theme_gallery_open() {
+            self.on_theme_gallery_key(key, ctrl);
             return;
         }
 
@@ -15380,6 +15443,199 @@ mod tests {
         );
         // The oldest are dropped, so the newest survive.
         assert_eq!(a.toasts().last().unwrap().message, "toast 6");
+    }
+
+    #[test]
+    fn toast_screen_shows_the_chat_breadcrumb() {
+        // VAL-MD-027: with one or more toasts active the chrome shows `✦ Cortex Code · chat` over
+        // the conversation (the trailing `chat` crumb in AMBER).
+        let mut a = app();
+        a.push_toast(ToastLevel::Success, "registry schema updated");
+        let buf = render_buffer(&a, 92, 30);
+        let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
+        assert!(row0.contains("Cortex Code"), "wordmark on row 0:\n{row0}");
+        assert!(row0.contains("chat"), "trailing `chat` crumb on row 0:\n{row0}");
+        // The chrome header is flat (no rounded box corner) — distinct from the MOTD card border.
+        assert!(
+            !row0.contains('╭'),
+            "the toast chrome header row is flat, not the MOTD card border:\n{row0}"
+        );
+        // The `chat` crumb is AMBER (the active trailing crumb color).
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        let chat_start = row0.find("chat").expect("chat crumb present");
+        let chat_cell = &buf[(chat_start as u16, 0)];
+        assert_eq!(
+            chat_cell.fg,
+            theme.secondary,
+            "the trailing `chat` crumb is AMBER"
+        );
+        // With no toasts the plain conversation shows the MOTD card border on row 0 (the flat
+        // `✦ Cortex Code · chat` chrome header is NOT drawn), so no `chat` crumb appears.
+        let mut plain_app = app();
+        plain_app.tick_toasts();
+        assert!(!plain_app.has_toasts());
+        let plain_buf = render_buffer(&plain_app, 92, 30);
+        let plain_row0 = (0..92).map(|x| plain_buf[(x, 0)].symbol()).collect::<String>();
+        assert!(
+            !plain_row0.contains("chat"),
+            "no `chat` breadcrumb crumb without toasts:\n{plain_row0}"
+        );
+        assert!(
+            plain_row0.contains('╭'),
+            "the plain conversation shows the MOTD card border on row 0:\n{plain_row0}"
+        );
+    }
+
+    #[test]
+    fn toast_band_shows_icon_colored_label_and_bright_message() {
+        // VAL-MD-028 / VAL-MD-029: a toast band shows `[icon] Level: message` — icon + label in the
+        // level color, message body in BRIGHT — in that order.
+        let mut a = app();
+        a.set_reduced_motion(true); // static band at its resting column for deterministic columns
+        a.push_toast(ToastLevel::Success, "registry schema updated");
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        let buf = render_buffer(&a, 92, 30);
+
+        // Find the band's header row (contains the icon + label + message in order).
+        let header_row = (0..30)
+            .find(|&y| {
+                let row = (0..92).map(|x| buf[(x, y)].symbol()).collect::<String>();
+                row.contains("[+] Success: registry schema updated")
+            })
+            .expect("a Success toast header band is rendered");
+        let row: String = (0..92).map(|x| buf[(x, header_row)].symbol()).collect();
+
+        // Icon `[+]` and the label `Success:` are the level color (green for success).
+        let icon_x = row.find("[+]").expect("icon present") as u16;
+        assert_eq!(buf[(icon_x, header_row)].fg, theme.success, "icon is level-colored");
+        let label_x = row.find("Success:").expect("label present") as u16;
+        assert_eq!(buf[(label_x, header_row)].fg, theme.success, "label is level-colored");
+
+        // The message body is BRIGHT (distinct from the level color).
+        let msg_x = row.find("registry").expect("message present") as u16;
+        assert_eq!(
+            buf[(msg_x, header_row)].fg,
+            theme.text_bright,
+            "message body is BRIGHT"
+        );
+        assert_ne!(
+            buf[(msg_x, header_row)].fg,
+            theme.success,
+            "message is not the level color"
+        );
+
+        // Every cell of the band header carries an explicit (non-page) background — no black bars.
+        assert_ne!(
+            buf[(icon_x, header_row)].bg,
+            theme.background,
+            "band cells carry the panel bg, not the page canvas"
+        );
+    }
+
+    #[test]
+    fn toast_shows_eighths_countdown_bar_with_seconds() {
+        // VAL-MD-030: each toast shows an eighths countdown bar tinted to the level color with the
+        // remaining seconds right-aligned in FAINT (e.g. `3s`).
+        let mut a = app();
+        a.set_reduced_motion(true);
+        a.push_toast(ToastLevel::Error, "tool 'deploy' not found");
+        let theme = frame::style::ThemeColors::from_name(a.theme());
+        let buf = render_buffer(&a, 92, 30);
+
+        // The bar row sits directly below the header row.
+        let header_row = (0..30)
+            .find(|&y| {
+                let row = (0..92).map(|x| buf[(x, y)].symbol()).collect::<String>();
+                row.contains("[x] Error:")
+            })
+            .expect("an Error toast header is rendered");
+        let bar_row = header_row + 1;
+        let row: String = (0..92).map(|x| buf[(x, bar_row)].symbol()).collect();
+
+        // The bar contains eighths block glyphs (the full block `█` at minimum).
+        let eighths = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+        assert!(
+            eighths.iter().any(|g| row.contains(g)),
+            "bar row is composed of eighths blocks:\n{row}"
+        );
+        // A `Ns` seconds label appears near the right of the band.
+        assert!(
+            row.contains("3s") || row.contains("2s") || row.contains("1s"),
+            "a `Ns` seconds label is shown:\n{row}"
+        );
+        // A filled bar cell is tinted to the level color (ERR red for an error toast). Search only
+        // within the band region (right half) so a mascot `█` on the same row is not sampled.
+        let filled_x = (46..92u16)
+            .find(|&x| buf[(x, bar_row)].symbol() == "█")
+            .expect("a filled bar cell in the band region");
+        assert_eq!(
+            buf[(filled_x, bar_row)].fg,
+            theme.error,
+            "the filled bar is the level color"
+        );
+    }
+
+    #[test]
+    fn multiple_toasts_stack_without_overlap() {
+        // VAL-MD-034: several active toasts stack as separate bands with uniform 3-row spacing.
+        let mut a = app();
+        a.set_reduced_motion(true);
+        a.push_toast(ToastLevel::Success, "registry schema updated");
+        a.push_toast(ToastLevel::Info, "switched model");
+        a.push_toast(ToastLevel::Warning, "context at 82% capacity");
+        a.push_toast(ToastLevel::Error, "tool not found");
+        let buf = render_buffer(&a, 92, 30);
+
+        let header_row_of = |needle: &str| {
+            (0..30).find(|&y| {
+                (0..92)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+        };
+        let rows: Vec<u16> = ["Success:", "Info:", "Warning:", "Error:"]
+            .iter()
+            .map(|n| header_row_of(n).unwrap_or_else(|| panic!("band {n} rendered")))
+            .collect();
+        // The four bands occupy four distinct rows, each 3 rows below the previous (no overlap).
+        for pair in rows.windows(2) {
+            assert_eq!(pair[1] - pair[0], 3, "bands are spaced 3 rows apart: {rows:?}");
+        }
+    }
+
+    #[test]
+    fn no_anim_renders_a_static_toast_with_level_message_and_countdown() {
+        // VAL-MD-033 / VAL-FOUND-024: under --no-anim a toast appears statically at its final
+        // position (no slide offset) while still showing the level color, message, and countdown.
+        let mut anim_off = app();
+        anim_off.set_reduced_motion(true);
+        anim_off.push_toast(ToastLevel::Info, "switched model");
+        let theme = frame::style::ThemeColors::from_name(anim_off.theme());
+        let buf = render_buffer(&anim_off, 92, 30);
+
+        // Level + message present.
+        let header_row = (0..30)
+            .find(|&y| {
+                (0..92)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("[i] Info: switched model")
+            })
+            .expect("static Info toast header rendered under --no-anim");
+        // The band is at its resting column (right edge): with band width 44 on a 92-col frame the
+        // band starts at col 46, so nothing is drawn left of the transcript region there.
+        let row: String = (0..92).map(|x| buf[(x, header_row)].symbol()).collect();
+        let icon_x = row.find("[i]").expect("icon present");
+        assert!(icon_x >= 40, "band rests at the right (no slide offset): icon at {icon_x}");
+        // Countdown bar present on the next row.
+        let bar_row_text: String = (0..92).map(|x| buf[(x, header_row + 1)].symbol()).collect();
+        assert!(
+            bar_row_text.contains('█') || bar_row_text.contains('▊') || bar_row_text.contains('▋'),
+            "countdown bar still rendered under --no-anim:\n{bar_row_text}"
+        );
+        // Level color still applied to the icon.
+        assert_eq!(buf[(icon_x as u16, header_row)].fg, theme.info);
     }
 
     #[test]

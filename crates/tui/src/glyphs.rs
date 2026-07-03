@@ -106,6 +106,11 @@ pub const SELECT_MARKER: &str = PROMPT;
 /// Progress-bar fill by eighths, ascending.
 pub const EIGHTHS: [&str; 8] = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
 
+/// Empty track of the toast countdown bar (lower one-eighth block, drawn in the GHOST tone). Kept
+/// distinct from the ascending [`EIGHTHS`] fill so the depleted portion of the bar reads as a faint
+/// baseline rather than a filled cell.
+pub const BAR_TRACK: &str = "▁";
+
 // --- Full-cell progress bar (`pbar`: filled `█` fg + empty `░` GHOST) ---
 
 /// Filled cell of a full-cell progress bar (the `pbar` used by full-screen views).
@@ -191,6 +196,7 @@ mod tests {
             SELECT_MARKER,
             PROGRESS_FULL,
             PROGRESS_EMPTY,
+            BAR_TRACK,
             BLOCK_FULL,
             BLOCK_LOWER_HALF,
             BLOCK_UPPER_HALF,

@@ -53,6 +53,15 @@ const CONTENT_MARGIN: usize = 2;
 
 /// Maximum number of toasts drawn at once in the overlay (matches the app's retention cap).
 const MAX_VISIBLE_TOASTS: usize = 4;
+/// Target width (columns) of a toast band (`markdown_toast.png` `tw=44`); clamped down on a very
+/// narrow terminal so the band always fits with a right margin.
+const TOAST_BAND_WIDTH: usize = 44;
+/// Duration (ms) of a toast's slide-in / slide-out transition. The band slides + fades over this
+/// window when it first appears and again in the final window before it auto-dismisses.
+const TOAST_SLIDE_MS: u128 = 220;
+/// How many columns a toast band is shifted to the right at the start of its slide-in (and the end
+/// of its slide-out); it eases to its resting column as the transition completes.
+const TOAST_SLIDE_CELLS: u16 = 6;
 /// Left indent (columns) of a hunk row's content within the `/diff` viewer accordion: the line
 /// number sits at this origin, the `+`/`-`/space sign at origin+6, and the code at origin+8.
 const DIFF_HUNK_ORIGIN: usize = 3;
@@ -71,6 +80,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // chrome; it fully replaces the conversation until dismissed (Esc), so nothing else is drawn.
     if app.active_view().is_some() {
         draw_full_screen_view(frame, app, area, &theme);
+        return;
+    }
+
+    // The Wave-7 themes-gallery canonical screen takes over the whole frame with its fixed-structure
+    // layout, rendered in the active theme; it fully replaces the conversation until dismissed (Esc).
+    if app.theme_gallery_open() {
+        crate::gallery::draw_theme_gallery(frame, app, area, &theme);
         return;
     }
 
@@ -120,6 +136,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         // AMBER; the shared 3-zone status bar is drawn by the chrome, so the conversation draws no
         // own footer.
         let body = crate::view::render_chrome(frame, area, app, "chat · code", &theme);
+        (body, false)
+    } else if app.has_toasts() {
+        // One or more transient toasts are on screen: wrap the conversation in the shared chrome
+        // under a `chat` crumb (markdown_toast.png); the shared 3-zone status bar is drawn by the
+        // chrome, so the conversation draws no own footer. The chrome appears with the toasts and
+        // reverts to the plain conversation once they auto-dismiss.
+        let body = crate::view::render_chrome(frame, area, app, "chat", &theme);
         (body, false)
     } else {
         (area, true)
@@ -2346,86 +2369,208 @@ fn draw_ack(frame: &mut Frame, app: &App, prompt_area: Rect, theme: &style::Them
     );
 }
 
-/// The fg color and human label for a toast level. Error toasts use the error color (a distinct red)
-/// so an error notification is unmistakable from a success/info one; the level is also encoded in the
-/// ASCII icon and the label text, so the distinction survives a monochrome snapshot.
-fn toast_decor(level: ToastLevel, theme: &style::ThemeColors) -> (Color, &'static str) {
+/// The fg color keyed to a toast's level: success in OKG green, info in INFO blue, warning in AMBER,
+/// error in ERR red (VAL-MD-029). The bracketed icon and the level label both carry this color; the
+/// message body is always BRIGHT, so the level survives a monochrome snapshot via the icon + label.
+fn toast_level_color(level: ToastLevel, theme: &style::ThemeColors) -> Color {
     match level {
-        ToastLevel::Success => (theme.success, "Success"),
-        ToastLevel::Info => (theme.info, "Info"),
-        ToastLevel::Warning => (theme.warning, "Warning"),
-        ToastLevel::Error => (theme.error, "Error"),
+        ToastLevel::Success => theme.success,
+        ToastLevel::Info => theme.info,
+        ToastLevel::Warning => theme.warning,
+        ToastLevel::Error => theme.error,
     }
 }
 
-/// Pad with trailing spaces (or truncate) so the string occupies exactly `width` columns. Used so a
-/// toast row paints a solid, fixed-width band regardless of message length.
-fn pad_or_truncate(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() >= width {
-        chars[..width].iter().collect()
-    } else {
-        let mut out: String = chars.iter().collect();
-        out.extend(std::iter::repeat_n(' ', width - chars.len()));
+/// The human-readable level label shown after the icon (`[+] Success: …`).
+fn toast_label(level: ToastLevel) -> &'static str {
+    match level {
+        ToastLevel::Success => "Success",
+        ToastLevel::Info => "Info",
+        ToastLevel::Warning => "Warning",
+        ToastLevel::Error => "Error",
+    }
+}
+
+/// Truncate `s` to at most `max` display columns, appending an `…` when it overflows (so a long
+/// toast message never overruns the band).
+fn truncate_cols(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_owned();
+    }
+    if max > 1 {
+        let mut out: String = chars[..max - 1].iter().collect();
+        out.push('…');
         out
+    } else {
+        chars[..max].iter().collect()
     }
 }
 
-/// Render a depleting progress bar `width` columns wide for the given remaining fraction (1.0 = full,
-/// 0.0 = empty), using eighth-block glyphs for sub-cell resolution so the bar visibly shrinks every
-/// frame. The continuous change is also what keeps the toast "busy" until it auto-dismisses, so a
-/// `wait-idle` observer settles exactly when the toast disappears rather than while it is still shown.
-fn toast_bar(fraction: f32, width: usize) -> String {
-    const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+/// The depleting countdown bar as `width` styled cells for the given remaining fraction (1.0 = full,
+/// 0.0 = empty). Filled cells use the eighths blocks (whole `█` plus one fractional cell) tinted to
+/// `fill`; the depleted remainder uses the faint `▁` track in `track`. The bar shrinks every frame as
+/// the fraction depletes, so it reads as a live countdown (VAL-MD-030 / VAL-MD-032).
+fn toast_bar_cells(fraction: f32, width: usize, fill: Style, track: Style) -> Vec<(char, Style)> {
     let fraction = fraction.clamp(0.0, 1.0);
-    let total = (fraction * width as f32 * 8.0).round() as usize;
-    let full = (total / 8).min(width);
-    let mut out = String::with_capacity(width);
-    for _ in 0..full {
-        out.push('█');
-    }
-    if full < width {
-        out.push(EIGHTHS[total % 8]);
-        for _ in (full + 1)..width {
-            out.push(' ');
+    let units = fraction * width as f32;
+    let whole = units.floor() as usize;
+    let rem = units - whole as f32;
+    let eighth_char = |g: &str| g.chars().next().unwrap_or(' ');
+    let mut cells = Vec::with_capacity(width);
+    for i in 0..width {
+        if i < whole {
+            cells.push((eighth_char(glyphs::EIGHTHS[7]), fill));
+        } else if i == whole && rem > 0.12 {
+            let idx = ((rem * 8.0) as usize).min(7);
+            cells.push((eighth_char(glyphs::EIGHTHS[idx]), fill));
+        } else {
+            cells.push((eighth_char(glyphs::BAR_TRACK), track));
         }
     }
-    out
+    cells
 }
 
-/// Render the active toasts as an auto-dismissing overlay stacked at the top-right corner. Each toast
-/// is a two-row band — a colored header (`[icon] Level: message`) over a depleting progress bar — so
-/// it reads clearly as a transient notification, with error toasts styled distinctly (error color +
-/// `[x]` icon + `Error` label). Drawn with `Clear` over the underlying cells, so once a toast expires
-/// the layout beneath is repainted intact.
+/// Blend `color` toward `bg` by `t` (0 = full `color`, 1 = fully `bg`); fades a toast band in and out
+/// during its slide transition. Non-RGB colors are returned unchanged.
+fn fade_color(color: Color, bg: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (color, bg) {
+        (Color::Rgb(cr, cg, cb), Color::Rgb(br, bgc, bb)) => {
+            let mix =
+                |c: u8, b: u8| (f32::from(c) + (f32::from(b) - f32::from(c)) * t).round() as u8;
+            Color::Rgb(mix(cr, br), mix(cg, bgc), mix(cb, bb))
+        }
+        _ => color,
+    }
+}
+
+/// The slide offset (columns right of the resting position) and opacity for a toast, from how long it
+/// has been shown (`elapsed_ms`) and how long remains (`remaining_ms`). When animations are disabled
+/// the band is always at rest (offset 0, opacity 1) so `--no-anim` renders a static toast at its final
+/// position with no slide/fade (VAL-MD-033 / VAL-FOUND-024). Otherwise it slides in from the right +
+/// fades in over the first [`TOAST_SLIDE_MS`] and slides out + fades out over the final one
+/// (VAL-MD-031). Pure function of its inputs, so the phases are unit-testable.
+fn toast_slide_phase(elapsed_ms: u128, remaining_ms: u128, animations_enabled: bool) -> (u16, f32) {
+    if !animations_enabled {
+        return (0, 1.0);
+    }
+    let phase_in = (elapsed_ms as f32 / TOAST_SLIDE_MS as f32).clamp(0.0, 1.0);
+    let phase_out = (remaining_ms as f32 / TOAST_SLIDE_MS as f32).clamp(0.0, 1.0);
+    let opacity = phase_in.min(phase_out);
+    let shift = (1.0 - phase_in).max(1.0 - phase_out);
+    let offset = (shift * TOAST_SLIDE_CELLS as f32).round() as u16;
+    (offset, opacity)
+}
+
+/// Render the active toasts as an auto-dismissing overlay of stacked bands in the upper-right region
+/// (`markdown_toast.png`). Each toast is a two-row band on an explicit `PANEL` background: a header
+/// (`[icon] Level: message` — icon + level label in the level color, message in BRIGHT) over a
+/// depleting eighths countdown bar (tinted to the level color) with the remaining seconds right-
+/// aligned in FAINT. Newly-triggered bands slide in + fade from the right and slide out + fade before
+/// auto-dismissing (unless `--no-anim`, which renders them static at their final position). Bands are
+/// spaced 3 rows apart so a stack never overlaps.
 fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     let toasts = app.toasts();
-    if toasts.is_empty() || area.width < 18 || area.height < 4 {
+    if toasts.is_empty() || area.width < 20 || area.height < 6 {
         return;
     }
 
-    let bg = theme.surface[2];
-    let max_width = ((area.width as usize) * 2 / 5)
-        .clamp(24, 54)
-        .min(area.width.saturating_sub(2) as usize);
+    let animations = app.animations_enabled();
+    let page_bg = theme.background;
+    let band_bg_base = theme.surface[1];
 
-    let mut y = area.y;
+    // Target the reference `tw=44`, clamped so the band always fits with a 2-col right margin.
+    let band_width = TOAST_BAND_WIDTH
+        .min(area.width.saturating_sub(4) as usize)
+        .max(12);
+    let resting_x = area.x + area.width.saturating_sub(band_width as u16 + 2);
+
+    // Reference `ty=3`: the first band sits below the chrome rule; each subsequent band is 3 rows
+    // lower (2 content rows + 1 gap) so the stack never overlaps (VAL-MD-034).
+    let mut y = area.y + 3;
     for toast in toasts.iter().take(MAX_VISIBLE_TOASTS) {
-        // Two content rows plus a one-row gap; stop before overrunning the frame.
         if y + 2 > area.y + area.height {
             break;
         }
 
-        let (color, label) = toast_decor(toast.level, theme);
-        let header_text = format!(" {} {label}: {} ", toast.level.icon(), toast.message);
-        let width = header_text.chars().count().clamp(12, max_width);
-        let header = pad_or_truncate(&header_text, width);
+        let level_color = toast_level_color(toast.level, theme);
+        let label = toast_label(toast.level);
+        let icon = toast.level.icon();
 
-        let duration = toast.duration.as_millis().max(1) as f32;
-        let remaining = toast.remaining().as_millis() as f32;
-        let bar = toast_bar(remaining / duration, width);
+        let elapsed_ms = toast.created_at.elapsed().as_millis();
+        let remaining = toast.remaining();
+        let remaining_ms = remaining.as_millis();
+        let duration_ms = toast.duration.as_millis().max(1);
+        let (offset, opacity) = toast_slide_phase(elapsed_ms, remaining_ms, animations);
 
-        let x = area.x + area.width.saturating_sub(width as u16 + 1);
+        // Fade the band bg + every fg toward the page background while the band slides in/out.
+        let fade_t = 1.0 - opacity;
+        let band_bg = fade_color(band_bg_base, page_bg, fade_t);
+        let level_fg = fade_color(level_color, page_bg, fade_t);
+        let msg_fg = fade_color(theme.text_bright, page_bg, fade_t);
+        let secs_fg = fade_color(theme.text_muted, page_bg, fade_t);
+        let track_fg = fade_color(theme.ghost, page_bg, fade_t);
+
+        let x = resting_x + offset;
+        if x >= area.x + area.width {
+            y += 3;
+            continue;
+        }
+        let width = band_width.min((area.x + area.width - x) as usize);
+        if width < 12 {
+            y += 3;
+            continue;
+        }
+
+        // Remaining whole seconds, right-aligned (`3s` → `2s` → `1s`, then the toast dismisses).
+        let secs = format!("{}s", remaining.as_secs_f32().ceil() as u64);
+        let secs_len = secs.chars().count();
+
+        // --- Header row: `[icon] Label:` (level color) + message (BRIGHT), on the band bg. ---
+        let base_style = Style::default().fg(msg_fg).bg(band_bg);
+        let level_style = Style::default()
+            .fg(level_fg)
+            .bg(band_bg)
+            .add_modifier(Modifier::BOLD);
+        let mut header_cells = vec![(' ', base_style); width];
+        place_segments(&mut header_cells, 1, &[(icon.to_owned(), level_style)]);
+        let label_col = 1 + icon.chars().count() + 1;
+        place_segments(
+            &mut header_cells,
+            label_col,
+            &[(format!("{label}:"), level_style)],
+        );
+        let msg_col = label_col + label.chars().count() + 2;
+        if msg_col + 1 < width {
+            let avail = width - 1 - msg_col;
+            let msg = truncate_cols(&toast.message, avail);
+            place_segments(&mut header_cells, msg_col, &[(msg, base_style)]);
+        }
+
+        // --- Bar row: eighths countdown (level color) + right-aligned seconds (FAINT). ---
+        let bar_width = width.saturating_sub(2 + 1 + secs_len).max(1);
+        let fill_style = Style::default().fg(level_fg).bg(band_bg);
+        let track_style = Style::default().fg(track_fg).bg(band_bg);
+        let mut bar_cells = vec![(' ', base_style); width];
+        let bar = toast_bar_cells(
+            remaining_ms as f32 / duration_ms as f32,
+            bar_width,
+            fill_style,
+            track_style,
+        );
+        for (i, cell) in bar.into_iter().enumerate() {
+            if 1 + i < width {
+                bar_cells[1 + i] = cell;
+            }
+        }
+        let secs_col = width.saturating_sub(1 + secs_len);
+        let secs_style = Style::default().fg(secs_fg).bg(band_bg);
+        place_segments(&mut bar_cells, secs_col, &[(secs, secs_style)]);
+
         let header_area = Rect {
             x,
             y,
@@ -2438,26 +2583,10 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
             width: width as u16,
             height: 1,
         };
-
         frame.render_widget(Clear, header_area);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                header,
-                Style::default()
-                    .fg(color)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            header_area,
-        );
+        frame.render_widget(Paragraph::new(cells_to_line(&header_cells)), header_area);
         frame.render_widget(Clear, bar_area);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                bar,
-                Style::default().fg(color).bg(bg),
-            ))),
-            bar_area,
-        );
+        frame.render_widget(Paragraph::new(cells_to_line(&bar_cells)), bar_area);
 
         y += 3;
     }
@@ -4965,6 +5094,123 @@ mod tests {
         lines.iter().map(plain).collect::<Vec<_>>().join("\n")
     }
 
+    #[test]
+    fn toast_level_color_is_keyed_to_level() {
+        // VAL-MD-029: success=OKG green, info=INFO blue, warning=AMBER, error=ERR red.
+        let theme = style::ThemeColors::dark();
+        assert_eq!(toast_level_color(ToastLevel::Success, &theme), theme.success);
+        assert_eq!(toast_level_color(ToastLevel::Info, &theme), theme.info);
+        assert_eq!(toast_level_color(ToastLevel::Warning, &theme), theme.warning);
+        assert_eq!(toast_level_color(ToastLevel::Error, &theme), theme.error);
+        // The four level colors are all distinct so the level reads unambiguously.
+        let colors = [
+            toast_level_color(ToastLevel::Success, &theme),
+            toast_level_color(ToastLevel::Info, &theme),
+            toast_level_color(ToastLevel::Warning, &theme),
+            toast_level_color(ToastLevel::Error, &theme),
+        ];
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(colors[i], colors[j], "level colors {i} and {j} collide");
+            }
+        }
+    }
+
+    #[test]
+    fn toast_labels_match_the_reference_bands() {
+        assert_eq!(toast_label(ToastLevel::Success), "Success");
+        assert_eq!(toast_label(ToastLevel::Info), "Info");
+        assert_eq!(toast_label(ToastLevel::Warning), "Warning");
+        assert_eq!(toast_label(ToastLevel::Error), "Error");
+        // The bracketed icons are the reference `[+]/[i]/[!]/[x]`.
+        assert_eq!(ToastLevel::Success.icon(), "[+]");
+        assert_eq!(ToastLevel::Info.icon(), "[i]");
+        assert_eq!(ToastLevel::Warning.icon(), "[!]");
+        assert_eq!(ToastLevel::Error.icon(), "[x]");
+    }
+
+    #[test]
+    fn toast_bar_cells_use_eighths_fill_and_a_faint_track() {
+        // VAL-MD-030: the countdown bar is composed of eighths block glyphs; the depleted remainder
+        // is the faint `▁` track (not blank), and the bar is exactly `width` cells wide.
+        let theme = style::ThemeColors::dark();
+        let fill = Style::default().fg(theme.success);
+        let track = Style::default().fg(theme.ghost);
+        let cells = toast_bar_cells(0.5, 20, fill, track);
+        assert_eq!(cells.len(), 20, "bar is exactly `width` cells");
+        // The leading half are filled eighths blocks (whole `█`), tinted with the fill style.
+        assert_eq!(cells[0].0, '█');
+        assert_eq!(cells[0].1.fg, Some(theme.success));
+        // The trailing (depleted) portion is the faint track glyph in the track style.
+        assert_eq!(cells[19].0, '▁');
+        assert_eq!(cells[19].1.fg, Some(theme.ghost));
+        // The fill glyphs come only from the safe eighths set, never braille.
+        let eighths: Vec<char> = glyphs::EIGHTHS.iter().map(|g| g.chars().next().unwrap()).collect();
+        for (ch, _) in &cells {
+            assert!(
+                *ch == '▁' || eighths.contains(ch),
+                "bar cell {ch:?} is a safe eighths/track glyph"
+            );
+            assert!(!glyphs::contains_braille(&ch.to_string()), "no braille in the bar");
+        }
+    }
+
+    #[test]
+    fn toast_bar_cells_deplete_over_time() {
+        // VAL-MD-032: as the remaining fraction shrinks, the filled portion is strictly shorter.
+        let fill = Style::default();
+        let track = Style::default();
+        let filled = |frac: f32| {
+            toast_bar_cells(frac, 24, fill, track)
+                .into_iter()
+                .filter(|(ch, _)| *ch != '▁')
+                .count()
+        };
+        let full = filled(0.9);
+        let mid = filled(0.5);
+        let low = filled(0.2);
+        assert!(full > mid, "0.9 fills more than 0.5 ({full} vs {mid})");
+        assert!(mid > low, "0.5 fills more than 0.2 ({mid} vs {low})");
+        // Empty leaves no filled cells (all track).
+        assert_eq!(filled(0.0), 0, "an empty countdown has no filled cells");
+    }
+
+    #[test]
+    fn toast_slide_phase_is_static_under_no_anim() {
+        // VAL-MD-033 / VAL-FOUND-024: with animations disabled the band is always at rest (offset 0,
+        // full opacity) regardless of elapsed/remaining time — no slide, no fade.
+        for &(elapsed, remaining) in &[(0u128, 2500u128), (50, 2450), (1000, 1500), (2450, 50)] {
+            let (offset, opacity) = toast_slide_phase(elapsed, remaining, false);
+            assert_eq!(offset, 0, "no slide offset under --no-anim");
+            assert!((opacity - 1.0).abs() < f32::EPSILON, "full opacity under --no-anim");
+        }
+    }
+
+    #[test]
+    fn toast_slide_phase_animates_in_and_out() {
+        // VAL-MD-031: with animations on, a freshly-triggered toast starts offset to the right and
+        // faded, eases to rest mid-life, then slides out + fades again before it dismisses.
+        // Fresh (elapsed 0): fully offset + transparent.
+        let (o0, op0) = toast_slide_phase(0, 2500, true);
+        assert!(o0 > 0, "fresh toast is offset to the right");
+        assert!(op0 < 0.5, "fresh toast is faded in");
+        // Mid-life: at rest, fully opaque.
+        let (om, opm) = toast_slide_phase(1200, 1300, true);
+        assert_eq!(om, 0, "mid-life toast is at its resting column");
+        assert!((opm - 1.0).abs() < f32::EPSILON, "mid-life toast is fully opaque");
+        // Just before dismiss (little remaining): offset again + fading out.
+        let (oe, ope) = toast_slide_phase(2450, 40, true);
+        assert!(oe > 0, "dismissing toast slides back out");
+        assert!(ope < 0.5, "dismissing toast fades out");
+    }
+
+    #[test]
+    fn truncate_cols_appends_ellipsis_on_overflow() {
+        assert_eq!(truncate_cols("hello", 10), "hello");
+        assert_eq!(truncate_cols("hello world", 5), "hell…");
+        assert_eq!(truncate_cols("", 4), "");
+    }
+
     /// A two-file `/diff` viewer fixture: file 0 (a context + one delete + one add hunk) opens
     /// expanded, file 1 (a substitution) stays collapsed — the diff-viewer reference composition.
     fn diff_viewer_fixture() -> crate::app::DiffViewer {
@@ -5919,6 +6165,9 @@ mod tests {
             crossterm::event::KeyCode::Char('3'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
+        // The panel switch pops a transient `Sidebar: …` toast; drop it so its band doesn't overlay
+        // the panel subtitle under assertion.
+        a.clear_toasts_for_test();
         let buf = draw_92x30(&a);
         assert!(buf_row(&buf, 0).contains("lsp"), "breadcrumb crumb is `lsp`");
         let screen = buf_text(&buf);
@@ -5943,6 +6192,9 @@ mod tests {
             crossterm::event::KeyCode::Char('4'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
+        // The panel switch pops a transient `Sidebar: …` toast; drop it so its band doesn't overlay
+        // the panel subtitle under assertion.
+        a.clear_toasts_for_test();
         let buf = draw_92x30(&a);
         assert!(buf_row(&buf, 0).contains("mcp"), "breadcrumb crumb is `mcp`");
         let screen = buf_text(&buf);
