@@ -196,6 +196,23 @@ pub fn no_color_from_env() -> bool {
     no_color_from_value(std::env::var_os("NO_COLOR").as_deref())
 }
 
+/// The usable column width for wrapping styled human output.
+///
+/// Queries the controlling terminal for its column count; when that is unavailable (e.g. the
+/// stream is not a terminal) it falls back to [`DEFAULT_WIDTH`]. Only ever consulted on the
+/// enabled/TTY styling path, so the machine/piped path is never reflowed.
+#[must_use]
+pub fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, _rows)| cols as usize)
+        .filter(|cols| *cols > 0)
+        .unwrap_or(DEFAULT_WIDTH)
+}
+
+/// The assumed terminal width when the real width cannot be determined (matches the QA geometry).
+pub const DEFAULT_WIDTH: usize = 92;
+
 /// A stream-scoped styler. When disabled, every styling method returns its input unchanged, so no
 /// ANSI escape byte can reach a piped/redirected consumer.
 #[derive(Debug, Clone, Copy)]

@@ -254,7 +254,10 @@ fn normalize_session_id(bytes: &[u8], session_id: &str) -> String {
 }
 
 /// The machine commands this harness pins. Each is offline and deterministic against the seeded DB.
-/// Future Wave 9 features append their own machine commands here as they are styled.
+/// Machine formats (`--format json`/`jsonl`) never route through the TTY styler, so they are
+/// byte-identical on a TTY and when piped. A non-empty golden pins the exact bytes; an empty
+/// golden means the content is dynamic (e.g. `models` reads the offline catalogue) so only the
+/// zero-ANSI + TTY==pipe invariants are checked, not a fixed golden.
 fn machine_commands(session_id: &str) -> Vec<(&'static str, Vec<&str>, &'static str)> {
     vec![
         (
@@ -277,6 +280,20 @@ fn machine_commands(session_id: &str) -> Vec<(&'static str, Vec<&str>, &'static 
             vec!["replay", session_id, "--format", "jsonl"],
             r#"{"session_id":"<SID>","messages":[{"role":"user","text":"hello world"},{"role":"assistant","text":"hi there"}]}"#,
         ),
+        // `cortex models` machine formats: dynamic catalogue content, so no fixed golden — but the
+        // json/jsonl bytes must still be identical on a TTY and when piped (VAL-CLI-028).
+        ("models_json", vec!["models", "--format", "json"], ""),
+        ("models_jsonl", vec!["models", "--format", "jsonl"], ""),
+    ]
+}
+
+/// The human/text commands whose TTY branch is intentionally styled. When piped they must emit the
+/// historical plain bytes with zero ANSI (styling auto-disables off a TTY); on a TTY they gain
+/// brand ANSI. `session_id` seeds the `replay` transcript.
+fn human_text_commands(session_id: &str) -> Vec<(&'static str, Vec<&str>)> {
+    vec![
+        ("models_text", vec!["models"]),
+        ("replay_text", vec!["replay", session_id]),
     ]
 }
 
@@ -308,6 +325,10 @@ fn machine_output_matches_the_pinned_golden_bytes() {
     let sandbox = Sandbox::new("golden");
     let session_id = sandbox.seed();
     for (label, args, golden) in machine_commands(&session_id) {
+        // Dynamic-content commands (empty golden) are covered by the ANSI + TTY==pipe invariants.
+        if golden.is_empty() {
+            continue;
+        }
         let out = sandbox.run_piped(&args);
         assert_eq!(out.status.code(), Some(0), "{label} must exit 0");
         let normalized = normalize_session_id(&out.stdout, &session_id);
@@ -385,5 +406,107 @@ fn pty_harness_presents_a_terminal_and_captures_output() {
     assert!(
         !contains_ansi(&captured),
         "the --version line must not be styled"
+    );
+}
+
+// VAL-CLI-028/032 (piped side): the styled human-text commands (`models`, `replay`) emit the
+// historical plain bytes with ZERO ANSI when piped/redirected — the TTY styler auto-disables.
+#[test]
+fn styled_human_text_is_plain_when_piped() {
+    let sandbox = Sandbox::new("human-piped");
+    let session_id = sandbox.seed();
+    for (label, args) in human_text_commands(&session_id) {
+        let out = sandbox.run_piped(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{label} must exit 0: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !contains_ansi(&out.stdout),
+            "{label} piped stdout must contain no ANSI/ESC byte, got: {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    // The piped `replay` text keeps the exact `[role] content\n` GOLD format.
+    let replay = sandbox.run_piped(&["replay", &session_id]);
+    assert_eq!(
+        String::from_utf8_lossy(&replay.stdout),
+        "[user] hello world\n[assistant] hi there\n",
+        "piped replay text is the byte-stable GOLD format"
+    );
+}
+
+// VAL-CLI-028/032 (TTY side): on a REAL terminal the styled human-text commands DO emit brand ANSI
+// (the styler is enabled), proving the TTY branch is actually exercised.
+#[test]
+fn styled_human_text_is_ansi_on_a_tty() {
+    let sandbox = Sandbox::new("human-tty");
+    let session_id = sandbox.seed();
+    for (label, args) in human_text_commands(&session_id) {
+        let tty = sandbox.run_in_pty(&args, &[]);
+        assert!(
+            contains_ansi(&tty),
+            "{label} TTY stdout must be styled with ANSI, got: {:?}",
+            String::from_utf8_lossy(&tty)
+        );
+    }
+}
+
+// VAL-CLI-036: `cortex --help` piped/non-TTY carries NO ANSI and the derive-generated wording is
+// unchanged (real subcommand names + option flags present).
+#[test]
+fn help_is_plain_and_unchanged_when_piped() {
+    let sandbox = Sandbox::new("help-piped");
+    let out = sandbox.run_piped(&["--help"]);
+    assert_eq!(out.status.code(), Some(0), "--help exits 0");
+    assert!(out.stderr.is_empty(), "--help writes nothing to stderr");
+    assert!(
+        !contains_ansi(&out.stdout),
+        "piped --help must contain no ANSI byte, got: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Derive-generated metadata: usage, options, and real subcommand names are present.
+    assert!(text.contains("Usage:"), "usage present: {text}");
+    for name in ["run", "tui", "serve", "session", "models", "replay"] {
+        assert!(text.contains(name), "piped help names {name}: {text}");
+    }
+}
+
+// VAL-CLI-033/034: `cortex --help` on a REAL terminal is brand-styled (ANSI) and shows the curated
+// shortlist plus the `…and N more` overflow hint.
+#[test]
+fn help_is_styled_with_shortlist_on_a_tty() {
+    let sandbox = Sandbox::new("help-tty");
+    let captured = sandbox.run_in_pty(&["--help"], &[]);
+    assert!(
+        contains_ansi(&captured),
+        "TTY --help must be brand-styled with ANSI, got: {:?}",
+        String::from_utf8_lossy(&captured)
+    );
+    let text = String::from_utf8_lossy(&captured);
+    assert!(
+        text.contains("more") && text.contains("cortex help <command>"),
+        "TTY help shows the overflow hint: {text}"
+    );
+    assert!(text.contains("Commands:"), "TTY help shows the Commands section: {text}");
+}
+
+// VAL-CLI-035: `cortex --version` reports the authentic crate version on both a TTY and when piped.
+#[test]
+fn version_reports_authentic_value() {
+    let sandbox = Sandbox::new("version");
+    let piped = sandbox.run_piped(&["--version"]);
+    assert_eq!(
+        String::from_utf8_lossy(&piped.stdout).trim(),
+        format!("cortex {}", env!("CARGO_PKG_VERSION")),
+    );
+    let tty = sandbox.run_in_pty(&["--version"], &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&tty).trim(),
+        format!("cortex {}", env!("CARGO_PKG_VERSION")),
+        "the --version line is authentic and unstyled on a TTY too"
     );
 }

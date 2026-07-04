@@ -16,6 +16,7 @@ mod feature_gate;
 mod format_bridge;
 mod formatter_cmd;
 mod generate_cmd;
+mod help;
 mod lifecycle;
 mod lsp_bridge;
 mod lsp_cmd;
@@ -63,6 +64,12 @@ use crate::cli::{Cli, Command};
 use crate::observe::{CounterSink, LogSink};
 
 fn main() -> ExitCode {
+    // On a real terminal, a top-level `--help` renders the brand-styled help; piped/non-TTY
+    // invocations fall through to clap's default (ANSI-free, derive-generated) help.
+    if let Some(code) = help::maybe_render_styled_help() {
+        return code;
+    }
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => return report_parse_error(err),

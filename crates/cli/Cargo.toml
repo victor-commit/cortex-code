@@ -43,6 +43,7 @@ tui = { workspace = true }
 server = { workspace = true }
 acp = { workspace = true }
 clap = { workspace = true }
+crossterm = { workspace = true }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
 futures-util = { workspace = true }
