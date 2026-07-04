@@ -166,6 +166,11 @@ pub enum Entry {
     Blocked { command: String, reason: String },
     /// A turn-level error surfaced to the user.
     Error(String),
+    /// A setup/turn failure that could not start or complete (missing credential, bad model,
+    /// upstream error). Rendered as the in-conversation `✦ Cortex` / `✗ error` block per
+    /// `err_inline.png` (distinct from the incidental [`Entry::Error`] used for attachment/editor
+    /// failures), never as a toast.
+    TurnError(String),
 }
 
 /// The kind of modal picker/view opened by a dialog-opening slash command.
@@ -2706,7 +2711,10 @@ impl App {
         self.push_answer_text(answer);
     }
 
-    /// Surface a turn error: drop an empty in-progress assistant entry, then record the error.
+    /// Surface a turn error: drop an empty in-progress assistant entry, then record the error as an
+    /// in-conversation `✦ Cortex` / `✗ error` block (per `err_inline.png`). The failure is NEVER
+    /// raised as a toast/notification — it lives only in the transcript so it reads as the
+    /// assistant's response to the turn, matching the reference mockup.
     fn set_turn_error(&mut self, message: String) {
         self.flush_stream_redactors();
         let message = redaction::redact(&message);
@@ -2715,8 +2723,7 @@ impl App {
                 self.transcript.pop();
             }
         }
-        self.push_toast(ToastLevel::Error, message.clone());
-        self.transcript.push(Entry::Error(message));
+        self.transcript.push(Entry::TurnError(message));
         self.turn_errored = true;
         self.emit_attention(AttentionEvent::Error);
     }
@@ -8203,6 +8210,7 @@ impl App {
                     out.push_str(&format!("> Blocked: `{command}` — {reason}\n\n"))
                 }
                 Entry::Error(text) => out.push_str(&format!("> Error: {text}\n\n")),
+                Entry::TurnError(text) => out.push_str(&format!("> Error: {text}\n\n")),
             }
         }
         out
@@ -8860,7 +8868,7 @@ fn entry_copy_text(entry: &Entry) -> String {
             }
             out
         }
-        Entry::Notice(text) | Entry::Error(text) => text.clone(),
+        Entry::Notice(text) | Entry::Error(text) | Entry::TurnError(text) => text.clone(),
         Entry::Shell(outcome) => format!("$ {}\n{}", outcome.command, outcome.output),
         Entry::Blocked { command, reason } => format!("blocked: {command} — {reason}"),
     }
@@ -11563,7 +11571,7 @@ mod tests {
         a.poll_turn();
         assert!(matches!(
             a.transcript.last(),
-            Some(Entry::Error(message))
+            Some(Entry::TurnError(message))
                 if !message.contains(&secret) && message.contains(redaction::PLACEHOLDER)
         ));
     }
@@ -11896,7 +11904,11 @@ mod tests {
         a.poll_turn();
 
         assert!(!a.is_busy());
-        assert!(matches!(a.transcript.last(), Some(Entry::Error(m)) if m == "provider exploded"));
+        assert!(
+            matches!(a.transcript.last(), Some(Entry::TurnError(m)) if m == "provider exploded")
+        );
+        // A turn error is an in-conversation block, never a toast/notification (VAL-ERR-002).
+        assert!(a.toasts().is_empty(), "turn error must not raise a toast");
         // The empty assistant entry was dropped, and only the user message reached history.
         let history = a.history_snapshot();
         assert_eq!(history.len(), 1);
@@ -11914,7 +11926,12 @@ mod tests {
         a.poll_turn();
 
         assert!(!a.is_busy());
-        assert!(matches!(a.transcript.last(), Some(Entry::Error(m)) if m == "no credential"));
+        assert!(matches!(a.transcript.last(), Some(Entry::TurnError(m)) if m == "no credential"));
+        // The setup failure is rendered inline, never as a toast/notification (VAL-ERR-002).
+        assert!(
+            a.toasts().is_empty(),
+            "setup error must not raise a toast"
+        );
     }
 
     #[test]

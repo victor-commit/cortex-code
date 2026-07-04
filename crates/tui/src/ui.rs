@@ -415,6 +415,7 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
                 push_blocked(&mut lines, command, reason, width, &theme);
             }
             Entry::Error(message) => push_error(&mut lines, message, width, &theme),
+            Entry::TurnError(message) => push_turn_error(&mut lines, message, width, &theme),
         }
     }
     // The busy/working indicator is no longer appended to the scrollback: it renders as a dedicated
@@ -1581,6 +1582,61 @@ fn push_error(
             Style::default().fg(theme.error),
         )));
     }
+    lines.push(Line::from(""));
+}
+
+/// Append a setup/turn failure as the in-conversation error block matching `err_inline.png`.
+///
+/// The block is a single clean stack: a `✦ Cortex` author marker on its own row (`✦` in the
+/// secondary/AMBER token, `Cortex` BRIGHT — the same author styling as an assistant reply), then a
+/// `✗ error` label row in the ERR-red accent on the FOLLOWING line (the author marker and the `✗`
+/// label never share a row, so there is no fused `errorx`/marker collision), the verbatim
+/// diagnostic wrapped in ERR red, and a DIM recovery-guidance line after a blank separator. Every
+/// row is inset by [`CONTENT_MARGIN`] so it aligns with the `›`/`✦` transcript column. This is
+/// rendered only for [`Entry::TurnError`]; it is never surfaced as a toast.
+fn push_turn_error(
+    lines: &mut Vec<Line<'static>>,
+    message: &str,
+    width: usize,
+    theme: &style::ThemeColors,
+) {
+    // Author marker `✦ Cortex` — same styling as the assistant author line (`✦` AMBER, name BRIGHT).
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(
+            format!("{} ", crate::glyphs::BRAND_STAR),
+            Style::default().fg(theme.secondary),
+        ),
+        Span::styled("Cortex".to_owned(), Style::default().fg(theme.text_bright)),
+    ]));
+    // `✗ error` label row in the ERR accent, on its own line below the author marker.
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(
+            format!("{} error", crate::glyphs::MARK_ERROR),
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    // The verbatim diagnostic, wrapped, in ERR red.
+    let body_width = width.saturating_sub(CONTENT_MARGIN).max(1);
+    for wrapped in wrap(message, body_width) {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(CONTENT_MARGIN)),
+            Span::styled(wrapped, Style::default().fg(theme.error)),
+        ]));
+    }
+    // A blank separator then a DIM recovery-guidance line.
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(CONTENT_MARGIN)),
+        Span::styled(
+            "The turn did not complete. Resend to retry, or use /models to switch providers."
+                .to_owned(),
+            Style::default().fg(theme.text_dim),
+        ),
+    ]));
     lines.push(Line::from(""));
 }
 
@@ -5039,6 +5095,103 @@ mod tests {
 
     fn rendered(lines: &[Line]) -> String {
         lines.iter().map(plain).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn turn_error_block_matches_err_inline_layout() {
+        // VAL-ERR-002/003: a setup/turn failure renders as a single in-conversation error block per
+        // err_inline.png — a `✦ Cortex` author marker on its OWN row, then a `✗ error` row in the
+        // ERR-red accent on the FOLLOWING row (no fused `errorx`/marker collision), the verbatim
+        // diagnostic in ERR red, and a DIM recovery-guidance line.
+        let mut a = app();
+        a.transcript
+            .push(Entry::User("Starting the deployment step…".to_owned()));
+        a.transcript.push(Entry::TurnError(
+            "missing credential: no API key available for openrouter".to_owned(),
+        ));
+        let theme = style::ThemeColors::from_name(a.theme());
+        let lines = transcript_lines(&a, 92);
+
+        // `✗ error` is unique; the `✦ Cortex` author marker is the row IMMEDIATELY above it, so the
+        // two markers occupy distinct rows (no fused `errorx` collision).
+        let error_idx = lines
+            .iter()
+            .position(|l| plain(l).contains("✗ error"))
+            .expect("`✗ error` row");
+        assert!(error_idx >= 1, "the error block has an author row above it");
+        let author_idx = error_idx - 1;
+        let author = &lines[author_idx];
+        assert!(
+            plain(author).contains("✦ Cortex"),
+            "the row above `✗ error` is the `✦ Cortex` author marker: {}",
+            plain(author)
+        );
+        assert!(
+            !plain(author).contains('✗'),
+            "author row carries no `✗` (no marker collision): {}",
+            plain(author)
+        );
+        let star = author
+            .spans
+            .iter()
+            .find(|s| s.content.starts_with('✦'))
+            .expect("✦ star span");
+        assert_eq!(star.style.fg, Some(theme.secondary), "✦ is AMBER");
+        let name = author
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Cortex")
+            .expect("Cortex label span");
+        assert_eq!(name.style.fg, Some(theme.text_bright), "Cortex is BRIGHT");
+
+        let error_row = &lines[error_idx];
+        assert!(
+            !plain(error_row).contains('✦'),
+            "`✗ error` row carries no `✦` (no fused marker): {}",
+            plain(error_row)
+        );
+        let error_span = error_row
+            .spans
+            .iter()
+            .find(|s| s.content.contains("error"))
+            .expect("`✗ error` span");
+        assert_eq!(error_span.style.fg, Some(theme.error), "`✗ error` is ERR red");
+
+        // The verbatim diagnostic is present, unaltered, in ERR red.
+        let diag = lines
+            .iter()
+            .find(|l| plain(l).contains("missing credential: no API key available for openrouter"))
+            .expect("verbatim diagnostic row");
+        let diag_span = diag
+            .spans
+            .iter()
+            .find(|s| s.content.contains("missing credential"))
+            .expect("diagnostic span");
+        assert_eq!(diag_span.style.fg, Some(theme.error), "diagnostic is ERR red");
+
+        // The recovery-guidance line is present in DIM.
+        let recovery = lines
+            .iter()
+            .find(|l| plain(l).contains("The turn did not complete. Resend to retry"))
+            .expect("recovery guidance row");
+        let recovery_span = recovery
+            .spans
+            .iter()
+            .find(|s| s.content.contains("The turn did not complete"))
+            .expect("recovery span");
+        assert_eq!(
+            recovery_span.style.fg,
+            Some(theme.text_dim),
+            "recovery guidance is DIM"
+        );
+
+        // No row fuses the two markers into an `errorx`/`x✦` artifact.
+        assert!(
+            lines
+                .iter()
+                .all(|l| !(plain(l).contains('✦') && plain(l).contains('✗'))),
+            "no row carries BOTH the ✦ author marker and the ✗ error label"
+        );
     }
 
     #[test]

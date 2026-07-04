@@ -3865,6 +3865,7 @@ dependencies = [
  "tokio",
  "toml",
  "tools",
+ "tracing",
  "tui-components",
  "tui-widgets",
 ]

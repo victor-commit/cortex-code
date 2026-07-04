@@ -72,7 +72,9 @@ fn mcp_servers_from_config(
     match mcp::servers_from_value(&json) {
         Ok(servers) => servers,
         Err(err) => {
-            eprintln!("cortex tui: ignoring invalid MCP configuration: {err}");
+            crate::turn::log_discovery_warning(&format!(
+                "ignoring invalid MCP configuration: {err}"
+            ));
             BTreeMap::new()
         }
     }

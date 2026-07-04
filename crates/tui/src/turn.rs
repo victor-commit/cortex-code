@@ -426,6 +426,17 @@ struct TurnSetup {
     config_inputs: settings::ConfigInputs,
 }
 
+/// Route a discovery/config warning (a malformed skill/agent/project-memory source, or an invalid
+/// MCP configuration) to the debug log instead of the terminal.
+///
+/// On the interactive TUI path the process owns the alternate screen in raw mode, so writing the
+/// warning to stderr would bleed over the live ratatui frame as a garbled overlay. The warning text
+/// is preserved verbatim in the tracing log so it stays diagnosable, while staying silent in the
+/// conversation and never touching the screen.
+pub(crate) fn log_discovery_warning(warning: &str) {
+    tracing::debug!("{warning}");
+}
+
 fn build_turn(
     prompt: &str,
     user_parts: Vec<llm::MessageContentPart>,
@@ -442,7 +453,7 @@ fn build_turn(
         .map_err(|err| format!("cannot determine the working directory: {err}"))?;
     let project_memory = memory::discover(&inputs);
     for warning in project_memory.warnings() {
-        eprintln!("cortex tui: {warning}");
+        log_discovery_warning(warning);
     }
     if project_memory.net_blocked() {
         return Err(
@@ -452,12 +463,12 @@ fn build_turn(
     }
     let discovered_skills = skills::discover(&inputs);
     for warning in &discovered_skills.warnings {
-        eprintln!("cortex tui: {warning}");
+        log_discovery_warning(warning);
     }
     let discovered_skill_list = discovered_skills.ordered_skills();
     let discovered_agents = custom_agents::discover(&inputs);
     for warning in &discovered_agents.warnings {
-        eprintln!("cortex tui: {warning}");
+        log_discovery_warning(warning);
     }
     let plugin_cwd = inputs.cwd.clone();
     let effective = settings::load(inputs.clone()).map_err(|err| err.to_string())?;
@@ -929,6 +940,119 @@ mod tests {
     #[test]
     fn qualified_model_id_passes() {
         assert!(validate_model_id("google/gemini-2.5-flash").is_ok());
+    }
+
+    #[test]
+    fn discovery_warnings_route_to_the_debug_log_not_the_screen() {
+        use crate::app::{App, Entry, Status};
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+
+        // Fixture: a skills dir with a malformed SKILL.md (mirrors the `write_broken_skill` fixture
+        // in crates/cli/tests/skills_live.rs), so discovery emits a `skipping skill …` warning.
+        let scratch = Scratch::new("discovery-warn");
+        let broken = scratch.project.join("skills").join("broken");
+        fs::create_dir_all(&broken).expect("create broken skill dir");
+        fs::write(
+            broken.join("SKILL.md"),
+            "---\nname: [\n---\nThis is broken.\n",
+        )
+        .expect("write broken skill");
+
+        let inputs = settings::ConfigInputs {
+            home: Some(scratch.root.clone()),
+            xdg_config_home: None,
+            cwd: scratch.project.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+
+        // The warning is still PRODUCED by discovery (preserved verbatim, for the log).
+        let discovery = skills::discover(&inputs);
+        assert!(
+            discovery
+                .warnings
+                .iter()
+                .any(|w| w.contains("skipping skill") && w.contains("broken")),
+            "malformed skill still produces a verbatim `skipping skill` warning: {:?}",
+            discovery.warnings
+        );
+
+        // Routing sends the warning to the tracing/debug log (a thread-local subscriber captures
+        // it), never to stdout/stderr — so it can never splatter the alternate screen.
+        #[derive(Clone, Default)]
+        struct CaptureSubscriber {
+            messages: std::sync::Arc<Mutex<Vec<String>>>,
+        }
+        impl tracing::Subscriber for CaptureSubscriber {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(
+                &self,
+                _span: &tracing::span::Id,
+                _follows: &tracing::span::Id,
+            ) {
+            }
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct MessageVisitor<'a>(&'a mut Vec<String>);
+                impl tracing::field::Visit for MessageVisitor<'_> {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        if field.name() == "message" {
+                            self.0.push(format!("{value:?}"));
+                        }
+                    }
+                }
+                let mut messages = self.messages.lock().unwrap();
+                event.record(&mut MessageVisitor(&mut messages));
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let capture = CaptureSubscriber::default();
+        tracing::subscriber::with_default(capture.clone(), || {
+            for warning in &discovery.warnings {
+                log_discovery_warning(warning);
+            }
+        });
+        let logged = capture.messages.lock().expect("capture lock");
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains("skipping skill") && m.contains("broken")),
+            "the discovery warning is routed to the debug log verbatim: {logged:?}"
+        );
+        drop(logged);
+
+        // The warning NEVER reaches the interactive screen path: a rendered transcript shows no
+        // `skipping skill` / `cortex tui:` / invalid-MCP warning text anywhere on screen.
+        let mut app = App::new(Status {
+            model: "google/gemini-2.5-flash".to_owned(),
+            agent: "build".to_owned(),
+            mode: "build".to_owned(),
+            variant: "default".to_owned(),
+            session: "new".to_owned(),
+        });
+        app.transcript.push(Entry::User("build the thing".to_owned()));
+        let screen = crate::ui::transcript_lines(&app, 92)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>();
+        assert!(
+            !screen.contains("skipping skill")
+                && !screen.contains("cortex tui:")
+                && !screen.contains("ignoring invalid MCP configuration"),
+            "no discovery/config warning reaches the rendered screen: {screen}"
+        );
     }
 
     #[test]
