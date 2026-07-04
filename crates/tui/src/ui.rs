@@ -1992,8 +1992,9 @@ fn mention_filename(path: &str) -> String {
 }
 
 /// The `dir · size` meta string for a file path: its parent directory (`.` at the repo root) and
-/// its real on-disk size (resolved against the working directory), or just the directory when the
-/// size cannot be read. Every row carries the same `dir · size` shape so the meta column is uniform.
+/// its real on-disk size (resolved against the working directory) in the compact `perm_mention.png`
+/// form (`4.3k`/`1.2M`), or just the directory when the size cannot be read. Every row carries the
+/// same `dir · size` shape so the meta column is uniform.
 fn mention_meta(path: &str) -> String {
     let dir = std::path::Path::new(path)
         .parent()
@@ -2003,7 +2004,7 @@ fn mention_meta(path: &str) -> String {
     let size = std::env::current_dir()
         .ok()
         .and_then(|cwd| std::fs::metadata(cwd.join(path)).ok())
-        .map(|meta| crate::mention::format_size(meta.len()));
+        .map(|meta| crate::mention::format_size_compact(meta.len()));
     match size {
         Some(size) => format!("{dir} {} {size}", crate::glyphs::SEPARATOR),
         None => dir,
@@ -8667,6 +8668,27 @@ mod tests {
             meta.content.contains(crate::glyphs::SEPARATOR),
             "meta is the uniform `dir · size` form: {:?}",
             meta.content
+        );
+        // The size token uses the compact `perm_mention.png` units (`4.3k`/`912`/`1.2M`), never the
+        // verbose repo-standard `24.7 KB` form.
+        let size_token = meta
+            .content
+            .rsplit(crate::glyphs::SEPARATOR)
+            .next()
+            .unwrap()
+            .trim();
+        assert!(
+            !size_token.contains("KB")
+                && !size_token.contains("MB")
+                && !size_token.contains("GB"),
+            "size uses the compact perm_mention units, not the verbose `KB` form: {size_token:?}"
+        );
+        assert!(
+            !size_token.is_empty()
+                && size_token
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || matches!(c, 'k' | 'M' | 'G')),
+            "size is a compact token like `4.3k`/`912`/`1.2M`: {size_token:?}"
         );
         // The `▪` bullet from the interim wave-0 design is gone.
         assert!(

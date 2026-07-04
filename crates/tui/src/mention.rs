@@ -77,11 +77,14 @@ pub fn type_label(path: &str) -> String {
     friendly.to_owned()
 }
 
-/// Format a byte count as a compact human-readable size (e.g. `0.7 KB`, `6.2 KB`, `1.2 MB`).
+/// Format a byte count in the repo-standard human-readable form (e.g. `0.7 KB`, `6.2 KB`, `1.2 MB`).
 ///
-/// Used as the size half of the `@`-mention popup's `dir · size` meta column. Sub-kilobyte files
-/// still read in `KB` (`0.x KB`) to match the mockup's size column, which never shows raw bytes.
+/// This is the value-locked `X.Y KB`/`MB`/`GB` size form; it is retained and pinned by its unit
+/// test. The `@`-mention popup renders sizes with the tighter [`format_size_compact`] form
+/// (`4.3k`/`1.2M`) to match `perm_mention.png`, so this function is no longer wired into the popup
+/// meta column but is kept as the shared repo-standard formatter.
 #[must_use]
+#[allow(dead_code)]
 pub fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -93,6 +96,29 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} MB", b / MB)
     } else {
         format!("{:.1} GB", b / GB)
+    }
+}
+
+/// Format a byte count in the compact `@`-mention size form used by `perm_mention.png`: a raw byte
+/// count under 1 KiB (`912`), then one decimal with a single-letter unit (`4.3k`, `1.2M`, `2.0G`).
+///
+/// This is the mention-local size renderer for the popup's `dir · size` meta column; it is distinct
+/// from the shared [`format_size`] so tightening the popup's units does not disturb the value-locked
+/// `X.Y KB` form.
+#[must_use]
+pub fn format_size_compact(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        bytes.to_string()
+    } else if b < MB {
+        format!("{:.1}k", b / KB)
+    } else if b < GB {
+        format!("{:.1}M", b / MB)
+    } else {
+        format!("{:.1}G", b / GB)
     }
 }
 
@@ -541,6 +567,19 @@ mod tests {
         assert_eq!(format_size(717), "0.7 KB");
         assert_eq!(format_size(2_100), "2.1 KB");
         assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
+    }
+
+    #[test]
+    fn format_size_compact_uses_perm_mention_units() {
+        // VAL-PERM-034: the `@`-mention size column uses the compact `perm_mention.png` units —
+        // raw bytes under 1 KiB, then `X.Yk` / `X.YM` / `X.YG` (never the verbose `24.7 KB` form).
+        assert_eq!(format_size_compact(912), "912");
+        assert_eq!(format_size_compact(4_403), "4.3k");
+        assert_eq!(format_size_compact(2_150), "2.1k");
+        assert_eq!(format_size_compact(1_258_291), "1.2M");
+        assert_eq!(format_size_compact(3 * 1024 * 1024 * 1024), "3.0G");
+        // The tight form never falls back to the verbose repo-standard unit.
+        assert!(!format_size_compact(4_403).contains("KB"));
     }
 
     #[test]
