@@ -53,6 +53,35 @@ One binary exposes several surfaces over the same session engine:
 - **Persistence & inspection** — SQLite-backed sessions plus `stats`, `search`,
   `export`/`import`, and `replay`.
 
+## Design & UX
+
+The interactive TUI and the headless CLI share a mono-orange design system: an
+`ORANGE`/`ORANGE_D`/`AMBER` palette on a near-black `#0d0d0d` base, with an
+explicit background painted on every cell so nothing falls through to the
+terminal default. The visual language is safe-glyph only (no braille), using the
+`✦` author mark, `▶`/`▼` disclosure toggles, and rounded card, panel, and modal
+corners (`╭ ╮ ╰ ╯`); selection uses an inverse selection-bar highlight.
+
+- **Themes** — five chrome themes are reachable from the `/themes` gallery:
+  `dark` (default), `light`, `monokai`, `ocean`, and `vscode`. In-chat and diff
+  code use a VS Code Dark+ syntax palette, while the gallery previews render each
+  theme in its own palette.
+- **Animations** — a safe spinner, a token-streaming reveal with a blinking
+  cursor, toast slide/fade, selection highlight, and eighths-based progress. All
+  animations honor `--no-anim` (or `CORTEX_NO_ANIM=1`) and reduced motion, which
+  disable the animated reveal without changing the underlying streaming or
+  network delivery.
+- **First-run onboarding** — a welcome screen appears on first run, and
+  `cortex auth login` (with no provider argument, on a terminal) opens an
+  interactive provider picker with masked API-key input (the key is never echoed
+  or logged) written to the `0600` auth store.
+- **Styled CLI** — the headless CLI uses truecolor ANSI styling that is
+  TTY-gated: it auto-disables when output is piped or redirected and honors
+  `NO_COLOR`. Machine output stays byte-stable, so `--format json` and `--jsonl`
+  are byte-identical whether piped or on a TTY and carry zero ANSI when piped.
+  Styled surfaces include `--help`, the `serve` banner and `-v` access log, and
+  `run`, `stats`, `search`, `models`, and `replay`.
+
 ## Workspace layout
 
 The repository is a Cargo workspace (`crates/`) whose `cli` crate builds the
@@ -119,6 +148,14 @@ Launch the interactive TUI:
 
 ```bash
 ./target/debug/cortex
+```
+
+Disable animations (reduced motion) by launching the TUI subcommand with
+`--no-anim`, or set `CORTEX_NO_ANIM=1` for the bare invocation:
+
+```bash
+./target/debug/cortex tui --no-anim
+CORTEX_NO_ANIM=1 ./target/debug/cortex
 ```
 
 Run a headless live turn:
@@ -218,7 +255,8 @@ cargo clippy --workspace --no-deps
 cargo test --workspace
 ```
 
-Live OpenRouter tests skip automatically when `OPENROUTER_API_KEY` is not set.
+Live OpenRouter tests skip automatically when `OPENROUTER_API_KEY` is not set,
+so the workspace test suite runs fully offline.
 
 ## License & attribution
 
