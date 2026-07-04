@@ -304,6 +304,17 @@ impl ProviderConfigSet {
         Catalogue::from_providers(providers)
     }
 
+    /// The merged catalogue built on top of the dynamically-resolved models.dev base.
+    ///
+    /// This is the single entry point the `/models` picker and `cortex models` use: it resolves
+    /// the models.dev catalogue (a live refresh when online, else the on-disk cache, else the
+    /// embedded snapshot — see [`crate::refresh::resolve_catalogue`]) and folds configured
+    /// providers/models on top. OpenCode Zen is excluded throughout.
+    #[must_use]
+    pub fn resolved_catalogue(&self) -> Catalogue {
+        self.merged_catalogue(&crate::refresh::resolve_catalogue())
+    }
+
     /// The provider base URL if configured, otherwise `None`.
     #[must_use]
     pub fn provider_base_url(&self, provider_id: &str) -> Option<String> {
@@ -887,6 +898,7 @@ fn parse_model_table(
             context: context_length,
             output: max_output_limit,
         },
+        release_date: None,
     })
 }
 
@@ -1230,5 +1242,25 @@ models = [{ id = "local/demo", cost = { input = 2, output = 3, cache_write = 1.1
             config.resolve_provider_base_url("ollama").as_deref(),
             Ok("http://127.0.0.1:11434/v1")
         );
+    }
+
+    #[test]
+    fn merged_catalogue_excludes_opencode_zen_from_configured_providers() {
+        // Even a config that names OpenCode Zen must not surface it in the merged catalogue.
+        let config = parse_set(
+            r#"
+[provider.opencode]
+base_url = "https://opencode.ai/zen/v1"
+models = [{ id = "opencode/grok-code", name = "code model" }]
+"#,
+        );
+        let merged = config.merged_catalogue(Catalogue::embedded());
+        assert!(
+            merged.provider("opencode").is_none(),
+            "OpenCode Zen is excluded from the merged catalogue"
+        );
+        assert!(merged.find_model("opencode/grok-code").is_none());
+        // The embedded openrouter base is still present.
+        assert!(merged.provider(OPENROUTER_ID).is_some());
     }
 }

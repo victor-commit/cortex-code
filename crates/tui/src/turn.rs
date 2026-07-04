@@ -1074,6 +1074,7 @@ mod tests {
                 tool_call: true,
                 limit: providers::ModelLimit::default(),
                 cost: providers::ModelCost::default(),
+                release_date: None,
             }),
         };
         let parts = vec![llm::MessageContentPart::Document {

@@ -24,6 +24,18 @@ pub const DEFAULT_PROVIDER: &str = "openrouter";
 /// The default model used when no model is requested (architecture §7).
 pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 
+/// The models.dev provider ids for OpenCode Zen. This provider is excluded from the catalogue
+/// everywhere (the `/models` picker, the `/connect` provider list, and `cortex models`).
+pub const OPENCODE_ZEN_PROVIDER_IDS: &[&str] = &["opencode", "zen"];
+
+/// Whether `provider_id` names the OpenCode Zen provider (excluded from the catalogue everywhere).
+#[must_use]
+pub fn is_opencode_zen(provider_id: &str) -> bool {
+    OPENCODE_ZEN_PROVIDER_IDS
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(provider_id.trim()))
+}
+
 /// The embedded models.dev snapshot (upstream shape: provider id -> provider object).
 const EMBEDDED_SNAPSHOT: &str = include_str!("models_dev.json");
 
@@ -146,6 +158,12 @@ pub struct ModelInfo {
     /// Pricing.
     #[serde(default)]
     pub cost: ModelCost,
+    /// The upstream release date (models.dev `release_date`, `YYYY-MM-DD`) when published.
+    ///
+    /// Used to order a provider's models recent-first (newest first); it is absent for the
+    /// embedded snapshot and skipped when serializing so machine output stays byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
 }
 
 /// Metadata for a provider in the catalogue.
@@ -164,6 +182,24 @@ pub struct ProviderInfo {
     /// The models this provider serves, keyed by model id.
     #[serde(default)]
     pub models: BTreeMap<String, ModelInfo>,
+}
+
+impl ProviderInfo {
+    /// This provider's models ordered recent-first: newest `release_date` first, then by model id
+    /// in descending order so newer ids sort above older ones (deliberately NOT alphabetical).
+    ///
+    /// Models without a `release_date` sort after those that carry one; the picker uses this
+    /// ordering so a provider group leads with its most recent models.
+    #[must_use]
+    pub fn models_recent_first(&self) -> Vec<&ModelInfo> {
+        let mut models: Vec<&ModelInfo> = self.models.values().collect();
+        models.sort_by(|a, b| {
+            b.release_date
+                .cmp(&a.release_date)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        models
+    }
 }
 
 /// The resolved provider + model for a requested (or defaulted) model id.
@@ -195,17 +231,25 @@ impl Catalogue {
 
     /// Parse a catalogue from a models.dev-shaped JSON document.
     ///
+    /// The OpenCode Zen provider is stripped so it can never appear in the catalogue, regardless
+    /// of the source document (embedded snapshot, on-disk cache, or a refreshed dataset).
+    ///
     /// # Errors
     /// Returns the underlying [`serde_json::Error`] if the document is not a valid provider map.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        let providers: BTreeMap<String, ProviderInfo> = serde_json::from_str(json)?;
+        let mut providers: BTreeMap<String, ProviderInfo> = serde_json::from_str(json)?;
+        exclude_opencode_zen(&mut providers);
         Ok(Self { providers })
     }
 
     /// Build a catalogue from an explicit provider map (used by the `models --refresh` path to
     /// assemble a curated, freshly-fetched snapshot before it is cached or listed).
+    ///
+    /// The OpenCode Zen provider is stripped here too, so every catalogue built in this crate
+    /// (the merged view included) excludes it.
     #[must_use]
-    pub(crate) fn from_providers(providers: BTreeMap<String, ProviderInfo>) -> Self {
+    pub(crate) fn from_providers(mut providers: BTreeMap<String, ProviderInfo>) -> Self {
+        exclude_opencode_zen(&mut providers);
         Self { providers }
     }
 
@@ -276,6 +320,11 @@ impl Catalogue {
 #[must_use]
 pub fn resolve_model(requested: Option<&str>) -> ResolvedModel {
     Catalogue::embedded().resolve_model(requested)
+}
+
+/// Drop the OpenCode Zen provider from a provider map (matched by map key or the entry's own id).
+fn exclude_opencode_zen(providers: &mut BTreeMap<String, ProviderInfo>) {
+    providers.retain(|id, info| !is_opencode_zen(id) && !is_opencode_zen(&info.id));
 }
 
 /// Estimate turn cost from model pricing metadata when the provider does not report `usage.cost`.
@@ -456,6 +505,89 @@ mod tests {
     }
 
     #[test]
+    fn is_opencode_zen_matches_both_ids_case_insensitively() {
+        assert!(is_opencode_zen("opencode"));
+        assert!(is_opencode_zen("zen"));
+        assert!(is_opencode_zen("OpenCode"));
+        assert!(is_opencode_zen(" zen "));
+        assert!(!is_opencode_zen("openrouter"));
+        assert!(!is_opencode_zen("openai"));
+    }
+
+    #[test]
+    fn from_json_excludes_the_opencode_zen_provider() {
+        let json = r#"{
+            "openrouter": { "id": "openrouter", "name": "OpenRouter", "models": {} },
+            "opencode": { "id": "opencode", "name": "OpenCode Zen", "models": { "zen/x": { "id": "zen/x", "name": "X" } } },
+            "zen": { "id": "zen", "name": "Zen", "models": {} }
+        }"#;
+        let catalogue = Catalogue::from_json(json).expect("parses");
+        assert!(catalogue.provider("openrouter").is_some());
+        assert!(
+            catalogue.provider("opencode").is_none(),
+            "OpenCode Zen is excluded from any parsed catalogue"
+        );
+        assert!(catalogue.provider("zen").is_none());
+    }
+
+    #[test]
+    fn from_providers_excludes_opencode_zen_even_by_entry_id() {
+        // A provider keyed differently than its own id is still excluded when the id is zen.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "sneaky".to_owned(),
+            ProviderInfo {
+                id: "opencode".to_owned(),
+                name: "OpenCode Zen".to_owned(),
+                api: None,
+                env: Vec::new(),
+                models: BTreeMap::new(),
+            },
+        );
+        let catalogue = Catalogue::from_providers(providers);
+        assert!(catalogue.providers().next().is_none());
+    }
+
+    #[test]
+    fn models_recent_first_orders_by_release_date_then_id_descending() {
+        fn model(id: &str, release_date: Option<&str>) -> ModelInfo {
+            ModelInfo {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                attachment: false,
+                reasoning: false,
+                tool_call: false,
+                limit: ModelLimit::default(),
+                cost: ModelCost::default(),
+                release_date: release_date.map(ToOwned::to_owned),
+            }
+        }
+        let mut models = BTreeMap::new();
+        for m in [
+            model("p/alpha", Some("2024-01-01")),
+            model("p/bravo", Some("2025-06-01")),
+            model("p/charlie", None),
+            model("p/delta", None),
+        ] {
+            models.insert(m.id.clone(), m);
+        }
+        let provider = ProviderInfo {
+            id: "p".to_owned(),
+            name: "P".to_owned(),
+            api: None,
+            env: Vec::new(),
+            models,
+        };
+        let ordered: Vec<&str> = provider
+            .models_recent_first()
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        // Dated models first (newest first), then undated models by id descending — never A→Z.
+        assert_eq!(ordered, vec!["p/bravo", "p/alpha", "p/delta", "p/charlie"]);
+    }
+
+    #[test]
     fn estimate_usage_cost_accounts_for_cache_and_reasoning_tokens() {
         let model = ModelInfo {
             id: "local/tiered".to_owned(),
@@ -474,6 +606,7 @@ mod tests {
                 ..ModelCost::default()
             }
             .with_known(true),
+            release_date: None,
         };
         let usage = Usage {
             input_tokens: 100,
@@ -519,6 +652,7 @@ mod tests {
                 ..ModelCost::default()
             }
             .with_known(true),
+            release_date: None,
         };
         let usage = Usage {
             input_tokens: 250_000,
@@ -548,6 +682,7 @@ mod tests {
             tool_call: true,
             limit: ModelLimit::default(),
             cost: ModelCost::default().with_known(true),
+            release_date: None,
         };
         let usage = Usage {
             input_tokens: 10,
@@ -571,6 +706,7 @@ mod tests {
             tool_call: true,
             limit: ModelLimit::default(),
             cost: ModelCost::default(),
+            release_date: None,
         };
         let usage = Usage {
             input_tokens: 10,

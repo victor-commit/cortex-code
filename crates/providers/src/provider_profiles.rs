@@ -164,8 +164,12 @@ pub(crate) fn profile(provider_id: &str) -> Option<&'static ProviderProfile> {
         .find(|profile| profile.provider_id == provider_id)
 }
 
-pub(crate) fn refresh_profiles() -> impl Iterator<Item = &'static ProviderProfile> {
+/// Find the built-in profile whose `models_dev_id` matches `models_dev_id`, when one exists.
+///
+/// This maps a top-level models.dev provider id (for example `google-vertex` or `amazon-bedrock`)
+/// onto the cortex provider profile that supplies its runtime defaults (env/base_url/protocol).
+pub(crate) fn profile_by_models_dev_id(models_dev_id: &str) -> Option<&'static ProviderProfile> {
     PROFILES
         .iter()
-        .filter(|profile| profile.models_dev_id.is_some())
+        .find(|profile| profile.models_dev_id == Some(models_dev_id))
 }

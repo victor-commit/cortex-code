@@ -195,6 +195,20 @@ pub fn list_stored_providers(path: &Path) -> io::Result<Vec<String>> {
     Ok(file.entries.into_keys().collect())
 }
 
+/// The provider ids the user is currently connected to (has a stored credential for), resolved
+/// from the process's auth-store path.
+///
+/// This is the convenience the `/models` picker uses to mark connected-vs-not-connected providers.
+/// A missing/empty/unreadable store yields an empty list (never an error), so the picker degrades
+/// cleanly when nothing is connected yet.
+#[must_use]
+pub fn connected_providers() -> Vec<String> {
+    AuthPathInputs::from_process()
+        .resolve()
+        .and_then(|path| list_stored_providers(&path).ok())
+        .unwrap_or_default()
+}
+
 /// Remove `provider_id` from the auth store at `path`.
 ///
 /// Returns `Ok(true)` when an entry was removed, `Ok(false)` when no entry existed. If the removed

@@ -27,12 +27,13 @@ mod runtime_provider;
 
 pub use catalogue::{
     Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelCostTier, ModelInfo, ModelLimit,
-    ProviderInfo, ResolvedModel, estimate_usage_cost, resolve_model, validate_model_id,
+    OPENCODE_ZEN_PROVIDER_IDS, ProviderInfo, ResolvedModel, estimate_usage_cost, is_opencode_zen,
+    resolve_model, validate_model_id,
 };
 pub use credentials::{
     AUTH_FILE_NAME, AuthPathInputs, Credential, CredentialInputs, CredentialSource, ENV_AUTH_FILE,
-    OPENROUTER_ENV, list_stored_providers, remove_stored_credential, resolve_credential,
-    store_credential,
+    OPENROUTER_ENV, connected_providers, list_stored_providers, remove_stored_credential,
+    resolve_credential, store_credential,
 };
 pub use openrouter::{
     OPENROUTER_API_BASE, OPENROUTER_DEFAULT_MODEL, OPENROUTER_ID,
@@ -43,7 +44,8 @@ pub use openrouter::{
 };
 pub use refresh::{
     ENV_MODELS_DEV_URL, MODELS_CACHE_FILE, MODELS_DEV_URL, load_cached_catalogue,
-    models_cache_path, models_dev_url, refresh_openrouter_catalogue, write_models_cache,
+    models_cache_path, models_dev_url, offline_catalogue, refresh_openrouter_catalogue,
+    resolve_catalogue, write_models_cache,
 };
 pub use runtime_config::{
     ProviderAuthConfig, ProviderAuthReport, ProviderConfigError, ProviderConfigReport,
