@@ -265,6 +265,28 @@ fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
     Some(score)
 }
 
+/// Whether `query` matches `haystack` as a case-insensitive subsequence: every character of
+/// `query`, in order (but not necessarily contiguous), appears somewhere in `haystack`. An empty
+/// query always matches. This is the same "matching anywhere" fuzzy semantics the file picker uses
+/// for [`fuzzy_score`], shared so the command palette can filter consistently (e.g. `mdl` matches
+/// `/models`). Non-alphanumeric query characters are compared verbatim.
+#[must_use]
+pub fn subsequence_match(haystack: &str, query: &str) -> bool {
+    let mut needles = query.chars().flat_map(char::to_lowercase).peekable();
+    if needles.peek().is_none() {
+        return true;
+    }
+    for hc in haystack.chars().flat_map(char::to_lowercase) {
+        if needles.peek().copied() == Some(hc) {
+            needles.next();
+            if needles.peek().is_none() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Parse every `@`-mention token out of `prompt`.
 ///
 /// A mention is an `@` at the start of the text or after whitespace, followed by a run of
@@ -459,6 +481,21 @@ mod tests {
         let all = files();
         let got = fuzzy_filter(&all, "", 2);
         assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn subsequence_match_matches_anywhere_case_insensitively() {
+        // A non-contiguous subsequence matches (this is what lets `mdl` hit `/models`).
+        assert!(subsequence_match("/models", "mdl"));
+        assert!(subsequence_match("/models", "models"));
+        assert!(subsequence_match("/models", "mod"));
+        // Case-insensitive on both sides.
+        assert!(subsequence_match("/Models", "MDL"));
+        // An empty query always matches; order still matters and missing chars fail.
+        assert!(subsequence_match("/models", ""));
+        assert!(!subsequence_match("/models", "ldm"), "order matters");
+        assert!(!subsequence_match("/models", "modelz"), "a missing char fails");
+        assert!(!subsequence_match("/new", "mdl"));
     }
 
     #[test]

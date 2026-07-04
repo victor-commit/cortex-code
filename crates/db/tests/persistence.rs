@@ -141,6 +141,31 @@ fn message_content_persists_across_reopen() {
 }
 
 #[test]
+fn counts_by_session_tallies_every_session_in_one_pass() {
+    // A single grouped query returns each session's message count; sessions with no messages are
+    // absent from the map (callers default them to 0). This backs the O(1)-store-open session
+    // picker build instead of one list_for_session per session.
+    let db = Database::open_in_memory().expect("memory db");
+    let one = db.sessions().create(Some("one")).expect("s1");
+    let two = db.sessions().create(Some("two")).expect("s2");
+    let empty = db.sessions().create(Some("empty")).expect("s3");
+
+    db.messages().create(&one.id, "user", "a").expect("m1");
+    db.messages().create(&one.id, "assistant", "b").expect("m2");
+    db.messages().create(&two.id, "user", "c").expect("m3");
+
+    let counts = db.messages().counts_by_session().expect("counts");
+    assert_eq!(counts.get(&one.id).copied(), Some(2), "two messages under `one`");
+    assert_eq!(counts.get(&two.id).copied(), Some(1), "one message under `two`");
+    assert_eq!(counts.get(&empty.id).copied(), None, "empty session is absent from the map");
+    // The tally matches per-session listing for every session.
+    for session in [&one, &two, &empty] {
+        let listed = db.messages().list_for_session(&session.id).expect("list").len();
+        assert_eq!(counts.get(&session.id).copied().unwrap_or(0), listed);
+    }
+}
+
+#[test]
 fn message_under_unknown_session_is_a_clear_not_found() {
     let db = Database::open_in_memory().expect("memory db");
     let err = db

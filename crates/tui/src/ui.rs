@@ -3294,12 +3294,21 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     let hints = dialog_hints(dialog.kind, rename.is_some());
 
     let empty = if rows.is_empty() {
-        Some(
-            dialog
-                .empty
-                .clone()
-                .unwrap_or_else(|| "(nothing to show)".to_owned()),
-        )
+        // A non-empty search query that filters the list to zero rows is a no-results state, not an
+        // empty catalogue: show a match-aware "No matches" (VAL-PICK-065) rather than the
+        // catalogue-empty string ("No sessions yet." / "No models in the catalogue."), which stays
+        // for the empty-query case.
+        let filtered_to_zero = searchable && !app.picker_search_query().trim().is_empty();
+        if filtered_to_zero {
+            Some("No matches".to_owned())
+        } else {
+            Some(
+                dialog
+                    .empty
+                    .clone()
+                    .unwrap_or_else(|| "(nothing to show)".to_owned()),
+            )
+        }
     } else {
         None
     };
@@ -9312,6 +9321,42 @@ mod tests {
         assert!(text.contains("›"), "selection marker on the highlight:\n{text}");
         assert!(!text.contains("▸"), "no legacy thin triangle:\n{text}");
         assert!(text.contains("Models"), "title-in-border drawn:\n{text}");
+    }
+
+    #[test]
+    fn model_picker_filtered_to_zero_shows_match_aware_empty_state() {
+        // VAL-PICK-065: a NON-empty query that filters the model picker to zero rows shows a
+        // match-aware "No matches", not the catalogue-empty string ("No models in the catalogue.").
+        let mut a = app();
+        for c in "/models".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(a.dialog_open(), "the model picker opened");
+        for c in "zzznotamodel".chars() {
+            a.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let text = dialog_screen(&a);
+        assert!(
+            text.contains("No matches"),
+            "a filtered-to-zero query shows the match-aware empty state:\n{text}"
+        );
+        assert!(
+            !text.contains("No models in the catalogue."),
+            "the catalogue-empty string is not shown for a non-empty query:\n{text}"
+        );
+        // (The no-highlighted-row guarantee for an empty body is covered by the modal-level test
+        // `empty_list_shows_a_no_results_state_and_no_highlight`; here the `›` search prompt is
+        // legitimately present on the query row.)
     }
 
     #[test]

@@ -129,6 +129,27 @@ impl<'a> MessageRepo<'a> {
         Ok(messages)
     }
 
+    /// Count the persisted messages under every session in one query, as a `session_id`-to-count
+    /// map. Sessions with no messages are simply absent from the map (callers default them to `0`).
+    /// This lets a caller tally many sessions from a single store round-trip instead of one
+    /// `list_for_session` per session (e.g. the TUI session picker).
+    pub fn counts_by_session(&self) -> DbResult<HashMap<String, usize>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT session_id, COUNT(*) FROM messages GROUP BY session_id")?;
+        let rows = statement.query_map([], |row| {
+            let session_id: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((session_id, count.max(0) as usize))
+        })?;
+        let mut counts = HashMap::new();
+        for row in rows {
+            let (session_id, count) = row?;
+            counts.insert(session_id, count);
+        }
+        Ok(counts)
+    }
+
     /// Fetch one message (with its rich parts) by id, or `None` if it does not exist.
     pub fn get(&self, message_id: &str) -> DbResult<Option<Message>> {
         let mut statement = self.conn.prepare(

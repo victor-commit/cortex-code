@@ -3801,16 +3801,18 @@ impl App {
             }
         }
 
-        let needle = palette.query.trim().to_ascii_lowercase();
+        let needle = palette.query.trim();
         if needle.is_empty() {
             return items;
         }
+        // Subsequence fuzzy match (matching anywhere, per VAL-PICK-061), consistent with the file
+        // picker's fuzzy semantics: `mdl` matches `/models`. Match against either the label or the
+        // description so a command stays reachable by name or by what it does.
         items
             .into_iter()
             .filter(|item| {
-                let label = item.label.to_ascii_lowercase();
-                let desc = item.description.to_ascii_lowercase();
-                label.contains(&needle) || desc.contains(&needle)
+                mention::subsequence_match(&item.label, needle)
+                    || mention::subsequence_match(&item.description, needle)
             })
             .collect()
     }
@@ -6072,12 +6074,22 @@ impl App {
         }
     }
 
-    /// The number of persisted messages under a session (best-effort; `0` when unreadable). Read
-    /// once per session when the picker opens, so search filtering never re-hits the store.
+    /// The number of persisted messages under a single session (best-effort; `0` when unreadable),
+    /// used by the `/status` view. The session picker batches every count via
+    /// [`Self::session_message_counts`] instead of calling this per row.
     fn session_message_count(&self, id: &str) -> usize {
         self.open_store()
             .and_then(|db| db.messages().list_for_session(id).ok())
             .map_or(0, |messages| messages.len())
+    }
+
+    /// Message counts for every persisted session read in one grouped store query, so the session
+    /// picker tallies each row from a fixed number of store round-trips rather than one open per
+    /// session. Best-effort: an empty map when no store is bound or it cannot be read.
+    fn session_message_counts(&self) -> std::collections::HashMap<String, usize> {
+        self.open_store()
+            .and_then(|db| db.messages().counts_by_session().ok())
+            .unwrap_or_default()
     }
 
     /// Build the full session-picker set: every persisted session (newest-first), each as a rich
@@ -6104,6 +6116,7 @@ impl App {
                 hay: key.to_lowercase(),
             }];
         }
+        let counts = self.session_message_counts();
         let now = current_epoch_secs();
         persisted
             .into_iter()
@@ -6114,7 +6127,7 @@ impl App {
                     .filter(|t| !t.trim().is_empty())
                     .unwrap_or_else(|| session.id.clone());
                 let model = short_model(session.model.as_deref().unwrap_or(&self.status.model));
-                let count = self.session_message_count(&session.id);
+                let count = counts.get(&session.id).copied().unwrap_or(0);
                 let age = relative_age(&session.updated_at, now);
                 let meta = if age.is_empty() {
                     format!("{count} msg")
@@ -15096,6 +15109,38 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         assert!(!a.palette_open(), "Enter on no-match closes the palette");
         assert!(!a.dialog_open(), "nothing is executed");
+    }
+
+    #[test]
+    fn palette_filter_is_subsequence_fuzzy_not_just_substring() {
+        // VAL-PICK-061: the palette filters by subsequence (matching anywhere), consistent with the
+        // file picker's fuzzy semantics — a non-contiguous query like `mdl` still surfaces
+        // `/models`, which a plain substring `.contains()` would miss.
+        let mut a = app();
+        a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        type_str(&mut a, "mdl");
+        let labels = a
+            .palette_matches()
+            .into_iter()
+            .map(|c| c.label)
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "/models"),
+            "`mdl` fuzzy-matches `/models`: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label == "/new"),
+            "an unrelated command stays hidden: {labels:?}"
+        );
+        // Clearing the query restores the full list.
+        for _ in 0.."mdl".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(a.palette_query(), Some(""));
+        assert!(
+            a.palette_matches().iter().any(|c| c.label == "/new"),
+            "clearing restores the full command list"
+        );
     }
 
     #[test]
