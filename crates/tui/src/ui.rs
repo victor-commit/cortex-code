@@ -1535,13 +1535,22 @@ fn push_blocked(
     row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
     let origin = bx + 2;
     let inner_room = (bx + bw - 1).saturating_sub(origin + 1);
+    let prefix = format!("{} ", glyphs::ACCENT_BAR); // `▌ `
+    let separator = format!("  {}  ", glyphs::EM_DASH); // `  —  `
+    // The fixed prefix (`▌ blocked  `) and separator (`  —  `) always occupy space, so the command
+    // clip budget is the inner room minus those and the reason — the reason stays visible (itself
+    // clipped only if it alone can't fit) and nothing overruns the right border.
+    let fixed_w = prefix.chars().count() + "blocked".chars().count() + 2 + separator.chars().count();
+    let reason_room = inner_room.saturating_sub(fixed_w);
+    let reason_clipped = clip_text(reason, reason_room);
+    let command_room = reason_room.saturating_sub(reason_clipped.chars().count());
     let segments: Vec<(String, Style)> = vec![
-        (format!("{} ", glyphs::ACCENT_BAR), deny),
+        (prefix, deny),
         ("blocked".to_owned(), deny_bold),
         ("  ".to_owned(), base),
-        (clip_text(command, inner_room), cmd_style),
-        (format!("  {}  ", glyphs::EM_DASH), sep_style),
-        (reason.to_owned(), reason_style),
+        (clip_text(command, command_room), cmd_style),
+        (separator, sep_style),
+        (reason_clipped, reason_style),
     ];
     place_segments(&mut row, origin, &segments);
     lines.push(cells_to_line(&row));
@@ -10131,6 +10140,47 @@ mod tests {
             fg_of("shell is disabled while planning"),
             Some(theme.text_dim),
             "the reason is DIM"
+        );
+    }
+
+    #[test]
+    fn blocked_banner_clips_a_long_command_and_keeps_the_reason_inside_the_border() {
+        // VAL-PERM-019/021 robustness: a realistic long command (>=39 chars) must not overrun the
+        // rounded box; the command is clipped with an ellipsis and the reason stays visible.
+        let theme = style::ThemeColors::dark();
+        let width = 92usize;
+        let long_command = "cargo build --release --features huge-thing";
+        assert!(long_command.chars().count() >= 39, "fixture is a long command");
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        push_blocked(
+            &mut lines,
+            long_command,
+            crate::app::SHELL_BLOCKED_WHILE_PLANNING,
+            width,
+            &theme,
+        );
+        let content = lines
+            .iter()
+            .find(|l| plain(l).contains("blocked"))
+            .expect("content row");
+        let text = plain(content);
+        let chars: Vec<char> = text.chars().collect();
+        // The right border sits at column `width - CONTENT_MARGIN - 1` and must still be the box
+        // edge — proof the assembled row never overran it.
+        let right_border = width - CONTENT_MARGIN - 1;
+        assert_eq!(chars[CONTENT_MARGIN], '│', "left border intact:\n{text}");
+        assert_eq!(chars[right_border], '│', "right border intact (no overrun):\n{text}");
+        // Nothing is painted past the right border (the trailing margin stays blank).
+        for &c in &chars[right_border + 1..] {
+            assert_eq!(c, ' ', "no content past the right border:\n{text}");
+        }
+        // The command is clipped with an ellipsis; the full command does not fit.
+        assert!(text.contains('…'), "long command is clipped with an ellipsis:\n{text}");
+        assert!(!text.contains(long_command), "the full long command is not shown:\n{text}");
+        // The reason remains visible despite the long command.
+        assert!(
+            text.contains("shell is disabled while planning"),
+            "the reason stays visible:\n{text}"
         );
     }
 

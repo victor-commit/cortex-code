@@ -17,9 +17,29 @@ pub struct InputAttachment {
     pub path: String,
     /// IANA media type (`image/png`, `image/jpeg`, `application/pdf`, `image/svg+xml`).
     pub media_type: String,
+    /// On-disk size in bytes, measured once at attach time (0 when unreadable). Cached so the
+    /// render hot path never re-stats the file.
+    byte_size: u64,
+    /// Card meta descriptor (`1104×720`, `12 pages`, `vector`, `document`), parsed once at attach
+    /// time from the file head. Cached so the render hot path never re-reads the file.
+    descriptor: String,
 }
 
 impl InputAttachment {
+    /// Build an attachment for `path`/`media_type`, measuring the byte size and card descriptor
+    /// once (best-effort file reads) so the render path can reuse the cached values every frame.
+    #[must_use]
+    pub fn new(path: String, media_type: String) -> Self {
+        let byte_size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        let descriptor = compute_descriptor(&path, &media_type);
+        Self {
+            path,
+            media_type,
+            byte_size,
+            descriptor,
+        }
+    }
+
     /// Human-readable chip label for the composer.
     #[must_use]
     pub fn chip_label(&self) -> String {
@@ -53,59 +73,24 @@ impl InputAttachment {
         }
     }
 
-    /// The on-disk size in bytes (0 when the file is unreadable).
+    /// The on-disk size in bytes (0 when the file was unreadable at attach time). Cached — no
+    /// per-call disk access.
     #[must_use]
     pub fn byte_size(&self) -> u64 {
-        std::fs::metadata(&self.path)
-            .map(|meta| meta.len())
-            .unwrap_or(0)
+        self.byte_size
     }
 
     /// The card metadata line: a type-specific descriptor plus the human-readable size, e.g.
-    /// `1104×720 · 42 KB` (image), `12 pages · 88 KB` (pdf), `vector · 4 KB` (svg). The descriptor
-    /// is best-effort (falls back to a generic word) but the size is always the real file size.
+    /// `1104×720 · 42 KB` (image), `12 pages · 88 KB` (pdf), `vector · 4 KB` (svg). Both the
+    /// descriptor and size are cached from attach time — this never touches the disk.
     #[must_use]
     pub fn meta_line(&self) -> String {
         format!(
             "{} {} {}",
-            self.descriptor(),
+            self.descriptor,
             crate::glyphs::SEPARATOR,
-            human_size(self.byte_size())
+            human_size(self.byte_size)
         )
-    }
-
-    /// A type-specific descriptor for the card meta line, read best-effort from the file bytes.
-    fn descriptor(&self) -> String {
-        match self.media_type.as_str() {
-            "image/svg+xml" => "vector".to_owned(),
-            "image/png" | "image/jpeg" => self
-                .read_prefix(PREFIX_READ_CAP)
-                .and_then(|bytes| image_dimensions(&self.media_type, &bytes))
-                .map(|(w, h)| format!("{w}{}{h}", crate::glyphs::MULTIPLY))
-                .unwrap_or_else(|| "image".to_owned()),
-            "application/pdf" => self
-                .read_prefix(PREFIX_READ_CAP)
-                .and_then(|bytes| pdf_page_count(&bytes))
-                .map(|n| {
-                    if n == 1 {
-                        "1 page".to_owned()
-                    } else {
-                        format!("{n} pages")
-                    }
-                })
-                .unwrap_or_else(|| "document".to_owned()),
-            _ => "file".to_owned(),
-        }
-    }
-
-    /// Read at most `cap` bytes from the head of the file (bounded so descriptor parsing never
-    /// pulls a whole large attachment into memory on the render path).
-    fn read_prefix(&self, cap: usize) -> Option<Vec<u8>> {
-        use std::io::Read;
-        let file = std::fs::File::open(&self.path).ok()?;
-        let mut buffer = Vec::new();
-        file.take(cap as u64).read_to_end(&mut buffer).ok()?;
-        Some(buffer)
     }
 
     /// Human-readable transcript summary line.
@@ -154,6 +139,34 @@ impl InputAttachment {
 /// dimensions / pdf page count). Image headers sit in the first bytes; a page tree with `/Count`
 /// and leaf `/Page` objects is reliably present well inside this window for typical documents.
 const PREFIX_READ_CAP: usize = 256 * 1024;
+
+/// Compute the cached card descriptor for a staged attachment from its file head (best-effort).
+/// Called once at attach time — never on the render path.
+fn compute_descriptor(path: &str, media_type: &str) -> String {
+    match media_type {
+        "image/svg+xml" => "vector".to_owned(),
+        "image/png" | "image/jpeg" => read_prefix(path, PREFIX_READ_CAP)
+            .and_then(|(bytes, _)| image_dimensions(media_type, &bytes))
+            .map(|(w, h)| format!("{w}{}{h}", crate::glyphs::MULTIPLY))
+            .unwrap_or_else(|| "image".to_owned()),
+        "application/pdf" => read_prefix(path, PREFIX_READ_CAP)
+            .map(|(bytes, truncated)| pdf_descriptor(&bytes, truncated))
+            .unwrap_or_else(|| "document".to_owned()),
+        _ => "file".to_owned(),
+    }
+}
+
+/// Read at most `cap` bytes from the head of a file (bounded so descriptor parsing never pulls a
+/// whole large attachment into memory). The `bool` is `true` when the file filled the cap, i.e. the
+/// prefix may be truncated and a byte-scan of it could under-count.
+fn read_prefix(path: &str, cap: usize) -> Option<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut buffer = Vec::new();
+    file.take(cap as u64).read_to_end(&mut buffer).ok()?;
+    let truncated = buffer.len() >= cap;
+    Some((buffer, truncated))
+}
 
 /// Format a byte count as a compact human-readable size (`4 KB`, `88 KB`, `1.3 MB`). Sizes below a
 /// kilobyte read as raw bytes; kilobytes/megabytes round to keep the card meta line short.
@@ -232,6 +245,81 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+/// Best-effort PDF page-count descriptor for the card meta line.
+///
+/// Prefers the authoritative page-tree `/Count N` node — correct even for large or compressed PDFs
+/// whose page objects fall past the read prefix or live in compressed object streams. When no
+/// `/Count` node is visible, a leaf-`/Page` tally is only trusted for a fully-read prefix; a
+/// truncated prefix would under-count, so it degrades to a generic `document` rather than report a
+/// confidently-wrong page count.
+fn pdf_descriptor(bytes: &[u8], truncated: bool) -> String {
+    if let Some(n) = pdf_page_tree_count(bytes) {
+        return pdf_pages_label(n);
+    }
+    if !truncated
+        && let Some(n) = pdf_page_count(bytes)
+    {
+        return pdf_pages_label(n);
+    }
+    "document".to_owned()
+}
+
+/// Render a page count as a card descriptor (`1 page` / `N pages`).
+fn pdf_pages_label(n: usize) -> String {
+    if n == 1 {
+        "1 page".to_owned()
+    } else {
+        format!("{n} pages")
+    }
+}
+
+/// How far around a `/Count` token to look for a sibling `/Kids` array when deciding whether the
+/// `/Count` belongs to a page-tree node (vs. an outline node, which also carries `/Count`). Sized
+/// to span a `/Kids` array for a few hundred direct child pages.
+const PDF_PAGE_TREE_WINDOW: usize = 4096;
+
+/// The authoritative total page count read from a page-tree `/Count N` node, if one is visible in
+/// `bytes`. A `/Count` is trusted only when a `/Kids` array sits nearby (the page-tree node's
+/// defining key), which excludes outline `/Count` nodes. The maximum qualifying value is the root
+/// node's total (the sum over the tree), so nested intermediate counts never win.
+fn pdf_page_tree_count(bytes: &[u8]) -> Option<usize> {
+    const COUNT_KEY: &[u8] = b"/Count";
+    const KIDS_KEY: &[u8] = b"/Kids";
+    let is_ws = |b: u8| matches!(b, b' ' | b'\r' | b'\n' | b'\t');
+    let mut best: Option<usize> = None;
+    let mut i = 0;
+    while i + COUNT_KEY.len() <= bytes.len() {
+        if &bytes[i..i + COUNT_KEY.len()] != COUNT_KEY {
+            i += 1;
+            continue;
+        }
+        let mut j = i + COUNT_KEY.len();
+        while j < bytes.len() && is_ws(bytes[j]) {
+            j += 1;
+        }
+        let digits_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > digits_start {
+            let window_start = i.saturating_sub(PDF_PAGE_TREE_WINDOW);
+            let window_end = (j + PDF_PAGE_TREE_WINDOW).min(bytes.len());
+            let has_kids = bytes[window_start..window_end]
+                .windows(KIDS_KEY.len())
+                .any(|w| w == KIDS_KEY);
+            if has_kids
+                && let Ok(n) = std::str::from_utf8(&bytes[digits_start..j])
+                    .unwrap_or("")
+                    .parse::<usize>()
+            {
+                best = Some(best.map_or(n, |b: usize| b.max(n)));
+            }
+        }
+        i = j.max(i + 1);
+    }
+    best
+}
+
 /// Best-effort PDF page count: count leaf `/Type /Page` objects (tolerating optional whitespace),
 /// excluding the `/Pages` tree node. Returns `None` when no page object is found.
 fn pdf_page_count(bytes: &[u8]) -> Option<usize> {
@@ -304,10 +392,10 @@ pub fn resolve_local_file_attachment(
     };
     validate_attachment_file(&canonical, media_type)?;
 
-    Ok(InputAttachment {
-        path: canonical.to_string_lossy().into_owned(),
-        media_type: media_type.to_owned(),
-    })
+    Ok(InputAttachment::new(
+        canonical.to_string_lossy().into_owned(),
+        media_type.to_owned(),
+    ))
 }
 
 /// Try to capture an image from the OS clipboard and persist it to a local attachment file.
@@ -349,10 +437,10 @@ pub fn capture_clipboard_image_attachment() -> Result<InputAttachment, String> {
     }
     if let Some(path) = capture_clipboard_pngpaste(&mut attempts)? {
         let media_type = supported_media_type_for_path(&path).unwrap_or("image/png");
-        return Ok(InputAttachment {
-            path: path.to_string_lossy().into_owned(),
-            media_type: media_type.to_owned(),
-        });
+        return Ok(InputAttachment::new(
+            path.to_string_lossy().into_owned(),
+            media_type.to_owned(),
+        ));
     }
 
     let mut message =
@@ -384,10 +472,7 @@ pub fn attachment_from_message_part(part: &MessagePart) -> Option<InputAttachmen
     if !is_supported_media_type(kind.as_ref()) {
         return None;
     }
-    Some(InputAttachment {
-        path: path.clone(),
-        media_type: kind.into_owned(),
-    })
+    Some(InputAttachment::new(path.clone(), kind.into_owned()))
 }
 
 /// Supported attachment media type for `path`, inferred by extension.
@@ -494,10 +579,10 @@ fn persist_clipboard_bytes(bytes: Vec<u8>, media_type: &str) -> Result<InputAtta
             path.display()
         )
     })?;
-    Ok(InputAttachment {
-        path: path.to_string_lossy().into_owned(),
-        media_type: media_type.to_owned(),
-    })
+    Ok(InputAttachment::new(
+        path.to_string_lossy().into_owned(),
+        media_type.to_owned(),
+    ))
 }
 
 fn looks_like_media(bytes: &[u8], media_type: &str) -> bool {
@@ -626,13 +711,7 @@ mod tests {
 
     #[test]
     fn badge_label_maps_media_type_to_short_uppercase_tag() {
-        let badge = |mt: &str| {
-            InputAttachment {
-                path: "x".to_owned(),
-                media_type: mt.to_owned(),
-            }
-            .badge_label()
-        };
+        let badge = |mt: &str| InputAttachment::new("x".to_owned(), mt.to_owned()).badge_label();
         assert_eq!(badge("image/png"), "PNG");
         assert_eq!(badge("image/jpeg"), "JPG");
         assert_eq!(badge("image/svg+xml"), "SVG");
@@ -674,6 +753,42 @@ mod tests {
     }
 
     #[test]
+    fn pdf_page_tree_count_reads_count_next_to_kids_and_takes_the_root_total() {
+        // Nested page tree: intermediate node /Count 3, root node /Count 12. The root total wins.
+        let pdf = b"%PDF-1.7\n<< /Type /Pages /Kids [ 5 0 R 6 0 R ] /Count 3 >>\n\
+                    << /Type /Pages /Kids [ 2 0 R 3 0 R 4 0 R ] /Count 12 >>";
+        assert_eq!(pdf_page_tree_count(pdf), Some(12));
+    }
+
+    #[test]
+    fn pdf_page_tree_count_ignores_outline_count_without_kids() {
+        // An outline dict carries /Count but no /Kids; it must not be read as a page count.
+        let pdf = b"%PDF-1.7\n<< /Type /Outlines /First 9 0 R /Last 9 0 R /Count 7 >>";
+        assert_eq!(pdf_page_tree_count(pdf), None);
+    }
+
+    #[test]
+    fn pdf_descriptor_prefers_count_even_when_prefix_is_truncated() {
+        // A compressed/large PDF whose page objects are past the prefix: the /Count node in the
+        // (truncated) head still yields the real page count, not a generic fallback.
+        let pdf = b"%PDF-1.7\n<< /Type /Pages /Kids [ 2 0 R 3 0 R ] /Count 42 >>";
+        assert_eq!(pdf_descriptor(pdf, true), "42 pages");
+        // Singular form when the count is one.
+        let one = b"%PDF-1.7\n<< /Type /Pages /Kids [ 2 0 R ] /Count 1 >>";
+        assert_eq!(pdf_descriptor(one, true), "1 page");
+    }
+
+    #[test]
+    fn pdf_descriptor_falls_back_to_document_when_truncated_without_count() {
+        // No /Count node and the prefix hit the cap (truncated): a leaf-page scan could under-count,
+        // so degrade to the generic descriptor rather than report a confidently-wrong page count.
+        let pdf = b"%PDF-1.4\n/Type /Page /Contents 2 0 R";
+        assert_eq!(pdf_descriptor(pdf, true), "document");
+        // With the whole file present (not truncated) the leaf-page tally is trusted.
+        assert_eq!(pdf_descriptor(pdf, false), "1 page");
+    }
+
+    #[test]
     fn meta_line_and_transcript_label_are_emoji_free_and_real() {
         let path = std::env::temp_dir().join(format!(
             "cortex-tui-meta-{}-{}.png",
@@ -694,10 +809,8 @@ mod tests {
             ],
         )
         .expect("write temp png");
-        let attachment = InputAttachment {
-            path: path.to_string_lossy().into_owned(),
-            media_type: "image/png".to_owned(),
-        };
+        let attachment =
+            InputAttachment::new(path.to_string_lossy().into_owned(), "image/png".to_owned());
         let meta = attachment.meta_line();
         // The 1×1 fixture yields real dimensions and a real (non-zero) byte size.
         assert!(meta.starts_with("1×1"), "meta reflects real dims: {meta}");
