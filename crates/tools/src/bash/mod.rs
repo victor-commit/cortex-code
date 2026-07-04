@@ -37,7 +37,9 @@ use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-pub use jobs::{BackgroundJob, BackgroundJobs, JobHandle};
+pub use jobs::{
+    BackgroundJob, BackgroundJobs, JobHandle, pid_alive_same_process, process_start_time,
+};
 
 use crate::output::{OutputLimits, bound_output};
 use crate::tool::{Tool, ToolContext, ToolOutput};

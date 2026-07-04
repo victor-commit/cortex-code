@@ -58,6 +58,17 @@ pub struct ToolCard {
     /// For a backgrounded `bash` job, the OS process id tracked to detect when the job exits.
     /// `None` once the job has completed (or for any card that was never backgrounded).
     pub bg_pid: Option<u32>,
+    /// The tracked background job's process start time (`/proc/<pid>` field 22), captured at
+    /// [`ToolCard::start_background`] so [`App::poll_background_jobs`](crate::app::App::poll_background_jobs)
+    /// can reject a *reused* pid: if the pid is alive but its start time no longer matches, the real
+    /// job has exited and an unrelated process now holds the pid. `None` when unknown.
+    pub bg_start_time: Option<u64>,
+    /// Whether this call requested a background job (`bash` with `background: true`), derived from
+    /// the structured tool-call arguments at construction. This is the single, unambiguous gate for
+    /// entering background-streaming mode: unlike `summary.contains("(background)")` it is immune to
+    /// the [`SUMMARY_MAX`] truncation that drops the marker from a long command, and to a foreground
+    /// command whose text merely mentions `(background)`.
+    pub is_background: bool,
     /// When the call started, used to measure [`ToolCard::duration_ms`] on completion.
     started: Instant,
 }
@@ -69,6 +80,7 @@ impl ToolCard {
         let name = name.into();
         let arguments = redaction::redact(arguments);
         let diff_stat = diff_stat_for(&name, &arguments);
+        let is_background = is_background_call(&name, &arguments);
         Self {
             id: id.into(),
             summary: redaction::redact(&summarize_args(&name, &arguments)),
@@ -81,6 +93,8 @@ impl ToolCard {
             diff: None,
             bg_log: None,
             bg_pid: None,
+            bg_start_time: None,
+            is_background,
             started: Instant::now(),
         }
     }
@@ -120,6 +134,7 @@ impl ToolCard {
     pub fn start_background(&mut self, pid: u32, log_path: PathBuf) {
         self.bg_pid = Some(pid);
         self.bg_log = Some(log_path);
+        self.bg_start_time = tools::process_start_time(pid);
     }
 
     /// Transition a backgrounded card to [`ToolStatus::Completed`] once its process id has exited,
@@ -131,14 +146,47 @@ impl ToolCard {
         self.status = ToolStatus::Completed;
         self.duration_ms = Some(self.started.elapsed().as_millis() as u64);
         self.bg_pid = None;
+        self.bg_start_time = None;
     }
 
     /// Whether this card is a backgrounded `bash` job still being polled (running with a tracked
     /// pid), the seam [`push_tool`](crate::ui::push_tool) uses to keep the "esc to background"
     /// footer hint scoped to the live window.
+    #[must_use]
     pub fn is_background_running(&self) -> bool {
         self.status == ToolStatus::Running && self.bg_pid.is_some()
     }
+
+    /// Whether the tracked background job's process is still the *same* live process it was at
+    /// [`ToolCard::start_background`]. This is the completion-transition signal: it is driven by the
+    /// job's real exit and, by comparing the captured `/proc/<pid>` start time, is immune to pid
+    /// reuse (a freed pid re-taken by an unrelated process reads as not alive). Returns `false` for
+    /// a card with no tracked pid.
+    #[must_use]
+    pub fn bg_process_alive(&self) -> bool {
+        match self.bg_pid {
+            Some(pid) => tools::pid_alive_same_process(pid, self.bg_start_time),
+            None => false,
+        }
+    }
+}
+
+/// Whether a tool call requests a background job: a `bash` call whose structured arguments carry
+/// `background: true`. Derived from the parsed JSON arguments (not the truncatable summary text), so
+/// it is the unambiguous gate for background-streaming mode regardless of command length.
+#[must_use]
+pub fn is_background_call(name: &str, arguments: &str) -> bool {
+    if name != "bash" {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("background")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// Parse the `pid`/`output` fields from a `bash` background-job start acknowledgement into the

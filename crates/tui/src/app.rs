@@ -2249,10 +2249,11 @@ impl App {
     /// (VAL-TOOL-023): a background job keeps live-streaming its real output instead of freezing on
     /// the static "job started" acknowledgement. A job's pid goes away either because the command
     /// finished naturally or because [`crate::turn`] reaped it by pid at the end of the turn that
-    /// spawned it (`background_jobs().shutdown()`); either way this observes the same signal
-    /// (`/proc/<pid>` gone) and finalizes the card from the same tailed content. Returns whether any
-    /// card changed — the event loop already redraws unconditionally each iteration, so this is
-    /// informational only.
+    /// spawned it (`background_jobs().shutdown()`); either way the completion transition observes the
+    /// job's real exit via [`ToolCard::bg_process_alive`], which compares the captured `/proc/<pid>`
+    /// start time so a *reused* pid (freed then re-taken by an unrelated process) never keeps the
+    /// card polling a live-but-unrelated pid. Returns whether any card changed — the event loop
+    /// already redraws unconditionally each iteration, so this is informational only.
     pub fn poll_background_jobs(&mut self) -> bool {
         let mut changed = false;
         for entry in &mut self.transcript {
@@ -2260,11 +2261,11 @@ impl App {
             if !card.is_background_running() {
                 continue;
             }
-            let (Some(log_path), Some(pid)) = (card.bg_log.clone(), card.bg_pid) else {
+            let (Some(log_path), Some(_pid)) = (card.bg_log.clone(), card.bg_pid) else {
                 continue;
             };
             let tailed = redaction::redact(&tail_background_log(&log_path));
-            if background_pid_alive(pid) {
+            if card.bg_process_alive() {
                 if card.output != tailed {
                     card.output = tailed;
                     changed = true;
@@ -2532,12 +2533,16 @@ impl App {
     /// Transition the running tool card matching `id` to its terminal (completed/failed) state,
     /// recording the result text. The most recent matching card wins so re-used ids never collide.
     ///
-    /// A successful backgrounded `bash` result (VAL-TOOL-023: summary marked `(background)`) is the
-    /// job-started acknowledgement, not a finished result — the card is instead handed its log path
-    /// and pid via [`ToolCard::start_background`] and stays [`ToolStatus::Running`], so
+    /// A successful backgrounded `bash` result (VAL-TOOL-023: the call's args carry
+    /// `background: true`, tracked on the card as [`ToolCard::is_background`]) is the job-started
+    /// acknowledgement, not a finished result — the card is instead handed its log path and pid via
+    /// [`ToolCard::start_background`] and stays [`ToolStatus::Running`], so
     /// [`App::poll_background_jobs`] can tail the live log until the job's process actually exits.
-    /// A result whose text doesn't carry a parseable `pid:`/`output:` pair (unexpected shape) falls
-    /// back to completing normally, so the card never hangs running with nothing to poll.
+    /// Gating on the structured `is_background` flag (not the truncatable `(background)` summary
+    /// marker) keeps this correct for arbitrarily long commands and immune to a foreground command
+    /// whose text merely mentions `(background)`. A result whose text doesn't carry a parseable
+    /// `pid:`/`output:` pair (unexpected shape) falls back to completing normally, so the card never
+    /// hangs running with nothing to poll.
     fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
         let mut lsp_candidate: Option<(String, String, String)> = None;
         if let Some(card) = self
@@ -2549,8 +2554,7 @@ impl App {
                 _ => None,
             })
         {
-            let is_background_bash =
-                !is_error && card.name == "bash" && card.summary.contains("(background)");
+            let is_background_bash = !is_error && card.is_background;
             let bg_job = is_background_bash
                 .then(|| crate::tool_card::text_from_parts(parts))
                 .and_then(|text| crate::tool_card::parse_background_job(&text));
@@ -9496,13 +9500,6 @@ fn tail_background_log(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Whether a background job's process is still alive, checked via `/proc/<pid>` — the same
-/// liveness probe `crates/tools/src/bash/jobs.rs` uses, so a card and the registry agree on when a
-/// job has exited. Linux-only (matches the target sandbox and the background-job feature itself).
-fn background_pid_alive(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
-}
-
 /// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
 /// mockup label): the default model reads `default · fast`, reasoning models read `reasoning`, free
 /// models read `free`, and the rest fall back to a capability word.
@@ -12130,6 +12127,146 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn long_background_bash_command_still_streams_and_completes() {
+        // VAL-TOOL-023 robustness: a background command longer than the SUMMARY_MAX (~100 char)
+        // truncation boundary LOSES the `(background)` marker from its summary, so the entry into
+        // background-streaming mode must be gated on the structured `background: true` arg (the
+        // card's `is_background` flag), NOT the truncatable summary text. Such a card must still
+        // stay ORANGE running, stream its log, and complete on the job's real exit.
+        use crate::tool_card::ToolStatus;
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a stand-in background process");
+        let pid = child.id();
+        let log = std::env::temp_dir().join(format!("cortex-bglong-test-{pid}.log"));
+        std::fs::write(&log, "step 1\n").expect("seed the job log");
+
+        // A command well over 88 chars, so its `<cmd> (background)` summary is truncated and the
+        // trailing `(background)` marker is dropped.
+        let long_cmd = format!("echo {} && sleep 30", "abcdefghij".repeat(12));
+        assert!(long_cmd.len() > 88, "command must exceed the truncation window");
+        let args = format!(
+            r#"{{"command":{},"background":true}}"#,
+            serde_json::Value::String(long_cmd.clone())
+        );
+
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("run a long background build".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "bglong".to_owned(),
+            name: "bash".to_owned(),
+            arguments: args,
+        }))
+        .unwrap();
+        let ack = format!(
+            "[background job started]\njob id: bash-1\npid: {pid}\ncwd: /tmp\noutput: {}\n\
+             The command is running in the background.",
+            log.display()
+        );
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "bglong".to_owned(),
+            name: "bash".to_owned(),
+            parts: vec![tool_part(&ack)],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        // Precondition of the bug: the summary lost its `(background)` marker to truncation, so a
+        // summary-substring gate would (wrongly) complete the card immediately. The flag-based gate
+        // still enters background-streaming mode.
+        let card = last_tool(&a);
+        assert!(
+            !card.summary.contains("(background)"),
+            "the long summary is truncated past the marker: {}",
+            card.summary
+        );
+        assert!(card.is_background, "the card is flagged background from its args");
+        assert_eq!(card.status, ToolStatus::Running, "long background card stays running");
+        assert_eq!(card.bg_pid, Some(pid));
+        assert_eq!(card.bg_log.as_deref(), Some(log.as_path()));
+
+        // It streams the live log while the process is alive.
+        std::fs::write(&log, "step 1\nstep 2\n").expect("append to the job log");
+        a.poll_background_jobs();
+        let card = last_tool(&a);
+        assert_eq!(card.status, ToolStatus::Running, "still running while the pid is alive");
+        assert!(card.output.contains("step 2"), "the body tails the log: {}", card.output);
+
+        // And it completes once the job's process exits.
+        std::fs::write(&log, "step 1\nstep 2\nstep 3 done\n").expect("finalize the job log");
+        child.kill().expect("kill the stand-in process");
+        child.wait().expect("reap the stand-in process");
+        for _ in 0..200 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        a.poll_background_jobs();
+        let card = last_tool(&a);
+        assert_eq!(
+            card.status,
+            ToolStatus::Completed,
+            "the long background card completes once its pid exits"
+        );
+        assert!(card.output.contains("step 3 done"), "final body: {}", card.output);
+
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn foreground_bash_mentioning_background_does_not_enter_background_mode() {
+        // VAL-TOOL-023 misfire guard: a FOREGROUND bash (no `background: true` arg) whose command
+        // text contains "(background)" AND whose stdout carries a `pid:`/`output:` ack shape must
+        // NOT enter background-streaming mode — the contrived substring/ack must not fool the gate.
+        // It completes normally with its output.
+        use crate::tool_card::ToolStatus;
+
+        let mut a = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("echo a fake ack".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "fg".to_owned(),
+            name: "bash".to_owned(),
+            arguments: r#"{"command":"echo 'starting job (background)'"}"#.to_owned(),
+        }))
+        .unwrap();
+        // A foreground result whose text mimics a background ack (has `(background)`, `pid:`,
+        // `output:` lines). This would fool a summary-substring gate.
+        let fake = "[background job started]\nstarting job (background)\npid: 4242\ncwd: /tmp\n\
+                    output: /tmp/does-not-exist.log";
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "fg".to_owned(),
+            name: "bash".to_owned(),
+            parts: vec![tool_part(fake)],
+            is_error: false,
+        }))
+        .unwrap();
+        a.poll_turn();
+
+        let card = last_tool(&a);
+        assert!(
+            card.summary.contains("(background)"),
+            "the summary text does contain the marker (the misfire trap): {}",
+            card.summary
+        );
+        assert!(!card.is_background, "no background arg → not a background card");
+        assert_eq!(
+            card.status,
+            ToolStatus::Completed,
+            "a foreground bash completes normally, never entering background mode"
+        );
+        assert!(card.bg_pid.is_none(), "no background pid is tracked");
+        assert!(card.bg_log.is_none(), "no background log is tracked");
+        assert!(!card.is_background_running(), "the card is not a live background job");
+        assert!(card.output.contains("pid: 4242"), "the ack text is the completed output");
     }
 
     #[test]

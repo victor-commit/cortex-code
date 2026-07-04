@@ -37,7 +37,9 @@ mod websearch;
 mod write;
 
 pub use apply_patch::{ApplyPatchTool, PatchFileDiff, patch_edited_paths, patch_file_diffs};
-pub use bash::{BackgroundJob, BackgroundJobs, BashTool, JobHandle};
+pub use bash::{
+    BackgroundJob, BackgroundJobs, BashTool, JobHandle, pid_alive_same_process, process_start_time,
+};
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;

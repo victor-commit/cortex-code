@@ -131,6 +131,33 @@ impl BackgroundJobs {
     }
 }
 
+/// The kernel-reported start time of process `pid` (field 22 of `/proc/<pid>/stat`, in clock ticks
+/// since boot). Two processes sharing a pid but with different start times are necessarily distinct
+/// processes, so capturing this at spawn time lets a later liveness probe reject a *reused* pid.
+/// `None` when the process is gone or `/proc` is unreadable (Linux-only, matching the target sandbox
+/// and the background-job feature).
+#[must_use]
+pub fn process_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` (field 2) is wrapped in parens and may itself contain spaces or ')'; splitting after
+    // the LAST ')' leaves fields 3.. , so `starttime` (field 22) is index 19 of the remainder.
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().nth(19)?.parse::<u64>().ok()
+}
+
+/// Whether `pid` still names the *same* process it did when `start_time` was captured, guarding
+/// against pid reuse: if the pid exists but its start time no longer matches the baseline, the
+/// original job has exited and an unrelated process now holds the pid, so it reads as not alive.
+/// When no baseline was captured (`None`), falls back to bare `/proc/<pid>` existence.
+#[must_use]
+pub fn pid_alive_same_process(pid: u32, start_time: Option<u64>) -> bool {
+    match (process_start_time(pid), start_time) {
+        (Some(current), Some(expected)) => current == expected,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +227,34 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(!pid_alive(pid), "pid {pid} must be reaped after shutdown");
+    }
+
+    #[tokio::test]
+    async fn liveness_guard_rejects_a_reused_pid() {
+        // A live process reads alive against its own captured start time, and (crucially) reads NOT
+        // alive against a mismatched start time — the shape that guards a completion transition
+        // against pid REUSE, where a freed pid is re-taken by an unrelated process.
+        let child = spawn_sleeper().await;
+        let pid = child.id().expect("pid");
+
+        let start = process_start_time(pid).expect("a live process has a start time");
+        assert!(
+            pid_alive_same_process(pid, Some(start)),
+            "the same process is alive against its own start time"
+        );
+        assert!(
+            !pid_alive_same_process(pid, Some(start.wrapping_add(1))),
+            "a mismatched start time (pid reuse) reads as not alive"
+        );
+        assert!(
+            pid_alive_same_process(pid, None),
+            "with no baseline, liveness falls back to bare existence"
+        );
+
+        // A never-allocated-high pid has no start time and reads not alive.
+        assert_eq!(process_start_time(u32::MAX), None);
+        assert!(!pid_alive_same_process(u32::MAX, Some(start)));
+
+        drop(child);
     }
 }

@@ -944,7 +944,7 @@ fn push_tool(
         let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
         let hint_text = if card.status == ToolStatus::Running
             && card.name == "bash"
-            && card.summary.contains("(background)")
+            && card.is_background
         {
             // VAL-TOOL-023: background bash footer hint is "Ctrl+O to expand · esc to background"
             // while the job is still running; once it completes the card reverts to the plain hint.
