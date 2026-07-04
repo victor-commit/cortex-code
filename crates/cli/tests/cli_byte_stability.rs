@@ -40,6 +40,7 @@ struct Sandbox {
     home: PathBuf,
     config: PathBuf,
     db_path: PathBuf,
+    work: PathBuf,
 }
 
 impl Sandbox {
@@ -53,13 +54,18 @@ impl Sandbox {
         let root = std::env::temp_dir().join(unique);
         let home = root.join("home");
         let config = root.join("config");
+        // An empty working directory every command is launched from, so `search` scans no source
+        // files and its output is the deterministic session-hit set alone (no cwd-dependent drift).
+        let work = root.join("work");
         fs::create_dir_all(&home).expect("create scratch HOME");
         fs::create_dir_all(&config).expect("create scratch config");
+        fs::create_dir_all(&work).expect("create scratch work dir");
         Self {
             db_path: root.join("state/cortex.db"),
             root,
             home,
             config,
+            work,
         }
     }
 
@@ -79,11 +85,13 @@ impl Sandbox {
         ]
     }
 
-    /// A piped (non-TTY) invocation with the hermetic environment.
+    /// A piped (non-TTY) invocation with the hermetic environment, launched from the empty work
+    /// directory so `search` is cwd-deterministic.
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
         command
             .args(args)
+            .current_dir(&self.work)
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env_remove("OPENROUTER_API_KEY")
@@ -117,6 +125,7 @@ impl Sandbox {
         for arg in args {
             builder.arg(arg);
         }
+        builder.cwd(&self.work);
         builder.env_clear();
         builder.env("PATH", std::env::var("PATH").unwrap_or_default());
         builder.env("TERM", "xterm-256color");
@@ -284,16 +293,25 @@ fn machine_commands(session_id: &str) -> Vec<(&'static str, Vec<&str>, &'static 
         // json/jsonl bytes must still be identical on a TTY and when piped (VAL-CLI-028).
         ("models_json", vec!["models", "--format", "json"], ""),
         ("models_jsonl", vec!["models", "--format", "jsonl"], ""),
+        // `cortex search` machine formats: the hit carries a dynamic `message_id` (beyond the
+        // normalized session id), so no fixed golden — but the styled `search` command's json/jsonl
+        // bytes must still be ANSI-free and identical on a TTY and when piped, proving its TTY
+        // styling never leaks into the machine path (VAL-CROSS-046/047/048). Launched from the empty
+        // work dir so the only hit is the seeded session match (`hello world`).
+        ("search_json", vec!["search", "hello", "--format", "json"], ""),
+        ("search_jsonl", vec!["search", "hello", "--format", "jsonl"], ""),
     ]
 }
 
 /// The human/text commands whose TTY branch is intentionally styled. When piped they must emit the
 /// historical plain bytes with zero ANSI (styling auto-disables off a TTY); on a TTY they gain
-/// brand ANSI. `session_id` seeds the `replay` transcript.
+/// brand ANSI. `session_id` seeds the `replay` transcript; `search`/`stats` read the seeded DB.
 fn human_text_commands(session_id: &str) -> Vec<(&'static str, Vec<&str>)> {
     vec![
         ("models_text", vec!["models"]),
         ("replay_text", vec!["replay", session_id]),
+        ("stats_text", vec!["stats"]),
+        ("search_text", vec!["search", "hello"]),
     ]
 }
 
