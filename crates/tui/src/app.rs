@@ -1066,6 +1066,10 @@ pub struct App {
     /// first run (fresh config + no stored credentials) and cleared once the user presses Enter to
     /// start; while set it takes over the whole frame. See [`crate::onboarding`].
     onboarding: bool,
+    /// The interactive auth/login screen state, present while the `cortex auth login` provider
+    /// picker + masked-key screen is showing. While `Some` it takes over the whole frame and is
+    /// modal (Esc cancels back to a normal launch). See [`crate::auth_login`].
+    auth_login: Option<crate::auth_login::AuthLoginState>,
     /// The `/status` view's data, snapshotted when the view opens (a git subprocess + store reads
     /// are too costly to repeat every redraw). Rebuilt on each `/status` open.
     status_snapshot: Option<crate::view::StatusData>,
@@ -1313,6 +1317,7 @@ impl App {
             active_view: None,
             theme_gallery_open: false,
             onboarding: false,
+            auth_login: None,
             status_snapshot: None,
             timeline_snapshot: Vec::new(),
             queue_snapshot: Vec::new(),
@@ -4971,6 +4976,56 @@ impl App {
         matches!(key.code, KeyCode::Enter)
     }
 
+    /// Whether the interactive auth/login screen is showing (for rendering + key routing).
+    #[must_use]
+    pub fn auth_login_active(&self) -> bool {
+        self.auth_login.is_some()
+    }
+
+    /// The auth/login screen state, or `None` when the screen is not open.
+    #[must_use]
+    pub fn auth_login_state(&self) -> Option<&crate::auth_login::AuthLoginState> {
+        self.auth_login.as_ref()
+    }
+
+    /// Open the interactive auth/login screen, resolving each provider's real logged-in status. Used
+    /// at launch when `cortex auth login` is invoked interactively (no provider argument on a TTY).
+    pub fn open_auth_login(&mut self) {
+        self.auth_login = Some(crate::auth_login::AuthLoginState::new());
+    }
+
+    /// Key handling for the interactive auth/login screen. It is modal: `Ctrl+C` quits and `Esc`
+    /// cancels back out of the screen WITHOUT storing a credential (even if a key was typed). `Tab`
+    /// cycles focus between the provider list and the key field; while the list is focused Up/Down
+    /// move the selection; while the key field is focused printable keys edit the masked value and
+    /// Backspace erases. `Enter` stores the selected provider's typed key to the 0600 store (never
+    /// echoing it) and exits. The raw key never leaves [`crate::auth_login::AuthLoginState`].
+    fn on_auth_login_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        let Some(state) = self.auth_login.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel: discard the screen (and any typed key) without persisting anything.
+                self.auth_login = None;
+            }
+            KeyCode::Tab => state.toggle_focus(),
+            KeyCode::Up => state.move_selection(-1),
+            KeyCode::Down => state.move_selection(1),
+            KeyCode::Enter => {
+                let _ = state.store_selected();
+                self.auth_login = None;
+            }
+            KeyCode::Backspace => state.backspace(),
+            KeyCode::Char(c) if !ctrl => state.type_char(c),
+            _ => {}
+        }
+    }
+
     /// Key handling for an open full-screen view. The view is modal: Esc closes it back to the
     /// conversation and `Ctrl+C` still quits so the user is never trapped. Other keys are swallowed
     /// (per-view navigation is added by each view's own feature).
@@ -8140,6 +8195,15 @@ impl App {
                     self.run_keybind_action(action);
                 }
             }
+            return;
+        }
+
+        // The interactive auth/login screen takes over the frame while showing. It is modal: Esc
+        // cancels out (without storing), Ctrl+C quits, and every other key drives the provider
+        // picker / masked key field. It is checked before onboarding because it is launched
+        // explicitly by `cortex auth login`, not as a first-run splash.
+        if self.auth_login_active() {
+            self.on_auth_login_key(key, ctrl);
             return;
         }
 

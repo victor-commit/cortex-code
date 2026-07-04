@@ -38,8 +38,10 @@ pub fn run(args: AuthArgs, pure_plugins: bool) -> Exit {
 }
 
 fn login(args: AuthLoginArgs, plugin_state: &PluginState) -> Exit {
-    let Some(provider) = normalized_provider(&args.provider) else {
-        eprintln!("cortex auth login: provider must be non-empty");
+    let Some(provider) = args.provider.as_deref().and_then(normalized_provider) else {
+        eprintln!(
+            "cortex auth login: provider must be non-empty (run `cortex auth login` on a terminal for the interactive provider picker)"
+        );
         return Exit::Usage;
     };
     let Some(path) = auth_store_path() else {

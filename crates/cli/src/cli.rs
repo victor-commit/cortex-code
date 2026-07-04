@@ -433,8 +433,11 @@ pub enum AuthCommand {
 #[derive(Debug, Args)]
 pub struct AuthLoginArgs {
     /// Provider id to store a credential for (for example: `openrouter`).
+    ///
+    /// When omitted on a TTY, `auth login` opens the interactive provider picker + masked key
+    /// input screen instead of storing non-interactively.
     #[arg(value_name = "PROVIDER")]
-    pub provider: String,
+    pub provider: Option<String>,
 
     /// API key value to store.
     ///
@@ -1454,13 +1457,29 @@ mod tests {
             Some(Command::Auth(AuthArgs {
                 command: AuthCommand::Login(args),
             })) => {
-                assert_eq!(args.provider, "openrouter");
+                assert_eq!(args.provider.as_deref(), Some("openrouter"));
                 assert_eq!(args.api_key.as_deref(), Some("abc"));
                 assert_eq!(args.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
                 assert_eq!(args.auth_method.as_deref(), Some("api"));
                 assert_eq!(args.auth_inputs, vec!["region=us".to_owned()]);
                 assert_eq!(args.oauth_code.as_deref(), Some("code-123"));
                 assert_eq!(args.format.format, OutputFormat::Json);
+            }
+            other => panic!("expected auth login, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_login_parses_without_provider() {
+        // `cortex auth login` with no provider parses (provider is None) — the interactive picker
+        // path. The command still resolves to `AuthCommand::Login`.
+        let cli = Cli::try_parse_from(["cortex", "auth", "login"]).expect("parse");
+        match cli.command {
+            Some(Command::Auth(AuthArgs {
+                command: AuthCommand::Login(args),
+            })) => {
+                assert!(args.provider.is_none(), "bare `auth login` has no provider");
+                assert!(args.api_key.is_none());
             }
             other => panic!("expected auth login, got {other:?}"),
         }

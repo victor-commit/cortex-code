@@ -76,6 +76,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         area,
     );
 
+    // The interactive auth/login screen (`cortex auth login`) takes over the whole frame with the
+    // shared chrome + centered sign-in panel; it fully replaces the conversation until the user
+    // signs in (Enter) or cancels (Esc). Checked before onboarding since it is launched explicitly.
+    if app.auth_login_active() {
+        crate::auth_login::draw_auth_login(frame, app, area, &theme);
+        return;
+    }
+
     // The first-run onboarding welcome screen takes over the whole frame with the shared chrome +
     // centered welcome card; it fully replaces the conversation until the user presses Enter.
     if app.onboarding_active() {

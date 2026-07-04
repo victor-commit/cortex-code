@@ -101,6 +101,10 @@ pub const EM_DASH: &str = "—";
 /// Selection bar marker (alias of [`PROMPT`]); rendered on an inverse selection bar.
 pub const SELECT_MARKER: &str = PROMPT;
 
+/// Strong-inverse selection left edge (`▎`, left one-quarter block); drawn in AMBER on the solid
+/// ORANGE fill of the auth provider-list selected row.
+pub const SELECTION_EDGE: &str = "▎";
+
 // --- Eighths (fractional progress fill, ascending 1/8 .. 8/8) ---
 
 /// Progress-bar fill by eighths, ascending.
@@ -194,6 +198,7 @@ mod tests {
             ELLIPSIS,
             EM_DASH,
             SELECT_MARKER,
+            SELECTION_EDGE,
             PROGRESS_FULL,
             PROGRESS_EMPTY,
             BAR_TRACK,

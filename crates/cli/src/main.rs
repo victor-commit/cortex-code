@@ -44,6 +44,7 @@ mod todo_store;
 mod tooling;
 mod worktree_cmd;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
             server_url: args.server,
             pure_plugins,
             reduced_motion: args.no_anim || tui::env_no_anim_enabled(),
+            auth_login: false,
         }),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
@@ -111,7 +113,19 @@ fn main() -> ExitCode {
         Some(Command::Completion(args)) => completion_cmd::run(args).into(),
         Some(Command::Man(args)) => man_cmd::run(args).into(),
         Some(Command::Agent(args)) => agent_cmd::run(args).into(),
-        Some(Command::Auth(args)) => auth_cmd::run(args, pure_plugins).into(),
+        Some(Command::Auth(args)) => {
+            // `cortex auth login` with no provider argument, on an interactive terminal and with no
+            // non-interactive key inputs, opens the full-screen provider picker + masked key input
+            // instead of the print-and-exit path. Everything else stays non-interactive.
+            if auth_wants_interactive_login(&args) {
+                let mut options = tui::LaunchOptions::from_env();
+                options.pure_plugins = pure_plugins;
+                options.auth_login = true;
+                tui::launch_with_options(options)
+            } else {
+                auth_cmd::run(args, pure_plugins).into()
+            }
+        }
         Some(Command::Models(args)) => models_cmd::run(args, pure_plugins).into(),
         Some(Command::Generate(args)) => generate_cmd::run(args).into(),
         Some(Command::Plugin(args)) => plugin_cmd::run(args).into(),
@@ -133,6 +147,23 @@ fn main() -> ExitCode {
         Some(Command::Uninstall(args)) => lifecycle::run_uninstall(args).into(),
         Some(Command::Debug(args)) => debug_cmd::run(args).into(),
     }
+}
+
+/// Whether a `cortex auth` invocation should open the interactive full-screen login (the provider
+/// picker + masked key input) instead of the non-interactive store-and-exit path. That happens only
+/// for `auth login` with no provider argument and no non-interactive key inputs (`--api-key`,
+/// `--api-key-env`, `--oauth-code`), and only when both stdin and stdout are real terminals (so
+/// piped/scripted usage keeps the deterministic non-interactive behavior).
+fn auth_wants_interactive_login(args: &cli::AuthArgs) -> bool {
+    let cli::AuthCommand::Login(login) = &args.command else {
+        return false;
+    };
+    login.provider.is_none()
+        && login.api_key.is_none()
+        && login.api_key_env.is_none()
+        && login.oauth_code.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
 }
 
 /// Map the dispatched subcommand to the surface that emits the startup lifecycle event.

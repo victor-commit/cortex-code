@@ -8,6 +8,7 @@
 
 mod app;
 mod attachments;
+mod auth_login;
 mod brand;
 mod checkpoint;
 mod diff;
@@ -63,6 +64,10 @@ pub struct LaunchOptions {
     /// Whether reduced-motion is requested (animations off; render the final static frame). Set by
     /// the `--no-anim` flag or the `CORTEX_NO_ANIM` environment preference.
     pub reduced_motion: bool,
+    /// Whether to boot directly into the interactive auth/login screen (the provider picker +
+    /// masked key input). Set when `cortex auth login` is invoked interactively with no provider
+    /// argument on a TTY.
+    pub auth_login: bool,
 }
 
 impl LaunchOptions {
@@ -74,6 +79,7 @@ impl LaunchOptions {
             server_url: env_non_empty("CORTEX_SERVER_URL"),
             pure_plugins: env_pure_enabled(),
             reduced_motion: env_no_anim_enabled(),
+            auth_login: false,
         }
     }
 }
@@ -143,6 +149,13 @@ fn run(options: LaunchOptions) -> io::Result<()> {
     // environment (or a resumed session) goes straight to the normal home/MOTD surface.
     if !has_initial_session {
         app.set_onboarding(onboarding::is_first_run());
+    }
+    // When launched as the interactive `cortex auth login` surface, boot straight into the auth/
+    // login screen (provider picker + masked key input); it takes over the frame until the user
+    // signs in or cancels. This supersedes any onboarding splash.
+    if options.auth_login {
+        app.set_onboarding(false);
+        app.open_auth_login();
     }
     // Connect configured MCP servers once for the attached TUI so `/mcp` and tool materialization
     // share a live catalogue. Runtime `mcp.tools.changed` notifications flow into the app state and
