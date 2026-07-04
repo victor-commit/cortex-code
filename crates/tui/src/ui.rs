@@ -76,6 +76,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         area,
     );
 
+    // The first-run onboarding welcome screen takes over the whole frame with the shared chrome +
+    // centered welcome card; it fully replaces the conversation until the user presses Enter.
+    if app.onboarding_active() {
+        crate::onboarding::draw_onboarding(frame, app, area, &theme);
+        return;
+    }
+
     // A full-screen Wave-2 view (status/mcp/…) takes over the whole frame with the shared view
     // chrome; it fully replaces the conversation until dismissed (Esc), so nothing else is drawn.
     if app.active_view().is_some() {

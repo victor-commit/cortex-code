@@ -20,6 +20,7 @@ mod mcp_runtime;
 mod mention;
 mod modal;
 mod motd;
+mod onboarding;
 mod permission;
 mod remote;
 mod shell;
@@ -133,8 +134,15 @@ fn run(options: LaunchOptions) -> io::Result<()> {
         }
     }
     let initial_session = options.session.or_else(|| env_non_empty("CORTEX_SESSION"));
+    let has_initial_session = initial_session.is_some();
     if let Some(session) = initial_session {
         app.attach_session(&session);
+    }
+    // On a pristine first run (a fresh HOME/XDG with no user config and no stored credentials) and
+    // no explicit session to resume, boot into the onboarding welcome screen; a configured
+    // environment (or a resumed session) goes straight to the normal home/MOTD surface.
+    if !has_initial_session {
+        app.set_onboarding(onboarding::is_first_run());
     }
     // Connect configured MCP servers once for the attached TUI so `/mcp` and tool materialization
     // share a live catalogue. Runtime `mcp.tools.changed` notifications flow into the app state and

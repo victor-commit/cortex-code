@@ -1062,6 +1062,10 @@ pub struct App {
     /// takes over the whole frame with the fixed-structure gallery layout and is modal: Esc closes
     /// it back to the conversation. See [`crate::gallery`].
     theme_gallery_open: bool,
+    /// Whether the first-run onboarding welcome screen is showing. Set at launch on a pristine
+    /// first run (fresh config + no stored credentials) and cleared once the user presses Enter to
+    /// start; while set it takes over the whole frame. See [`crate::onboarding`].
+    onboarding: bool,
     /// The `/status` view's data, snapshotted when the view opens (a git subprocess + store reads
     /// are too costly to repeat every redraw). Rebuilt on each `/status` open.
     status_snapshot: Option<crate::view::StatusData>,
@@ -1308,6 +1312,7 @@ impl App {
             diff_viewer: None,
             active_view: None,
             theme_gallery_open: false,
+            onboarding: false,
             status_snapshot: None,
             timeline_snapshot: Vec::new(),
             queue_snapshot: Vec::new(),
@@ -4936,6 +4941,36 @@ impl App {
         }
     }
 
+    /// Whether the first-run onboarding welcome screen is showing (for rendering).
+    #[must_use]
+    pub fn onboarding_active(&self) -> bool {
+        self.onboarding
+    }
+
+    /// Set whether the onboarding welcome screen is showing, used at launch to boot into
+    /// onboarding on a pristine first run.
+    pub fn set_onboarding(&mut self, onboarding: bool) {
+        self.onboarding = onboarding;
+    }
+
+    /// Key handling for the first-run onboarding welcome screen. It is a start splash, not a trap:
+    /// `Ctrl+C` still quits, `Enter` advances into the normal app surface (the welcome card is no
+    /// longer shown), and any other key also dismisses the splash and is then forwarded to the
+    /// normal handler so it acts on the surface beneath (e.g. `/` opens the command menu). This
+    /// keeps a fresh-config launch from swallowing the user's first keystroke.
+    ///
+    /// Returns `true` when the key was fully handled here (an `Enter` advance or a `Ctrl+C` quit);
+    /// returns `false` after dismissing onboarding so the caller lets the same key fall through to
+    /// normal handling.
+    fn on_onboarding_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return true;
+        }
+        self.onboarding = false;
+        matches!(key.code, KeyCode::Enter)
+    }
+
     /// Key handling for an open full-screen view. The view is modal: Esc closes it back to the
     /// conversation and `Ctrl+C` still quits so the user is never trapped. Other keys are swallowed
     /// (per-view navigation is added by each view's own feature).
@@ -8108,6 +8143,14 @@ impl App {
             return;
         }
 
+        // The first-run onboarding welcome screen takes over the frame while showing. It is a start
+        // splash: Enter advances past it and Ctrl+C quits (both consumed here), while any other key
+        // dismisses it and then falls through to act on the surface beneath, so the user's first
+        // keystroke is never trapped.
+        if self.onboarding_active() && self.on_onboarding_key(key, ctrl) {
+            return;
+        }
+
         // The Wave-7 themes-gallery screen takes over the frame while open: it is modal so the
         // prompt is not edited beneath it. Esc closes it back to the conversation; Ctrl+C quits.
         if self.theme_gallery_open() {
@@ -10224,6 +10267,49 @@ mod tests {
             variant: "default".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    #[test]
+    fn enter_advances_past_onboarding() {
+        // VAL-ONB-011: pressing Enter on the onboarding welcome screen advances out of onboarding
+        // without leaking a submission into the prompt beneath.
+        let mut a = app();
+        a.set_onboarding(true);
+        assert!(a.onboarding_active(), "onboarding shows when set");
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.onboarding_active(), "Enter dismisses onboarding");
+        assert!(
+            a.input_value().is_empty(),
+            "Enter starts fresh: nothing is typed into the prompt"
+        );
+    }
+
+    #[test]
+    fn onboarding_key_dismisses_and_forwards_and_ctrl_c_quits() {
+        // The welcome screen is a start splash, not a trap: a non-Enter key dismisses it and is
+        // forwarded to the surface beneath (so a fresh-config launch never swallows the first
+        // keystroke, e.g. a slash command), while Ctrl+C still quits.
+        let mut a = app();
+        a.set_onboarding(true);
+        a.on_key(key(KeyCode::Char('x')));
+        assert!(!a.onboarding_active(), "a printable key dismisses onboarding");
+        assert_eq!(
+            a.input_value(),
+            "x",
+            "the dismissing key is forwarded into the prompt beneath"
+        );
+
+        let mut b = app();
+        b.set_onboarding(true);
+        b.on_key(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(b.should_quit, "Ctrl+C quits from onboarding");
+    }
+
+    #[test]
+    fn default_app_is_not_in_onboarding() {
+        // A normally-constructed app (e.g. every other test / a configured launch) is not gated
+        // into onboarding.
+        assert!(!app().onboarding_active());
     }
 
     fn isolated_share_dir(test_name: &str) -> (PathBuf, PathBuf) {
