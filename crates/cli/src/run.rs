@@ -59,6 +59,7 @@ use crate::custom_agents;
 use crate::custom_modes;
 use crate::permission;
 use crate::permission_store;
+use crate::style;
 use crate::plugin_bridge::{
     CommandBeforeOutcome, CommandInvocation, PluginState, WorkspaceAdapterDoc,
 };
@@ -1925,26 +1926,25 @@ async fn stream_jsonl(
     let mut handle = stdout.lock();
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
+    // On a TTY each event line is syntax-highlighted and a footer is appended; off a TTY the
+    // styler is a pure passthrough so the machine bytes stay byte-identical, footer suppressed
+    // (VAL-CLI-008/010/011).
+    let styler = style::Styler::for_stdout();
+    let mut event_count: usize = 0;
 
     if let Ok(line) = render_session_line(agent, mode, session_id, tool_names, tool_definitions) {
-        let _ = handle.write_all(line.as_bytes());
-        let _ = handle.write_all(b"\n");
-        let _ = handle.flush();
+        write_jsonl_line(&mut handle, styler, &line, &mut event_count);
     }
 
     let result = run_turn(provider, turn, dispatcher, |event| {
         publish_runner_event(&bus, &event);
         for part_event in lifecycle.observe(&event) {
             if let Ok(line) = render_part_lifecycle_line(&part_event) {
-                let _ = handle.write_all(line.as_bytes());
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
+                write_jsonl_line(&mut handle, styler, &line, &mut event_count);
             }
         }
         if let Ok(line) = render_event_line(&event) {
-            let _ = handle.write_all(line.as_bytes());
-            let _ = handle.write_all(b"\n");
-            let _ = handle.flush();
+            write_jsonl_line(&mut handle, styler, &line, &mut event_count);
         }
         runner_events.push(event);
     })
@@ -1964,6 +1964,18 @@ async fn stream_jsonl(
     };
     plugin_state.apply_compaction_hooks(model_id, &mut outcome.compactions);
     apply_estimated_usage_cost(resolved_model, &mut outcome);
+
+    // TTY-only stream footer: a faint `stream complete · N events` summary. Suppressed off a TTY
+    // (the styler is disabled) so piped JSONL stays byte-identical to the baseline (VAL-CLI-010/011).
+    if styler.is_enabled() {
+        let footer = format!(
+            "stream complete {} {event_count} events",
+            style::SEPARATOR
+        );
+        let _ = handle.write_all(styler.paint(&footer, style::FAINT).as_bytes());
+        let _ = handle.write_all(b"\n");
+        let _ = handle.flush();
+    }
 
     drop(handle);
     if let Some(err) = &outcome.error {
@@ -2204,8 +2216,19 @@ async fn emit_json(
 
     let stdout = io::stdout();
     let mut handle = stdout.lock();
+    // On a TTY the human branch pretty-prints + syntax-highlights the document; off a TTY the
+    // styler is a pure passthrough so the machine bytes stay byte-identical (VAL-CLI-004/007).
+    let styler = style::Styler::for_stdout();
+    let rendered = if styler.is_enabled() {
+        format!(
+            "{}\n",
+            styler.highlight_json_pretty(line.trim_end_matches('\n'))
+        )
+    } else {
+        line
+    };
     if handle
-        .write_all(line.as_bytes())
+        .write_all(rendered.as_bytes())
         .and_then(|()| handle.flush())
         .is_err()
     {
@@ -2337,6 +2360,22 @@ fn tool_names_from(tool_definitions: &[ToolDef]) -> Vec<String> {
 /// event serializes to an object carrying a stable `type` discriminator.
 fn render_event_line(event: &RunnerEvent) -> Result<String, serde_json::Error> {
     serde_json::to_string(event).map(|line| redaction::redact(&line))
+}
+
+/// Write one JSONL event line, syntax-highlighting it when the styler is enabled (TTY), and bump
+/// the emitted-event counter. Off a TTY the styler is a pure passthrough, so the raw machine bytes
+/// (`line` + `\n`) reach a piped consumer unchanged.
+fn write_jsonl_line<W: Write>(
+    handle: &mut W,
+    styler: style::Styler,
+    line: &str,
+    event_count: &mut usize,
+) {
+    let rendered = styler.highlight_json(line);
+    let _ = handle.write_all(rendered.as_bytes());
+    let _ = handle.write_all(b"\n");
+    let _ = handle.flush();
+    *event_count += 1;
 }
 
 /// Render one derived part lifecycle event as a JSONL line.
@@ -4195,5 +4234,160 @@ mod tests {
             steps <= 25,
             "the reported step count never exceeds MAX_STEPS"
         );
+    }
+
+    /// Remove every SGR escape sequence so a highlighted string can be compared to its plain form.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for e in chars.by_ref() {
+                    if e == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    // The transformation `emit_json` applies on the human/TTY branch: pretty-print + highlight the
+    // serialized document. This mirrors the exact `emit_json` write logic without a live turn.
+    fn json_tty_render(styler: style::Styler, line: &str) -> String {
+        if styler.is_enabled() {
+            format!(
+                "{}\n",
+                styler.highlight_json_pretty(line.trim_end_matches('\n'))
+            )
+        } else {
+            line.to_owned()
+        }
+    }
+
+    // VAL-CLI-007: off a TTY the `--format json` bytes are byte-identical to the serialized
+    // document (no pretty-print, no ANSI) — the styler is a pure passthrough.
+    #[test]
+    fn json_piped_bytes_are_byte_identical_to_the_serialized_document() {
+        let line = render_json_document(
+            "google/gemini-2.5-flash",
+            "build",
+            None,
+            "ses_pipe",
+            &["read".to_owned(), "edit".to_owned()],
+            &[],
+            &sample_outcome(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .expect("render");
+        let piped = json_tty_render(style::Styler::new(false), &line);
+        assert_eq!(piped, line, "piped json is the untouched serialized document");
+        assert!(!piped.contains('\x1b'), "piped json carries no ANSI byte");
+        assert_eq!(piped.matches('\n').count(), 1, "piped json is one line");
+    }
+
+    // VAL-CLI-004/006: on a TTY the `--format json` text is multi-line, 2-space-indented, and
+    // syntax-highlighted, yet stripped of ANSI it reparses to the SAME JSON value as the piped
+    // document (only insignificant whitespace was added; keys/order preserved).
+    #[test]
+    fn json_tty_is_pretty_highlighted_and_reparses_to_the_same_value() {
+        let line = render_json_document(
+            "google/gemini-2.5-flash",
+            "build",
+            None,
+            "ses_tty",
+            &["read".to_owned(), "edit".to_owned()],
+            &[],
+            &sample_outcome(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .expect("render");
+        let tty = json_tty_render(style::Styler::new(true), &line);
+        assert!(tty.contains('\x1b'), "tty json is syntax-highlighted");
+        assert!(
+            tty.matches('\n').count() > 1,
+            "tty json is pretty-printed across multiple lines"
+        );
+        let plain = strip_ansi(&tty);
+        let a: serde_json::Value = serde_json::from_str(&line).expect("piped json");
+        let b: serde_json::Value = serde_json::from_str(&plain).expect("tty json reparses");
+        assert_eq!(a, b, "pretty TTY reflow preserves the exact JSON value");
+        // VAL-CLI-005: the finish_reason "stop" value is status-green on the TTY.
+        let style::Rgb(r, g, b) = style::OK_GREEN;
+        let green = format!("\x1b[38;2;{r};{g};{b}m");
+        assert!(
+            tty.contains(&format!("{green}\"stop\"\x1b[0m")),
+            "the stop finish_reason renders green"
+        );
+    }
+
+    // VAL-CLI-011: off a TTY each `--jsonl` line is byte-identical (no ANSI) and no footer is
+    // written; on a TTY the same lines are highlighted and a `stream complete · N events` footer
+    // follows. Mirrors the `write_jsonl_line` + footer logic without a live turn.
+    #[test]
+    fn jsonl_piped_is_raw_bytes_no_footer_tty_adds_footer() {
+        let events = [
+            render_session_line("build", None, "ses_j", &["edit".to_owned()], &[]).expect("session"),
+            render_event_line(&RunnerEvent::TextDelta {
+                text: "hi".to_owned(),
+            })
+            .expect("delta"),
+            render_event_line(&RunnerEvent::Done {
+                reason: llm::FinishReason::Stop,
+                steps: 1,
+            })
+            .expect("done"),
+        ];
+
+        // Piped: passthrough, no footer.
+        let disabled = style::Styler::new(false);
+        let mut piped = Vec::new();
+        let mut count = 0usize;
+        for line in &events {
+            write_jsonl_line(&mut piped, disabled, line, &mut count);
+        }
+        let piped_text = String::from_utf8(piped).expect("utf8");
+        let expected: String = events.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(piped_text, expected, "piped jsonl is the raw serialized lines");
+        assert!(!piped_text.contains('\x1b'), "piped jsonl carries no ANSI");
+        assert!(
+            !piped_text.contains("stream complete"),
+            "no TTY footer when piped"
+        );
+        assert_eq!(count, 3, "event counter tracks each written line");
+
+        // TTY: highlighted lines + footer with the real event count.
+        let enabled = style::Styler::new(true);
+        let mut tty = Vec::new();
+        let mut tty_count = 0usize;
+        for line in &events {
+            write_jsonl_line(&mut tty, enabled, line, &mut tty_count);
+        }
+        let footer = format!("stream complete {} {tty_count} events", style::SEPARATOR);
+        tty.extend_from_slice(enabled.paint(&footer, style::FAINT).as_bytes());
+        tty.push(b'\n');
+        let tty_text = String::from_utf8(tty).expect("utf8");
+        assert!(tty_text.contains('\x1b'), "tty jsonl lines are highlighted");
+        assert!(
+            tty_text.contains("stream complete · 3 events"),
+            "footer names the real event count, got: {tty_text:?}"
+        );
+        // Each highlighted line, stripped of ANSI, equals its raw serialized line (one per line).
+        for line in &events {
+            assert!(
+                strip_ansi(&tty_text).contains(line),
+                "raw event line survives highlighting intact"
+            );
+        }
     }
 }

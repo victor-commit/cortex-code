@@ -256,6 +256,168 @@ impl Styler {
     pub fn paint(self, text: &str, color: Rgb) -> String {
         self.apply(text, Style::fg(color))
     }
+
+    /// Syntax-highlight a compact JSON object line (one object per line, no reflow), for the
+    /// human/TTY branch of `run --jsonl`. Keys are `SYNTAX_KEY`, string values `SYNTAX_STRING`,
+    /// numbers `SYNTAX_NUMBER`, `true`/`false`/`null` `SYNTAX_KEYWORD`, and structural punctuation
+    /// `SYNTAX_PUNCT`; the two status exceptions (a `stop` finish/`reason` value and the `done`
+    /// stream `type` discriminator) render in `OK_GREEN`. Returns the input unchanged when the
+    /// styler is disabled, so a piped consumer never sees an ANSI byte (byte-stability).
+    #[must_use]
+    pub fn highlight_json(self, json: &str) -> String {
+        if !self.enabled {
+            return json.to_owned();
+        }
+        colorize_json(json, false)
+    }
+
+    /// Pretty-print (2-space indent, multi-line) AND syntax-highlight a compact JSON document, for
+    /// the human/TTY branch of `run --format json`. The reflow reads the already-serialized compact
+    /// bytes so field order (and any redaction) is preserved exactly; only insignificant whitespace
+    /// is added. Returns the input unchanged when the styler is disabled.
+    #[must_use]
+    pub fn highlight_json_pretty(self, json: &str) -> String {
+        if !self.enabled {
+            return json.to_owned();
+        }
+        colorize_json(json, true)
+    }
+}
+
+/// Wrap `text` in a foreground-color SGR sequence. Used only on the enabled/TTY styling path.
+fn wrap(text: &str, color: Rgb) -> String {
+    format!("{}{text}{RESET}", Style::fg(color).open_sequence())
+}
+
+/// The VS Code Dark+ color for a JSON string *value*, honoring the two status-green exceptions:
+/// a `finish_reason`/`reason` value of `"stop"` and a stream `type` value of `"done"`.
+fn json_string_value_color(key: Option<&str>, value: &str) -> Rgb {
+    match key {
+        Some("finish_reason" | "reason") if value == "stop" => OK_GREEN,
+        Some("type") if value == "done" => OK_GREEN,
+        _ => SYNTAX_STRING,
+    }
+}
+
+/// Tokenize a compact JSON string and emit a syntax-highlighted rendering, optionally reflowed to
+/// a 2-space-indented multi-line form. The input is assumed to be well-formed compact JSON (no
+/// insignificant whitespace between tokens), as produced by `serde_json::to_string`.
+fn colorize_json(json: &str, pretty: bool) -> String {
+    let bytes = json.as_bytes();
+    let mut out = String::with_capacity(json.len() * 3);
+    let mut indent: usize = 0;
+    let mut last_key: Option<String> = None;
+    let mut i = 0;
+
+    let push_indent = |out: &mut String, indent: usize| {
+        for _ in 0..indent {
+            out.push_str("  ");
+        }
+    };
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                let raw = &json[start..i];
+                let is_key = i < bytes.len() && bytes[i] == b':';
+                if is_key {
+                    last_key = Some(json[start + 1..i - 1].to_owned());
+                    out.push_str(&wrap(raw, SYNTAX_KEY));
+                } else {
+                    let value = &json[start + 1..i - 1];
+                    let color = json_string_value_color(last_key.as_deref(), value);
+                    last_key = None;
+                    out.push_str(&wrap(raw, color));
+                }
+            }
+            open @ (b'{' | b'[') => {
+                out.push_str(&wrap(std::str::from_utf8(&[open]).unwrap_or("{"), SYNTAX_PUNCT));
+                let close = if open == b'{' { b'}' } else { b']' };
+                if i + 1 < bytes.len() && bytes[i + 1] == close {
+                    // Empty container: keep `{}` / `[]` inline.
+                    out.push_str(&wrap(std::str::from_utf8(&[close]).unwrap_or("}"), SYNTAX_PUNCT));
+                    last_key = None;
+                    i += 2;
+                    continue;
+                }
+                if pretty {
+                    indent += 1;
+                    out.push('\n');
+                    push_indent(&mut out, indent);
+                }
+                i += 1;
+            }
+            close @ (b'}' | b']') => {
+                if pretty {
+                    indent = indent.saturating_sub(1);
+                    out.push('\n');
+                    push_indent(&mut out, indent);
+                }
+                out.push_str(&wrap(std::str::from_utf8(&[close]).unwrap_or("}"), SYNTAX_PUNCT));
+                last_key = None;
+                i += 1;
+            }
+            b',' => {
+                out.push_str(&wrap(",", SYNTAX_PUNCT));
+                if pretty {
+                    out.push('\n');
+                    push_indent(&mut out, indent);
+                }
+                i += 1;
+            }
+            b':' => {
+                out.push_str(&wrap(":", SYNTAX_PUNCT));
+                if pretty {
+                    out.push(' ');
+                }
+                i += 1;
+            }
+            b't' | b'f' | b'n' => {
+                let rest = &json[i..];
+                let literal = ["true", "false", "null"]
+                    .into_iter()
+                    .find(|lit| rest.starts_with(lit));
+                if let Some(lit) = literal {
+                    out.push_str(&wrap(lit, SYNTAX_KEYWORD));
+                    last_key = None;
+                    i += lit.len();
+                } else {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-' => i += 1,
+                        _ => break,
+                    }
+                }
+                out.push_str(&wrap(&json[start..i], SYNTAX_NUMBER));
+                last_key = None;
+            }
+            other => {
+                // Only ASCII whitespace can legitimately appear here in well-formed JSON.
+                out.push(other as char);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -389,5 +551,111 @@ mod tests {
         assert_eq!(PAGE, Rgb(13, 13, 13));
         assert_eq!(OK_GREEN, Rgb(96, 204, 110));
         assert_eq!(ERR_RED, Rgb(224, 96, 96));
+    }
+
+    /// The SGR opening sequence for a foreground-only color, so tests can assert a specific token
+    /// wraps a specific slice.
+    fn fg_open(color: Rgb) -> String {
+        Style::fg(color).open_sequence()
+    }
+
+    #[test]
+    fn disabled_styler_json_highlighters_are_pure_passthrough() {
+        let plain = Styler::new(false);
+        let compact = r#"{"type":"done","reason":"stop","steps":2}"#;
+        assert_eq!(plain.highlight_json(compact), compact);
+        assert_eq!(plain.highlight_json_pretty(compact), compact);
+        assert!(!plain.highlight_json(compact).contains('\x1b'));
+        assert!(!plain.highlight_json_pretty(compact).contains('\x1b'));
+    }
+
+    #[test]
+    fn highlight_json_colors_keys_strings_numbers_and_keywords() {
+        let styled = Styler::new(true);
+        let out = styled.highlight_json(
+            r#"{"id":"c1","is_error":false,"total_tokens":4204}"#,
+        );
+        // Object key -> VS Code Dark+ VAR (light blue).
+        assert!(out.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_KEY), r#""id""#)));
+        // String value -> STR (orange-brown).
+        assert!(out.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""c1""#)));
+        // Boolean literal -> KEYWORD/CONST.
+        assert!(out.contains(&format!("{}false{RESET}", fg_open(SYNTAX_KEYWORD))));
+        // Number -> NUM (green syntax token).
+        assert!(out.contains(&format!("{}4204{RESET}", fg_open(SYNTAX_NUMBER))));
+        // Single line (jsonl): no reflow.
+        assert!(!out.contains('\n'), "jsonl highlight must stay single-line");
+    }
+
+    #[test]
+    fn highlight_json_greens_the_done_type_and_stop_reason_only() {
+        let styled = Styler::new(true);
+        let done = styled.highlight_json(r#"{"type":"done","reason":"stop"}"#);
+        // The `done` type discriminator is status-green (VAL-CLI-038).
+        assert!(done.contains(&format!("{}{}{RESET}", fg_open(OK_GREEN), r#""done""#)));
+        // The `stop` reason value is status-green (VAL-CLI-005/009).
+        assert!(done.contains(&format!("{}{}{RESET}", fg_open(OK_GREEN), r#""stop""#)));
+
+        // A non-terminal `type` value stays STR orange-brown, not green.
+        let session = styled.highlight_json(r#"{"type":"session","agent":"build"}"#);
+        assert!(session.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""session""#)));
+        assert!(
+            !session.contains(&format!("{}{}{RESET}", fg_open(OK_GREEN), r#""session""#)),
+            "only the `done` type value is green"
+        );
+        // A generic string value that happens to equal `stop` under a non-reason key is NOT green.
+        let generic = styled.highlight_json(r#"{"name":"stop"}"#);
+        assert!(generic.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""stop""#)));
+    }
+
+    #[test]
+    fn highlight_json_pretty_reflows_with_two_space_indent() {
+        let styled = Styler::new(true);
+        let out = styled.highlight_json_pretty(r#"{"role":"assistant","steps":1}"#);
+        // Stripping ANSI recovers a canonical 2-space-indented multi-line document.
+        let plain = strip_ansi(&out);
+        assert_eq!(
+            plain,
+            "{\n  \"role\": \"assistant\",\n  \"steps\": 1\n}",
+            "pretty output is 2-space indented, colon-spaced, multi-line"
+        );
+    }
+
+    #[test]
+    fn highlight_json_pretty_keeps_empty_containers_inline() {
+        let styled = Styler::new(true);
+        let out = styled.highlight_json_pretty(r#"{"tools":[],"meta":{}}"#);
+        let plain = strip_ansi(&out);
+        assert_eq!(plain, "{\n  \"tools\": [],\n  \"meta\": {}\n}");
+    }
+
+    #[test]
+    fn highlight_json_pretty_stripped_of_ansi_reparses_to_the_same_value() {
+        let styled = Styler::new(true);
+        let compact =
+            r#"{"role":"assistant","usage":{"input_tokens":10,"cost":0.04},"tools":["read","edit"]}"#;
+        let out = styled.highlight_json_pretty(compact);
+        let plain = strip_ansi(&out);
+        let a: serde_json::Value = serde_json::from_str(compact).expect("compact json");
+        let b: serde_json::Value = serde_json::from_str(&plain).expect("pretty json reparses");
+        assert_eq!(a, b, "pretty reflow preserves the JSON value");
+    }
+
+    /// Remove every SGR escape sequence so a highlighted string can be compared structurally.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for e in chars.by_ref() {
+                    if e == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 }
