@@ -164,10 +164,6 @@ pub enum Entry {
     /// `▌ blocked` banner naming the command and a dim reason (`shell is disabled while planning`).
     /// The command is NOT executed; the banner is the only trace it leaves.
     Blocked { command: String, reason: String },
-    /// The `/help` command reference: the built-in slash commands and keybindings, rendered as a
-    /// distinct panel. Its content is generated at render time from the command registry, so the
-    /// entry itself carries no data.
-    Help,
     /// A turn-level error surfaced to the user.
     Error(String),
 }
@@ -8123,7 +8119,6 @@ impl App {
                 Entry::Blocked { command, reason } => {
                     out.push_str(&format!("> Blocked: `{command}` — {reason}\n\n"))
                 }
-                Entry::Help => {}
                 Entry::Error(text) => out.push_str(&format!("> Error: {text}\n\n")),
             }
         }
@@ -8785,7 +8780,6 @@ fn entry_copy_text(entry: &Entry) -> String {
         Entry::Notice(text) | Entry::Error(text) => text.clone(),
         Entry::Shell(outcome) => format!("$ {}\n{}", outcome.command, outcome.output),
         Entry::Blocked { command, reason } => format!("blocked: {command} — {reason}"),
-        Entry::Help => "Help — commands & keybindings".to_owned(),
     }
 }
 

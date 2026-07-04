@@ -414,7 +414,6 @@ pub fn render_transcript(app: &App, width: usize) -> RenderedTranscript {
             Entry::Blocked { command, reason } => {
                 push_blocked(&mut lines, command, reason, width, &theme);
             }
-            Entry::Help => push_help(&mut lines, app, &theme),
             Entry::Error(message) => push_error(&mut lines, message, width, &theme),
         }
     }
@@ -1565,89 +1564,6 @@ fn push_blocked(
     lines.push(cells_to_line(&bottom));
     lines.push(Line::from(""));
 }
-const KEYBINDINGS: &[(&str, &str)] = &[
-    ("Enter", "Send the prompt / run the highlighted command"),
-    ("Shift+Enter", "Insert a newline without sending"),
-    ("!", "Enter shell mode to run a command (Esc to exit)"),
-    ("/", "Open the slash-command menu"),
-    ("Up / Down", "Move the slash-menu highlight"),
-    ("Esc", "Close the slash-command menu"),
-    ("Ctrl+A / Ctrl+E", "Jump to line start / end"),
-    ("Ctrl+O", "Expand / collapse tool cards"),
-    ("Ctrl+F", "Find in chat (Enter/Up next/prev, Esc close)"),
-    ("PageUp / PageDown", "Scroll the transcript up / down"),
-    ("Ctrl+K / Ctrl+N", "Select previous / next message"),
-    ("Ctrl+Y", "Copy the selected message"),
-    ("Ctrl+C", "Quit Cortex Code"),
-];
-
-/// Append the `/help` command reference: a titled panel listing every currently-discoverable slash
-/// command (built-ins, config custom commands, and MCP prompt commands) with its description, then
-/// the keybindings (including the active leader bindings).
-/// This is the visible effect of `/help`.
-fn push_help(lines: &mut Vec<Line<'static>>, app: &App, theme: &style::ThemeColors) {
-    let title = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
-    let section = Style::default()
-        .fg(theme.warning)
-        .add_modifier(Modifier::BOLD);
-    let name = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
-    let desc = Style::default().fg(theme.text_dim);
-
-    lines.push(Line::from(Span::styled(
-        "Help — commands & keybindings",
-        title,
-    )));
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("Commands", section)));
-    for (name_text, description_text) in app.slash_help_entries() {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  /{:<18}", name_text), name),
-            Span::styled(format!("  {}", description_text), desc),
-        ]));
-    }
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("Keybindings", section)));
-    for (keys, what) in KEYBINDINGS {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {keys:<16}"), name),
-            Span::styled(format!("  {what}"), desc),
-        ]));
-    }
-    lines.push(Line::from(""));
-
-    let leader = app.keybinds().leader.display();
-    lines.push(Line::from(Span::styled(
-        format!("Leader bindings ({leader} then a key)"),
-        section,
-    )));
-    for (chord, action) in app.keybinds().entries() {
-        let mut desc_text = action.label().to_owned();
-        if let Some(reason) = app.keybind_disabled_reason(*action) {
-            desc_text.push_str(&format!(" (disabled: {reason})"));
-        }
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {:<16}", format!("{leader} {}", chord.display())),
-                name,
-            ),
-            Span::styled(format!("  {desc_text}"), desc),
-        ]));
-    }
-    if !app.keybind_diagnostics().is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Keybind diagnostics", section)));
-        for message in app.keybind_diagnostics() {
-            lines.push(Line::from(vec![
-                Span::styled("  • ", desc),
-                Span::styled(message.clone(), Style::default().fg(theme.warning)),
-            ]));
-        }
-    }
-    lines.push(Line::from(""));
-}
-
 /// Append a turn-level error as a distinct, red-styled block.
 fn push_error(
     lines: &mut Vec<Line<'static>>,
@@ -8826,31 +8742,12 @@ mod tests {
     }
 
     #[test]
-    fn help_entry_renders_commands_and_keybindings() {
-        // VAL-TUI-032: the `/help` view lists commands and keybindings.
-        let mut a = app();
-        a.transcript.push(Entry::Help);
-        let text = rendered(&transcript_lines(&a, 80));
-        assert!(text.contains("Commands"), "commands section:\n{text}");
-        assert!(text.contains("/help"), "help command listed:\n{text}");
-        assert!(text.contains("/export"), "export command listed:\n{text}");
-        assert!(text.contains("Keybindings"), "keybindings section:\n{text}");
-        assert!(text.contains("Ctrl+C"), "a keybinding listed:\n{text}");
-    }
-
-    #[test]
-    fn model_switching_is_discoverable_in_both_help_and_palette() {
+    fn model_switching_is_discoverable_in_the_palette() {
         // VAL-CROSS-035: a randomly chosen capability (model switching) must be findable through
         // an in-product listing on the TUI surface, not only via hidden means. It surfaces in the
-        // `/help` reference AND the command palette, both backed by the shared slash registry.
+        // command palette, backed by the shared slash registry. (The `/help` reference lists it
+        // too; that half is covered by the full-screen help view's own tests.)
         let mut a = app();
-
-        a.transcript.push(Entry::Help);
-        let help_text = rendered(&transcript_lines(&a, 80));
-        assert!(
-            help_text.contains("/models"),
-            "/help lists the model-switching command:\n{help_text}"
-        );
 
         a.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('p'),
