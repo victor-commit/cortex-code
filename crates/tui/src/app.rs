@@ -1078,6 +1078,9 @@ pub struct App {
     /// The highlighted row in the open `/queue` view (arrow-key navigation), clamped to the queue
     /// length.
     queue_selection: usize,
+    /// Whether the first `d` of the `/queue` view's vim-style `dd` remove chord is armed; a second
+    /// `d` removes the selected prompt and any other key disarms it.
+    queue_pending_dd: bool,
     /// The open `@`-file picker, or `None` when closed. While set it captures navigation, selection,
     /// and dismissal keys; a selection inserts an `@path` token and a typed range or whitespace
     /// dismisses it.
@@ -1318,6 +1321,7 @@ impl App {
             timeline_snapshot: Vec::new(),
             queue_snapshot: Vec::new(),
             queue_selection: 0,
+            queue_pending_dd: false,
             mention: None,
             plugin_text_complete: None,
             pending_text_completion: None,
@@ -3833,6 +3837,64 @@ impl App {
         self.push_toast(ToastLevel::Success, "Queued prompt dropped");
     }
 
+    /// Edit the `/queue` view's selected prompt (`↵`): pull it back out of the queue into the
+    /// composer (its typed text + captured attachments) and close the view so it can be revised and
+    /// resubmitted. A no-op when the selection points past the queue.
+    fn edit_selected_queued_prompt(&mut self) {
+        let index = self.queue_selection;
+        if index >= self.queued_prompts.len() {
+            return;
+        }
+        let Some(item) = self.queued_prompts.remove(index) else {
+            return;
+        };
+        let text = item.header.unwrap_or(item.prompt);
+        self.composer_attachments = item.attachments;
+        self.set_input_value(&text);
+        self.close_active_view();
+    }
+
+    /// Reorder the `/queue` view's selected prompt by one slot (`Ctrl+Up`/`Ctrl+Down`), keeping the
+    /// selection bar on the moved prompt and re-snapshotting the view rows. A no-op at the ends or
+    /// with fewer than two queued prompts.
+    fn reorder_selected_queued_prompt(&mut self, up: bool) {
+        let len = self.queued_prompts.len();
+        if len < 2 {
+            return;
+        }
+        let index = self.queue_selection;
+        let target = if up {
+            if index == 0 {
+                return;
+            }
+            index - 1
+        } else {
+            if index + 1 >= len {
+                return;
+            }
+            index + 1
+        };
+        self.queued_prompts.swap(index, target);
+        self.queue_selection = target;
+        self.queue_snapshot = self.build_queue_rows();
+        self.push_toast(ToastLevel::Success, "Queued prompt reordered");
+    }
+
+    /// Remove the `/queue` view's selected prompt (`dd`), reusing the shared per-index drop, then
+    /// re-snapshot the view rows and clamp the selection so the bar never points past the end.
+    fn remove_selected_queued_prompt(&mut self) {
+        let index = self.queue_selection;
+        if index >= self.queued_prompts.len() {
+            return;
+        }
+        self.drop_queued_prompt_index(index);
+        self.queue_snapshot = self.build_queue_rows();
+        let len = self.queue_snapshot.len();
+        if self.queue_selection >= len {
+            self.queue_selection = len.saturating_sub(1);
+        }
+    }
+
     fn dispatch_palette_action(&mut self, action: PaletteAction) {
         match action {
             PaletteAction::DispatchSlash(name) => {
@@ -4042,6 +4104,7 @@ impl App {
     fn open_queue_view(&mut self) {
         self.queue_snapshot = self.build_queue_rows();
         self.queue_selection = 0;
+        self.queue_pending_dd = false;
         self.open_view(crate::view::ViewKind::Queue);
     }
 
@@ -5042,9 +5105,17 @@ impl App {
             self.open_help_view();
             return;
         }
-        // The `/queue` view is navigable: arrow keys move the highlighted (selection-bar) row.
+        // The `/queue` view is navigable and its footer-advertised actions operate on the selected
+        // queued prompt: plain arrows/`j`/`k` move the highlighted (selection-bar) row, `↵` pulls
+        // the selection back into the composer for editing, `Ctrl+Up`/`Ctrl+Down` reorder it, and
+        // `dd` removes it (all reuse the shared queue-manager mutations).
         if self.active_view == Some(crate::view::ViewKind::Queue) {
+            // The vim-style `dd` remove chord: the first `d` arms it, a second `d` removes the
+            // selection, and any other key disarms it (handled by clearing the flag up front).
+            let dd_armed = std::mem::take(&mut self.queue_pending_dd);
             match key.code {
+                KeyCode::Up if ctrl => self.reorder_selected_queued_prompt(true),
+                KeyCode::Down if ctrl => self.reorder_selected_queued_prompt(false),
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.queue_selection = self.queue_selection.saturating_sub(1);
                 }
@@ -5052,6 +5123,14 @@ impl App {
                     let len = self.queue_snapshot.len();
                     if len > 0 {
                         self.queue_selection = (self.queue_selection + 1).min(len - 1);
+                    }
+                }
+                KeyCode::Enter => self.edit_selected_queued_prompt(),
+                KeyCode::Char('d') if !ctrl => {
+                    if dd_armed {
+                        self.remove_selected_queued_prompt();
+                    } else {
+                        self.queue_pending_dd = true;
                     }
                 }
                 _ => {}
@@ -13393,6 +13472,10 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
     }
 
+    fn queue_rows(a: &App) -> Vec<String> {
+        a.queue_snapshot().to_vec()
+    }
+
     #[test]
     fn dispatching_sessions_opens_the_session_picker() {
         // VAL-TUI-034: `/sessions` opens a session-picker listing at least the current session.
@@ -13906,6 +13989,110 @@ mod tests {
 
         a.on_key(key(KeyCode::Esc));
         assert!(a.active_view().is_none(), "Esc dismisses the queue view");
+    }
+
+    #[test]
+    fn queue_view_enter_edits_the_selected_prompt() {
+        // misc-queue-inview-actions: `↵` pulls the selected queued prompt back into the composer
+        // for editing and closes the view (reusing the shared queue mutation).
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        for prompt in ["first queued", "second queued", "third queued"] {
+            type_str(&mut a, prompt);
+            a.on_key(key(KeyCode::Enter));
+        }
+        dispatch(&mut a, "queue");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.queue_selection(), 1);
+
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.active_view().is_none(), "editing closes the queue view");
+        assert_eq!(
+            a.input_value(),
+            "second queued",
+            "the selected prompt lands back in the composer"
+        );
+        assert_eq!(a.queued_count(), 2, "the edited prompt is pulled out of the queue");
+    }
+
+    #[test]
+    fn queue_view_ctrl_arrows_reorder_the_selected_prompt() {
+        // misc-queue-inview-actions: `Ctrl+Up`/`Ctrl+Down` move the selected queued prompt one slot,
+        // keeping the selection bar on it and re-snapshotting the rows.
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        for prompt in ["first queued", "second queued", "third queued"] {
+            type_str(&mut a, prompt);
+            a.on_key(key(KeyCode::Enter));
+        }
+        dispatch(&mut a, "queue");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.queue_selection(), 1);
+
+        a.on_key(key_mod(KeyCode::Down, KeyModifiers::CONTROL));
+        assert_eq!(a.queue_selection(), 2, "Ctrl+Down follows the moved prompt");
+        assert_eq!(
+            queue_rows(&a),
+            ["first queued", "third queued", "second queued"],
+            "the selected prompt moved down one slot"
+        );
+
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::CONTROL));
+        assert_eq!(a.queue_selection(), 1, "Ctrl+Up follows the moved prompt back");
+        assert_eq!(
+            queue_rows(&a),
+            ["first queued", "second queued", "third queued"],
+            "the selected prompt moved back up one slot"
+        );
+
+        // Reorder clamps at the ends: Ctrl+Up on the head is a no-op.
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.queue_selection(), 0);
+        a.on_key(key_mod(KeyCode::Up, KeyModifiers::CONTROL));
+        assert_eq!(a.queue_selection(), 0, "Ctrl+Up on the head is a no-op");
+        assert_eq!(
+            queue_rows(&a),
+            ["first queued", "second queued", "third queued"],
+            "the head cannot move up"
+        );
+    }
+
+    #[test]
+    fn queue_view_dd_removes_the_selected_prompt() {
+        // misc-queue-inview-actions: the vim-style `dd` chord removes the selected queued prompt and
+        // clamps the selection; a lone `d` (or `d` then another key) does not remove anything.
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("busy".to_owned(), rx, flag());
+        for prompt in ["first queued", "second queued", "third queued"] {
+            type_str(&mut a, prompt);
+            a.on_key(key(KeyCode::Enter));
+        }
+        dispatch(&mut a, "queue");
+
+        // A single `d` arms the chord but does not remove.
+        a.on_key(key(KeyCode::Char('d')));
+        assert_eq!(a.queued_count(), 3, "a lone `d` does not remove a prompt");
+        // A non-`d` key disarms the chord.
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Char('d')));
+        assert_eq!(a.queued_count(), 3, "a broken d…x chord does not remove");
+
+        // Select the last row, then `dd` removes it and the selection clamps.
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.queue_selection(), 2);
+        a.on_key(key(KeyCode::Char('d')));
+        a.on_key(key(KeyCode::Char('d')));
+        assert_eq!(a.queued_count(), 2, "`dd` removes the selected prompt");
+        assert_eq!(
+            queue_rows(&a),
+            ["first queued", "second queued"],
+            "the last queued prompt was removed"
+        );
+        assert_eq!(a.queue_selection(), 1, "selection clamps to the new last row");
     }
 
     #[test]
