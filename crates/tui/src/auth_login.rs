@@ -383,7 +383,7 @@ fn panel_body_lines(state: &AuthLoginState, width: usize, theme: &ThemeColors) -
     }
 
     // Row 12: the green `✓` 0600 stored-credential note.
-    lines.push(stored_note_line(width, theme));
+    lines.push(stored_note_line(width, &auth_store_display_path(), theme));
     // Row 13: blank.
     lines.push(row(width, base, &[]));
     // Row 14: key hints.
@@ -517,22 +517,51 @@ fn input_box_mid(
 }
 
 /// The stored-credential note: green `✓`, then `credential stored in <path> ` (DIM), then the
-/// `(0600)` permission note in green (VAL-ONB-026).
-fn stored_note_line(width: usize, theme: &ThemeColors) -> Line<'static> {
+/// `(0600)` permission note in green (VAL-ONB-026). The `✓` prefix and the green `(0600)` suffix
+/// always survive: only the PATH portion is middle-ellipsized to fit the panel interior, so an
+/// over-long non-`$HOME` store path (a long `CORTEX_AUTH_FILE` / `XDG_DATA_HOME`) never clips them.
+fn stored_note_line(width: usize, display_path: &str, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let okg = Style::default().fg(theme.success).bg(theme.background);
     let dim = Style::default().fg(theme.text_dim).bg(theme.background);
+    let check = format!("{} ", glyphs::MARK_DONE);
+    let prefix = "credential stored in ";
+    let suffix = "(0600)";
+    // Reserve columns for the fixed prefix/suffix (the ✓, the label, the space after the path, and
+    // the `(0600)` note) so the remaining budget is exactly what the path may occupy.
+    let fixed = check.chars().count() + prefix.chars().count() + 1 + suffix.chars().count();
+    let path_budget = width.saturating_sub(CONTENT_COL).saturating_sub(fixed);
+    let path = middle_ellipsize(display_path, path_budget);
     let mut cells = vec![(' ', base); width.max(1)];
     place_segments(
         &mut cells,
         CONTENT_COL,
         &[
-            (format!("{} ", glyphs::MARK_DONE), okg),
-            (format!("credential stored in {} ", auth_store_display_path()), dim),
-            ("(0600)".to_owned(), okg),
+            (check, okg),
+            (format!("{prefix}{path} "), dim),
+            (suffix.to_owned(), okg),
         ],
     );
     cells_to_line(&cells)
+}
+
+/// Middle-ellipsize `s` to at most `max` characters, keeping a leading run and a trailing run
+/// joined by a single `…` (the trailing half is favored so the filename survives). Returns `s`
+/// unchanged when it already fits within `max`.
+fn middle_ellipsize(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_owned();
+    }
+    if max <= 1 {
+        return glyphs::ELLIPSIS.to_owned();
+    }
+    let keep = max - 1;
+    let head_len = keep / 2;
+    let tail_len = keep - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}{}{tail}", glyphs::ELLIPSIS)
 }
 
 /// The key-hints footer: `enter sign in   tab next field   ↑↓ select   esc cancel` with the key
@@ -770,7 +799,7 @@ mod tests {
     fn stored_note_has_green_0600() {
         // VAL-ONB-026: a `✓ credential stored in … (0600)` note with `✓` and `(0600)` in green.
         let theme = ThemeColors::from_name("dark");
-        let line = stored_note_line(120, &theme);
+        let line = stored_note_line(120, "~/.local/share/cortex/auth.json", &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("credential stored in"), "note text:\n{text}");
         assert!(text.contains("(0600)"), "0600 permission note present");
@@ -786,6 +815,71 @@ mod tests {
             .find(|s| s.content.as_ref() == format!("{} ", glyphs::MARK_DONE))
             .expect("green check present");
         assert_eq!(check.style.fg, Some(theme.success), "✓ is green");
+    }
+
+    #[test]
+    fn default_store_path_note_is_byte_identical_no_ellipsis() {
+        // VAL-ONB-026: the default `~/.local/share/cortex/auth.json` note is unchanged — the path
+        // fits within the 68-col panel interior, so it is rendered verbatim with NO ellipsis.
+        let theme = ThemeColors::from_name("dark");
+        let inner = (PANEL_W - 2) as usize;
+        let line = stored_note_line(inner, "~/.local/share/cortex/auth.json", &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("credential stored in ~/.local/share/cortex/auth.json (0600)"),
+            "default path note is verbatim:\n{text}"
+        );
+        assert!(
+            !text.contains(glyphs::ELLIPSIS),
+            "default path note carries no ellipsis:\n{text}"
+        );
+    }
+
+    #[test]
+    fn long_non_home_store_path_middle_ellipsizes_keeping_prefix_and_green_0600() {
+        // An over-long non-$HOME store path (a long CORTEX_AUTH_FILE / XDG_DATA_HOME) is
+        // middle-ellipsized so the `✓ credential stored in` prefix AND the green `(0600)` suffix
+        // both survive unclipped inside the 68-col panel.
+        let theme = ThemeColors::from_name("dark");
+        let inner = (PANEL_W - 2) as usize;
+        let long_path =
+            "/var/lib/some-really-long-service-data-root/nested/deeper/still/cortex/auth.json";
+        let line = stored_note_line(inner, long_path, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        // The path is ellipsized (it cannot fit whole), but both the leading prefix and the
+        // trailing filename survive.
+        assert!(text.contains(glyphs::ELLIPSIS), "long path is middle-ellipsized:\n{text}");
+        assert!(
+            text.contains("credential stored in /var/lib"),
+            "the `✓ credential stored in <head` prefix survives:\n{text}"
+        );
+        assert!(text.contains("auth.json"), "the trailing filename survives:\n{text}");
+
+        // The green `(0600)` suffix is present, is its own span, and is green (unclipped).
+        let perm = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "(0600)")
+            .expect("green `(0600)` suffix present and unclipped");
+        assert_eq!(perm.style.fg, Some(theme.success), "(0600) is green");
+
+        // The green `✓ ` prefix is present and green (unclipped).
+        let check = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == format!("{} ", glyphs::MARK_DONE))
+            .expect("green `✓` prefix present and unclipped");
+        assert_eq!(check.style.fg, Some(theme.success), "✓ is green");
+
+        // The whole note fits inside the panel interior: nothing spills past the last interior cell.
+        assert!(
+            text.chars().count() <= inner,
+            "note fits the {inner}-col interior (len {}):\n{text}",
+            text.chars().count()
+        );
+        // And the note ends exactly with the intact `(0600)` (the suffix is not clipped away).
+        assert!(text.trim_end().ends_with("(0600)"), "note ends with the intact (0600):\n{text}");
     }
 
     #[test]
