@@ -284,6 +284,112 @@ impl Styler {
     }
 }
 
+// --- `serve` banner + access-log rendering (VAL-CLI-012..016 / 037) --------------------------
+//
+// The `serve` banner, routes hint, and access-log rows are the human/stderr surface of
+// `cortex serve`. Machine consumers read stdout, which stays untouched. Every helper below routes
+// its color through a [`Styler`], so a disabled styler (piped/non-TTY stderr, or `NO_COLOR`)
+// yields exactly the historical plain bytes with zero ANSI escapes.
+
+/// Leading indent for an access-log row.
+const ACCESS_LOG_INDENT: &str = "  ";
+/// Method column width (fits `GET`/`POST`/`PUT`/`PATCH`/`DELETE`, always with a trailing gap).
+const ACCESS_LOG_METHOD_W: usize = 6;
+/// Path column width, sized so the status column aligns for the common short routes; longer paths
+/// overflow gracefully while keeping at least a two-column gap before the status.
+const ACCESS_LOG_PATH_W: usize = 26;
+
+/// The status color for an HTTP status code in the serve access log: green for 2xx/3xx (success /
+/// redirect), red otherwise. Green here is a sanctioned status hue, never a plain data number.
+#[must_use]
+pub fn http_status_color(status: u16) -> Rgb {
+    if (200..400).contains(&status) {
+        OK_GREEN
+    } else {
+        ERR_RED
+    }
+}
+
+/// The `serve` listening banner line (no trailing newline).
+///
+/// Renders `cortex serve listening on http://<addr>` with the URL painted URL-blue. The leading
+/// text is left unstyled so a disabled styler reproduces the exact historical plain banner byte
+/// for byte.
+#[must_use]
+pub fn serve_banner_line(styler: Styler, addr: &str) -> String {
+    let url = format!("http://{addr}");
+    format!("cortex serve listening on {}", styler.paint(&url, URL_BLUE))
+}
+
+/// The faint `serve` routes-hint footer (no trailing newline), naming real server routes.
+#[must_use]
+pub fn serve_routes_hint(styler: Styler) -> String {
+    let hint =
+        format!("routes: /health /event /session /openapi.json {ELLIPSIS} (Ctrl-C to stop)");
+    styler.paint(&hint, FAINT)
+}
+
+/// The human duration label for a completed request: `open` for a long-lived stream, `<n>ms` under
+/// a second, else `<n>.<d>s`.
+#[must_use]
+pub fn serve_duration_label(duration: std::time::Duration, streaming: bool) -> String {
+    if streaming {
+        return "open".to_owned();
+    }
+    let millis = duration.as_millis();
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else {
+        format!("{:.1}s", duration.as_secs_f64())
+    }
+}
+
+/// One aligned `serve` access-log row (no trailing newline): method (ORANGE) + path (TXT) +
+/// status (green for 2xx/3xx, red otherwise) + duration (FAINT). Streaming responses annotate the
+/// path with `(SSE)` and show an `open` duration.
+#[must_use]
+pub fn serve_access_log_row(
+    styler: Styler,
+    method: &str,
+    path: &str,
+    status: u16,
+    duration: std::time::Duration,
+    streaming: bool,
+) -> String {
+    // Method cell: left-justified, guaranteed to end with at least one space so a long method
+    // (e.g. DELETE) never abuts the path.
+    let width = ACCESS_LOG_METHOD_W;
+    let mut method_cell = format!("{method:<width$}");
+    if !method_cell.ends_with(' ') {
+        method_cell.push(' ');
+    }
+
+    // Path cell, padded so the status column lines up for the common routes; a streaming response
+    // is annotated with `(SSE)`.
+    let path_display = if streaming {
+        format!("{path}  (SSE)")
+    } else {
+        path.to_owned()
+    };
+    let path_width = ACCESS_LOG_PATH_W;
+    let path_cell = if path_display.len() < path_width {
+        format!("{path_display:<path_width$}")
+    } else {
+        format!("{path_display}  ")
+    };
+
+    let status_str = status.to_string();
+    let duration_label = serve_duration_label(duration, streaming);
+
+    format!(
+        "{ACCESS_LOG_INDENT}{method}{path}{status}  {duration}",
+        method = styler.paint(&method_cell, ORANGE),
+        path = styler.paint(&path_cell, TXT),
+        status = styler.paint(&status_str, http_status_color(status)),
+        duration = styler.paint(&duration_label, FAINT),
+    )
+}
+
 /// Wrap `text` in a foreground-color SGR sequence. Used only on the enabled/TTY styling path.
 fn wrap(text: &str, color: Rgb) -> String {
     format!("{}{text}{RESET}", Style::fg(color).open_sequence())
@@ -657,5 +763,106 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn http_status_color_greens_success_and_reds_errors() {
+        for ok in [200_u16, 201, 204, 301, 302, 399] {
+            assert_eq!(http_status_color(ok), OK_GREEN, "{ok} is a success/redirect");
+        }
+        for err in [400_u16, 401, 404, 429, 500, 503] {
+            assert_eq!(http_status_color(err), ERR_RED, "{err} is an error");
+        }
+    }
+
+    #[test]
+    fn serve_banner_line_is_plain_and_ansi_free_when_disabled() {
+        let plain = Styler::new(false);
+        let line = serve_banner_line(plain, "127.0.0.1:3200");
+        assert_eq!(line, "cortex serve listening on http://127.0.0.1:3200");
+        assert!(!line.contains('\x1b'), "disabled banner has no ANSI");
+    }
+
+    #[test]
+    fn serve_banner_line_paints_the_url_blue_when_enabled() {
+        let styled = Styler::new(true);
+        let line = serve_banner_line(styled, "127.0.0.1:3200");
+        // The URL is wrapped in the URL-blue SGR; the lead text is unstyled.
+        assert!(line.starts_with("cortex serve listening on "));
+        assert!(line.contains(&format!(
+            "{}http://127.0.0.1:3200\x1b[0m",
+            Style::fg(URL_BLUE).open_sequence()
+        )));
+        // Stripping ANSI recovers the exact plain banner.
+        assert_eq!(
+            strip_ansi(&line),
+            "cortex serve listening on http://127.0.0.1:3200"
+        );
+    }
+
+    #[test]
+    fn serve_routes_hint_names_real_routes_and_is_faint() {
+        let styled = Styler::new(true);
+        let hint = serve_routes_hint(styled);
+        let plain = strip_ansi(&hint);
+        for route in ["/health", "/event", "/session", "/openapi.json"] {
+            assert!(plain.contains(route), "routes hint names {route}: {plain}");
+        }
+        assert!(plain.contains("(Ctrl-C to stop)"));
+        // Whole line is faint; disabled styler is a plain passthrough.
+        assert!(hint.contains(&Style::fg(FAINT).open_sequence()));
+        let disabled = serve_routes_hint(Styler::new(false));
+        assert!(!disabled.contains('\x1b'), "disabled routes hint has no ANSI");
+        assert_eq!(disabled, plain);
+    }
+
+    #[test]
+    fn serve_duration_label_formats_ms_seconds_and_open() {
+        use std::time::Duration;
+        assert_eq!(serve_duration_label(Duration::from_millis(1), false), "1ms");
+        assert_eq!(serve_duration_label(Duration::from_millis(8), false), "8ms");
+        assert_eq!(serve_duration_label(Duration::from_millis(999), false), "999ms");
+        assert_eq!(serve_duration_label(Duration::from_millis(1400), false), "1.4s");
+        // Streaming responses show `open` regardless of the elapsed time.
+        assert_eq!(serve_duration_label(Duration::from_millis(3), true), "open");
+    }
+
+    #[test]
+    fn serve_access_log_row_is_plain_and_ansi_free_when_disabled() {
+        use std::time::Duration;
+        let plain = Styler::new(false);
+        let row = serve_access_log_row(plain, "GET", "/health", 200, Duration::from_millis(1), false);
+        assert!(!row.contains('\x1b'), "disabled row has no ANSI: {row:?}");
+        // Aligned columns: 2-space indent, method, path, status, duration.
+        assert_eq!(row, "  GET   /health                   200  1ms");
+    }
+
+    #[test]
+    fn serve_access_log_row_colors_method_status_and_duration() {
+        use std::time::Duration;
+        let styled = Styler::new(true);
+        let ok = serve_access_log_row(styled, "POST", "/session", 201, Duration::from_millis(8), false);
+        assert!(ok.contains(&format!("{}POST", Style::fg(ORANGE).open_sequence())));
+        assert!(ok.contains(&format!("{}201\x1b[0m", Style::fg(OK_GREEN).open_sequence())));
+        assert!(ok.contains(&format!("{}8ms\x1b[0m", Style::fg(FAINT).open_sequence())));
+        // A server error paints the status red.
+        let err = serve_access_log_row(styled, "GET", "/boom", 500, Duration::from_millis(2), false);
+        assert!(err.contains(&format!("{}500\x1b[0m", Style::fg(ERR_RED).open_sequence())));
+        // The visible (ANSI-stripped) columns stay aligned regardless of styling.
+        assert_eq!(
+            strip_ansi(&ok),
+            "  POST  /session                  201  8ms"
+        );
+    }
+
+    #[test]
+    fn serve_access_log_row_annotates_streaming_with_sse_and_open() {
+        use std::time::Duration;
+        let styled = Styler::new(true);
+        let row = serve_access_log_row(styled, "GET", "/event", 200, Duration::from_millis(0), true);
+        let plain = strip_ansi(&row);
+        assert!(plain.contains("/event  (SSE)"), "SSE annotation present: {plain}");
+        assert!(plain.trim_end().ends_with("open"), "streaming shows open: {plain}");
+        assert!(!plain.contains("0ms"), "streaming never shows a millisecond duration");
     }
 }

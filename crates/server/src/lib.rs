@@ -84,6 +84,33 @@ pub struct HealthResponse {
     pub status: &'static str,
 }
 
+/// One completed HTTP request, as observed by the access-log middleware.
+///
+/// This carries only presentation-neutral facts (method, path, final status, wall-clock duration,
+/// and whether the response is a long-lived stream). Formatting/styling is the caller's concern, so
+/// the (cli-owned) TTY-gated styler renders the row while this crate stays free of any tty/color
+/// dependency.
+#[derive(Debug, Clone)]
+pub struct AccessLogRecord {
+    /// The request HTTP method (e.g. `GET`, `POST`).
+    pub method: String,
+    /// The request path (no query string).
+    pub path: String,
+    /// The final response status code, including any auth short-circuit.
+    pub status: u16,
+    /// Wall-clock time from entering the middleware to the response head being ready.
+    pub duration: Duration,
+    /// Whether the response is a long-lived stream (e.g. SSE `/event`), for which the elapsed
+    /// duration is not meaningful (the connection stays open).
+    pub streaming: bool,
+}
+
+/// A sink that `cortex serve -v` installs to print one styled access-log row per request.
+///
+/// Kept as an injectable closure so the verbose access log is opt-in (plain `serve` installs no
+/// sink and therefore emits no per-request rows) and so the styling lives in the cli crate.
+pub type AccessLogSink = Arc<dyn Fn(AccessLogRecord) + Send + Sync>;
+
 /// Shared immutable state for HTTP handlers.
 ///
 /// The server stores a database path, not an in-memory session map. Each route opens the shared
@@ -91,6 +118,7 @@ pub struct HealthResponse {
 /// restarts and visible to other surfaces that use the same path.
 #[derive(Clone)]
 pub struct ServerState {
+    access_log: Option<AccessLogSink>,
     db_path: PathBuf,
     cwd: PathBuf,
     audit_path: Option<PathBuf>,
@@ -115,6 +143,7 @@ impl ServerState {
     #[must_use]
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         Self {
+            access_log: None,
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             audit_path: None,
@@ -139,6 +168,7 @@ impl ServerState {
     #[must_use]
     pub fn with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider>) -> Self {
         Self {
+            access_log: None,
             db_path: db_path.into(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             audit_path: None,
@@ -220,6 +250,17 @@ impl ServerState {
     #[must_use]
     pub fn with_auth(mut self, auth: ServerAuth) -> Self {
         self.auth = auth;
+        self
+    }
+
+    /// Install a per-request access-log sink (used by `cortex serve -v`).
+    ///
+    /// When present, a middleware calls the sink once per completed request with an
+    /// [`AccessLogRecord`]. When absent (the default, and what plain `cortex serve` uses) the
+    /// middleware is a pure passthrough, so no per-request rows are emitted.
+    #[must_use]
+    pub fn with_access_log(mut self, sink: AccessLogSink) -> Self {
+        self.access_log = Some(sink);
         self
     }
 
@@ -586,6 +627,7 @@ pub fn app_with_provider(db_path: impl Into<PathBuf>, provider: Arc<dyn Provider
 /// Construct the axum application from pre-resolved server state.
 pub fn app_with_state(state: ServerState) -> Router {
     let auth = state.auth.clone();
+    let access_log = state.access_log.clone();
     Router::new()
         .route("/health", get(health).options(preflight))
         .route(
@@ -882,6 +924,9 @@ pub fn app_with_state(state: ServerState) -> Router {
         )
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth, auth_and_cors))
+        // Outermost so it observes the final status of every request, including auth
+        // short-circuits and CORS preflights. A `None` sink makes this a pure passthrough.
+        .layer(middleware::from_fn_with_state(access_log, access_log_layer))
 }
 
 /// Resolve and validate the requested bind address.
@@ -976,6 +1021,38 @@ async fn auth_and_cors(State(auth): State<ServerAuth>, request: Request, next: N
     if let Some(origin) = cors_origin {
         add_cors_headers(response.headers_mut(), origin, false);
     }
+    response
+}
+
+/// Access-log middleware: when a sink is installed, emit one [`AccessLogRecord`] per completed
+/// request; otherwise pass straight through with no measurement. It never inspects or mutates the
+/// request/response, so HTTP behavior is identical whether or not the log is enabled.
+async fn access_log_layer(
+    State(sink): State<Option<AccessLogSink>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(sink) = sink else {
+        return next.run(request).await;
+    };
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let duration = started.elapsed();
+    let status = response.status().as_u16();
+    let streaming = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|content_type| content_type.starts_with("text/event-stream"));
+    sink(AccessLogRecord {
+        method,
+        path,
+        status,
+        duration,
+        streaming,
+    });
     response
 }
 
@@ -3809,4 +3886,98 @@ async fn wait_for_shutdown_signal() {
 #[cfg(not(unix))]
 async fn wait_for_shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod access_log_tests {
+    use super::*;
+    use axum::body::Body;
+    use std::sync::Mutex;
+    use tower::ServiceExt;
+
+    fn capturing_sink() -> (AccessLogSink, Arc<Mutex<Vec<AccessLogRecord>>>) {
+        let records: Arc<Mutex<Vec<AccessLogRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = records.clone();
+        let sink: AccessLogSink = Arc::new(move |record| {
+            captured.lock().expect("access-log records lock").push(record);
+        });
+        (sink, records)
+    }
+
+    #[tokio::test]
+    async fn access_log_sink_records_one_row_per_request() {
+        let (sink, records) = capturing_sink();
+        let state = ServerState::new(std::env::temp_dir().join("cortex-access-log-some.db"))
+            .with_access_log(sink);
+        let app = app_with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("build health request"),
+            )
+            .await
+            .expect("dispatch health request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rows = records.lock().expect("records lock");
+        assert_eq!(rows.len(), 1, "exactly one access-log row per request");
+        assert_eq!(rows[0].method, "GET");
+        assert_eq!(rows[0].path, "/health");
+        assert_eq!(rows[0].status, 200);
+        assert!(!rows[0].streaming, "/health is not a stream");
+    }
+
+    #[tokio::test]
+    async fn without_a_sink_the_middleware_is_a_passthrough() {
+        // No sink installed (the plain `cortex serve` case): the request still succeeds and no
+        // per-request row is produced anywhere.
+        let state = ServerState::new(std::env::temp_dir().join("cortex-access-log-none.db"));
+        let app = app_with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("build health request"),
+            )
+            .await
+            .expect("dispatch health request");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn access_log_flags_the_event_stream_as_streaming() {
+        let (sink, records) = capturing_sink();
+        let state = ServerState::new(std::env::temp_dir().join("cortex-access-log-sse.db"))
+            .with_access_log(sink);
+        let app = app_with_state(state);
+
+        // The SSE handler returns its response head promptly (the body stream is lazy), so the
+        // access-log row is produced without consuming the stream.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/event")
+                    .body(Body::empty())
+                    .expect("build event request"),
+            )
+            .await
+            .expect("dispatch event request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rows = records.lock().expect("records lock");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/event");
+        assert!(
+            rows[0].streaming,
+            "the SSE event stream must be flagged as streaming"
+        );
+    }
 }

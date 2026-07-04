@@ -142,7 +142,9 @@ fn main() -> ExitCode {
         Some(Command::Mcp(args)) => mcp_cmd::run(args).into(),
         Some(Command::Lsp(args)) => lsp_cmd::run(args).into(),
         Some(Command::Formatter(args)) => formatter_cmd::run(args).into(),
-        Some(Command::Serve(args)) => serve_cmd::run(args, bus.clone(), pure_plugins).into(),
+        Some(Command::Serve(args)) => {
+            serve_cmd::run(args, bus.clone(), pure_plugins, cli.verbose).into()
+        }
         Some(Command::Attach(args)) => attach::run(args).into(),
         Some(Command::Upgrade(args)) => lifecycle::run_upgrade(args).into(),
         Some(Command::Uninstall(args)) => lifecycle::run_uninstall(args).into(),
