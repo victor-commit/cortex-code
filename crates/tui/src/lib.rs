@@ -11,6 +11,8 @@ mod attachments;
 mod auth_login;
 mod brand;
 mod checkpoint;
+#[cfg(test)]
+mod cross_invariants;
 mod diff;
 mod format_bridge;
 mod gallery;
