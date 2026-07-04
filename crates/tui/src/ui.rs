@@ -922,7 +922,7 @@ fn push_tool(
         lines.push(interior_row(&[("output".to_owned(), header_style)]));
 
         if let Some(diff) = card.diff.as_deref() {
-            push_card_diff_rows(lines, diff, bx, bw, border_style, base, theme);
+            push_card_diff_rows(lines, diff, bx, bw, width, border_style, theme);
         } else if card.name == "todo" {
             // VAL-TOOL-025: todo items render with three-state markers: ✓ done (OKG green),
             // ▶ in-progress (ORANGE), ○ pending (FAINT).
@@ -1134,10 +1134,12 @@ fn parse_todo_item_line(
         (glyphs::DOT_HOLLOW, theme.ghost, theme.text)
     };
     
-    // Extract content after the status and priority brackets
+    // Strip the leading `[status][priority]` prefix from the FRONT (past the 2nd `]`) so a content
+    // that itself contains `]` (e.g. "fix array[0] bug") is preserved verbatim.
     let content = after_dot
-        .rsplit(']')
-        .next()
+        .split_once(']')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(_, rest)| rest)
         .unwrap_or(after_dot)
         .trim()
         .to_owned();
@@ -1156,11 +1158,11 @@ fn push_card_diff_rows(
     diff: &FileDiff,
     bx: usize,
     bw: usize,
+    width: usize,
     border_style: Style,
-    base: Style,
     theme: &style::ThemeColors,
 ) {
-    let width = base_width(bx, bw);
+    let base = Style::default().bg(theme.background);
     let origin = bx + 2;
     let mut shown = 0usize;
     let mut truncated = false;
@@ -1219,12 +1221,6 @@ fn push_card_diff_rows(
         );
         lines.push(cells_to_line(&row));
     }
-}
-
-/// The full row width implied by a box at `bx` spanning `bw` columns (`bx + bw`), used to size the
-/// cell buffers for interior rows.
-fn base_width(bx: usize, bw: usize) -> usize {
-    bx + bw
 }
 
 /// Width (columns) of one attachment card (`perm_attach.png`: three 28-col cards tile the 88-col
@@ -7775,6 +7771,41 @@ mod tests {
     }
 
     #[test]
+    fn expanded_diff_rows_paint_the_full_row_width() {
+        // Expanded-diff rows must paint the FULL row width (not just up to the card's right edge),
+        // so the far-right margin cells outside the card keep an explicit bg like every other row.
+        let theme = style::ThemeColors::dark();
+        let card = diff_card();
+        let width = 92usize;
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, width, true, &theme);
+
+        let diff_row = lines
+            .iter()
+            .find(|l| plain(l).contains("new_a"))
+            .expect("an addition diff row");
+        assert_eq!(
+            plain(diff_row).chars().count(),
+            width,
+            "the diff row spans the full row width"
+        );
+        for span in &diff_row.spans {
+            assert!(
+                span.style.bg.is_some(),
+                "every diff-row cell carries an explicit bg (no unpainted margin): {:?}",
+                span.content
+            );
+        }
+        // The far-right margin cell (outside the card box) carries the brand near-black page bg.
+        let last = diff_row.spans.last().expect("a trailing span");
+        assert_eq!(
+            last.style.bg,
+            Some(theme.background),
+            "the far-right margin keeps the page background"
+        );
+    }
+
+    #[test]
     fn card_label_accent_is_stable_across_toggle() {
         // VAL-TOOL-032: toggling collapsed<->expanded keeps the top-border label (glyph + name +
         // state accent) identical; only the body below changes.
@@ -8375,6 +8406,25 @@ mod tests {
             .find(|s| s.content.contains(glyphs::DOT_HOLLOW))
             .expect("pending marker span");
         assert_eq!(pending_marker.style.fg, Some(theme.ghost), "pending marker is FAINT");
+    }
+
+    #[test]
+    fn todo_body_preserves_content_containing_brackets() {
+        // A todo whose content itself contains `]` (e.g. "fix array[0] bug") must render its full
+        // content verbatim: only the leading `[status][priority]` prefix is stripped, not the tail.
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("todo", r#"{}"#);
+        let output = "1. [in_progress][high] fix array[0] bug";
+        card.complete(&[protocol::ToolResultPart::text(output)], false);
+
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 92, true, &theme);
+        let text = rendered(&lines);
+
+        assert!(
+            text.contains("fix array[0] bug"),
+            "todo content with `]` is preserved verbatim (not truncated):\n{text}"
+        );
     }
 
     #[test]
@@ -9403,7 +9453,7 @@ mod tests {
         let search = &lines[0];
         assert_eq!(search.spans[0].content, crate::glyphs::PROMPT);
         assert_eq!(search.spans[0].style.fg, Some(theme.primary));
-        let text = rendered(&[search.clone()]);
+        let text = rendered(std::slice::from_ref(search));
         assert!(text.contains("dif"), "typed query shown: {text}");
         assert!(text.contains(crate::glyphs::CURSOR), "caret shown: {text}");
         // The underline rule sits directly under the search row.
