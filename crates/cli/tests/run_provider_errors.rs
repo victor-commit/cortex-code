@@ -6,14 +6,15 @@
 //! Coverage:
 //! - **VAL-LLM-022**: a keyless run fails fast with a clear missing-credential diagnostic that
 //!   names how to provide the key (`OPENROUTER_API_KEY`), with a clean stdout and no backtrace.
-//! - **VAL-LLM-032**: pointing the provider base URL at an unreachable loopback port (3200-3299,
-//!   nothing listening) yields a transport/connection diagnostic distinct from net-disabled and
-//!   missing-credential, within a bounded time, with no answer on stdout and no backtrace.
+//! - **VAL-LLM-032**: pointing the provider base URL at an unreachable loopback port (an
+//!   OS-assigned ephemeral port with nothing listening) yields a transport/connection diagnostic
+//!   distinct from net-disabled and missing-credential, within a bounded time, with no answer on
+//!   stdout and no backtrace.
 //! - **VAL-RUN-008**: `CORTEX_NO_NET=1 cortex run` fails closed before any socket — a syscall
 //!   trace shows zero outbound `connect()` and the diagnostic reads as net-disabled.
 
 use std::io::Read;
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -66,18 +67,14 @@ fn fake_key() -> String {
     format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8))
 }
 
-/// Find a port in the mission's 3200-3299 range that currently refuses connections, so a probe
-/// against it yields a deterministic transport failure (never a hang).
+/// Obtain a loopback port that refuses connections, so a probe against it yields a deterministic
+/// transport failure (never a hang): bind an OS-assigned ephemeral port, read it, then drop the
+/// listener so the port is closed.
 fn closed_local_port() -> u16 {
-    for port in (3200u16..=3299).rev() {
-        let addr: SocketAddr = format!("127.0.0.1:{port}")
-            .parse()
-            .expect("valid loopback addr");
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_err() {
-            return port;
-        }
-    }
-    panic!("no closed port available in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    port
 }
 
 /// Run the binary with a hard timeout. stdout/stderr are drained on dedicated threads so a child

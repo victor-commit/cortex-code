@@ -1,18 +1,16 @@
 //! Black-box audit sink coverage through the shipped `cortex run` binary.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3280);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1357,16 +1355,7 @@ fn assert_pid_reaped(pid: u32, label: &str) {
 }
 
 fn bind_provider_listener() -> (u16, TcpListener) {
-    for _ in 0..40 {
-        let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > 3299 {
-            NEXT_PORT.store(3280, Ordering::SeqCst);
-            continue;
-        }
-        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-        if let Ok(listener) = TcpListener::bind(addr) {
-            return (port, listener);
-        }
-    }
-    panic!("no free port in 3280-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    (port, listener)
 }

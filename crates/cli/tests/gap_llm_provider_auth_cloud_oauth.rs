@@ -208,12 +208,7 @@ fn wait_child(child: &mut Child, timeout: Duration) -> std::process::ExitStatus 
 }
 
 fn bind_loopback_listener() -> TcpListener {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return listener;
-        }
-    }
-    panic!("no free loopback port in 3200-3299");
+    TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener")
 }
 
 fn parse_headers(head: &str) -> Vec<(String, String)> {

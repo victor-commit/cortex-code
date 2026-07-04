@@ -22,21 +22,17 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// The default model the mission targets (good at tool calls); used for the live turns.
 const MODEL: &str = "google/gemini-2.5-flash";
-const FIXTURE_PORT_START: u16 = 3240;
-const FIXTURE_PORT_END: u16 = 3279;
 const READ_RECOVERY_MAX_ATTEMPTS: usize = 3;
 const COMPOUND_RECOVERY_MAX_ATTEMPTS: usize = 3;
 const TOUCH_DENY_MAX_ATTEMPTS: usize = 3;
 const LIVE_RETRY_BACKOFF: Duration = Duration::from_millis(300);
 static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
-static NEXT_FIXTURE_PORT: AtomicU16 = AtomicU16::new(FIXTURE_PORT_START);
 
 /// Resolve the live OpenRouter key, or `None` to skip the test cleanly when it is unset/empty.
 fn live_key() -> Option<String> {
@@ -241,17 +237,7 @@ impl Fixture {
 }
 
 fn bind_loopback_listener() -> TcpListener {
-    for _ in 0..80 {
-        let port = NEXT_FIXTURE_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > FIXTURE_PORT_END {
-            NEXT_FIXTURE_PORT.store(FIXTURE_PORT_START, Ordering::SeqCst);
-            continue;
-        }
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return listener;
-        }
-    }
-    panic!("no free loopback port in reserved fixture range 3240-3279");
+    TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener")
 }
 
 fn read_http_request(stream: &mut TcpStream) -> std::io::Result<()> {

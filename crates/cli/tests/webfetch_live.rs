@@ -2,8 +2,8 @@
 //!
 //! The test is gated on `OPENROUTER_API_KEY`: without a key it skips cleanly, while mission
 //! validation runs it with the real key. The fetched page is served by a real loopback HTTP server
-//! on the mission port range 3200-3299, and the model must call the real built-in tool to read the
-//! page-specific marker.
+//! on an OS-assigned ephemeral port (127.0.0.1:0), and the model must call the real built-in tool
+//! to read the page-specific marker.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -36,15 +36,12 @@ fn isolated_home() -> PathBuf {
 }
 
 fn bind_loopback() -> (TcpListener, u16) {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            listener
-                .set_nonblocking(true)
-                .expect("set nonblocking listener");
-            return (listener, port);
-        }
-    }
-    panic!("no free loopback port in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let port = listener.local_addr().expect("local addr").port();
+    (listener, port)
 }
 
 fn serve_marker_page(marker: String) -> (String, thread::JoinHandle<Option<String>>) {

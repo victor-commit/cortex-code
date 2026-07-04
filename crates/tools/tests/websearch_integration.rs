@@ -10,15 +10,12 @@ use tools::{Tool, ToolContext, ToolRegistry, WebSearchConfig, WebSearchProvider,
 static WEBSEARCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn bind_loopback() -> (TcpListener, u16) {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            listener
-                .set_nonblocking(false)
-                .expect("set listener blocking");
-            return (listener, port);
-        }
-    }
-    panic!("no free loopback port in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    listener
+        .set_nonblocking(false)
+        .expect("set listener blocking");
+    let port = listener.local_addr().expect("local addr").port();
+    (listener, port)
 }
 
 fn serve_once(

@@ -24,24 +24,46 @@ test-threads = 32
 fail-fast = false
 # Residual transient fixture races (a loopback accept-thread that briefly loses the scheduler while
 # the fast bulk drains, on this shared/loaded host) are re-run in a FRESH process; a truly-broken
-# test fails every attempt, so retries never mask a deterministic failure. The `network` cap below
-# is the primary structural fix.
+# test fails every attempt, so retries never mask a deterministic failure. The port-pool
+# oversubscription/TOCTOU flakes that the fixed 3200-3299 scan produced are now eliminated at the
+# source (the in-process mock listeners bind 127.0.0.1:0), so the raised `network` cap below is the
+# primary structural fix. Retries are KEPT at the baseline 5 (not reduced) because the residual flake
+# this budget now protects is a DIFFERENT, unrelated one: the reserved-range serve_lifecycle
+# cold-LSP-probe tests return `WouldBlock` under global CPU load on this heavily-loaded shared host
+# (load avg ~14), and the higher `network` cap adds CPU pressure that makes that pre-existing
+# environmental flake fire a bit more often (observed to consume the full retry budget on a saturated
+# host). Holding retries at 5 keeps the harness safety net unchanged from the accepted baseline while
+# the cap is raised. (On a quiet host a smaller budget suffices.)
 retries = 5
 # Do not kill legitimately-slow fixtures (a cold LSP availability probe can take ~25s).
 slow-timeout = { period = "45s", terminate-after = 8 }
 
-# ROOT CAUSE of the full-parallelism failures: the network-touching *integration* tests in the
-# cli/server/mcp/tools crates each spin up loopback HTTP/SSE fixture servers (and child `cortex`
-# turns) that scan the FIXED mission port pool 127.0.0.1:3200-3299 for a free port, and several
-# rely on a file-local `static Mutex` to serialize server access. Under nextest's process-per-test
-# model that Mutex no longer serializes, and running many such heavyweight tests at once
-# oversubscribes the 100-port pool (TOCTOU: a "closed" port a test expects unreachable gets bound
-# by a neighbour → HTTP 404) and starves the fixture accept threads past their internal deadlines
-# ("transport unavailable"). Capping this group at the baseline's proven-safe concurrency restores
-# port-pool headroom and CPU for the fixture threads — a harness-concurrency fix only; no test is
-# weakened, skipped, or deleted.
+# The network-touching *integration* tests in the cli/server/mcp/tools crates spin up loopback
+# HTTP/SSE fixture servers (and child `cortex` turns). The in-process Rust mock listeners now bind an
+# OS-assigned ephemeral port (`TcpListener::bind(("127.0.0.1", 0))` + read `local_addr()`), which
+# REMOVES the fixed 3200-3299 pool scan and its TOCTOU (a "closed" port a neighbour then binds ->
+# HTTP 404) entirely; only the tests that spawn a real product `cortex serve` / mcp remote-server
+# child still use the reserved range (the product enforces 3200-3299 in `server::bind_addr` /
+# `CORTEX_MCP_PORT`). With pool oversubscription gone, the ephemeral mock bulk no longer needs a tight
+# cap, so `network` is raised from the baseline's proven-safe 4 to 8.
+#
+# The `serve_lsp` group holds only the three `serve_lifecycle::serve_lsp_status_*` tests, which spawn
+# a real reserved-range `cortex serve` child and drive a ~25s COLD language-server availability probe.
+# That probe is CPU/scheduler sensitive on this loaded shared host and intermittently returns
+# `WouldBlock` (a documented environment-timing flake, unrelated to port selection). Keeping them in
+# their own small group holds them off the wider `network` pool so a raised `network` cap does not
+# pile extra fixture load onto their cold probe. Harness-concurrency only; no test is weakened,
+# skipped, or deleted.
 [test-groups]
-network = { max-threads = 4 }
+network = { max-threads = 8 }
+serve_lsp = { max-threads = 2 }
+
+# Order matters: nextest uses the FIRST override that assigns a test-group. The narrow serve_lsp
+# filter must precede the broad network filter so the cold-LSP-probe tests land in serve_lsp (they
+# also match the network filter).
+[[profile.default.overrides]]
+filter = 'package(cli) & test(serve_lsp_status)'
+test-group = "serve_lsp"
 
 [[profile.default.overrides]]
 filter = 'kind(test) & (package(cli) | package(server) | package(mcp) | package(tools))'

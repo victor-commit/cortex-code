@@ -89,9 +89,9 @@ struct ProviderFixture {
 
 impl ProviderFixture {
     fn spawn(mcp_port: u16, scenario: Scenario) -> Self {
-        let port = free_port();
         let listener =
-            TcpListener::bind(("127.0.0.1", port)).expect("bind provider loopback fixture");
+            TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral provider loopback fixture");
+        let port = listener.local_addr().expect("local addr").port();
         let captures = Arc::new(Mutex::new(Vec::new()));
         let thread_captures = captures.clone();
         let thread = thread::spawn(move || {

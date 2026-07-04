@@ -1,9 +1,8 @@
 //! Black-box checks for the `CORTEX_NO_NET` fail-closed network kill-switch, exercised through
 //! the `cortex net check` network-touching command path (VAL-SKEL-032..036).
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpListener;
 use std::process::Command;
-use std::time::Duration;
 
 /// The dedicated exit code for a kill-switch refusal (`Exit::NetDisabled`).
 const NET_DISABLED_CODE: i32 = 4;
@@ -19,18 +18,14 @@ fn cortex() -> Command {
     cmd
 }
 
-/// Find a port in the mission's 3200-3299 range that currently refuses connections, so a probe
-/// against it yields a deterministic transport failure (never a hang).
+/// Obtain a loopback port that refuses connections, so a probe against it yields a deterministic
+/// transport failure (never a hang): bind an OS-assigned ephemeral port, read it, then drop the
+/// listener so the port is closed.
 fn closed_local_port() -> u16 {
-    for port in (3200u16..=3299).rev() {
-        let addr: SocketAddr = format!("127.0.0.1:{port}")
-            .parse()
-            .expect("valid loopback addr");
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_err() {
-            return port;
-        }
-    }
-    panic!("no closed port available in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    port
 }
 
 /// The `net check` arguments aimed at a guaranteed-closed loopback port.

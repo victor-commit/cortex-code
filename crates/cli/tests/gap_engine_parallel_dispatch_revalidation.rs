@@ -13,7 +13,7 @@
 //!   tool results with correct call ids and deterministic original-call ordering across repeated
 //!   runs.
 //!
-//! Process hygiene: the loopback fixture binds only inside the mission port range 3200-3299; the
+//! Process hygiene: the loopback fixture binds an OS-assigned ephemeral port (127.0.0.1:0); the
 //! `cortex` child is reaped by its exact PID (killed on timeout). No external network is used by the
 //! deterministic tests.
 
@@ -97,12 +97,7 @@ impl Fixture {
 }
 
 fn bind_loopback_listener() -> TcpListener {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return listener;
-        }
-    }
-    panic!("no free loopback port in mission range 3200-3299");
+    TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener")
 }
 
 /// Read one HTTP request, returning the request body (the chat-completions JSON payload).

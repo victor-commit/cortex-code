@@ -3,12 +3,12 @@
 //! degrading cleanly without corrupting the catalogue. Covers VAL-FINISH-005..007 and VAL-FINISH-009.
 //!
 //! Network determinism: the happy-path and forced-failure cases drive the binary against a local
-//! fixture endpoint via the `CORTEX_MODELS_DEV_URL` seam (bound in the mission's 3200-3299 range),
-//! so they never depend on external connectivity. A separate, connectivity-gated test exercises the
-//! real models.dev endpoint to prove the live fetch (VAL-FINISH-005).
+//! fixture endpoint via the `CORTEX_MODELS_DEV_URL` seam (bound on an OS-assigned ephemeral loopback
+//! port, 127.0.0.1:0), so they never depend on external connectivity. A separate, connectivity-gated
+//! test exercises the real models.dev endpoint to prove the live fetch (VAL-FINISH-005).
 
 use std::io::{BufRead, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -172,25 +172,20 @@ fn run_with_early_stdout_close(mut command: Command, timeout: Duration) -> (Outp
     )
 }
 
-/// Bind a fixture HTTP server on a free port in the mission's 3200-3299 range.
+/// Bind a fixture HTTP server on an OS-assigned ephemeral loopback port.
 fn bind_fixture_port() -> (TcpListener, u16) {
-    for port in 3200u16..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return (listener, port);
-        }
-    }
-    panic!("no free port available in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    (listener, port)
 }
 
-/// Find a port in 3200-3299 that currently refuses connections, for a deterministic fetch failure.
+/// Obtain a loopback port that refuses connections, for a deterministic fetch failure: bind an
+/// OS-assigned ephemeral port, read it, then drop the listener so the port is closed.
 fn closed_port() -> u16 {
-    for port in (3200u16..=3299).rev() {
-        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_err() {
-            return port;
-        }
-    }
-    panic!("no closed port available in 3200-3299");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    port
 }
 
 /// Serve a single HTTP/1.1 response carrying `body` and then close, bounded so the thread never

@@ -178,12 +178,9 @@ struct Fixture {
 }
 
 fn bind_fixture() -> Fixture {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return Fixture { listener, port };
-        }
-    }
-    panic!("no free loopback port in 3200-3299 for the provider fixture");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    Fixture { listener, port }
 }
 
 fn read_http_request(stream: &mut TcpStream) -> String {

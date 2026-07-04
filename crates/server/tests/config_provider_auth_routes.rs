@@ -483,12 +483,9 @@ async fn start_token_fixture() -> (String, tokio::task::JoinHandle<()>) {
 }
 
 async fn bind_in_reserved_range() -> TcpListener {
-    for port in 3200..=3299 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await {
-            return listener;
-        }
-    }
-    panic!("no free port in 3200-3299 for the OAuth token fixture");
+    TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind ephemeral loopback listener")
 }
 
 async fn send(
