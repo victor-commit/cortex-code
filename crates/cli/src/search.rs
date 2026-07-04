@@ -241,7 +241,11 @@ fn render_search_styled(
     }
 
     if !session_hits.is_empty() {
-        out.push('\n');
+        // Separate the session block from the workspace hits above it, but only when there ARE
+        // workspace hits — in the session-only case the block starts cleanly with no leading blank.
+        if !workspace_lines.is_empty() {
+            out.push('\n');
+        }
         out.push_str(&styler.paint("persisted sessions", style::DIM));
         out.push('\n');
         for hit in session_hits {
@@ -578,6 +582,24 @@ mod tests {
         format!("\x1b[38;2;{};{};{}m", color.0, color.1, color.2)
     }
 
+    /// Remove every SGR escape sequence so a styled render can be inspected structurally.
+    fn strip_ansi(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for e in chars.by_ref() {
+                    if e == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     fn hit(base: style::Rgb) -> String {
         let style::Rgb(fr, fg_, fb) = base;
         let style::Rgb(br, bg, bb) = style::HIT_BG;
@@ -687,6 +709,57 @@ mod tests {
         let out = render_search_styled(body, &[], "parse_config", Styler::new(false));
         assert!(!out.contains('\x1b'), "disabled styler emits no ANSI: {out:?}");
         assert_eq!(render_search_styled("", &[], "x", Styler::new(true)), "");
+    }
+
+    // Session-only hits (zero workspace lines): the `persisted sessions` block must start cleanly
+    // with NO stray leading blank line. The blank separator is emitted only to divide the session
+    // block from workspace hits above it, so it is omitted when there are none.
+    #[test]
+    fn styled_search_session_only_hits_have_no_leading_blank_line() {
+        let hits = vec![session_hit(
+            "ses_7f3a91",
+            5,
+            "user",
+            "why does parse_config fail on empty input?",
+        )];
+        let out = render_search_styled("", &hits, "parse_config", Styler::new(true));
+        let plain = strip_ansi(&out);
+        assert!(
+            !plain.starts_with('\n'),
+            "session-only output must not start with a blank line: {plain:?}"
+        );
+        assert!(
+            plain.starts_with("persisted sessions"),
+            "the block starts with the header row: {plain:?}"
+        );
+        // The block is still correct end to end (header, the session row, then the FAINT footer).
+        assert!(
+            out.contains(&format!("{}persisted sessions\x1b[0m", fg(style::DIM))),
+            "DIM session header present: {out:?}"
+        );
+        assert!(
+            out.contains(&format!(
+                "{}1 matches {} 0 workspace {} 1 session\x1b[0m",
+                fg(style::FAINT),
+                style::SEPARATOR,
+                style::SEPARATOR
+            )),
+            "FAINT footer with real counts: {out:?}"
+        );
+    }
+
+    // With BOTH workspace and session hits, the single blank separator between the workspace block
+    // and the `persisted sessions` header is preserved (the fix only drops the blank in the
+    // session-only case).
+    #[test]
+    fn styled_search_keeps_one_blank_separator_between_workspace_and_session_blocks() {
+        let body = "src/config.rs:42:fn parse_config(path: &Path) {\n";
+        let hits = vec![session_hit("ses_7f3a91", 5, "user", "why parse_config?")];
+        let plain = strip_ansi(&render_search_styled(body, &hits, "parse_config", Styler::new(true)));
+        assert!(
+            plain.contains("\n\npersisted sessions\n"),
+            "exactly one blank line separates the workspace hits from the session header: {plain:?}"
+        );
     }
 
     #[test]

@@ -69,9 +69,6 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8)
         match listener.local_addr() {
             Ok(addr) => {
                 eprintln!("{}", style::serve_banner_line(styler, &addr.to_string()));
-                if access_log_enabled {
-                    eprintln!("{}", style::serve_routes_hint(styler));
-                }
             }
             Err(err) => {
                 eprintln!("cortex serve: failed to inspect local listener address: {err}");
@@ -80,7 +77,15 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8)
         }
 
         match server::serve_with_signals(listener, bus, env!("CARGO_PKG_VERSION"), state).await {
-            Ok(()) => Exit::Success,
+            Ok(()) => {
+                // Emit the faint routes hint after the per-request access rows (matching the
+                // serve_banner.png ordering); the verbose access log streams the rows during the
+                // run, so the footer is printed once the server has stopped.
+                if access_log_enabled {
+                    eprintln!("{}", style::serve_routes_hint(styler));
+                }
+                Exit::Success
+            }
             Err(err) => {
                 eprintln!("cortex serve: {err}");
                 Exit::Failure

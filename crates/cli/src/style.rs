@@ -414,7 +414,14 @@ fn wrap(text: &str, color: Rgb) -> String {
 
 /// The VS Code Dark+ color for a JSON string *value*, honoring the two status-green exceptions:
 /// a `finish_reason`/`reason` value of `"stop"` and a stream `type` value of `"done"`.
-fn json_string_value_color(key: Option<&str>, value: &str) -> Rgb {
+///
+/// The exception applies ONLY to a top-level key of the run/jsonl event object (`top_level`). A
+/// same-named key nested deeper (e.g. a tool result carrying its own `type`/`reason` field) keeps
+/// the ordinary string color, so the green never mis-fires below the outermost object.
+fn json_string_value_color(key: Option<&str>, value: &str, top_level: bool) -> Rgb {
+    if !top_level {
+        return SYNTAX_STRING;
+    }
     match key {
         Some("finish_reason" | "reason") if value == "stop" => OK_GREEN,
         Some("type") if value == "done" => OK_GREEN,
@@ -429,6 +436,10 @@ fn colorize_json(json: &str, pretty: bool) -> String {
     let bytes = json.as_bytes();
     let mut out = String::with_capacity(json.len() * 3);
     let mut indent: usize = 0;
+    // Container nesting depth, tracked independently of `pretty` so the status-green exception can
+    // be confined to the outermost object (a value at `depth == 1`); a same-named key nested deeper
+    // never greens.
+    let mut depth: usize = 0;
     let mut last_key: Option<String> = None;
     let mut i = 0;
 
@@ -460,7 +471,7 @@ fn colorize_json(json: &str, pretty: bool) -> String {
                     out.push_str(&wrap(raw, SYNTAX_KEY));
                 } else {
                     let value = &json[start + 1..i - 1];
-                    let color = json_string_value_color(last_key.as_deref(), value);
+                    let color = json_string_value_color(last_key.as_deref(), value, depth == 1);
                     last_key = None;
                     out.push_str(&wrap(raw, color));
                 }
@@ -469,12 +480,13 @@ fn colorize_json(json: &str, pretty: bool) -> String {
                 out.push_str(&wrap(std::str::from_utf8(&[open]).unwrap_or("{"), SYNTAX_PUNCT));
                 let close = if open == b'{' { b'}' } else { b']' };
                 if i + 1 < bytes.len() && bytes[i + 1] == close {
-                    // Empty container: keep `{}` / `[]` inline.
+                    // Empty container: keep `{}` / `[]` inline (no depth change; it never nests).
                     out.push_str(&wrap(std::str::from_utf8(&[close]).unwrap_or("}"), SYNTAX_PUNCT));
                     last_key = None;
                     i += 2;
                     continue;
                 }
+                depth += 1;
                 if pretty {
                     indent += 1;
                     out.push('\n');
@@ -483,6 +495,7 @@ fn colorize_json(json: &str, pretty: bool) -> String {
                 i += 1;
             }
             close @ (b'}' | b']') => {
+                depth = depth.saturating_sub(1);
                 if pretty {
                     indent = indent.saturating_sub(1);
                     out.push('\n');
@@ -729,6 +742,47 @@ mod tests {
         // A generic string value that happens to equal `stop` under a non-reason key is NOT green.
         let generic = styled.highlight_json(r#"{"name":"stop"}"#);
         assert!(generic.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""stop""#)));
+    }
+
+    #[test]
+    fn highlight_json_status_green_exception_never_fires_on_a_nested_key() {
+        let styled = Styler::new(true);
+
+        // A same-named `type`/`reason` key nested inside a deeper object must NOT be greened; only
+        // the top-level status discriminators are the sanctioned exception. Here the top-level
+        // `type` is `session` (orange-brown) and a nested tool-result object carries its OWN
+        // `type:"done"` + `reason:"stop"` that must stay orange-brown, never OK_GREEN.
+        let nested = styled.highlight_json(
+            r#"{"type":"session","result":{"type":"done","reason":"stop"}}"#,
+        );
+        let done_green = format!("{}{}{RESET}", fg_open(OK_GREEN), r#""done""#);
+        let stop_green = format!("{}{}{RESET}", fg_open(OK_GREEN), r#""stop""#);
+        assert!(
+            !nested.contains(&done_green),
+            "a nested type:\"done\" must not be greened: {nested:?}"
+        );
+        assert!(
+            !nested.contains(&stop_green),
+            "a nested reason:\"stop\" must not be greened: {nested:?}"
+        );
+        // The nested values keep the ordinary string color.
+        assert!(nested.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""done""#)));
+        assert!(nested.contains(&format!("{}{}{RESET}", fg_open(SYNTAX_STRING), r#""stop""#)));
+
+        // The pretty (multi-line) reflow honors the same depth rule.
+        let pretty = styled.highlight_json_pretty(
+            r#"{"type":"session","result":{"type":"done","reason":"stop"}}"#,
+        );
+        assert!(
+            !pretty.contains(&done_green) && !pretty.contains(&stop_green),
+            "pretty reflow must not green a nested type/reason: {pretty:?}"
+        );
+
+        // Sanity: the top-level exception still fires when the discriminator IS at the top level,
+        // even with a following nested object (proving the depth gate, not a blanket disable).
+        let top = styled.highlight_json(r#"{"type":"done","reason":"stop","usage":{"steps":1}}"#);
+        assert!(top.contains(&done_green), "top-level type:\"done\" is green: {top:?}");
+        assert!(top.contains(&stop_green), "top-level reason:\"stop\" is green: {top:?}");
     }
 
     #[test]

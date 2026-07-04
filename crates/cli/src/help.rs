@@ -44,8 +44,9 @@ pub fn maybe_render_styled_help() -> Option<ExitCode> {
 }
 
 /// Whether the arguments request the TOP-LEVEL help (a `-h`/`--help` that appears before any
-/// subcommand). Global valueless flags (`-v`/`--verbose`/`--pure`) may precede it; the first bare
-/// token is a subcommand, so help after it belongs to that subcommand and is left to clap.
+/// subcommand). Global valueless flags (`-v`/`--verbose`/`--pure`) may precede it, including when
+/// grouped into a single short-flag cluster (`-vh`/`-hv`), which clap treats as `-v -h`; the first
+/// bare token is a subcommand, so help after it belongs to that subcommand and is left to clap.
 fn top_level_help_requested<I, S>(args: I) -> bool
 where
     I: IntoIterator<Item = S>,
@@ -55,6 +56,22 @@ where
         match arg.as_ref() {
             "-h" | "--help" => return true,
             "-V" | "--version" => return false,
+            // A long global flag (e.g. `--pure`): valueless, keep scanning.
+            token if token.starts_with("--") => continue,
+            // A short-flag cluster of global valueless flags (`-v`, plus clap's auto `-h`/`-V`),
+            // e.g. `-vh`/`-hv`/`-vvh`. Scan the cluster left-to-right the way clap does: the first
+            // `h` renders help, the first `V` defers to version, `v` is skipped, and any other
+            // short flag is unknown here so we defer to clap (which will diagnose it).
+            token if token.starts_with('-') && token.len() > 1 => {
+                for c in token[1..].chars() {
+                    match c {
+                        'v' => {}
+                        'h' => return true,
+                        'V' => return false,
+                        _ => return false,
+                    }
+                }
+            }
             token if token.starts_with('-') => continue,
             _ => return false,
         }
@@ -183,13 +200,13 @@ fn flag_spec(arg: &clap::Arg) -> String {
     spec
 }
 
-/// The first sentence of a (possibly multi-sentence) description, keeping it to one concise line.
+/// The concise one-line description for the shortlist: the first line of a (possibly multi-line)
+/// description. The whole first line is kept — a mid-line `". "` sentence break is NOT cut, so a
+/// description whose first sentence ends early (e.g. `Do X. Then Y.`) is not truncated to just
+/// `Do X.`. Subsequent paragraphs of a long `about` are still dropped (they belong to
+/// `cortex help <command>`), keeping the shortlist to one line per entry.
 fn short_desc(text: &str) -> String {
-    let line = text.lines().next().unwrap_or("").trim();
-    match line.find(". ") {
-        Some(idx) => line[..=idx].to_owned(),
-        None => line.to_owned(),
-    }
+    text.lines().next().unwrap_or("").trim().to_owned()
 }
 
 /// Left-justify `text` (pad trailing spaces) to a minimum visible width.
@@ -239,6 +256,26 @@ mod tests {
         // Version and plain invocations are not help.
         assert!(!top_level_help_requested(["--version"]));
         assert!(!top_level_help_requested(std::iter::empty::<&str>()));
+    }
+
+    // The combined short-flag cluster forms (`-vh`/`-hv`, and repeats like `-vvh`) request the
+    // top-level styled help, at parity with the spelled-out `-v --help` — clap groups `-vh` as
+    // `-v -h`, so the styled help must fire for both spellings.
+    #[test]
+    fn detects_combined_short_flag_help_clusters() {
+        assert!(top_level_help_requested(["-vh"]), "-vh is -v -h → styled help");
+        assert!(top_level_help_requested(["-hv"]), "-hv is -h -v → styled help");
+        assert!(top_level_help_requested(["-vvh"]), "-vvh is -v -v -h → styled help");
+        assert!(top_level_help_requested(["-h"]));
+        // A bare `-v` cluster with no `h` is not a help request.
+        assert!(!top_level_help_requested(["-v"]));
+        assert!(!top_level_help_requested(["-vv"]));
+        // `V` (version) inside a cluster defers to clap's version, never styled help.
+        assert!(!top_level_help_requested(["-vV"]), "-vV requests version, not help");
+        // A cluster with an unknown short flag is left to clap to diagnose.
+        assert!(!top_level_help_requested(["-vx"]));
+        // A subcommand before the cluster keeps subcommand help with clap.
+        assert!(!top_level_help_requested(["run", "-vh"]));
     }
 
     // VAL-CLI-033: tagline + Usage + Options:/Commands: headers in the brand palette.
@@ -301,5 +338,20 @@ mod tests {
         let plain = render_help(Styler::new(false));
         assert!(!plain.contains('\x1b'), "disabled help carries no ANSI");
         assert!(plain.contains("Usage: cortex [OPTIONS] [COMMAND]"));
+    }
+
+    // The shortlist description keeps the full first line and does NOT cut at a mid-line sentence
+    // break (`". "`), so meaningful text following an early period is not dropped.
+    #[test]
+    fn short_desc_keeps_the_full_first_line_without_sentence_truncation() {
+        // A description whose first sentence ends early keeps the rest of the line.
+        assert_eq!(
+            short_desc("Do X. Then Y and Z are configured."),
+            "Do X. Then Y and Z are configured.",
+        );
+        // Only the first line is kept (subsequent long-help paragraphs are dropped).
+        assert_eq!(short_desc("First line.\n\nSecond paragraph."), "First line.");
+        // A single concise description passes through unchanged (trimmed).
+        assert_eq!(short_desc("  Start the local loopback HTTP/SSE server.  "), "Start the local loopback HTTP/SSE server.");
     }
 }

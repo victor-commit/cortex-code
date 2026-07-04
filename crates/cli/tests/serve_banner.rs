@@ -121,6 +121,25 @@ fn verbose_serve_adds_banner_routes_hint_and_aligned_access_rows() {
         session_row.contains("201"),
         "the POST /session row shows its 201 status: {session_row:?}"
     );
+
+    // Ordering matches serve_banner.png: the faint routes hint is emitted AFTER the per-request
+    // access rows (the access log streams during the run; the hint prints on graceful shutdown).
+    let routes_idx = stderr
+        .find("routes:")
+        .unwrap_or_else(|| panic!("expected the routes hint in:\n{stderr}"));
+    let last_access_idx = stderr
+        .lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            (t.starts_with("GET") || t.starts_with("POST")) && line.contains('/')
+        })
+        .map(|line| stderr.find(line).expect("access row is a substring of stderr"))
+        .max()
+        .unwrap_or_else(|| panic!("expected at least one access row in:\n{stderr}"));
+    assert!(
+        routes_idx > last_access_idx,
+        "the routes hint must follow the access rows (serve_banner.png ordering):\n{stderr}"
+    );
 }
 
 #[test]
