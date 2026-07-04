@@ -65,3 +65,4 @@ tower = { workspace = true }
 crossterm = { workspace = true }
 httpdate = { workspace = true }
 image = { workspace = true }
+portable-pty = { workspace = true }

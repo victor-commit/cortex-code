@@ -39,6 +39,7 @@ mod serve_cmd;
 mod session;
 mod snapshot;
 mod stats;
+mod style;
 mod subagent;
 mod todo_store;
 mod tooling;

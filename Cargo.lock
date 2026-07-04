@@ -587,6 +587,7 @@ dependencies = [
  "permissions",
  "plugins",
  "policy",
+ "portable-pty",
  "protocol",
  "providers",
  "redaction",
