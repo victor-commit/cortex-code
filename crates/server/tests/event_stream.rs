@@ -860,6 +860,10 @@ async fn live_write_tool_turn_emits_file_edited_from_the_real_action() {
         .with_cwd(workspace.clone());
     let app = server::app_with_state(state);
     let session = create_session(&app).await;
+    // Pin a builtin-family model so tool selection includes write/edit regardless of any ambient
+    // global cortex config; without this the GPT-family registry (read + apply_patch only) drops
+    // the fake provider's write call.
+    pin_builtin_family_model(scratch.db_path(), &session.id);
     let mut stream = subscribe(&app).await;
 
     let response = app
@@ -2045,6 +2049,14 @@ impl Provider for MultiQuestionAskingProvider {
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })
     }
+}
+
+fn pin_builtin_family_model(db_path: PathBuf, session_id: &str) {
+    db::Database::open(db_path)
+        .expect("open db to pin session model")
+        .sessions()
+        .set_model(session_id, Some("google/gemini-2.5-flash"))
+        .expect("pin builtin-family session model");
 }
 
 struct Scratch {

@@ -722,6 +722,7 @@ action = "deny"
         server::ServerState::with_provider(scratch.db_path(), provider).with_cwd(workspace.clone());
     let app = server::app_with_state(state);
     let session = create_session(&app).await;
+    pin_builtin_family_model(scratch.db_path(), &session.id);
 
     // Inside write follows the saved allow (no prompt) and mutates the workspace file.
     let inside = app
@@ -2530,6 +2531,7 @@ async fn server_tool_edit_records_checkpoint_revertible_by_tui_store() {
         .with_checkpoint_base(checkpoint_base.clone());
     let app = server::app_with_state(state);
     let session = create_session(&app).await;
+    pin_builtin_family_model(scratch.db_path(), &session.id);
 
     let response = app
         .oneshot(
@@ -3718,6 +3720,14 @@ impl Provider for ExternalDirectoryWriteProvider {
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })
     }
+}
+
+fn pin_builtin_family_model(db_path: PathBuf, session_id: &str) {
+    db::Database::open(db_path)
+        .expect("open db to pin session model")
+        .sessions()
+        .set_model(session_id, Some("google/gemini-2.5-flash"))
+        .expect("pin builtin-family session model");
 }
 
 struct Scratch {
