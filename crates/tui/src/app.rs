@@ -5202,6 +5202,7 @@ impl App {
     /// Key handling for the `/connect` flow. It is modal: `Ctrl+C` quits; `Esc` backs out one step
     /// (and closes the flow from the provider step); arrows move the active list; `Enter` advances
     /// the step (and, on the key step, stores the masked key via [`crate::connect::ConnectState`]);
+    /// `d` on the provider step disconnects the highlighted (connected) provider after a confirm;
     /// printable keys / Backspace edit the masked key on the key step. The raw key never leaves the
     /// connect state, and a store failure/empty key renders as the flow's inline `✗ error` block.
     fn on_connect_key(&mut self, key: KeyEvent, ctrl: bool) {
@@ -5222,12 +5223,18 @@ impl App {
                     state.enter_provider();
                 }
             }
+            (Step::Provider, KeyCode::Char('d')) if !ctrl => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.request_disconnect();
+                }
+            }
             (Step::Method, KeyCode::Enter) => {
                 if let Some(state) = self.connect.as_mut() {
                     state.enter_method();
                 }
             }
             (Step::ApiKey, KeyCode::Enter) => self.confirm_connect_api_key(),
+            (Step::ConfirmDisconnect, KeyCode::Enter) => self.confirm_connect_disconnect(),
             (Step::ApiKey, KeyCode::Backspace) => {
                 if let Some(state) = self.connect.as_mut() {
                     state.backspace();
@@ -5238,7 +5245,7 @@ impl App {
                     state.type_char(c);
                 }
             }
-            (Step::Connected, KeyCode::Enter) => self.connect = None,
+            (Step::Connected | Step::Disconnected, KeyCode::Enter) => self.connect = None,
             _ => {}
         }
     }
@@ -5255,7 +5262,7 @@ impl App {
     fn connect_back_or_close(&mut self, step: crate::connect::Step) {
         use crate::connect::Step;
         match step {
-            Step::Provider | Step::Connected => self.connect = None,
+            Step::Provider | Step::Connected | Step::Disconnected => self.connect = None,
             Step::Method => {
                 if let Some(state) = self.connect.as_mut() {
                     state.back_to_provider();
@@ -5264,6 +5271,11 @@ impl App {
             Step::ApiKey => {
                 if let Some(state) = self.connect.as_mut() {
                     state.back_to_method();
+                }
+            }
+            Step::ConfirmDisconnect => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.cancel_disconnect();
                 }
             }
             Step::OAuthWaiting => {
@@ -5281,6 +5293,15 @@ impl App {
     fn confirm_connect_api_key(&mut self) {
         if let Some(state) = self.connect.as_mut() {
             let _ = state.confirm_api_key();
+        }
+    }
+
+    /// Confirm the `/connect` disconnect: remove the highlighted provider's stored credential from
+    /// the 0600 auth store and re-resolve so it reads as not connected (reflected in `/models` on the
+    /// next open). No secret is read or shown; a removal error renders the flow's inline error.
+    fn confirm_connect_disconnect(&mut self) {
+        if let Some(state) = self.connect.as_mut() {
+            let _ = state.confirm_disconnect();
         }
     }
 
@@ -10640,6 +10661,24 @@ mod tests {
         assert!(a.connect_active(), "/connect opens the connect flow");
         a.on_key(key(KeyCode::Esc));
         assert!(!a.connect_active(), "esc closes the flow");
+    }
+
+    #[test]
+    fn connect_disconnect_key_is_a_safe_noop_when_nothing_is_connected() {
+        // VAL-CONN-009: `d` requests a disconnect only for a connected provider. With no stored
+        // credential (the ambient test store is empty), pressing `d` is a safe no-op that keeps the
+        // provider step and the flow open — the confirm-before-remove step is only reached for a
+        // connected provider (exercised deterministically in the connect-state tests).
+        let mut a = app();
+        a.dispatch_builtin_command("connect", "Connect a provider (API key or OAuth)");
+        assert!(a.connect_active(), "/connect opens the flow");
+        a.on_key(key(KeyCode::Char('d')));
+        assert!(a.connect_active(), "the flow stays open after a no-op disconnect key");
+        assert_eq!(
+            a.connect_state().map(crate::connect::ConnectState::step),
+            Some(crate::connect::Step::Provider),
+            "a no-op disconnect keeps the provider step"
+        );
     }
 
     #[test]

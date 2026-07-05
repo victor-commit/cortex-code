@@ -37,7 +37,7 @@ use ratatui::widgets::Paragraph;
 
 use providers::{
     AuthPathInputs, OAuthEndpoints, connectable_providers, connected_providers,
-    list_stored_providers, oauth_endpoints, store_credential,
+    list_stored_providers, oauth_endpoints, remove_stored_credential, store_credential,
 };
 use redaction::guard_outbound;
 use tui_components::style::ThemeColors;
@@ -85,6 +85,10 @@ pub enum Step {
     OAuthWaiting,
     /// The provider has been connected (success confirmation).
     Connected,
+    /// Confirm removing a connected provider's stored credential (confirm-before-remove).
+    ConfirmDisconnect,
+    /// The provider has been disconnected (its credential removed) — confirmation note.
+    Disconnected,
 }
 
 /// An auth method offered for a provider.
@@ -507,6 +511,59 @@ impl ConnectState {
         self.step = Step::Provider;
     }
 
+    /// Request disconnecting the highlighted provider: if it currently has a stored credential, move
+    /// to the confirm-before-remove step; otherwise it is a no-op (there is nothing to disconnect).
+    pub fn request_disconnect(&mut self) {
+        if self.selected_provider().connected {
+            self.error = None;
+            self.notice = None;
+            self.step = Step::ConfirmDisconnect;
+        }
+    }
+
+    /// Cancel a pending disconnect, returning to the provider step with nothing removed.
+    pub fn cancel_disconnect(&mut self) {
+        self.error = None;
+        self.notice = None;
+        self.step = Step::Provider;
+    }
+
+    /// Confirm the disconnect: remove the highlighted provider's stored credential from the process's
+    /// 0600 auth store and, on success, re-resolve so it reads as not connected. A missing store or a
+    /// removal error yields an inline error and removes nothing. Returns whether an entry was removed.
+    #[must_use]
+    pub fn confirm_disconnect(&mut self) -> bool {
+        match AuthPathInputs::from_process().resolve() {
+            Some(path) => self.disconnect_to(&path),
+            None => {
+                self.error = Some("No credential store is available.".to_owned());
+                false
+            }
+        }
+    }
+
+    /// Remove the highlighted provider's stored credential from the auth store at `path`, then
+    /// re-resolve the connected state from that store so it reflects immediately (and, on the next
+    /// `/models` open, the provider reads as not connected). No secret is read or shown. Returns
+    /// whether an entry was removed.
+    pub(crate) fn disconnect_to(&mut self, path: &Path) -> bool {
+        let id = self.selected_provider().id;
+        match remove_stored_credential(path, id) {
+            Ok(removed) => {
+                self.error = None;
+                self.notice = None;
+                self.refresh_connected_from(path);
+                self.step = Step::Disconnected;
+                removed
+            }
+            Err(err) => {
+                // `io::Error` carries no key material, so this message is secret-free.
+                self.error = Some(format!("Could not remove credential: {err}"));
+                false
+            }
+        }
+    }
+
     /// Return to the method step from the API-key step, discarding any typed key.
     pub fn back_to_method(&mut self) {
         self.key_input.clear();
@@ -734,6 +791,51 @@ fn panel_body_lines(
                 faint,
             ));
         }
+        Step::ConfirmDisconnect => {
+            let display = state.selected_provider().display;
+            lines.push(content_row(
+                width,
+                base,
+                &format!("Disconnect {display}?"),
+                text,
+            ));
+            lines.push(row(width, base, &[]));
+            lines.push(content_row(
+                width,
+                base,
+                "this removes its stored credential from auth.json",
+                faint,
+            ));
+            lines.push(content_row(
+                width,
+                base,
+                "its models will require reconnecting to use",
+                faint,
+            ));
+        }
+        Step::Disconnected => {
+            let display = state.selected_provider().display;
+            let muted = Style::default().fg(theme.text_muted).bg(theme.background);
+            let bright = Style::default().fg(theme.text_bright).bg(theme.background);
+            lines.push(row(
+                width,
+                base,
+                &[(
+                    CONTENT_COL,
+                    vec![
+                        (format!("{} disconnected ", glyphs::DOT_HOLLOW), muted),
+                        (display.to_owned(), bright),
+                    ],
+                )],
+            ));
+            lines.push(row(width, base, &[]));
+            lines.push(content_row(
+                width,
+                base,
+                "its models now require reconnecting to use",
+                faint,
+            ));
+        }
     }
 
     // Inline error block (`✗ <message>`) in the ERR accent — never a toast/splatter.
@@ -882,11 +984,18 @@ fn hints_line(step: Step, width: usize, theme: &ThemeColors) -> Line<'static> {
     let key = Style::default().fg(theme.border).bg(theme.background);
     let label = Style::default().fg(theme.text_muted).bg(theme.background);
     let hints: &[(&str, &str)] = match step {
-        Step::Provider => &[(concat!("↑", "↓"), "select"), ("↵", "choose"), ("esc", "close")],
+        Step::Provider => &[
+            (concat!("↑", "↓"), "select"),
+            ("↵", "choose"),
+            ("d", "disconnect"),
+            ("esc", "close"),
+        ],
         Step::Method => &[(concat!("↑", "↓"), "select"), ("↵", "choose"), ("esc", "back")],
         Step::ApiKey => &[("↵", "connect"), ("esc", "back")],
         Step::OAuthWaiting => &[("esc", "cancel")],
         Step::Connected => &[("↵", "done"), ("esc", "close")],
+        Step::ConfirmDisconnect => &[("↵", "disconnect"), ("esc", "cancel")],
+        Step::Disconnected => &[("↵", "done"), ("esc", "close")],
     };
     let mut segments: Vec<(String, Style)> = Vec::new();
     for (i, (k, l)) in hints.iter().enumerate() {
@@ -1118,6 +1227,182 @@ mod tests {
             .expect("selected provider name on the fill");
         assert_eq!(fill.style.bg, Some(theme.primary), "row fill is ORANGE");
         assert_eq!(fill.style.fg, Some(theme.background), "text is near-black");
+    }
+
+    // --- Disconnect / manage connected providers (VAL-CONN-009), driven at the state level with a
+    // throwaway auth store so the round-trip is deterministic and offline-safe. ---
+
+    #[test]
+    fn connect_provider_step_shows_connected_status() {
+        // VAL-CONN-009: the flow shows which providers currently have a stored credential. After a
+        // credential is stored, its provider row reads as connected; others read as not connected.
+        let path = unique_auth_path("list-connected");
+        store_credential(&path, "openrouter", "sk-or-list").expect("store openrouter");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        assert!(
+            state
+                .providers
+                .iter()
+                .find(|p| p.id == "openrouter")
+                .unwrap()
+                .connected,
+            "openrouter reads as connected"
+        );
+        assert!(
+            state.providers.iter().any(|p| !p.connected),
+            "a provider without a stored credential reads as not connected"
+        );
+        // The connected marker renders on the provider row (the `✓ connected` status).
+        let theme = ThemeColors::from_name("dark");
+        let line = provider_row(&state, 0, 66, &theme);
+        let status: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(
+            status.contains(&format!("{} connected", glyphs::MARK_DONE)),
+            "connected status is shown on the row: {status}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disconnect_is_confirm_before_remove_and_removes_the_credential() {
+        // VAL-CONN-009: disconnecting a connected provider is confirm-before-remove — requesting a
+        // disconnect moves to a confirm step WITHOUT removing anything; confirming removes the stored
+        // credential (remove_stored_credential) and re-resolves so it reads as not connected.
+        let path = unique_auth_path("disconnect");
+        store_credential(&path, "openrouter", "sk-or-secret").expect("store openrouter");
+        store_credential(&path, "groq", "gsk-other-secret").expect("store groq");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        assert_eq!(state.selected_provider().id, "openrouter");
+        assert!(state.selected_provider().connected, "openrouter starts connected");
+
+        state.request_disconnect();
+        assert_eq!(
+            state.step,
+            Step::ConfirmDisconnect,
+            "requesting a disconnect confirms before removing"
+        );
+        assert!(path.exists(), "nothing is removed before the confirmation");
+
+        assert!(state.disconnect_to(&path), "confirming removes the credential");
+        assert_eq!(state.step, Step::Disconnected, "flow advances to the disconnected note");
+        assert!(
+            !state
+                .providers
+                .iter()
+                .find(|p| p.id == "openrouter")
+                .unwrap()
+                .connected,
+            "openrouter reads as not connected after the disconnect"
+        );
+        assert!(
+            state
+                .providers
+                .iter()
+                .find(|p| p.id == "groq")
+                .unwrap()
+                .connected,
+            "the other provider stays connected"
+        );
+        let body = std::fs::read_to_string(&path).expect("auth file still holds the other provider");
+        assert!(!body.contains("openrouter"), "openrouter entry removed from auth.json:\n{body}");
+        assert!(!body.contains("sk-or-secret"), "removed secret is gone from disk:\n{body}");
+        assert!(body.contains("groq"), "the other provider is preserved:\n{body}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disconnecting_the_last_provider_removes_the_store_file() {
+        // VAL-CONN-009: removing the only stored credential leaves no auth.json behind.
+        let path = unique_auth_path("disconnect-last");
+        store_credential(&path, "openrouter", "sk-or-only").expect("store openrouter");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        state.request_disconnect();
+        assert!(state.disconnect_to(&path), "the sole credential is removed");
+        assert!(!path.exists(), "removing the last provider deletes the store file");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disconnect_is_a_noop_on_a_not_connected_provider() {
+        // A provider without a stored credential cannot be disconnected: requesting a disconnect is a
+        // no-op that stays on the provider step (there is nothing to confirm).
+        let mut state = ConnectState::new();
+        for provider in &mut state.providers {
+            provider.connected = false;
+        }
+        state.request_disconnect();
+        assert_eq!(
+            state.step,
+            Step::Provider,
+            "no confirm step for a not-connected provider"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_disconnect_keeps_the_credential() {
+        // VAL-CONN-009: cancelling the confirm keeps the stored credential (confirm-before-remove).
+        let path = unique_auth_path("cancel-disconnect");
+        store_credential(&path, "openrouter", "sk-or-keep").expect("store openrouter");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        state.request_disconnect();
+        assert_eq!(state.step, Step::ConfirmDisconnect);
+        state.cancel_disconnect();
+        assert_eq!(state.step, Step::Provider, "cancel returns to the provider step");
+        assert!(path.exists(), "cancel removes nothing");
+        assert!(
+            state
+                .providers
+                .iter()
+                .find(|p| p.id == "openrouter")
+                .unwrap()
+                .connected,
+            "openrouter stays connected after a cancelled disconnect"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disconnect_confirm_and_done_screens_render_safely_without_secrets() {
+        // VAL-CONN-009/010: the confirm + disconnected screens render in the mono-orange auth
+        // language with safe glyphs and never show a secret.
+        let path = unique_auth_path("disconnect-render");
+        store_credential(&path, "openrouter", "sk-or-secret-xyz").expect("store openrouter");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        state.request_disconnect();
+        let theme = ThemeColors::from_name("dark");
+        let confirm: String = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(
+            confirm.contains("Disconnect OpenRouter"),
+            "the confirm prompt names the provider:\n{confirm}"
+        );
+        assert!(
+            !confirm.contains("sk-or-secret-xyz"),
+            "no secret appears on the confirm screen:\n{confirm}"
+        );
+        assert!(!glyphs::contains_braille(&confirm), "no braille on the confirm screen");
+
+        assert!(state.disconnect_to(&path));
+        let done: String = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(
+            done.contains("disconnected"),
+            "the disconnected confirmation is shown:\n{done}"
+        );
+        assert!(
+            !done.contains("sk-or-secret-xyz"),
+            "no secret appears on the disconnected screen:\n{done}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     // --- OAuth mechanics (VAL-CONN-006/007/008/010), driven against a CONTROLLED loopback
