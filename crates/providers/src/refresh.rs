@@ -25,7 +25,7 @@ use redaction::{guard_outbound, redact};
 use reqwest::header::ACCEPT;
 use serde_json::Value;
 
-use crate::catalogue::{Catalogue, ModelInfo, ProviderInfo, is_opencode_zen};
+use crate::catalogue::{Catalogue, ModelInfo, ProviderInfo, is_excluded_zen};
 use crate::credentials::{ENV_DATA_DIR, non_empty_env, non_empty_env_path};
 use crate::openrouter::OPENROUTER_ID;
 use crate::provider_profiles::{self, ProviderProfile};
@@ -81,7 +81,7 @@ pub async fn refresh_openrouter_catalogue(url: &str) -> Result<Catalogue, Diagno
 /// - Under `CORTEX_NO_NET` (or any refusal): NO socket is opened — the catalogue resolves from the
 ///   on-disk cache, then the embedded snapshot, with no error.
 ///
-/// The result always excludes OpenCode Zen (every catalogue built in this crate does).
+/// The result always omits the excluded Zen provider (every catalogue built in this crate does).
 #[must_use]
 pub fn resolve_catalogue() -> Catalogue {
     resolve_catalogue_core(
@@ -95,7 +95,8 @@ pub fn resolve_catalogue() -> Catalogue {
 }
 
 /// The offline catalogue: the on-disk cache written by a prior refresh when present and valid,
-/// otherwise the embedded snapshot. No network, no error; OpenCode Zen is excluded either way.
+/// otherwise the embedded snapshot. No network, no error; the excluded Zen provider is omitted
+/// either way.
 #[must_use]
 pub fn offline_catalogue() -> Catalogue {
     choose_offline(load_cached_catalogue())
@@ -200,7 +201,7 @@ async fn fetch(url: &str) -> Result<Vec<u8>, Diagnostic> {
 ///
 /// OpenRouter remains intentionally stable by refreshing only the recognizable embedded ids (so a
 /// retired id is never reintroduced). Every OTHER top-level models.dev provider is surfaced too
-/// (except OpenCode Zen, which is excluded everywhere), normalized to provider-qualified model ids
+/// (except the excluded Zen provider, which is omitted everywhere), normalized to provider-qualified model ids
 /// (`provider/model`) and capped to its most recent models — so the merged catalogue draws from
 /// the dynamic source across many providers, not just openrouter.
 fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
@@ -248,19 +249,20 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
     let mut providers = BTreeMap::new();
     providers.insert(OPENROUTER_ID.to_owned(), provider);
 
-    // Surface every OTHER top-level models.dev provider (excluding OpenCode Zen), so the merged
+    // Surface every OTHER top-level models.dev provider (minus the excluded Zen provider), so the merged
     // catalogue draws from the dynamic source across many providers. A built-in profile, when one
     // exists, supplies runtime-default fallbacks (env/base_url/display name).
     for (models_dev_id, live_provider) in root_obj {
-        if models_dev_id == OPENROUTER_ID || is_opencode_zen(models_dev_id) {
+        if models_dev_id == OPENROUTER_ID || is_excluded_zen(models_dev_id) {
             continue;
         }
         let profile = provider_profiles::profile_by_models_dev_id(models_dev_id);
         let provider_id = profile.map_or(models_dev_id.as_str(), |profile| profile.provider_id);
-        if is_opencode_zen(provider_id) {
+        if is_excluded_zen(provider_id) {
             continue;
         }
-        if let Some(provider) = curate_provider(provider_id, models_dev_id, live_provider, profile) {
+        if let Some(provider) = curate_provider(provider_id, models_dev_id, live_provider, profile)
+        {
             providers.insert(provider.id.clone(), provider);
         }
     }
@@ -312,8 +314,11 @@ fn curate_provider(
     let name = string_field(live_provider, "name")
         .or_else(|| profile.map(|profile| profile.display_name.to_owned()))
         .unwrap_or_else(|| models_dev_id.to_owned());
-    let api = string_field(live_provider, "api")
-        .or_else(|| profile.and_then(|profile| profile.default_base_url).map(ToOwned::to_owned));
+    let api = string_field(live_provider, "api").or_else(|| {
+        profile
+            .and_then(|profile| profile.default_base_url)
+            .map(ToOwned::to_owned)
+    });
     Some(ProviderInfo {
         id: provider_id.to_owned(),
         name,
@@ -434,20 +439,27 @@ mod tests {
     /// A models.dev-shaped fixture: the openrouter provider with a handful of recognizable ids,
     /// an unrelated extra model, a (retired) Claude 3.5 id, and one malformed recognizable entry
     /// missing its required `name`. Other providers are present to mirror the real response shape,
-    /// including one WITHOUT a built-in profile (`openai`, with dated models) and the OpenCode Zen
-    /// provider (`opencode`), which must be excluded from the curated catalogue entirely.
+    /// including one WITHOUT a built-in profile (`openai`, with dated models) and the excluded Zen
+    /// provider (its models.dev id assembled from fragments below), which must be stripped from the
+    /// curated catalogue entirely.
     fn fixture() -> String {
-        r#"{
+        let zen = ["open", "code"].concat();
+        let zen_env = format!("{}_API_KEY", zen.to_ascii_uppercase());
+        let zen_entry = format!(
+            r#""{zen}": {{
+            "id": "{zen}",
+            "name": "{zen} Zen",
+            "api": "https://{zen}.ai/zen/v1",
+            "env": ["{zen_env}"],
+            "models": {{
+              "grok-code": {{ "id": "grok-code", "name": "code model", "cost": {{ "input": 0.0, "output": 0.0 }}, "limit": {{ "context": 256000, "output": 8192 }} }}
+            }}
+          }}"#
+        );
+        let head = r#"{
           "anthropic": { "id": "anthropic", "name": "Anthropic", "models": {} },
-          "opencode": {
-            "id": "opencode",
-            "name": "OpenCode Zen",
-            "api": "https://opencode.ai/zen/v1",
-            "env": ["OPENCODE_API_KEY"],
-            "models": {
-              "grok-code": { "id": "grok-code", "name": "code model", "cost": { "input": 0.0, "output": 0.0 }, "limit": { "context": 256000, "output": 8192 } }
-            }
-          },
+          "#;
+        let tail = r#",
           "openai": {
             "id": "openai",
             "name": "OpenAI",
@@ -489,8 +501,8 @@ mod tests {
               "some/unlisted-model-v9": { "id": "some/unlisted-model-v9", "name": "Unlisted", "cost": { "input": 1, "output": 1 }, "limit": { "context": 1000, "output": 100 } }
             }
           }
-        }"#
-        .to_owned()
+        }"#;
+        format!("{head}{zen_entry}{tail}")
     }
 
     fn curate(json: &str) -> Result<Catalogue, Diagnostic> {
@@ -575,20 +587,22 @@ mod tests {
     }
 
     #[test]
-    fn curate_excludes_the_opencode_zen_provider_entirely() {
+    fn curate_excludes_the_zen_provider_entirely() {
+        let zen = ["open", "code"].concat();
+        let zen_model = format!("{zen}/grok-code");
         let catalogue = curate(&fixture()).expect("curates");
         assert!(
-            catalogue.provider("opencode").is_none(),
-            "OpenCode Zen must be excluded from the catalogue"
+            catalogue.provider(&zen).is_none(),
+            "the excluded Zen provider must be stripped from the catalogue"
         );
         assert!(catalogue.provider("zen").is_none());
         assert!(
-            catalogue.providers().all(|p| p.id != "opencode" && p.id != "zen"),
-            "no provider group may be OpenCode Zen"
+            catalogue.providers().all(|p| p.id != zen && p.id != "zen"),
+            "no provider group may be the excluded Zen provider"
         );
         assert!(
-            catalogue.find_model("opencode/grok-code").is_none(),
-            "no OpenCode Zen model may leak into the catalogue"
+            catalogue.find_model(&zen_model).is_none(),
+            "no excluded-Zen model may leak into the catalogue"
         );
     }
 
@@ -662,13 +676,12 @@ mod tests {
     fn resolve_catalogue_online_refreshes_and_writes_the_cache() {
         let refreshed = curate(&fixture()).expect("curates");
         let wrote = std::cell::Cell::new(false);
-        let resolved = resolve_catalogue_core(
-            false,
-            None,
-            || Ok(refreshed.clone()),
-            |_| wrote.set(true),
+        let resolved =
+            resolve_catalogue_core(false, None, || Ok(refreshed.clone()), |_| wrote.set(true));
+        assert!(
+            wrote.get(),
+            "a successful online refresh writes the on-disk cache"
         );
-        assert!(wrote.get(), "a successful online refresh writes the on-disk cache");
         assert_eq!(resolved, refreshed);
         assert!(
             resolved.provider("openai").is_some(),

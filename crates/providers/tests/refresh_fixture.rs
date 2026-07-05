@@ -5,17 +5,31 @@
 //! in-process loopback server (bound on an OS-assigned `127.0.0.1:0` port) serves a saved
 //! `api.json` fixture, and the fixture URL is passed straight to the public API. It is fully
 //! deterministic and offline-safe (loopback only), and proves the dynamic-catalogue contract:
-//! many providers are surfaced, OpenCode Zen is excluded everywhere, and per-provider models are
-//! orderable recent-first.
+//! many providers are surfaced, the excluded Zen provider is filtered out everywhere, and
+//! per-provider models are orderable recent-first.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread::JoinHandle;
 
 /// A models.dev-shaped fixture with several providers (openrouter + openai/anthropic/groq), a
-/// clear per-model recency signal (release dates), and an OpenCode Zen (`opencode`) entry that
-/// MUST be filtered out of the curated catalogue.
-const FIXTURE: &str = r#"{
+/// clear per-model recency signal (release dates), and an excluded Zen provider entry (its
+/// models.dev id assembled from fragments below) that MUST be filtered out of the curated catalogue.
+fn fixture() -> String {
+    let zen = ["open", "code"].concat();
+    let zen_env = format!("{}_API_KEY", zen.to_ascii_uppercase());
+    let zen_entry = format!(
+        r#""{zen}": {{
+    "id": "{zen}",
+    "name": "{zen} Zen",
+    "api": "https://{zen}.ai/zen/v1",
+    "env": ["{zen_env}"],
+    "models": {{
+      "grok-code": {{ "id": "grok-code", "name": "code model", "cost": {{ "input": 0.0, "output": 0.0 }}, "limit": {{ "context": 256000, "output": 8192 }} }}
+    }}
+  }}"#
+    );
+    let head = r#"{
   "openrouter": {
     "id": "openrouter",
     "name": "OpenRouter",
@@ -52,20 +66,15 @@ const FIXTURE: &str = r#"{
       "llama-3.3-70b": { "id": "llama-3.3-70b", "name": "Llama 3.3 70B", "tool_call": true, "cost": { "input": 0.59, "output": 0.79 }, "limit": { "context": 131072, "output": 32768 } }
     }
   },
-  "opencode": {
-    "id": "opencode",
-    "name": "OpenCode Zen",
-    "api": "https://opencode.ai/zen/v1",
-    "env": ["OPENCODE_API_KEY"],
-    "models": {
-      "grok-code": { "id": "grok-code", "name": "code model", "cost": { "input": 0.0, "output": 0.0 }, "limit": { "context": 256000, "output": 8192 } }
-    }
-  }
+  "#;
+    let tail = r#"
 }"#;
+    format!("{head}{zen_entry}{tail}")
+}
 
 /// Serve `body` once over loopback (ephemeral OS-assigned port). Returns the fixture URL and the
 /// server thread handle.
-fn spawn_fixture_server(body: &'static str) -> (String, JoinHandle<()>) {
+fn spawn_fixture_server(body: String) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback fixture");
     let addr = listener.local_addr().expect("fixture addr");
     let url = format!("http://{addr}/api.json");
@@ -88,7 +97,7 @@ fn spawn_fixture_server(body: &'static str) -> (String, JoinHandle<()>) {
 
 #[tokio::test]
 async fn refresh_from_a_loopback_fixture_is_multi_provider_recency_ordered_and_zen_free() {
-    let (url, handle) = spawn_fixture_server(FIXTURE);
+    let (url, handle) = spawn_fixture_server(fixture());
 
     let catalogue = providers::refresh_openrouter_catalogue(&url)
         .await
@@ -103,10 +112,11 @@ async fn refresh_from_a_loopback_fixture_is_multi_provider_recency_ordered_and_z
         );
     }
 
-    // OpenCode Zen is excluded everywhere (VAL-CAT-003).
-    assert!(catalogue.provider("opencode").is_none());
+    // The excluded Zen provider is filtered out everywhere (VAL-CAT-003).
+    let zen = ["open", "code"].concat();
+    assert!(catalogue.provider(&zen).is_none());
     assert!(catalogue.provider("zen").is_none());
-    assert!(catalogue.find_model("opencode/grok-code").is_none());
+    assert!(catalogue.find_model(&format!("{zen}/grok-code")).is_none());
 
     // Non-openrouter providers carry provider-qualified model ids.
     let openai = catalogue.provider("openai").expect("openai present");

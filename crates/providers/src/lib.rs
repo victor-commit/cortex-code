@@ -26,9 +26,9 @@ mod runtime_config;
 mod runtime_provider;
 
 pub use catalogue::{
-    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, ModelCost, ModelCostTier, ModelInfo, ModelLimit,
-    OPENCODE_ZEN_PROVIDER_IDS, ProviderInfo, ResolvedModel, estimate_usage_cost, is_opencode_zen,
-    resolve_model, validate_model_id,
+    Catalogue, DEFAULT_MODEL, DEFAULT_PROVIDER, EXCLUDED_ZEN_PROVIDER_IDS, ModelCost,
+    ModelCostTier, ModelInfo, ModelLimit, ProviderInfo, ResolvedModel, estimate_usage_cost,
+    is_excluded_zen, resolve_model, validate_model_id,
 };
 pub use credentials::{
     AUTH_FILE_NAME, AuthPathInputs, Credential, CredentialInputs, CredentialSource, ENV_AUTH_FILE,

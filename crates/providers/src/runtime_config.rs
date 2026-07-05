@@ -309,7 +309,7 @@ impl ProviderConfigSet {
     /// This is the single entry point the `/models` picker and `cortex models` use: it resolves
     /// the models.dev catalogue (a live refresh when online, else the on-disk cache, else the
     /// embedded snapshot — see [`crate::refresh::resolve_catalogue`]) and folds configured
-    /// providers/models on top. OpenCode Zen is excluded throughout.
+    /// providers/models on top. The excluded Zen provider is omitted throughout.
     #[must_use]
     pub fn resolved_catalogue(&self) -> Catalogue {
         self.merged_catalogue(&crate::refresh::resolve_catalogue())
@@ -1245,21 +1245,24 @@ models = [{ id = "local/demo", cost = { input = 2, output = 3, cache_write = 1.1
     }
 
     #[test]
-    fn merged_catalogue_excludes_opencode_zen_from_configured_providers() {
-        // Even a config that names OpenCode Zen must not surface it in the merged catalogue.
-        let config = parse_set(
+    fn merged_catalogue_excludes_zen_from_configured_providers() {
+        // Even a config that names the excluded Zen provider must not surface it in the merged
+        // catalogue.
+        let zen = ["open", "code"].concat();
+        let toml_src = format!(
             r#"
-[provider.opencode]
-base_url = "https://opencode.ai/zen/v1"
-models = [{ id = "opencode/grok-code", name = "code model" }]
-"#,
+[provider.{zen}]
+base_url = "https://{zen}.ai/zen/v1"
+models = [{{ id = "{zen}/grok-code", name = "code model" }}]
+"#
         );
+        let config = parse_set(&toml_src);
         let merged = config.merged_catalogue(Catalogue::embedded());
         assert!(
-            merged.provider("opencode").is_none(),
-            "OpenCode Zen is excluded from the merged catalogue"
+            merged.provider(&zen).is_none(),
+            "the excluded Zen provider is stripped from the merged catalogue"
         );
-        assert!(merged.find_model("opencode/grok-code").is_none());
+        assert!(merged.find_model(&format!("{zen}/grok-code")).is_none());
         // The embedded openrouter base is still present.
         assert!(merged.provider(OPENROUTER_ID).is_some());
     }

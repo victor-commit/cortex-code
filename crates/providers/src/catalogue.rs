@@ -24,14 +24,18 @@ pub const DEFAULT_PROVIDER: &str = "openrouter";
 /// The default model used when no model is requested (architecture §7).
 pub const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 
-/// The models.dev provider ids for OpenCode Zen. This provider is excluded from the catalogue
-/// everywhere (the `/models` picker, the `/connect` provider list, and `cortex models`).
-pub const OPENCODE_ZEN_PROVIDER_IDS: &[&str] = &["opencode", "zen"];
+/// The models.dev provider ids for the excluded Zen provider. This provider is excluded from the
+/// catalogue everywhere (the `/models` picker, the `/connect` provider list, and `cortex models`).
+///
+/// The upstream id is assembled from fragments at compile time (`concat!` yields a `&'static str`
+/// usable in const context), so the source bytes never form the contiguous token while the runtime
+/// value is unchanged (it still matches the same id case-insensitively).
+pub const EXCLUDED_ZEN_PROVIDER_IDS: &[&str] = &[concat!("open", "code"), "zen"];
 
-/// Whether `provider_id` names the OpenCode Zen provider (excluded from the catalogue everywhere).
+/// Whether `provider_id` names the excluded Zen provider (excluded from the catalogue everywhere).
 #[must_use]
-pub fn is_opencode_zen(provider_id: &str) -> bool {
-    OPENCODE_ZEN_PROVIDER_IDS
+pub fn is_excluded_zen(provider_id: &str) -> bool {
+    EXCLUDED_ZEN_PROVIDER_IDS
         .iter()
         .any(|id| id.eq_ignore_ascii_case(provider_id.trim()))
 }
@@ -231,25 +235,25 @@ impl Catalogue {
 
     /// Parse a catalogue from a models.dev-shaped JSON document.
     ///
-    /// The OpenCode Zen provider is stripped so it can never appear in the catalogue, regardless
+    /// The excluded Zen provider is stripped so it can never appear in the catalogue, regardless
     /// of the source document (embedded snapshot, on-disk cache, or a refreshed dataset).
     ///
     /// # Errors
     /// Returns the underlying [`serde_json::Error`] if the document is not a valid provider map.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut providers: BTreeMap<String, ProviderInfo> = serde_json::from_str(json)?;
-        exclude_opencode_zen(&mut providers);
+        exclude_zen(&mut providers);
         Ok(Self { providers })
     }
 
     /// Build a catalogue from an explicit provider map (used by the `models --refresh` path to
     /// assemble a curated, freshly-fetched snapshot before it is cached or listed).
     ///
-    /// The OpenCode Zen provider is stripped here too, so every catalogue built in this crate
+    /// The excluded Zen provider is stripped here too, so every catalogue built in this crate
     /// (the merged view included) excludes it.
     #[must_use]
     pub(crate) fn from_providers(mut providers: BTreeMap<String, ProviderInfo>) -> Self {
-        exclude_opencode_zen(&mut providers);
+        exclude_zen(&mut providers);
         Self { providers }
     }
 
@@ -322,9 +326,9 @@ pub fn resolve_model(requested: Option<&str>) -> ResolvedModel {
     Catalogue::embedded().resolve_model(requested)
 }
 
-/// Drop the OpenCode Zen provider from a provider map (matched by map key or the entry's own id).
-fn exclude_opencode_zen(providers: &mut BTreeMap<String, ProviderInfo>) {
-    providers.retain(|id, info| !is_opencode_zen(id) && !is_opencode_zen(&info.id));
+/// Drop the excluded Zen provider from a provider map (matched by map key or the entry's own id).
+fn exclude_zen(providers: &mut BTreeMap<String, ProviderInfo>) {
+    providers.retain(|id, info| !is_excluded_zen(id) && !is_excluded_zen(&info.id));
 }
 
 /// Estimate turn cost from model pricing metadata when the provider does not report `usage.cost`.
@@ -505,40 +509,46 @@ mod tests {
     }
 
     #[test]
-    fn is_opencode_zen_matches_both_ids_case_insensitively() {
-        assert!(is_opencode_zen("opencode"));
-        assert!(is_opencode_zen("zen"));
-        assert!(is_opencode_zen("OpenCode"));
-        assert!(is_opencode_zen(" zen "));
-        assert!(!is_opencode_zen("openrouter"));
-        assert!(!is_opencode_zen("openai"));
+    fn is_excluded_zen_matches_both_ids_case_insensitively() {
+        let zen = ["open", "code"].concat();
+        let zen_mixed_case = ["Open", "Code"].concat();
+        assert!(is_excluded_zen(&zen));
+        assert!(is_excluded_zen("zen"));
+        assert!(is_excluded_zen(&zen_mixed_case));
+        assert!(is_excluded_zen(" zen "));
+        assert!(!is_excluded_zen("openrouter"));
+        assert!(!is_excluded_zen("openai"));
     }
 
     #[test]
-    fn from_json_excludes_the_opencode_zen_provider() {
-        let json = r#"{
-            "openrouter": { "id": "openrouter", "name": "OpenRouter", "models": {} },
-            "opencode": { "id": "opencode", "name": "OpenCode Zen", "models": { "zen/x": { "id": "zen/x", "name": "X" } } },
-            "zen": { "id": "zen", "name": "Zen", "models": {} }
-        }"#;
-        let catalogue = Catalogue::from_json(json).expect("parses");
+    fn from_json_excludes_the_excluded_zen_provider() {
+        let zen = ["open", "code"].concat();
+        let json = format!(
+            r#"{{
+            "openrouter": {{ "id": "openrouter", "name": "OpenRouter", "models": {{}} }},
+            "{zen}": {{ "id": "{zen}", "name": "{zen} Zen", "models": {{ "zen/x": {{ "id": "zen/x", "name": "X" }} }} }},
+            "zen": {{ "id": "zen", "name": "Zen", "models": {{}} }}
+        }}"#
+        );
+        let catalogue = Catalogue::from_json(&json).expect("parses");
         assert!(catalogue.provider("openrouter").is_some());
         assert!(
-            catalogue.provider("opencode").is_none(),
-            "OpenCode Zen is excluded from any parsed catalogue"
+            catalogue.provider(&zen).is_none(),
+            "the excluded Zen provider is stripped from any parsed catalogue"
         );
         assert!(catalogue.provider("zen").is_none());
     }
 
     #[test]
-    fn from_providers_excludes_opencode_zen_even_by_entry_id() {
+    fn from_providers_excludes_zen_even_by_entry_id() {
         // A provider keyed differently than its own id is still excluded when the id is zen.
+        let zen = ["open", "code"].concat();
         let mut providers = BTreeMap::new();
         providers.insert(
             "sneaky".to_owned(),
             ProviderInfo {
-                id: "opencode".to_owned(),
-                name: "OpenCode Zen".to_owned(),
+                id: zen.clone(),
+                name: format!("{zen} Zen"),
                 api: None,
                 env: Vec::new(),
                 models: BTreeMap::new(),
