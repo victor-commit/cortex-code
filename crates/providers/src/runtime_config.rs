@@ -1248,7 +1248,7 @@ models = [{ id = "local/demo", cost = { input = 2, output = 3, cache_write = 1.1
     fn merged_catalogue_excludes_zen_from_configured_providers() {
         // Even a config that names the excluded Zen provider must not surface it in the merged
         // catalogue.
-        let zen = ["open", "code"].concat();
+        let zen = crate::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let toml_src = format!(
             r#"
 [provider.{zen}]

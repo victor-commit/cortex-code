@@ -47,8 +47,8 @@ pub use provider_profiles::{
 };
 pub use refresh::{
     ENV_MODELS_DEV_URL, MODELS_CACHE_FILE, MODELS_DEV_URL, load_cached_catalogue,
-    models_cache_path, models_dev_url, offline_catalogue, refresh_openrouter_catalogue,
-    resolve_catalogue, write_models_cache,
+    models_cache_path, models_dev_url, offline_catalogue, offline_catalogue_with_source,
+    refresh_models_dev_catalogue, resolve_catalogue, write_models_cache,
 };
 pub use runtime_config::{
     ProviderAuthConfig, ProviderAuthReport, ProviderConfigError, ProviderConfigReport,

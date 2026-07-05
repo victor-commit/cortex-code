@@ -85,9 +85,9 @@ pub(crate) fn collect_providers(
     let provider_report = provider_config.redacted_report();
 
     let (builtin_catalogue, builtin_source) = if refresh {
-        refresh_builtin_catalogue()?
+        refresh_models_dev_catalogue()?
     } else {
-        offline_builtin_catalogue()
+        providers::offline_catalogue_with_source()
     };
     let merged_catalogue = provider_config.merged_catalogue(&builtin_catalogue);
     let default_model =
@@ -134,22 +134,13 @@ pub(crate) fn collect_providers(
     })
 }
 
-/// The offline builtin catalogue: the cache written by a prior `--refresh` when present and
-/// valid, otherwise the embedded snapshot. Either source is read from disk with no network access.
-fn offline_builtin_catalogue() -> (providers::Catalogue, &'static str) {
-    match providers::load_cached_catalogue() {
-        Some(cached) => (cached, "cached"),
-        None => (providers::Catalogue::embedded().clone(), "builtin"),
-    }
-}
-
-/// Refresh the builtin providers from models.dev, fail-closed under `CORTEX_NO_NET`.
+/// Refresh the models.dev catalogue, fail-closed under `CORTEX_NO_NET`.
 ///
 /// The outbound guard is consulted FIRST, so under the kill-switch this returns the net-disabled
 /// exit code with no socket opened. On a successful fetch the curated snapshot is cached (a write
 /// failure is non-fatal) and listed; on a fetch failure it returns the mapped failure exit with a
 /// clear diagnostic on stderr, leaving any existing cache (and the embedded snapshot) intact.
-fn refresh_builtin_catalogue() -> Result<(providers::Catalogue, &'static str), Exit> {
+fn refresh_models_dev_catalogue() -> Result<(providers::Catalogue, &'static str), Exit> {
     if let Err(diag) = redaction::guard_outbound("models.dev catalog refresh") {
         eprintln!("cortex models --refresh: {diag}");
         return Err(diag.exit());
@@ -167,7 +158,7 @@ fn refresh_builtin_catalogue() -> Result<(providers::Catalogue, &'static str), E
     };
 
     let url = providers::models_dev_url();
-    match runtime.block_on(providers::refresh_openrouter_catalogue(&url)) {
+    match runtime.block_on(providers::refresh_models_dev_catalogue(&url)) {
         Ok(catalogue) => {
             if let Err(err) = providers::write_models_cache(&catalogue) {
                 // A cache write failure must not fail the refresh: the listing is already in hand.

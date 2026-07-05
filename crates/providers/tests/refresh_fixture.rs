@@ -1,6 +1,6 @@
 //! End-to-end proof of the models.dev refresh path against a CONTROLLED loopback fixture.
 //!
-//! This exercises the real `refresh_openrouter_catalogue` fetch+parse+curate pipeline (rustls
+//! This exercises the real `refresh_models_dev_catalogue` fetch+parse+curate pipeline (rustls
 //! reqwest client → HTTP read → curation) without touching the live models.dev endpoint: a tiny
 //! in-process loopback server (bound on an OS-assigned `127.0.0.1:0` port) serves a saved
 //! `api.json` fixture, and the fixture URL is passed straight to the public API. It is fully
@@ -14,9 +14,10 @@ use std::thread::JoinHandle;
 
 /// A models.dev-shaped fixture with several providers (openrouter + openai/anthropic/groq), a
 /// clear per-model recency signal (release dates), and an excluded Zen provider entry (its
-/// models.dev id assembled from fragments below) that MUST be filtered out of the curated catalogue.
+/// models.dev id read from the brand-safe `EXCLUDED_ZEN_PROVIDER_IDS`) that MUST be filtered out of
+/// the curated catalogue.
 fn fixture() -> String {
-    let zen = ["open", "code"].concat();
+    let zen = providers::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
     let zen_env = format!("{}_API_KEY", zen.to_ascii_uppercase());
     let zen_entry = format!(
         r#""{zen}": {{
@@ -99,7 +100,7 @@ fn spawn_fixture_server(body: String) -> (String, JoinHandle<()>) {
 async fn refresh_from_a_loopback_fixture_is_multi_provider_recency_ordered_and_zen_free() {
     let (url, handle) = spawn_fixture_server(fixture());
 
-    let catalogue = providers::refresh_openrouter_catalogue(&url)
+    let catalogue = providers::refresh_models_dev_catalogue(&url)
         .await
         .expect("the loopback fixture refresh succeeds");
     handle.join().expect("fixture server thread");
@@ -113,7 +114,7 @@ async fn refresh_from_a_loopback_fixture_is_multi_provider_recency_ordered_and_z
     }
 
     // The excluded Zen provider is filtered out everywhere (VAL-CAT-003).
-    let zen = ["open", "code"].concat();
+    let zen = providers::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
     assert!(catalogue.provider(&zen).is_none());
     assert!(catalogue.provider("zen").is_none());
     assert!(catalogue.find_model(&format!("{zen}/grok-code")).is_none());

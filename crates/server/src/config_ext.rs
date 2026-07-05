@@ -285,7 +285,7 @@ pub(super) fn provider_context(state: &ServerState) -> Result<ProviderContext, A
     let effective = settings::load(config_inputs.clone()).map_err(config_api_error)?;
     let provider_config =
         ProviderConfigSet::from_table(effective.table()).map_err(provider_config_api_error)?;
-    let (builtin, builtin_source) = offline_catalogue();
+    let (builtin, builtin_source) = providers::offline_catalogue_with_source();
     let merged = provider_config.merged_catalogue(&builtin);
     let default_model = provider_config
         .resolve_model(&merged, Some(effective.model()))
@@ -301,17 +301,6 @@ pub(super) fn provider_context(state: &ServerState) -> Result<ProviderContext, A
         default_model,
         plugin_providers,
     })
-}
-
-/// The offline catalogue: a prior `--refresh` cache when present, otherwise the embedded snapshot.
-///
-/// This mirrors `cortex models` so the server's provider listing reports the same source tag and
-/// model set, and never opens a socket.
-fn offline_catalogue() -> (Catalogue, &'static str) {
-    match providers::load_cached_catalogue() {
-        Some(cached) => (cached, "cached"),
-        None => (Catalogue::embedded().clone(), "builtin"),
-    }
 }
 
 fn load_effective(state: &ServerState) -> Result<EffectiveConfig, ApiError> {

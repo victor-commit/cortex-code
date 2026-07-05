@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn is_excluded_zen_matches_both_ids_case_insensitively() {
-        let zen = ["open", "code"].concat();
+        let zen = EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let zen_mixed_case = ["Open", "Code"].concat();
         assert!(is_excluded_zen(&zen));
         assert!(is_excluded_zen("zen"));
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn from_json_excludes_the_excluded_zen_provider() {
-        let zen = ["open", "code"].concat();
+        let zen = EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let json = format!(
             r#"{{
             "openrouter": {{ "id": "openrouter", "name": "OpenRouter", "models": {{}} }},
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn from_providers_excludes_zen_even_by_entry_id() {
         // A provider keyed differently than its own id is still excluded when the id is zen.
-        let zen = ["open", "code"].concat();
+        let zen = EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let mut providers = BTreeMap::new();
         providers.insert(
             "sneaky".to_owned(),

@@ -68,7 +68,7 @@ pub fn models_dev_url() -> String {
 /// # Errors
 /// Returns a [`Diagnostic`] for a net-disabled refusal, a transport/connection failure, a non-2xx
 /// response, or a response that does not contain any recognized models.
-pub async fn refresh_openrouter_catalogue(url: &str) -> Result<Catalogue, Diagnostic> {
+pub async fn refresh_models_dev_catalogue(url: &str) -> Result<Catalogue, Diagnostic> {
     guard_outbound(OUTBOUND_OPERATION)?;
     let bytes = fetch(url).await?;
     parse_and_curate(&bytes)
@@ -102,6 +102,17 @@ pub fn offline_catalogue() -> Catalogue {
     choose_offline(load_cached_catalogue())
 }
 
+/// The offline catalogue paired with the source tag the CLI and server report: `"cached"` when a
+/// prior `--refresh` wrote the on-disk cache, else `"builtin"` for the embedded snapshot.
+///
+/// This is the single source of truth for the cache-then-embedded offline resolution that
+/// `cortex models` and the server provider listing draw from, so neither re-implements the
+/// fallback. No network, no error; the excluded Zen provider is omitted either way.
+#[must_use]
+pub fn offline_catalogue_with_source() -> (Catalogue, &'static str) {
+    choose_offline_with_source(load_cached_catalogue())
+}
+
 /// The pure resolve decision, separated from the environment/socket/disk reads so both the online
 /// and offline branches are unit-testable without touching the network or the process env.
 fn resolve_catalogue_core<Fetch, Write>(
@@ -128,7 +139,16 @@ where
 
 /// Prefer the cache, then fall back to the embedded snapshot.
 fn choose_offline(cached: Option<Catalogue>) -> Catalogue {
-    cached.unwrap_or_else(|| Catalogue::embedded().clone())
+    choose_offline_with_source(cached).0
+}
+
+/// The cache-then-embedded decision paired with the `"cached"`/`"builtin"` source tag the
+/// CLI/server surface as each entry's `source`.
+fn choose_offline_with_source(cached: Option<Catalogue>) -> (Catalogue, &'static str) {
+    match cached {
+        Some(cached) => (cached, "cached"),
+        None => (Catalogue::embedded().clone(), "builtin"),
+    }
 }
 
 /// Run the async refresh to completion on a dedicated thread with its own current-thread runtime.
@@ -146,7 +166,7 @@ fn refresh_blocking(url: &str) -> Result<Catalogue, Diagnostic> {
                     "failed to start the models.dev refresh runtime: {err}"
                 )))
             })?;
-        runtime.block_on(refresh_openrouter_catalogue(&url))
+        runtime.block_on(refresh_models_dev_catalogue(&url))
     })
     .join()
     .unwrap_or_else(|_| {
@@ -440,10 +460,10 @@ mod tests {
     /// an unrelated extra model, a (retired) Claude 3.5 id, and one malformed recognizable entry
     /// missing its required `name`. Other providers are present to mirror the real response shape,
     /// including one WITHOUT a built-in profile (`openai`, with dated models) and the excluded Zen
-    /// provider (its models.dev id assembled from fragments below), which must be stripped from the
-    /// curated catalogue entirely.
+    /// provider (its models.dev id read from the brand-safe `EXCLUDED_ZEN_PROVIDER_IDS`), which
+    /// must be stripped from the curated catalogue entirely.
     fn fixture() -> String {
-        let zen = ["open", "code"].concat();
+        let zen = crate::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let zen_env = format!("{}_API_KEY", zen.to_ascii_uppercase());
         let zen_entry = format!(
             r#""{zen}": {{
@@ -588,7 +608,7 @@ mod tests {
 
     #[test]
     fn curate_excludes_the_zen_provider_entirely() {
-        let zen = ["open", "code"].concat();
+        let zen = crate::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
         let zen_model = format!("{zen}/grok-code");
         let catalogue = curate(&fixture()).expect("curates");
         assert!(
