@@ -9,18 +9,25 @@
 //!
 //! 1. **Provider** — pick a provider to connect.
 //! 2. **Method** — its auth methods: API KEY always, plus OAuth ONLY where the provider advertises
-//!    it (the OAuth handshake itself is wired by the connect-oauth-bridge feature; here the method
-//!    is presented).
+//!    it. OAuth drives the REAL [`mcp::oauth`] engine (loopback callback in the reserved 3200-3299
+//!    range, CSRF `state`, code→token exchange) on a background runtime, mirroring the CLI bridge in
+//!    `crates/cli/src/auth_cmd.rs`; a structured `oauth` credential is stored to `auth.json` (0600).
 //! 3. **API key** — a MASKED entry (never echoed); confirming stores it via
 //!    [`providers::store_credential`] to `auth.json` (0600) and RE-RESOLVES so the provider reads as
 //!    connected immediately (usable in `/models` with no restart).
+//! 4. **OAuth waiting** — an in-progress "waiting for authorization" state showing the URL to open
+//!    while the loopback callback listener awaits the authorization response.
 //!
-//! Security invariant: the typed key lives only in [`ConnectState::key_input`] and is NEVER rendered
-//! or logged — the input box shows one `•` per typed character, and storing writes straight to the
-//! 0600 credential store without echoing the key. Failures render as the inline `✗ error` block
+//! Security invariant: neither the typed key nor an OAuth token is ever rendered or logged — the
+//! masked input box shows one `•` per typed character, and both paths write straight to the 0600
+//! credential store without echoing the secret (the authorization URL carries only the client id,
+//! loopback redirect, and CSRF state — no secret). Failures render as the inline `✗ error` block
 //! inside the panel (the VAL-ERR error surface), never a toast/splatter.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
+use std::thread;
+use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -29,9 +36,10 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use providers::{
-    AuthPathInputs, connectable_providers, connected_providers, list_stored_providers,
-    store_credential,
+    AuthPathInputs, OAuthEndpoints, connectable_providers, connected_providers,
+    list_stored_providers, oauth_endpoints, store_credential,
 };
+use redaction::guard_outbound;
 use tui_components::style::ThemeColors;
 
 use crate::app::App;
@@ -39,6 +47,10 @@ use crate::auth_login::masked_input_box;
 use crate::glyphs;
 use crate::ui::{cells_to_line, place_segments};
 use crate::view;
+
+/// How long the OAuth flow waits for the loopback callback before giving up (the CLI bridge uses the
+/// same 3-minute-class budget for an interactive authorization).
+const OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The breadcrumb crumb shown after `✦ Cortex Code ·` on the connect screen.
 const CRUMB: &str = "connect";
@@ -69,6 +81,8 @@ pub enum Step {
     Method,
     /// Enter a masked API key for the chosen provider.
     ApiKey,
+    /// The OAuth flow is running: waiting for the browser authorization + loopback callback.
+    OAuthWaiting,
     /// The provider has been connected (success confirmation).
     Connected,
 }
@@ -98,6 +112,159 @@ impl Method {
             Method::OAuth => "authorize in your browser",
         }
     }
+}
+
+/// A state update published by the background OAuth worker for the UI thread to apply.
+enum OAuthMessage {
+    /// The loopback listener is up and the authorization URL is ready; the TUI shows the
+    /// "waiting for authorization" state with the URL to open. Carries no secret.
+    AwaitingAuthorization {
+        /// The full authorization URL (client id + loopback redirect + CSRF state, no secret).
+        authorize_url: String,
+        /// The loopback redirect URI the callback listens on (in the reserved 3200-3299 range).
+        redirect_uri: String,
+    },
+    /// A valid callback was exchanged and a structured `oauth` credential was stored (0600).
+    Connected,
+    /// The flow failed (bad/absent CSRF state, a denial, a timeout, or a store error). The message
+    /// is secret-free and renders as the inline `✗ error` block.
+    Failed(String),
+}
+
+/// The live OAuth handshake state held while the flow is running: the channel the background worker
+/// publishes on, the authorization URL / loopback redirect once the listener is up, and the auth
+/// store the worker writes to (so the connected state re-resolves from the same store on success).
+struct OAuthProgress {
+    /// The receiver drained each tick by [`ConnectState::poll_oauth`].
+    rx: Receiver<OAuthMessage>,
+    /// The authorization URL to open, once the worker reports the listener is up.
+    authorize_url: Option<String>,
+    /// The loopback redirect URI the callback listens on, once known.
+    redirect_uri: Option<String>,
+    /// The 0600 auth store the worker persists the credential to.
+    auth_path: PathBuf,
+}
+
+/// Run the real [`mcp::oauth`] authorization-code flow on a dedicated background thread with its own
+/// current-thread Tokio runtime (mirroring `crates/cli/src/auth_cmd.rs::authorize_builtin_oauth_method`
+/// and the TUI turn worker), publishing state back over a channel the UI drains each tick.
+///
+/// The worker: binds the loopback callback listener + builds the authorization URL ([`begin`]),
+/// reports [`OAuthMessage::AwaitingAuthorization`], waits for a valid callback (matching CSRF state)
+/// and exchanges the code at the token endpoint ([`AuthorizationRequest::complete`]), then stores a
+/// STRUCTURED `oauth` credential (access/refresh tokens, expiry, token endpoint, client id) to the
+/// 0600 auth store. A mismatched/absent state is rejected by the engine and stores NOTHING; any
+/// failure is reported as [`OAuthMessage::Failed`] with a secret-free message.
+///
+/// [`begin`]: mcp::oauth::begin
+/// [`AuthorizationRequest::complete`]: mcp::oauth::AuthorizationRequest::complete
+fn spawn_oauth(
+    config: mcp::oauth::OAuthConfig,
+    callback_port: Option<u16>,
+    timeout: Duration,
+    auth_path: PathBuf,
+    provider_id: String,
+) -> Receiver<OAuthMessage> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                let _ = tx.send(OAuthMessage::Failed(format!(
+                    "failed to start OAuth runtime: {err}"
+                )));
+                return;
+            }
+        };
+        let request = match runtime.block_on(mcp::oauth::begin(config, callback_port)) {
+            Ok(request) => request,
+            Err(err) => {
+                let _ = tx.send(OAuthMessage::Failed(err.to_string()));
+                return;
+            }
+        };
+        // The authorize URL + loopback redirect carry no secret; surfacing them is the "open this
+        // URL / waiting for authorization" state.
+        if tx
+            .send(OAuthMessage::AwaitingAuthorization {
+                authorize_url: request.authorize_url.clone(),
+                redirect_uri: request.redirect_uri.clone(),
+            })
+            .is_err()
+        {
+            // The flow was cancelled before the listener came up; nothing to wait for.
+            return;
+        }
+        match runtime.block_on(request.complete(timeout)) {
+            Ok(token) => {
+                // Persist a STRUCTURED oauth credential (type oauth, access/refresh tokens, expiry,
+                // token endpoint, client id) so runtime_auth.rs can unwrap/refresh it. The token is
+                // written straight to the 0600 store and never echoed.
+                let credential = oauth_credential_json(&token);
+                match store_credential(&auth_path, &provider_id, &credential) {
+                    Ok(()) => {
+                        let _ = tx.send(OAuthMessage::Connected);
+                    }
+                    Err(err) => {
+                        // `io::Error` carries no token material, so this message is secret-free.
+                        let _ = tx.send(OAuthMessage::Failed(format!(
+                            "Could not store credential: {err}"
+                        )));
+                    }
+                }
+            }
+            Err(err) => {
+                // A mismatched/absent CSRF state, a denial, or a timeout — the engine stored
+                // nothing; surface a secret-free inline error.
+                let _ = tx.send(OAuthMessage::Failed(err.to_string()));
+            }
+        }
+    });
+    rx
+}
+
+/// Serialize a freshly-exchanged OAuth token into the STRUCTURED `oauth` credential JSON persisted
+/// to the 0600 auth store (mirroring the CLI bridge). The shape matches what
+/// `providers::runtime_auth` reads back (`OAuthCredential::from_stored`) so the credential unwraps
+/// and refreshes on expiry.
+fn oauth_credential_json(token: &mcp::StoredToken) -> String {
+    let mut credential = serde_json::Map::new();
+    credential.insert(
+        "type".to_owned(),
+        serde_json::Value::String("oauth".to_owned()),
+    );
+    credential.insert(
+        "access_token".to_owned(),
+        serde_json::Value::String(token.access_token.clone()),
+    );
+    credential.insert(
+        "token_type".to_owned(),
+        serde_json::Value::String(token.token_type.clone()),
+    );
+    if let Some(refresh_token) = &token.refresh_token {
+        credential.insert(
+            "refresh_token".to_owned(),
+            serde_json::Value::String(refresh_token.clone()),
+        );
+    }
+    if let Some(expires_at) = token.expires_at {
+        credential.insert(
+            "expires_at".to_owned(),
+            serde_json::Value::Number(expires_at.into()),
+        );
+    }
+    credential.insert(
+        "token_endpoint".to_owned(),
+        serde_json::Value::String(token.token_endpoint.clone()),
+    );
+    credential.insert(
+        "client_id".to_owned(),
+        serde_json::Value::String(token.client_id.clone()),
+    );
+    serde_json::to_string(&serde_json::Value::Object(credential)).unwrap_or_default()
 }
 
 /// One connectable provider row: its stable id (credential-store key), display name, whether it
@@ -131,9 +298,11 @@ pub struct ConnectState {
     key_input: String,
     /// An inline error rendered as the `✗ error` block inside the panel (never a toast).
     error: Option<String>,
-    /// A faint inline notice (e.g. the OAuth method is presented but its handshake is wired by the
-    /// connect-oauth-bridge feature).
+    /// A faint inline notice.
     notice: Option<String>,
+    /// The live OAuth handshake state while the OAuth flow is running (its background worker channel
+    /// plus the authorization URL / loopback redirect once the listener is up).
+    oauth: Option<OAuthProgress>,
 }
 
 impl ConnectState {
@@ -161,6 +330,7 @@ impl ConnectState {
             key_input: String::new(),
             error: None,
             notice: None,
+            oauth: None,
         }
     }
 
@@ -205,8 +375,8 @@ impl ConnectState {
         self.step = Step::Method;
     }
 
-    /// Act on the highlighted method: API key opens the masked entry; OAuth is presented (its
-    /// handshake is wired by the connect-oauth-bridge feature) with a faint inline notice.
+    /// Act on the highlighted method: API key opens the masked entry; OAuth starts the real
+    /// [`mcp::oauth`] handshake on a background runtime and moves to the waiting step.
     pub fn enter_method(&mut self) {
         match self.methods.get(self.method_selected).copied() {
             Some(Method::ApiKey) => {
@@ -215,14 +385,119 @@ impl ConnectState {
                 self.notice = None;
                 self.step = Step::ApiKey;
             }
-            Some(Method::OAuth) => {
-                self.notice = Some(format!(
-                    "OAuth sign-in for {} authorizes in your browser.",
-                    self.selected_provider().display
-                ));
-            }
+            Some(Method::OAuth) => self.start_oauth(),
             None => {}
         }
+    }
+
+    /// Start the OAuth flow for the highlighted provider: fail closed on the network kill-switch,
+    /// resolve the provider's OAuth endpoints (env-overridable for a controlled loopback endpoint)
+    /// and the 0600 auth-store path from the process, then spawn the background handshake worker.
+    /// An unavailable store, a provider without OAuth config, or a blocked network render an inline
+    /// error and start nothing.
+    fn start_oauth(&mut self) {
+        let display = self.selected_provider().display.to_owned();
+        let id = self.selected_provider().id.to_owned();
+        // Fail closed on CORTEX_NO_NET before binding a listener or opening any socket.
+        if let Err(diag) = guard_outbound("provider OAuth authorization") {
+            self.error = Some(diag.to_string());
+            return;
+        }
+        let Some(path) = AuthPathInputs::from_process().resolve() else {
+            self.error = Some("No credential store is available.".to_owned());
+            return;
+        };
+        let Some(endpoints) = oauth_endpoints(&id) else {
+            self.error = Some(format!("OAuth is not configured for {display}."));
+            return;
+        };
+        self.begin_oauth(endpoints, path, id);
+    }
+
+    /// Spawn the background OAuth worker for the resolved `endpoints`, storing to `path` under
+    /// `provider_id`, and move to the waiting step. Separated from [`Self::start_oauth`] so a test
+    /// can drive the handshake against a controlled loopback endpoint with explicit inputs.
+    pub(crate) fn begin_oauth(
+        &mut self,
+        endpoints: OAuthEndpoints,
+        path: PathBuf,
+        provider_id: String,
+    ) {
+        let config = mcp::oauth::OAuthConfig {
+            authorize_endpoint: endpoints.authorize_endpoint,
+            token_endpoint: endpoints.token_endpoint,
+            client_id: endpoints.client_id,
+            scopes: endpoints.scopes,
+        };
+        let rx = spawn_oauth(
+            config,
+            endpoints.callback_port,
+            OAUTH_TIMEOUT,
+            path.clone(),
+            provider_id,
+        );
+        self.oauth = Some(OAuthProgress {
+            rx,
+            authorize_url: None,
+            redirect_uri: None,
+            auth_path: path,
+        });
+        self.error = None;
+        self.notice = None;
+        self.step = Step::OAuthWaiting;
+    }
+
+    /// Drain the background OAuth worker's messages and apply them: record the authorization URL /
+    /// loopback redirect once the listener is up, transition to the connected step (re-resolving the
+    /// connected state) on success, or fall back to the method step with an inline error on failure.
+    /// A no-op when no OAuth flow is running.
+    pub fn poll_oauth(&mut self) {
+        let mut drained = Vec::new();
+        if let Some(progress) = self.oauth.as_ref() {
+            while let Ok(message) = progress.rx.try_recv() {
+                drained.push(message);
+            }
+        }
+        for message in drained {
+            match message {
+                OAuthMessage::AwaitingAuthorization {
+                    authorize_url,
+                    redirect_uri,
+                } => {
+                    if let Some(progress) = self.oauth.as_mut() {
+                        progress.authorize_url = Some(authorize_url);
+                        progress.redirect_uri = Some(redirect_uri);
+                    }
+                }
+                OAuthMessage::Connected => {
+                    let auth_path = self
+                        .oauth
+                        .as_ref()
+                        .map(|progress| progress.auth_path.clone());
+                    self.oauth = None;
+                    self.error = None;
+                    self.notice = None;
+                    if let Some(path) = auth_path {
+                        self.refresh_connected_from(&path);
+                    }
+                    self.step = Step::Connected;
+                }
+                OAuthMessage::Failed(message) => {
+                    self.oauth = None;
+                    self.error = Some(message);
+                    self.step = Step::Method;
+                }
+            }
+        }
+    }
+
+    /// Cancel a running OAuth flow (dropping the worker channel) and return to the method step. The
+    /// background listener winds down on its own timeout; nothing is stored.
+    pub fn cancel_oauth(&mut self) {
+        self.oauth = None;
+        self.error = None;
+        self.notice = None;
+        self.step = Step::Method;
     }
 
     /// Return to the provider step from the method step.
@@ -307,6 +582,14 @@ impl ConnectState {
     /// The number of typed key characters (drives the count of mask bullets); never the key itself.
     fn key_len(&self) -> usize {
         self.key_input.chars().count()
+    }
+
+    /// The authorization URL to open while the OAuth flow waits for the callback, once the loopback
+    /// listener is up. Carries only the client id, loopback redirect, and CSRF state — no secret.
+    fn oauth_authorize_url(&self) -> Option<&str> {
+        self.oauth
+            .as_ref()
+            .and_then(|progress| progress.authorize_url.as_deref())
     }
 }
 
@@ -395,6 +678,43 @@ fn panel_body_lines(
             lines.push(row(width, base, &[]));
             lines.push(stored_note_line(width, theme));
         }
+        Step::OAuthWaiting => {
+            let display = state.selected_provider().display;
+            let amber = Style::default().fg(theme.secondary).bg(theme.background);
+            lines.push(content_row(
+                width,
+                base,
+                &format!("waiting for authorization — {display}"),
+                text,
+            ));
+            lines.push(row(width, base, &[]));
+            match state.oauth_authorize_url() {
+                Some(url) => {
+                    lines.push(content_row(width, base, "open this URL to authorize:", faint));
+                    // The URL can exceed the panel width; wrap it so the whole (secret-free) URL is
+                    // visible for the user to open.
+                    let wrap_at = width.saturating_sub(CONTENT_COL).max(1);
+                    for chunk in wrap_text(url, wrap_at) {
+                        lines.push(content_row(width, base, &chunk, amber));
+                    }
+                    lines.push(row(width, base, &[]));
+                    lines.push(content_row(
+                        width,
+                        base,
+                        "cortex is listening on the loopback callback for the response",
+                        faint,
+                    ));
+                }
+                None => {
+                    lines.push(content_row(
+                        width,
+                        base,
+                        "starting the loopback callback listener…",
+                        faint,
+                    ));
+                }
+            }
+        }
         Step::Connected => {
             let display = state.selected_provider().display;
             let okg = Style::default().fg(theme.success).bg(theme.background);
@@ -448,6 +768,20 @@ fn window(selected: usize, len: usize, capacity: usize) -> (usize, usize) {
     let half = capacity / 2;
     let start = selected.saturating_sub(half).min(len - capacity);
     (start, start + capacity)
+}
+
+/// Split `text` into chunks of at most `width` characters (char-based; authorization URLs are
+/// ASCII), so a long URL wraps across panel rows rather than being clipped.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width)
+        .map(|chunk| chunk.iter().collect::<String>())
+        .collect()
 }
 
 /// One provider row: the selected row is a strong inverse bar (solid ORANGE fill, near-black text,
@@ -551,6 +885,7 @@ fn hints_line(step: Step, width: usize, theme: &ThemeColors) -> Line<'static> {
         Step::Provider => &[(concat!("↑", "↓"), "select"), ("↵", "choose"), ("esc", "close")],
         Step::Method => &[(concat!("↑", "↓"), "select"), ("↵", "choose"), ("esc", "back")],
         Step::ApiKey => &[("↵", "connect"), ("esc", "back")],
+        Step::OAuthWaiting => &[("esc", "cancel")],
         Step::Connected => &[("↵", "done"), ("esc", "close")],
     };
     let mut segments: Vec<(String, Style)> = Vec::new();
@@ -783,5 +1118,361 @@ mod tests {
             .expect("selected provider name on the fill");
         assert_eq!(fill.style.bg, Some(theme.primary), "row fill is ORANGE");
         assert_eq!(fill.style.fg, Some(theme.background), "text is near-black");
+    }
+
+    // --- OAuth mechanics (VAL-CONN-006/007/008/010), driven against a CONTROLLED loopback
+    // OAuth endpoint that exercises the REAL `mcp::oauth` engine (no third-party provider). ---
+
+    /// A copilot provider row selected, ready to start the OAuth method.
+    fn oauth_state_for_copilot() -> ConnectState {
+        let mut state = ConnectState::new();
+        let copilot = state
+            .providers
+            .iter()
+            .position(|p| p.id == "copilot")
+            .expect("copilot connectable");
+        state.provider_selected = copilot;
+        state.enter_provider();
+        assert!(
+            state.methods.contains(&Method::OAuth),
+            "copilot offers OAuth"
+        );
+        state
+    }
+
+    /// Build fixture OAuth endpoints whose token endpoint points at a controlled loopback server;
+    /// the callback port is left unpinned so the engine scans the reserved 3200-3299 range.
+    fn fixture_endpoints(token_base: &str) -> OAuthEndpoints {
+        OAuthEndpoints {
+            authorize_endpoint: format!("{token_base}/authorize"),
+            token_endpoint: format!("{token_base}/token"),
+            client_id: "fixture-client".to_owned(),
+            scopes: vec!["read:user".to_owned()],
+            callback_port: None,
+        }
+    }
+
+    /// A controlled loopback token server (bound on an OS-assigned ephemeral port) that answers the
+    /// single token-exchange POST with `body`. Returns its base URL and the accept thread handle.
+    fn spawn_token_server(body: &str) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind token server");
+        let addr = listener.local_addr().expect("token addr");
+        let response_body = body.to_owned();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Poll the OAuth worker until the loopback listener is up, returning `(authorize_url,
+    /// redirect_uri)`.
+    fn wait_for_awaiting(state: &mut ConnectState) -> (String, String) {
+        for _ in 0..250 {
+            state.poll_oauth();
+            if let Some(url) = state.oauth_authorize_url() {
+                let redirect = state
+                    .oauth
+                    .as_ref()
+                    .and_then(|progress| progress.redirect_uri.clone())
+                    .expect("redirect uri set with the url");
+                return (url.to_owned(), redirect);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("OAuth loopback listener did not come up");
+    }
+
+    /// Poll the OAuth worker until it leaves the waiting step (connected or failed).
+    fn wait_for_result(state: &mut ConnectState) {
+        for _ in 0..250 {
+            state.poll_oauth();
+            if state.step != Step::OAuthWaiting {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("OAuth flow did not resolve");
+    }
+
+    /// Deliver a loopback callback GET to `redirect_uri` with `code` and `state`.
+    fn deliver_callback(redirect_uri: &str, code: &str, state: &str) {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        let addr = redirect_uri
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .expect("host:port in redirect uri")
+            .to_owned();
+        let mut stream = TcpStream::connect(&addr).expect("connect to loopback callback");
+        let request = format!(
+            "GET /callback?code={code}&state={state} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).expect("write callback");
+        let mut buffer = Vec::new();
+        let _ = stream.read_to_end(&mut buffer);
+    }
+
+    /// Read a query parameter's raw value from a URL (the values used here are un-encoded hex/ids).
+    fn query_param(url: &str, key: &str) -> Option<String> {
+        let query = url.split_once('?')?.1;
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=')
+                && k == key
+            {
+                return Some(v.to_owned());
+            }
+        }
+        None
+    }
+
+    /// The port of a `http://127.0.0.1:PORT/callback` redirect uri.
+    fn redirect_port(redirect_uri: &str) -> u16 {
+        redirect_uri
+            .trim_start_matches("http://127.0.0.1:")
+            .split('/')
+            .next()
+            .and_then(|port| port.parse::<u16>().ok())
+            .expect("callback port in redirect uri")
+    }
+
+    #[test]
+    fn oauth_start_builds_valid_authorization_request_and_loopback_listener() {
+        // VAL-CONN-006: choosing OAuth builds a valid authorization URL (client_id + loopback
+        // redirect_uri on a 3200-3299 port + CSRF state), starts the loopback callback listener, and
+        // the TUI shows a "waiting for authorization" state with the URL to open.
+        let (token_base, server) = spawn_token_server(r#"{"access_token":"unused"}"#);
+        let path = unique_auth_path("oauth-url");
+        let mut state = oauth_state_for_copilot();
+        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        assert_eq!(state.step, Step::OAuthWaiting, "flow enters the waiting step");
+
+        let (authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
+        assert!(
+            authorize_url.contains("client_id=fixture-client"),
+            "authorize URL carries the client id: {authorize_url}"
+        );
+        assert_eq!(
+            query_param(&authorize_url, "response_type").as_deref(),
+            Some("code"),
+            "authorization-code flow"
+        );
+        let csrf_state = query_param(&authorize_url, "state").expect("CSRF state present");
+        assert!(!csrf_state.is_empty(), "a non-empty CSRF state is issued");
+        assert!(
+            redirect_uri.starts_with("http://127.0.0.1:"),
+            "loopback redirect uri: {redirect_uri}"
+        );
+        let port = redirect_port(&redirect_uri);
+        assert!(
+            (3200..=3299).contains(&port),
+            "callback binds in the reserved 3200-3299 range, got {port}"
+        );
+
+        // The TUI shows the "waiting for authorization" state with the URL to open.
+        let theme = ThemeColors::from_name("dark");
+        let body = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>();
+        assert!(
+            body.contains("waiting for authorization"),
+            "waiting state shown:\n{body}"
+        );
+        assert!(
+            body.contains("open this URL to authorize"),
+            "the URL-to-open prompt is shown:\n{body}"
+        );
+        // The (secret-free) URL is displayed; it wraps across rows, so match its contiguous scheme
+        // prefix rather than a fragment that a wrap boundary may split.
+        assert!(
+            body.contains("http://127.0.0.1:"),
+            "the authorization URL is shown:\n{body}"
+        );
+
+        // Clean up: unblock the (unused) token server and drop the flow.
+        state.cancel_oauth();
+        drop(server);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn oauth_valid_callback_exchanges_and_stores_structured_credential() {
+        // VAL-CONN-007: a valid callback (matching state + code) is exchanged at the token endpoint
+        // and a STRUCTURED oauth credential (type oauth, access/refresh tokens, expiry, token
+        // endpoint, client id) is stored to auth.json at 0600; the flow transitions to connected.
+        let (token_base, server) = spawn_token_server(
+            r#"{"access_token":"fresh-oauth-token","refresh_token":"refresh-oauth-token","token_type":"Bearer","expires_in":3600}"#,
+        );
+        let path = unique_auth_path("oauth-store");
+        let mut state = oauth_state_for_copilot();
+        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        let (authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
+        let csrf_state = query_param(&authorize_url, "state").expect("state");
+
+        deliver_callback(&redirect_uri, "auth-code-123", &csrf_state);
+        wait_for_result(&mut state);
+        server.join().expect("token server joined");
+
+        assert_eq!(state.step, Step::Connected, "flow transitions to connected");
+        assert!(state.error.is_none(), "no error on success");
+        assert!(
+            state
+                .providers
+                .iter()
+                .find(|p| p.id == "copilot")
+                .unwrap()
+                .connected,
+            "copilot reads as connected after storing"
+        );
+
+        // The stored credential is a STRUCTURED oauth entry with all the fields runtime_auth reads.
+        let body = std::fs::read_to_string(&path).expect("auth file written");
+        for expected in [
+            "oauth",
+            "access_token",
+            "fresh-oauth-token",
+            "refresh_token",
+            "expires_at",
+            "token_endpoint",
+            "client_id",
+            "fixture-client",
+        ] {
+            assert!(body.contains(expected), "stored credential has `{expected}`:\n{body}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "auth.json is owner-only 0600");
+        }
+
+        // VAL-CONN-010: the token never appears on the rendered connected screen.
+        let theme = ThemeColors::from_name("dark");
+        let rendered = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>();
+        assert!(
+            !rendered.contains("fresh-oauth-token") && !rendered.contains("refresh-oauth-token"),
+            "no token appears on screen:\n{rendered}"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn oauth_mismatched_state_is_rejected_and_stores_nothing() {
+        // VAL-CONN-008: a callback with a mismatched CSRF state is rejected, NOTHING is stored, and a
+        // clean inline error is surfaced (the flow returns to the method step, no toast).
+        let (token_base, server) = spawn_token_server(r#"{"access_token":"must-not-be-stored"}"#);
+        let path = unique_auth_path("oauth-badstate");
+        let mut state = oauth_state_for_copilot();
+        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        let (_authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
+
+        // Deliver a callback with a forged (mismatched) state.
+        deliver_callback(&redirect_uri, "auth-code-123", "forged-state-value");
+        wait_for_result(&mut state);
+        drop(server);
+
+        assert_eq!(state.step, Step::Method, "bad state returns to the method step");
+        assert!(state.error.is_some(), "an inline error is surfaced");
+        assert!(
+            !state
+                .providers
+                .iter()
+                .find(|p| p.id == "copilot")
+                .unwrap()
+                .connected,
+            "copilot is NOT connected after a rejected callback"
+        );
+        assert!(
+            !path.exists(),
+            "no credential is stored for a mismatched CSRF state"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn oauth_denied_authorization_renders_a_clean_inline_error() {
+        // VAL-CONN-008: a denied authorization surfaces a clean inline `✗ error` block and stores
+        // nothing (the flow returns to the method step; the inline error renders in the panel — the
+        // connect surface never raises a toast, proven by `connect_inline_error_uses_err_mark_never_toast`).
+        let (token_base, server) = spawn_token_server(r#"{"access_token":"unused"}"#);
+        let path = unique_auth_path("oauth-denied");
+        let mut state = oauth_state_for_copilot();
+        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        let (_authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
+
+        // A denial callback carries `error=access_denied` (no code).
+        {
+            use std::io::{Read, Write};
+            use std::net::TcpStream;
+            let addr = redirect_uri
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap()
+                .to_owned();
+            let mut stream = TcpStream::connect(&addr).expect("connect callback");
+            let request = format!(
+                "GET /callback?error=access_denied HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).expect("write callback");
+            let mut buffer = Vec::new();
+            let _ = stream.read_to_end(&mut buffer);
+        }
+        wait_for_result(&mut state);
+        drop(server);
+
+        assert_eq!(state.step, Step::Method, "a denial returns to the method step");
+        assert!(state.error.is_some(), "an inline error is surfaced");
+        assert!(!path.exists(), "a denied authorization stores nothing");
+
+        // The error renders as the inline `✗ <message>` block inside the panel.
+        let theme = ThemeColors::from_name("dark");
+        let body = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>();
+        assert!(
+            body.contains(glyphs::MARK_ERROR),
+            "an inline ✗ error block is rendered:\n{body}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn oauth_credential_json_is_structured_and_matches_runtime_auth_shape() {
+        // The serialized credential is the structured `oauth` shape runtime_auth reads back.
+        let token = mcp::StoredToken {
+            access_token: "acc".to_owned(),
+            refresh_token: Some("ref".to_owned()),
+            token_type: "Bearer".to_owned(),
+            expires_at: Some(1234),
+            token_endpoint: "http://127.0.0.1:3271/token".to_owned(),
+            client_id: "fixture-client".to_owned(),
+        };
+        let json = oauth_credential_json(&token);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["type"], "oauth");
+        assert_eq!(value["access_token"], "acc");
+        assert_eq!(value["refresh_token"], "ref");
+        assert_eq!(value["expires_at"], 1234);
+        assert_eq!(value["token_endpoint"], "http://127.0.0.1:3271/token");
+        assert_eq!(value["client_id"], "fixture-client");
     }
 }

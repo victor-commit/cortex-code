@@ -5250,8 +5250,8 @@ impl App {
         }
     }
 
-    /// Handle `Esc` in the `/connect` flow: back out one step, or close the flow from the provider /
-    /// connected steps.
+    /// Handle `Esc` in the `/connect` flow: back out one step, cancel a running OAuth handshake, or
+    /// close the flow from the provider / connected steps.
     fn connect_back_or_close(&mut self, step: crate::connect::Step) {
         use crate::connect::Step;
         match step {
@@ -5266,6 +5266,11 @@ impl App {
                     state.back_to_method();
                 }
             }
+            Step::OAuthWaiting => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.cancel_oauth();
+                }
+            }
         }
     }
 
@@ -5276,6 +5281,16 @@ impl App {
     fn confirm_connect_api_key(&mut self) {
         if let Some(state) = self.connect.as_mut() {
             let _ = state.confirm_api_key();
+        }
+    }
+
+    /// Drain the background OAuth handshake worker into the `/connect` flow each tick, so the
+    /// "waiting for authorization" screen advances to connected (structured `oauth` credential
+    /// stored 0600, provider re-resolved) or to an inline error, without a restart. A no-op when the
+    /// flow is closed or no OAuth handshake is running.
+    pub fn poll_connect_oauth(&mut self) {
+        if let Some(state) = self.connect.as_mut() {
+            state.poll_oauth();
         }
     }
 

@@ -179,10 +179,140 @@ const PROFILES: &[ProviderProfile] = &[
     },
 ];
 
+/// Built-in OAuth endpoint defaults for an OAuth-capable provider. These are the real
+/// authorization/token endpoints and public (non-secret) client id a provider advertises; the
+/// `/connect` OAuth flow starts from these and lets `CORTEX_OAUTH_*` env vars override every field
+/// (used to point the flow at a controlled loopback endpoint for mechanics testing).
+#[derive(Clone, Copy, Debug)]
+struct OAuthDefaults {
+    provider_id: &'static str,
+    authorize_endpoint: &'static str,
+    token_endpoint: &'static str,
+    /// A public (non-secret) OAuth client id. Never a secret; the redirect_uri is loopback-only.
+    client_id: &'static str,
+    scopes: &'static [&'static str],
+}
+
+/// The built-in OAuth defaults, one per OAuth-capable provider profile. Only providers with
+/// `supports_oauth = true` appear here; the flow refuses OAuth for a provider with neither a
+/// built-in default nor a `CORTEX_OAUTH_*` override.
+const OAUTH_DEFAULTS: &[OAuthDefaults] = &[OAuthDefaults {
+    provider_id: "copilot",
+    authorize_endpoint: "https://github.com/login/oauth/authorize",
+    token_endpoint: "https://github.com/login/oauth/access_token",
+    client_id: "Iv1.b507a08c87ecfe98",
+    scopes: &["read:user"],
+}];
+
 pub(crate) fn profile(provider_id: &str) -> Option<&'static ProviderProfile> {
     PROFILES
         .iter()
         .find(|profile| profile.provider_id == provider_id)
+}
+
+/// A resolved OAuth endpoint set for a provider's `/connect` OAuth method: the authorization and
+/// token endpoints, the client id, the requested scopes, and an optional pinned loopback callback
+/// port. Built from the provider's built-in defaults, with every field overridable via
+/// `CORTEX_OAUTH_*` environment variables so a controlled loopback OAuth endpoint can be pointed at
+/// for mechanics testing. Carries no secret (the redirect is loopback-only and no client secret is
+/// required for the loopback authorization-code flow).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthEndpoints {
+    /// The authorization endpoint the authorization URL is built against.
+    pub authorize_endpoint: String,
+    /// The token endpoint the authorization code is exchanged at.
+    pub token_endpoint: String,
+    /// The OAuth client id presented to the authorization server (public, non-secret).
+    pub client_id: String,
+    /// The requested scopes (may be empty).
+    pub scopes: Vec<String>,
+    /// An explicit loopback callback port (must be in 3200-3299); `None` scans the reserved range.
+    pub callback_port: Option<u16>,
+}
+
+/// Resolve the OAuth endpoint set for `provider_id`'s `/connect` OAuth method from the process
+/// environment, or `None` when the provider does not advertise OAuth or no endpoints resolve.
+///
+/// Every field is overridable via `CORTEX_OAUTH_<PROVIDER>_<FIELD>` (e.g.
+/// `CORTEX_OAUTH_COPILOT_AUTHORIZE_ENDPOINT`), falling back to the un-namespaced
+/// `CORTEX_OAUTH_<FIELD>`, then the built-in default. This is the seam a controlled loopback OAuth
+/// endpoint uses to exercise the real engine without a third-party provider.
+#[must_use]
+pub fn oauth_endpoints(provider_id: &str) -> Option<OAuthEndpoints> {
+    oauth_endpoints_with(provider_id, |name| std::env::var(name).ok())
+}
+
+/// Resolve OAuth endpoints for `provider_id` using an explicit `env` lookup (deterministic and
+/// unit-testable). Provider-specific overrides win over generic overrides, which win over built-in
+/// defaults.
+fn oauth_endpoints_with(
+    provider_id: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<OAuthEndpoints> {
+    let profile = profile(provider_id)?;
+    if !profile.supports_oauth {
+        return None;
+    }
+    let defaults = OAUTH_DEFAULTS
+        .iter()
+        .find(|entry| entry.provider_id == provider_id);
+
+    let provider_key = env_provider_key(provider_id);
+    let lookup = |suffix: &str| {
+        oauth_non_empty(env(&format!("CORTEX_OAUTH_{provider_key}_{suffix}")).as_deref())
+            .or_else(|| oauth_non_empty(env(&format!("CORTEX_OAUTH_{suffix}")).as_deref()))
+    };
+
+    let authorize_endpoint = lookup("AUTHORIZE_ENDPOINT")
+        .or_else(|| defaults.map(|entry| entry.authorize_endpoint.to_owned()))?;
+    let token_endpoint = lookup("TOKEN_ENDPOINT")
+        .or_else(|| defaults.map(|entry| entry.token_endpoint.to_owned()))?;
+    let client_id =
+        lookup("CLIENT_ID").or_else(|| defaults.map(|entry| entry.client_id.to_owned()))?;
+    let scopes = lookup("SCOPES").map(|raw| split_oauth_scopes(&raw)).or_else(|| {
+        defaults.map(|entry| entry.scopes.iter().map(|scope| (*scope).to_owned()).collect())
+    });
+    let callback_port = lookup("CALLBACK_PORT").and_then(|raw| raw.parse::<u16>().ok());
+
+    Some(OAuthEndpoints {
+        authorize_endpoint,
+        token_endpoint,
+        client_id,
+        scopes: scopes.unwrap_or_default(),
+        callback_port,
+    })
+}
+
+/// Uppercase a provider id into its `CORTEX_OAUTH_<KEY>_*` environment-variable segment,
+/// mapping any non-alphanumeric character to `_` (so `openai-compatible` -> `OPENAI_COMPATIBLE`).
+fn env_provider_key(provider_id: &str) -> String {
+    provider_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Split a comma/space-separated scopes string into non-empty scope tokens.
+fn split_oauth_scopes(raw: &str) -> Vec<String> {
+    raw.split([',', ' '])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Trim a candidate env value and keep it only if non-empty after trimming.
+fn oauth_non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 /// Find the built-in profile whose `models_dev_id` matches `models_dev_id`, when one exists.
@@ -270,5 +400,77 @@ mod tests {
             "openrouter is API-key only (no OAuth method)"
         );
         assert_eq!(openrouter.api_key_env, Some("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn oauth_endpoints_use_builtin_defaults_when_unoverridden() {
+        // An OAuth-capable provider resolves its built-in authorization/token endpoints + client id
+        // when no env override is present.
+        let resolved = oauth_endpoints_with("copilot", |_| None).expect("copilot has OAuth");
+        assert_eq!(
+            resolved.authorize_endpoint,
+            "https://github.com/login/oauth/authorize"
+        );
+        assert_eq!(
+            resolved.token_endpoint,
+            "https://github.com/login/oauth/access_token"
+        );
+        assert!(!resolved.client_id.is_empty(), "a client id is present");
+        assert_eq!(resolved.callback_port, None, "port scans the range by default");
+    }
+
+    #[test]
+    fn oauth_endpoints_reject_providers_without_oauth() {
+        // An api-key-only provider has no OAuth method, so nothing resolves.
+        assert!(
+            oauth_endpoints_with("openrouter", |_| Some("x".to_owned())).is_none(),
+            "openrouter is api-key only"
+        );
+    }
+
+    #[test]
+    fn oauth_endpoints_are_env_overridable_to_a_loopback_endpoint() {
+        // A controlled loopback OAuth endpoint overrides every field via CORTEX_OAUTH_<PROVIDER>_*.
+        let env = |name: &str| match name {
+            "CORTEX_OAUTH_COPILOT_AUTHORIZE_ENDPOINT" => {
+                Some("http://127.0.0.1:3271/authorize".to_owned())
+            }
+            "CORTEX_OAUTH_COPILOT_TOKEN_ENDPOINT" => Some("http://127.0.0.1:3271/token".to_owned()),
+            "CORTEX_OAUTH_COPILOT_CLIENT_ID" => Some("fixture-client".to_owned()),
+            "CORTEX_OAUTH_COPILOT_SCOPES" => Some("read:user, models".to_owned()),
+            "CORTEX_OAUTH_COPILOT_CALLBACK_PORT" => Some("3242".to_owned()),
+            _ => None,
+        };
+        let resolved = oauth_endpoints_with("copilot", env).expect("override resolves");
+        assert_eq!(resolved.authorize_endpoint, "http://127.0.0.1:3271/authorize");
+        assert_eq!(resolved.token_endpoint, "http://127.0.0.1:3271/token");
+        assert_eq!(resolved.client_id, "fixture-client");
+        assert_eq!(
+            resolved.scopes,
+            vec!["read:user".to_owned(), "models".to_owned()]
+        );
+        assert_eq!(resolved.callback_port, Some(3242));
+    }
+
+    #[test]
+    fn oauth_endpoints_accept_the_generic_override_fallback() {
+        // The un-namespaced CORTEX_OAUTH_<FIELD> override applies when no provider-specific key set.
+        let env = |name: &str| match name {
+            "CORTEX_OAUTH_TOKEN_ENDPOINT" => Some("http://127.0.0.1:3272/token".to_owned()),
+            _ => None,
+        };
+        let resolved = oauth_endpoints_with("copilot", env).expect("resolves");
+        assert_eq!(resolved.token_endpoint, "http://127.0.0.1:3272/token");
+        // The un-overridden fields still fall back to the built-in defaults.
+        assert_eq!(
+            resolved.authorize_endpoint,
+            "https://github.com/login/oauth/authorize"
+        );
+    }
+
+    #[test]
+    fn env_provider_key_uppercases_and_sanitizes() {
+        assert_eq!(env_provider_key("copilot"), "COPILOT");
+        assert_eq!(env_provider_key("openai-compatible"), "OPENAI_COMPATIBLE");
     }
 }

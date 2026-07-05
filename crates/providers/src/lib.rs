@@ -42,7 +42,9 @@ pub use openrouter::{
     resolve_openai_compatible_with_options, resolve_openrouter, resolve_openrouter_with,
     resolve_openrouter_with_options,
 };
-pub use provider_profiles::{ConnectableProvider, connectable_providers};
+pub use provider_profiles::{
+    ConnectableProvider, OAuthEndpoints, connectable_providers, oauth_endpoints,
+};
 pub use refresh::{
     ENV_MODELS_DEV_URL, MODELS_CACHE_FILE, MODELS_DEV_URL, load_cached_catalogue,
     models_cache_path, models_dev_url, offline_catalogue, refresh_openrouter_catalogue,

@@ -446,6 +446,11 @@ fn event_loop<B: Backend + Write>(
         // Apply any streamed turn events (text/reasoning growth, usage, completion) to the state.
         app.poll_turn();
 
+        // Advance the mid-session `/connect` OAuth handshake: drain the background worker so the
+        // "waiting for authorization" screen transitions to connected (or an inline error) once the
+        // loopback callback is exchanged, without a restart.
+        app.poll_connect_oauth();
+
         // Tail every backgrounded `bash` card's log into its body and complete it once the job's
         // pid has exited, so a running background card stays live-updating instead of the static
         // "job started" acknowledgement (VAL-TOOL-023).
