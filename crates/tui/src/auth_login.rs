@@ -585,10 +585,13 @@ fn hints_line(width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let key = Style::default().fg(theme.border).bg(theme.background);
     let label = Style::default().fg(theme.text_muted).bg(theme.background);
-    let hints = [
+    // Route the arrow key caps through the safe-glyph constants (the enter/tab caps stay as their
+    // word labels), keeping the safe-glyph guarantee centralized in `glyphs`.
+    let nav = format!("{}{}", glyphs::KEY_UP, glyphs::KEY_DOWN);
+    let hints: [(&str, &str); 4] = [
         ("enter", "sign in"),
         ("tab", "next field"),
-        (concat!("↑", "↓"), "select"),
+        (nav.as_str(), "select"),
         ("esc", "cancel"),
     ];
     let mut segments: Vec<(String, Style)> = Vec::new();

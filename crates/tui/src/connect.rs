@@ -147,6 +147,22 @@ struct OAuthProgress {
     redirect_uri: Option<String>,
     /// The 0600 auth store the worker persists the credential to.
     auth_path: PathBuf,
+    /// Signals the background worker to shut its loopback callback listener down promptly (on
+    /// cancel or flow close), so the reserved 3200-3299 port is released at once instead of being
+    /// held until [`OAUTH_TIMEOUT`]. Dropping the sender is itself the signal.
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl OAuthProgress {
+    /// Signal the background OAuth worker to release its loopback callback listener NOW, freeing the
+    /// reserved 3200-3299 port immediately rather than after [`OAUTH_TIMEOUT`]. Dropping the sender
+    /// delivers the same signal (so a dropped flow winds the listener down too); taking it here
+    /// makes cancellation explicit and idempotent.
+    fn signal_shutdown(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
 }
 
 /// Run the real [`mcp::oauth`] authorization-code flow on a dedicated background thread with its own
@@ -168,6 +184,7 @@ fn spawn_oauth(
     timeout: Duration,
     auth_path: PathBuf,
     provider_id: String,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Receiver<OAuthMessage> {
     let (tx, rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
@@ -202,8 +219,18 @@ fn spawn_oauth(
             // The flow was cancelled before the listener came up; nothing to wait for.
             return;
         }
-        match runtime.block_on(request.complete(timeout)) {
-            Ok(token) => {
+        // Wait for the callback (validating CSRF) OR a prompt shutdown signal from the UI. A
+        // cancelled/closed flow drops the sender, resolving `shutdown_rx`, so the `complete`
+        // future — and with it the loopback listener — is dropped at once, releasing the reserved
+        // 3200-3299 port rather than holding it until `timeout`.
+        let outcome = runtime.block_on(async move {
+            tokio::select! {
+                result = request.complete(timeout) => Some(result),
+                _ = shutdown_rx => None,
+            }
+        });
+        match outcome {
+            Some(Ok(token)) => {
                 // Persist a STRUCTURED oauth credential (type oauth, access/refresh tokens, expiry,
                 // token endpoint, client id) so runtime_auth.rs can unwrap/refresh it. The token is
                 // written straight to the 0600 store and never echoed.
@@ -220,10 +247,14 @@ fn spawn_oauth(
                     }
                 }
             }
-            Err(err) => {
+            Some(Err(err)) => {
                 // A mismatched/absent CSRF state, a denial, or a timeout — the engine stored
                 // nothing; surface a secret-free inline error.
                 let _ = tx.send(OAuthMessage::Failed(err.to_string()));
+            }
+            None => {
+                // The flow was cancelled or closed: the listener has been dropped and the reserved
+                // callback port released. Nothing was exchanged or stored.
             }
         }
     });
@@ -304,6 +335,10 @@ pub struct ConnectState {
     error: Option<String>,
     /// A faint inline notice.
     notice: Option<String>,
+    /// Whether the most recent confirmed disconnect actually removed a stored credential. `false`
+    /// when the confirmed provider had no entry left to remove (its store was modified elsewhere),
+    /// so the disconnected note can match reality instead of claiming a removal that did not happen.
+    disconnect_removed: bool,
     /// The live OAuth handshake state while the OAuth flow is running (its background worker channel
     /// plus the authorization URL / loopback redirect once the listener is up).
     oauth: Option<OAuthProgress>,
@@ -334,6 +369,7 @@ impl ConnectState {
             key_input: String::new(),
             error: None,
             notice: None,
+            disconnect_removed: false,
             oauth: None,
         }
     }
@@ -433,18 +469,21 @@ impl ConnectState {
             client_id: endpoints.client_id,
             scopes: endpoints.scopes,
         };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let rx = spawn_oauth(
             config,
             endpoints.callback_port,
             OAUTH_TIMEOUT,
             path.clone(),
             provider_id,
+            shutdown_rx,
         );
         self.oauth = Some(OAuthProgress {
             rx,
             authorize_url: None,
             redirect_uri: None,
             auth_path: path,
+            shutdown: Some(shutdown_tx),
         });
         self.error = None;
         self.notice = None;
@@ -495,9 +534,14 @@ impl ConnectState {
         }
     }
 
-    /// Cancel a running OAuth flow (dropping the worker channel) and return to the method step. The
-    /// background listener winds down on its own timeout; nothing is stored.
+    /// Cancel a running OAuth flow and return to the method step: signal the background worker to
+    /// release its loopback callback listener promptly (freeing the reserved 3200-3299 port at once
+    /// rather than after [`OAUTH_TIMEOUT`]), then drop the handshake. Nothing is stored, and the
+    /// CSRF safety is unchanged; a cancelled flow simply exchanges nothing.
     pub fn cancel_oauth(&mut self) {
+        if let Some(progress) = self.oauth.as_mut() {
+            progress.signal_shutdown();
+        }
         self.oauth = None;
         self.error = None;
         self.notice = None;
@@ -552,6 +596,7 @@ impl ConnectState {
             Ok(removed) => {
                 self.error = None;
                 self.notice = None;
+                self.disconnect_removed = removed;
                 self.refresh_connected_from(path);
                 self.step = Step::Disconnected;
                 removed
@@ -796,7 +841,7 @@ fn panel_body_lines(
             lines.push(content_row(
                 width,
                 base,
-                &format!("Disconnect {display}?"),
+                &format!("disconnect {display}?"),
                 text,
             ));
             lines.push(row(width, base, &[]));
@@ -817,24 +862,50 @@ fn panel_body_lines(
             let display = state.selected_provider().display;
             let muted = Style::default().fg(theme.text_muted).bg(theme.background);
             let bright = Style::default().fg(theme.text_bright).bg(theme.background);
-            lines.push(row(
-                width,
-                base,
-                &[(
-                    CONTENT_COL,
-                    vec![
-                        (format!("{} disconnected ", glyphs::DOT_HOLLOW), muted),
-                        (display.to_owned(), bright),
-                    ],
-                )],
-            ));
-            lines.push(row(width, base, &[]));
-            lines.push(content_row(
-                width,
-                base,
-                "its models now require reconnecting to use",
-                faint,
-            ));
+            if state.disconnect_removed {
+                lines.push(row(
+                    width,
+                    base,
+                    &[(
+                        CONTENT_COL,
+                        vec![
+                            (format!("{} disconnected ", glyphs::DOT_HOLLOW), muted),
+                            (display.to_owned(), bright),
+                        ],
+                    )],
+                ));
+                lines.push(row(width, base, &[]));
+                lines.push(content_row(
+                    width,
+                    base,
+                    "its models now require reconnecting to use",
+                    faint,
+                ));
+            } else {
+                // A rare Ok(false): the confirmed provider had no stored entry left to remove (its
+                // store was modified elsewhere), so the note reflects that nothing was removed.
+                lines.push(row(
+                    width,
+                    base,
+                    &[(
+                        CONTENT_COL,
+                        vec![
+                            (
+                                format!("{} no stored credential for ", glyphs::DOT_HOLLOW),
+                                muted,
+                            ),
+                            (display.to_owned(), bright),
+                        ],
+                    )],
+                ));
+                lines.push(row(width, base, &[]));
+                lines.push(content_row(
+                    width,
+                    base,
+                    "nothing was removed; it may have changed elsewhere",
+                    faint,
+                ));
+            }
         }
     }
 
@@ -958,7 +1029,9 @@ fn list_row(
 }
 
 /// The 0600 stored-credential note shown on the API-key step: green `✓` + a secret-free reminder
-/// that the key is stored owner-only and never displayed.
+/// that the key WILL be stored owner-only and is never displayed. The copy is pre-storage because
+/// this note renders WHILE the user is still typing (nothing is stored until the entry is
+/// confirmed), so it must not read as if the key is already stored.
 fn stored_note_line(width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let okg = Style::default().fg(theme.success).bg(theme.background);
@@ -970,9 +1043,9 @@ fn stored_note_line(width: usize, theme: &ThemeColors) -> Line<'static> {
             CONTENT_COL,
             vec![
                 (format!("{} ", glyphs::MARK_DONE), okg),
-                ("stored to auth.json ".to_owned(), dim),
+                ("will be stored to auth.json ".to_owned(), dim),
                 ("(0600)".to_owned(), okg),
-                (" — the key is never shown".to_owned(), dim),
+                ("; never shown".to_owned(), dim),
             ],
         )],
     )
@@ -983,26 +1056,37 @@ fn hints_line(step: Step, width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let key = Style::default().fg(theme.border).bg(theme.background);
     let label = Style::default().fg(theme.text_muted).bg(theme.background);
-    let hints: &[(&str, &str)] = match step {
-        Step::Provider => &[
-            (concat!("↑", "↓"), "select"),
-            ("↵", "choose"),
-            ("d", "disconnect"),
-            ("esc", "close"),
+    // Route the hint key caps through the safe-glyph constants (rather than re-inlining the
+    // arrow/enter literals here) so the safe-glyph guarantee stays centralized in `glyphs`.
+    let nav = format!("{}{}", glyphs::KEY_UP, glyphs::KEY_DOWN);
+    let enter = glyphs::KEY_ENTER;
+    let hints: Vec<(String, &str)> = match step {
+        Step::Provider => vec![
+            (nav, "select"),
+            (enter.to_owned(), "choose"),
+            ("d".to_owned(), "disconnect"),
+            ("esc".to_owned(), "close"),
         ],
-        Step::Method => &[(concat!("↑", "↓"), "select"), ("↵", "choose"), ("esc", "back")],
-        Step::ApiKey => &[("↵", "connect"), ("esc", "back")],
-        Step::OAuthWaiting => &[("esc", "cancel")],
-        Step::Connected => &[("↵", "done"), ("esc", "close")],
-        Step::ConfirmDisconnect => &[("↵", "disconnect"), ("esc", "cancel")],
-        Step::Disconnected => &[("↵", "done"), ("esc", "close")],
+        Step::Method => vec![
+            (nav, "select"),
+            (enter.to_owned(), "choose"),
+            ("esc".to_owned(), "back"),
+        ],
+        Step::ApiKey => vec![(enter.to_owned(), "connect"), ("esc".to_owned(), "back")],
+        Step::OAuthWaiting => vec![("esc".to_owned(), "cancel")],
+        Step::Connected => vec![(enter.to_owned(), "done"), ("esc".to_owned(), "close")],
+        Step::ConfirmDisconnect => vec![
+            (enter.to_owned(), "disconnect"),
+            ("esc".to_owned(), "cancel"),
+        ],
+        Step::Disconnected => vec![(enter.to_owned(), "done"), ("esc".to_owned(), "close")],
     };
     let mut segments: Vec<(String, Style)> = Vec::new();
     for (i, (k, l)) in hints.iter().enumerate() {
         if i > 0 {
             segments.push(("   ".to_owned(), label));
         }
-        segments.push(((*k).to_owned(), key));
+        segments.push((k.clone(), key));
         segments.push((" ".to_owned(), label));
         segments.push(((*l).to_owned(), label));
     }
@@ -1172,6 +1256,29 @@ mod tests {
         assert!(state.error.is_some(), "an inline error is set");
         assert_eq!(state.step, Step::ApiKey, "flow stays on the key step");
         assert!(!path.exists(), "no auth file written for an empty key");
+    }
+
+    #[test]
+    fn connect_api_key_reassurance_reads_as_pre_storage() {
+        // The green reassurance on the API-key step renders WHILE the user is still typing (before
+        // anything is stored), so it must read as pre-storage ("will be stored … never shown"), not
+        // as if the key is already stored.
+        let mut app = app_with_connect();
+        press(&mut app, KeyCode::Enter); // provider -> method
+        press(&mut app, KeyCode::Enter); // method (API key) -> key entry
+        let text = buffer_text(&render(&app));
+        assert!(
+            text.contains("will be stored to auth.json"),
+            "reassurance uses pre-storage phrasing:\n{text}"
+        );
+        assert!(
+            text.contains("(0600)") && text.contains("never shown"),
+            "reassurance keeps the 0600 + never-shown guarantee:\n{text}"
+        );
+        assert!(
+            !text.contains("— the key is never shown"),
+            "the old already-stored phrasing is gone:\n{text}"
+        );
     }
 
     #[test]
@@ -1366,6 +1473,40 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_note_matches_reality_when_nothing_was_removed() {
+        // The disconnected note branches on the actual removal result: if the confirmed provider's
+        // entry no longer exists (its store was modified elsewhere), remove_stored_credential returns
+        // Ok(false) and the note reflects that nothing was removed rather than claiming a disconnect.
+        let path = unique_auth_path("disconnect-vanished");
+        store_credential(&path, "openrouter", "sk-or-vanish").expect("store openrouter");
+        let mut state = ConnectState::new();
+        state.refresh_connected_from(&path);
+        state.request_disconnect();
+        assert_eq!(state.step, Step::ConfirmDisconnect);
+
+        // The store is modified out-of-band between confirm and remove: the entry vanishes.
+        std::fs::remove_file(&path).expect("remove auth file out-of-band");
+
+        assert!(!state.disconnect_to(&path), "no entry remained to remove");
+        assert_eq!(state.step, Step::Disconnected, "still lands on a disconnected-note screen");
+
+        let theme = ThemeColors::from_name("dark");
+        let note: String = panel_body_lines(&state, 64, 22, &theme)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(
+            note.contains("no stored credential for OpenRouter"),
+            "the note reflects that nothing was removed:\n{note}"
+        );
+        assert!(
+            !note.contains("disconnected OpenRouter"),
+            "it does not claim a disconnect that did not happen:\n{note}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn disconnect_confirm_and_done_screens_render_safely_without_secrets() {
         // VAL-CONN-009/010: the confirm + disconnected screens render in the mono-orange auth
         // language with safe glyphs and never show a secret.
@@ -1380,7 +1521,7 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
             .collect();
         assert!(
-            confirm.contains("Disconnect OpenRouter"),
+            confirm.contains("disconnect OpenRouter"),
             "the confirm prompt names the provider:\n{confirm}"
         );
         assert!(
@@ -1590,6 +1731,80 @@ mod tests {
         // Clean up: unblock the (unused) token server and drop the flow.
         state.cancel_oauth();
         drop(server);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn oauth_cancel_shuts_the_background_worker_down_promptly() {
+        // Resource hygiene: signalling shutdown makes the background OAuth worker drop its loopback
+        // callback listener and EXIT at once (releasing its reserved 3200-3299 port), instead of
+        // blocking on the callback until the 180s OAUTH_TIMEOUT, which is what lets rapid
+        // cancel+restart transiently exhaust the pool. Observed deterministically via the worker's
+        // own channel: when the worker returns it drops its sender, so the receiver disconnects.
+        // (Not via port rebinding, which races against the shared 3200-3299 pool.)
+        use std::sync::mpsc::TryRecvError;
+        let config = mcp::oauth::OAuthConfig {
+            authorize_endpoint: "http://127.0.0.1:3200/authorize".to_owned(),
+            token_endpoint: "http://127.0.0.1:3200/token".to_owned(),
+            client_id: "fixture-client".to_owned(),
+            scopes: vec!["read:user".to_owned()],
+        };
+        let path = unique_auth_path("oauth-cancel-shutdown");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        // A full 180s worker timeout so the bounded poll below (not the timeout) is what proves
+        // promptness: an ignored signal would keep the worker blocked ~180s and the receiver
+        // connected for the whole window.
+        let rx = spawn_oauth(
+            config,
+            None,
+            Duration::from_secs(180),
+            path.clone(),
+            "copilot".to_owned(),
+            shutdown_rx,
+        );
+
+        // The worker binds the loopback listener (scanning the free reserved range) and reports the
+        // authorization URL — the "waiting for authorization" state.
+        let mut listener_up = false;
+        for _ in 0..250 {
+            match rx.try_recv() {
+                Ok(OAuthMessage::AwaitingAuthorization { redirect_uri, .. }) => {
+                    assert!(
+                        redirect_uri.starts_with("http://127.0.0.1:"),
+                        "loopback redirect uri: {redirect_uri}"
+                    );
+                    listener_up = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+                Err(TryRecvError::Disconnected) => {
+                    panic!("worker exited before the loopback listener came up")
+                }
+            }
+        }
+        assert!(listener_up, "the loopback callback listener came up");
+
+        // Signal shutdown exactly as `cancel_oauth` / flow-close does (dropping the sender).
+        drop(shutdown_tx);
+
+        // The worker drops the listener and returns promptly, so its sender drops and the receiver
+        // disconnects, well under OAUTH_TIMEOUT.
+        let mut shut_down = false;
+        for _ in 0..250 {
+            match rx.try_recv() {
+                Err(TryRecvError::Disconnected) => {
+                    shut_down = true;
+                    break;
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(
+            shut_down,
+            "cancel shuts the OAuth worker (and its loopback listener) down promptly, not after 180s"
+        );
+        assert!(!path.exists(), "a cancelled flow exchanges and stores nothing");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
