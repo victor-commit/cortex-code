@@ -31,7 +31,25 @@ One binary exposes several surfaces over the same session engine:
 ## Features
 
 - **Providers & models** — OpenRouter by default, a multi-protocol provider
-  layer, an embedded model catalogue, and `cortex models --refresh` to update it.
+  layer, and a dynamic multi-provider model catalogue in the `/models` picker.
+  The catalogue is curated from every supported models.dev provider (endpoint
+  overridable via `CORTEX_MODELS_DEV_URL`), cached on disk next to `auth.json`,
+  grouped by provider with the latest models first in each group, and annotated
+  with honest metadata (context length, price, capability descriptors);
+  providers you hold a credential for are marked as connected. Offline
+  (`CORTEX_NO_NET` or the outbound guards) it resolves from the cache, then an
+  embedded snapshot, with no network attempt. `cortex models --refresh` updates
+  it.
+- **Mid-session connect** — the `/connect` slash command opens a
+  provider-connect flow in the mono-orange auth style: pick a provider, choose
+  an auth method (API key always, OAuth only where the provider supports it),
+  and enter a masked API key (never echoed) that is stored `0600` in
+  `auth.json`. The provider is usable immediately and shows as connected in
+  `/models` with no restart. OAuth-capable providers use a real loopback OAuth
+  flow (callback on the reserved 3200-3299 port range, CSRF-protected), and a
+  connected provider can be disconnected from the same flow (confirm before
+  remove), which removes the stored credential. Secrets live only in the `0600`
+  `auth.json` and are never printed, logged, or echoed.
 - **Tools** — read, write, edit, apply_patch, glob, grep (ripgrep), bash (with
   background jobs), todo, webfetch, websearch, the `task` subagent tool, an `lsp`
   tool, `skill`, and `question`, with large-output truncation.
@@ -139,6 +157,10 @@ or store it in the local `0600` auth store:
 ./target/debug/cortex auth login openrouter --api-key "$OPENROUTER_API_KEY"
 ./target/debug/cortex auth list
 ```
+
+You can also connect providers from inside the TUI with the `/connect` slash
+command, which stores the key in the same `0600` `auth.json` and marks the
+provider as connected in `/models` without a restart.
 
 `.env.local` is gitignored; never commit your key.
 
