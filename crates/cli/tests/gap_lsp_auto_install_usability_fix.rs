@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
-const TIMEOUT: Duration = Duration::from_secs(35);
+// The first `lsp status`/`diagnostics` invocation runs a cold language-server enumeration that can
+// take ~33-38s in slow sandboxes; this is a max-wait bound only, not a promptness assertion.
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn temp_dir(tag: &str) -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -443,7 +443,7 @@ fn serve_lsp_status_stays_prompt_under_tight_sequential_loop() {
     let mut server = ServerProcess::start_with_db_path(port, &db_path);
 
     // Warm the cache once with a tolerant read timeout (the first probe is heavy).
-    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(60))
         .expect("warm /lsp request");
     assert_eq!(
         warm.status, 200,
@@ -490,7 +490,7 @@ fn serve_lsp_status_concurrent_cold_start_is_single_flight() {
     let mut handles = Vec::new();
     for _ in 0..burst {
         handles.push(thread::spawn(move || {
-            request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
+            request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(60))
                 .map(|response| (response.status, response.body))
         }));
     }
@@ -539,7 +539,7 @@ fn serve_lsp_status_revalidation_recovers_across_stale_windows() {
     let mut server = ServerProcess::start_with_db_path(port, &db_path);
 
     // Warm the cache once with a tolerant read timeout (the first probe is heavy).
-    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(30))
+    let warm = request_http_with_timeout(port, "GET", "/lsp", None, Duration::from_secs(60))
         .expect("warm /lsp request");
     assert_eq!(
         warm.status, 200,
