@@ -1073,6 +1073,10 @@ pub struct App {
     /// picker + masked-key screen is showing. While `Some` it takes over the whole frame and is
     /// modal (Esc cancels back to a normal launch). See [`crate::auth_login`].
     auth_login: Option<crate::auth_login::AuthLoginState>,
+    /// The mid-session `/connect` provider-auth flow state, present while the `/connect` screen is
+    /// showing. While `Some` it takes over the whole frame and is modal (Esc backs out a step / off
+    /// the flow). See [`crate::connect`].
+    connect: Option<crate::connect::ConnectState>,
     /// The `/status` view's data, snapshotted when the view opens (a git subprocess + store reads
     /// are too costly to repeat every redraw). Rebuilt on each `/status` open.
     status_snapshot: Option<crate::view::StatusData>,
@@ -1324,6 +1328,7 @@ impl App {
             theme_gallery_open: false,
             onboarding: false,
             auth_login: None,
+            connect: None,
             status_snapshot: None,
             timeline_snapshot: Vec::new(),
             queue_snapshot: Vec::new(),
@@ -4052,6 +4057,7 @@ impl App {
             "rename" => self.open_rename_dialog(),
             "models" => self.open_models_dialog(),
             "model" => self.open_models_dialog(),
+            "connect" => self.open_connect(),
             "agents" => self.open_agents_dialog(),
             "skills" => self.open_skills_dialog(),
             "variant" => self.open_variants_dialog(),
@@ -5171,6 +5177,105 @@ impl App {
             KeyCode::Backspace => state.backspace(),
             KeyCode::Char(c) if !ctrl => state.type_char(c),
             _ => {}
+        }
+    }
+
+    /// Whether the mid-session `/connect` provider-auth flow is showing.
+    #[must_use]
+    pub fn connect_active(&self) -> bool {
+        self.connect.is_some()
+    }
+
+    /// The mid-session `/connect` flow state, when the screen is showing (for rendering).
+    #[must_use]
+    pub fn connect_state(&self) -> Option<&crate::connect::ConnectState> {
+        self.connect.as_ref()
+    }
+
+    /// Open the mid-session `/connect` provider-auth flow: a provider picker over the generalized
+    /// provider catalogue (all profiles minus the excluded Zen provider), then a method step and a
+    /// masked API-key entry. Reachable any time from the `/connect` slash command (not boot-only).
+    pub fn open_connect(&mut self) {
+        self.connect = Some(crate::connect::ConnectState::new());
+    }
+
+    /// Key handling for the `/connect` flow. It is modal: `Ctrl+C` quits; `Esc` backs out one step
+    /// (and closes the flow from the provider step); arrows move the active list; `Enter` advances
+    /// the step (and, on the key step, stores the masked key via [`crate::connect::ConnectState`]);
+    /// printable keys / Backspace edit the masked key on the key step. The raw key never leaves the
+    /// connect state, and a store failure/empty key renders as the flow's inline `✗ error` block.
+    fn on_connect_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        let Some(step) = self.connect.as_ref().map(crate::connect::ConnectState::step) else {
+            return;
+        };
+        use crate::connect::Step;
+        match (step, key.code) {
+            (_, KeyCode::Esc) => self.connect_back_or_close(step),
+            (Step::Provider | Step::Method, KeyCode::Up) => self.connect_move(-1),
+            (Step::Provider | Step::Method, KeyCode::Down) => self.connect_move(1),
+            (Step::Provider, KeyCode::Enter) => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.enter_provider();
+                }
+            }
+            (Step::Method, KeyCode::Enter) => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.enter_method();
+                }
+            }
+            (Step::ApiKey, KeyCode::Enter) => self.confirm_connect_api_key(),
+            (Step::ApiKey, KeyCode::Backspace) => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.backspace();
+                }
+            }
+            (Step::ApiKey, KeyCode::Char(c)) if !ctrl => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.type_char(c);
+                }
+            }
+            (Step::Connected, KeyCode::Enter) => self.connect = None,
+            _ => {}
+        }
+    }
+
+    /// Move the highlighted row in the active `/connect` step by `delta`.
+    fn connect_move(&mut self, delta: i32) {
+        if let Some(state) = self.connect.as_mut() {
+            state.move_selection(delta);
+        }
+    }
+
+    /// Handle `Esc` in the `/connect` flow: back out one step, or close the flow from the provider /
+    /// connected steps.
+    fn connect_back_or_close(&mut self, step: crate::connect::Step) {
+        use crate::connect::Step;
+        match step {
+            Step::Provider | Step::Connected => self.connect = None,
+            Step::Method => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.back_to_provider();
+                }
+            }
+            Step::ApiKey => {
+                if let Some(state) = self.connect.as_mut() {
+                    state.back_to_method();
+                }
+            }
+        }
+    }
+
+    /// Confirm the `/connect` masked API-key entry: store it to the 0600 auth store and re-resolve.
+    /// On success the provider is usable immediately (it reads as connected in `/models` and a turn
+    /// resolves its credential without a restart — the picker and turns both read the store fresh, so
+    /// nothing cached needs invalidating). An empty/failed store renders the flow's inline error.
+    fn confirm_connect_api_key(&mut self) {
+        if let Some(state) = self.connect.as_mut() {
+            let _ = state.confirm_api_key();
         }
     }
 
@@ -8382,6 +8487,14 @@ impl App {
             return;
         }
 
+        // The mid-session `/connect` provider-auth flow takes over the frame while showing. It is
+        // modal: Esc backs out a step (and closes the flow from the provider step), Ctrl+C quits,
+        // and every other key drives the provider picker / method step / masked key field.
+        if self.connect_active() {
+            self.on_connect_key(key, ctrl);
+            return;
+        }
+
         // The first-run onboarding welcome screen takes over the frame while showing. It is a start
         // splash: Enter advances past it and Ctrl+C quits (both consumed here), while any other key
         // dismisses it and then falls through to act on the surface beneath, so the user's first
@@ -10500,6 +10613,18 @@ mod tests {
             variant: "default".to_owned(),
             session: "new".to_owned(),
         })
+    }
+
+    #[test]
+    fn connect_command_opens_the_flow_mid_session() {
+        // VAL-CONN-001: dispatching /connect opens the provider-connect flow mid-session (not
+        // boot-only), and Esc from the provider step closes it back to the conversation.
+        let mut a = app();
+        assert!(!a.connect_active(), "the flow is closed initially");
+        a.dispatch_builtin_command("connect", "Connect a provider (API key or OAuth)");
+        assert!(a.connect_active(), "/connect opens the connect flow");
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.connect_active(), "esc closes the flow");
     }
 
     #[test]

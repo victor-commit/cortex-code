@@ -38,6 +38,10 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Open the model picker",
     },
     SlashCommand {
+        name: "connect",
+        description: "Connect a provider (API key or OAuth)",
+    },
+    SlashCommand {
         name: "agents",
         description: "Open the agent picker",
     },
@@ -242,6 +246,25 @@ mod tests {
     fn unknown_query_yields_no_matches() {
         // VAL-TUI-048: an unrecognized command filters to nothing (graceful no-match).
         assert!(filter("zzznotreal").is_empty());
+    }
+
+    #[test]
+    fn connect_command_is_registered_with_a_description() {
+        // VAL-CONN-001: `/connect` appears in the slash palette with a description.
+        let connect = BUILTINS
+            .iter()
+            .find(|command| command.name == "connect")
+            .expect("/connect is registered");
+        assert!(
+            !connect.description.is_empty(),
+            "the /connect command has a description"
+        );
+        // It is discoverable by typing `/conn`.
+        let matches = filter("conn");
+        assert!(
+            matches.iter().any(|command| command.name == "connect"),
+            "typing `conn` surfaces /connect"
+        );
     }
 
     #[test]

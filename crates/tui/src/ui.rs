@@ -84,6 +84,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     }
 
+    // The mid-session `/connect` provider-auth flow takes over the whole frame with the shared
+    // chrome + centered connect panel; it fully replaces the conversation until the user finishes or
+    // cancels (Esc).
+    if app.connect_active() {
+        crate::connect::draw_connect(frame, app, area, &theme);
+        return;
+    }
+
     // The first-run onboarding welcome screen takes over the whole frame with the shared chrome +
     // centered welcome card; it fully replaces the conversation until the user presses Enter.
     if app.onboarding_active() {

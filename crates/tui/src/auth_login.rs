@@ -348,10 +348,13 @@ fn panel_body_lines(state: &AuthLoginState, width: usize, theme: &ThemeColors) -
                 &[(CONTENT_COL, vec![(label, Style::default().fg(theme.text).bg(theme.background))])],
             ));
             // Rows 9..11: the orange-bordered masked input box.
-            let box_w = width.saturating_sub(CONTENT_COL * 2).max(4);
-            lines.push(input_box_top(width, box_w, theme));
-            lines.push(input_box_mid(state, spec, width, box_w, theme));
-            lines.push(input_box_bottom(width, box_w, theme));
+            lines.extend(masked_input_box(
+                state.key_len(),
+                spec.key_prefix,
+                state.focus == Focus::KeyInput,
+                width,
+                theme,
+            ));
         }
         AuthKind::OAuth => {
             // Row 8: OAuth method line (NOT the api-key paste prompt).
@@ -439,14 +442,25 @@ fn provider_row(
     cells_to_line(&cells)
 }
 
-/// The masked-input box top border (rounded, ORANGE).
-fn input_box_top(width: usize, box_w: usize, theme: &ThemeColors) -> Line<'static> {
-    box_border(width, box_w, theme, glyphs::BOX_TOP_LEFT, glyphs::BOX_TOP_RIGHT)
-}
-
-/// The masked-input box bottom border (rounded, ORANGE).
-fn input_box_bottom(width: usize, box_w: usize, theme: &ThemeColors) -> Line<'static> {
-    box_border(width, box_w, theme, glyphs::BOX_BOTTOM_LEFT, glyphs::BOX_BOTTOM_RIGHT)
+/// The masked API-key input box (three rows: rounded ORANGE top border, the masked content row,
+/// and the rounded bottom border), sized to the panel interior and aligned at [`CONTENT_COL`].
+///
+/// This is the shared masked-entry widget reused by the mid-session `/connect` flow: `key_len`
+/// drives the count of `•` mask bullets (the raw key is NEVER passed in or rendered), `key_prefix`
+/// is a non-secret format hint, and `focused` shows the `▏` caret while the field has focus.
+pub(crate) fn masked_input_box(
+    key_len: usize,
+    key_prefix: &str,
+    focused: bool,
+    width: usize,
+    theme: &ThemeColors,
+) -> [Line<'static>; 3] {
+    let box_w = width.saturating_sub(CONTENT_COL * 2).max(4);
+    [
+        box_border(width, box_w, theme, glyphs::BOX_TOP_LEFT, glyphs::BOX_TOP_RIGHT),
+        masked_input_mid(key_len, key_prefix, focused, width, box_w, theme),
+        box_border(width, box_w, theme, glyphs::BOX_BOTTOM_LEFT, glyphs::BOX_BOTTOM_RIGHT),
+    ]
 }
 
 /// A horizontal box border row (`corner` + `─`×(box_w-2) + `corner`) in the ORANGE input tone.
@@ -475,10 +489,12 @@ fn box_border(
 
 /// The masked-input box content row: ORANGE side borders enclosing the non-secret key prefix hint,
 /// one `•` per typed character (the key body is NEVER shown), and a `▏` caret when the field is
-/// focused.
-fn input_box_mid(
-    state: &AuthLoginState,
-    spec: &ProviderSpec,
+/// focused. `key_len` is the count of typed characters (never the key), `key_prefix` a non-secret
+/// format hint, and `focused` whether the caret is shown.
+fn masked_input_mid(
+    key_len: usize,
+    key_prefix: &str,
+    focused: bool,
     width: usize,
     box_w: usize,
     theme: &ThemeColors,
@@ -495,21 +511,20 @@ fn input_box_mid(
 
     // Interior content: prefix hint + bullets + caret, clipped to keep both borders + padding.
     let content_start = CONTENT_COL + 2;
-    let prefix_len = spec.key_prefix.chars().count();
+    let prefix_len = key_prefix.chars().count();
     let interior = box_w.saturating_sub(4);
-    let caret_focused = state.focus == Focus::KeyInput;
-    let caret_reserve = usize::from(caret_focused);
+    let caret_reserve = usize::from(focused);
     let bullet_budget = interior.saturating_sub(prefix_len + caret_reserve);
-    let bullets = glyphs::BULLET.repeat(state.key_len().min(bullet_budget));
+    let bullets = glyphs::BULLET.repeat(key_len.min(bullet_budget));
 
     let mut segments: Vec<(String, Style)> = Vec::new();
     if prefix_len > 0 {
-        segments.push((spec.key_prefix.to_owned(), dim));
+        segments.push((key_prefix.to_owned(), dim));
     }
     if !bullets.is_empty() {
         segments.push((bullets, text));
     }
-    if caret_focused {
+    if focused {
         segments.push((glyphs::CURSOR.to_owned(), orange));
     }
     place_segments(&mut cells, content_start, &segments);
