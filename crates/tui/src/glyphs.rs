@@ -90,6 +90,9 @@ pub const MARK_ERROR: &str = "✗";
 pub const MARK_RUNNING: &str = "⚙";
 /// Faint inline separator.
 pub const SEPARATOR: &str = "·";
+/// Connected-provider marker (a filled dot) shown on `/models` rows whose provider has a stored
+/// credential, distinguishing connected providers from not-connected ones.
+pub const CONNECTED_MARKER: &str = DOT_FILLED;
 /// Dimension separator (`W×H`) for image attachment metadata (multiplication sign, DejaVu-safe).
 pub const MULTIPLY: &str = "×";
 /// Ellipsis.
@@ -194,6 +197,7 @@ mod tests {
             MARK_ERROR,
             MARK_RUNNING,
             SEPARATOR,
+            CONNECTED_MARKER,
             MULTIPLY,
             ELLIPSIS,
             EM_DASH,

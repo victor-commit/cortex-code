@@ -608,9 +608,11 @@ struct ModelPick {
     id: String,
     /// The vendor prefix before the first `/` (e.g. `google`), used to group by provider.
     vendor: String,
-    /// The display row (key/desc/meta) handed to the modal renderer.
+    /// The display row (key/desc/meta) handed to the modal renderer. Its key carries a leading
+    /// connected marker when the serving provider has a stored credential.
     row: crate::modal::ModalRow,
-    /// Lowercased haystack (id + description) the search query matches against.
+    /// Lowercased haystack (id + display name + description) the search query matches against, so
+    /// type-to-filter narrows across providers by id or name.
     hay: String,
 }
 
@@ -4254,57 +4256,131 @@ impl App {
         self.select_model_row(&active);
     }
 
-    /// Build the full model-picker set from the merged catalogue: every model an enabled provider
-    /// serves, as a rich row with real id/ctx/price and a metadata-derived descriptor. Sorted by id
-    /// so the list is deterministic and vendors group contiguously for the `⇥` view.
+    /// Build the full model-picker set from the DYNAMIC merged catalogue (the models.dev cache
+    /// written by a prior refresh, else the embedded snapshot — resolved offline, never the network
+    /// from the synchronous TUI — with configured providers/models folded on top). Every enabled
+    /// provider's models become a rich row (real id/ctx/price + a metadata-derived descriptor and a
+    /// connected marker). Models are grouped by vendor with the LATEST models first WITHIN each group
+    /// (recency, not alphabetical). The disallowed Zen vendor is excluded throughout (the catalogue
+    /// strips it before this projection ever sees it).
     fn build_model_picks(&self) -> Vec<ModelPick> {
         let theme = frame::style::ThemeColors::from_name(&self.theme);
-        let meta_color = theme.text;
-        let default_model = self.status.model.clone();
-        let effective = effective_config();
-        let provider_config = effective
+        let (merged, provider_config) = self.merged_model_catalogue();
+        Self::model_picks_from_catalogue(
+            &merged,
+            provider_config.as_ref(),
+            &self.status.model,
+            &providers::connected_providers(),
+            theme.text,
+        )
+    }
+
+    /// The merged model catalogue the `/models` picker draws from, plus the provider config used to
+    /// filter disabled providers: the DYNAMIC models.dev catalogue resolved OFFLINE (the on-disk
+    /// cache written by a prior refresh, else the embedded snapshot — no network from the
+    /// synchronous TUI), with configured providers/models folded on top. The disallowed Zen vendor
+    /// is excluded.
+    fn merged_model_catalogue(
+        &self,
+    ) -> (providers::Catalogue, Option<providers::ProviderConfigSet>) {
+        let provider_config = effective_config()
             .as_ref()
             .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
-        let merged = provider_config.as_ref().map_or_else(
-            || providers::Catalogue::embedded().clone(),
-            |cfg| cfg.merged_catalogue(providers::Catalogue::embedded()),
-        );
-        let mut picks: Vec<ModelPick> = Vec::new();
+        let base = providers::offline_catalogue();
+        let merged = provider_config
+            .as_ref()
+            .map_or_else(|| base.clone(), |cfg| cfg.merged_catalogue(&base));
+        (merged, provider_config)
+    }
+
+    /// Project a merged catalogue into the picker's rich rows: one row per model id (deduped to the
+    /// resolving provider — the first in sorted provider order, matching `Catalogue::find_model`),
+    /// grouped by vendor prefix with the newest models first within each group. Connected providers
+    /// (a stored credential in `connected`) get a leading marker so they read distinctly from
+    /// not-connected ones. A pure function of its inputs so the ordering/marking is unit-testable.
+    fn model_picks_from_catalogue(
+        merged: &providers::Catalogue,
+        provider_config: Option<&providers::ProviderConfigSet>,
+        default_model: &str,
+        connected: &[String],
+        meta_color: ratatui::style::Color,
+    ) -> Vec<ModelPick> {
+        struct Entry {
+            vendor: String,
+            id: String,
+            name: String,
+            release_date: Option<String>,
+            desc: String,
+            meta: String,
+            connected: bool,
+        }
+
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut entries: Vec<Entry> = Vec::new();
         for provider in merged.providers() {
-            let enabled = provider_config
-                .as_ref()
-                .is_none_or(|cfg| cfg.provider_enabled(&provider.id));
+            let enabled = provider_config.is_none_or(|cfg| cfg.provider_enabled(&provider.id));
             if !enabled {
                 continue;
             }
+            let is_connected = connected.iter().any(|id| id == &provider.id);
             for model in provider.models.values() {
-                let is_default = model.id == default_model;
+                if !seen.insert(model.id.clone()) {
+                    continue;
+                }
                 let vendor = model
                     .id
                     .split_once('/')
-                    .map_or_else(|| model.id.clone(), |(v, _)| v.to_owned());
-                let desc = model_descriptor(model, is_default);
-                let meta = format!(
-                    "{} · {}",
-                    format_context(model.limit.context),
-                    format_price(model.cost.input)
-                );
-                let hay = format!("{} {desc}", model.id).to_lowercase();
-                picks.push(ModelPick {
-                    id: model.id.clone(),
+                    .map_or_else(|| model.id.clone(), |(vendor, _)| vendor.to_owned());
+                let is_default = model.id == default_model;
+                entries.push(Entry {
                     vendor,
-                    row: crate::modal::ModalRow {
-                        key: model.id.clone(),
-                        desc: Some(desc),
-                        meta: Some(meta),
-                        meta_color: Some(meta_color),
-                    },
-                    hay,
+                    id: model.id.clone(),
+                    name: model.name.clone(),
+                    release_date: model.release_date.clone(),
+                    desc: model_descriptor(model, is_default),
+                    meta: format!(
+                        "{} · {}",
+                        format_context(model.limit.context),
+                        format_price(model.cost.input)
+                    ),
+                    connected: is_connected,
                 });
             }
         }
-        picks.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
-        picks
+
+        // Vendor groups sort alphabetically (contiguous for the `⇥` grouped view); WITHIN each group
+        // the newest models sort first — most recent `release_date` first, then id descending so
+        // newer ids lead — deliberately NOT alphabetical.
+        entries.sort_by(|a, b| {
+            a.vendor
+                .cmp(&b.vendor)
+                .then_with(|| b.release_date.cmp(&a.release_date))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+
+        entries
+            .into_iter()
+            .map(|entry| {
+                let marker = if entry.connected {
+                    crate::glyphs::CONNECTED_MARKER
+                } else {
+                    " "
+                };
+                let key = format!("{marker} {}", entry.id);
+                let hay = format!("{} {} {}", entry.id, entry.name, entry.desc).to_lowercase();
+                ModelPick {
+                    id: entry.id,
+                    vendor: entry.vendor,
+                    row: crate::modal::ModalRow {
+                        key,
+                        desc: Some(entry.desc),
+                        meta: Some(entry.meta),
+                        meta_color: Some(meta_color),
+                    },
+                    hay,
+                }
+            })
+            .collect()
     }
 
     /// Rebuild the model picker's visible rows (and the `model_rows` selection map) from the cached
@@ -4322,7 +4398,7 @@ impl App {
             if !query.is_empty() && !pick.hay.contains(&query) {
                 continue;
             }
-            key_width = key_width.max(pick.id.chars().count());
+            key_width = key_width.max(pick.row.key.chars().count());
             if grouped && current_vendor.as_deref() != Some(pick.vendor.as_str()) {
                 current_vendor = Some(pick.vendor.clone());
                 items.push(pick.vendor.clone());
@@ -9509,8 +9585,9 @@ fn tail_background_log(path: &Path) -> String {
 }
 
 /// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
-/// mockup label): the default model reads `default · fast`, reasoning models read `reasoning`, free
-/// models read `free`, and the rest fall back to a capability word.
+/// mockup label): the default model leads with `default`, reasoning models read `reasoning` and
+/// attachment-capable models read `multimodal` (both shown when both apply), free models read
+/// `free`, and the rest fall back to a capability word.
 fn model_descriptor(model: &providers::ModelInfo, is_default: bool) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if is_default {
@@ -9521,11 +9598,12 @@ fn model_descriptor(model: &providers::ModelInfo, is_default: bool) -> String {
     } else if is_default {
         parts.push("fast");
     }
+    if model.attachment {
+        parts.push("multimodal");
+    }
     if parts.is_empty() {
         if model.cost.input <= 0.0 {
             parts.push("free");
-        } else if model.attachment {
-            parts.push("multimodal");
         } else {
             parts.push("chat");
         }
@@ -14883,6 +14961,150 @@ mod tests {
             a.dialog().expect("open").items.len(),
             flat.len(),
             "toggling back returns to the flat list"
+        );
+    }
+
+    /// A models.dev-shaped catalogue fixture with two real providers (each carrying dated models)
+    /// plus a disallowed Zen provider, used to drive the pure picker projection deterministically.
+    fn model_catalogue_fixture() -> providers::Catalogue {
+        let json = r#"{
+            "openai": {
+                "id": "openai",
+                "name": "OpenAI",
+                "models": {
+                    "openai/gpt-5": {"id": "openai/gpt-5", "name": "GPT-5", "reasoning": true, "attachment": true, "limit": {"context": 400000}, "cost": {"input": 1.25}, "release_date": "2025-08-01"},
+                    "openai/gpt-4o": {"id": "openai/gpt-4o", "name": "GPT-4o", "reasoning": false, "attachment": true, "limit": {"context": 128000}, "cost": {"input": 2.5}, "release_date": "2024-05-01"}
+                }
+            },
+            "anthropic": {
+                "id": "anthropic",
+                "name": "Anthropic",
+                "models": {
+                    "anthropic/claude-opus-4.1": {"id": "anthropic/claude-opus-4.1", "name": "Claude Opus 4.1", "reasoning": true, "attachment": true, "limit": {"context": 200000}, "cost": {"input": 15}, "release_date": "2025-08-05"},
+                    "anthropic/claude-sonnet-4": {"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4", "reasoning": true, "attachment": true, "limit": {"context": 1000000}, "cost": {"input": 3}, "release_date": "2025-05-01"}
+                }
+            },
+            "zen": {
+                "id": "zen",
+                "name": "Zen (disallowed)",
+                "models": {
+                    "zen/zen-1": {"id": "zen/zen-1", "name": "Zen 1", "limit": {"context": 8000}, "cost": {"input": 0}}
+                }
+            }
+        }"#;
+        providers::Catalogue::from_json(json).expect("valid fixture catalogue")
+    }
+
+    fn model_pick_pos(picks: &[ModelPick], id: &str) -> usize {
+        picks.iter().position(|pick| pick.id == id).unwrap_or_else(|| {
+            panic!(
+                "pick {id} present in {:?}",
+                picks.iter().map(|pick| &pick.id).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    #[test]
+    fn model_picks_group_by_vendor_recent_first_not_alphabetical() {
+        // VAL-CAT-001/002/003: the picker surfaces multiple provider groups (drawn from the dynamic
+        // catalogue), orders each group's models newest-first by release_date (NOT alphabetical),
+        // and never lists the disallowed Zen vendor.
+        let theme = frame::style::ThemeColors::dark();
+        let picks = App::model_picks_from_catalogue(
+            &model_catalogue_fixture(),
+            None,
+            "openai/gpt-5",
+            &[],
+            theme.text,
+        );
+        let vendors: BTreeSet<&str> = picks.iter().map(|pick| pick.vendor.as_str()).collect();
+        assert!(
+            vendors.contains("openai") && vendors.contains("anthropic"),
+            "multiple provider groups present: {vendors:?}"
+        );
+        assert!(
+            !vendors.contains("zen") && picks.iter().all(|pick| !pick.id.contains("zen")),
+            "the disallowed Zen vendor is excluded everywhere: {vendors:?}"
+        );
+        // Within the openai group, the newer gpt-5 (2025) sorts above the older gpt-4o (2024) —
+        // recency, not alphabetical (alphabetical would rank gpt-4o above gpt-5).
+        assert!(
+            model_pick_pos(&picks, "openai/gpt-5") < model_pick_pos(&picks, "openai/gpt-4o"),
+            "newest openai model leads its group (recent-first)"
+        );
+        assert!(
+            model_pick_pos(&picks, "anthropic/claude-opus-4.1")
+                < model_pick_pos(&picks, "anthropic/claude-sonnet-4"),
+            "newest anthropic model leads its group (recent-first)"
+        );
+    }
+
+    #[test]
+    fn model_picks_mark_connected_providers_distinctly() {
+        // VAL-CAT-007: models served by a connected provider (a stored credential) carry a leading
+        // connected marker; not-connected providers' models do not, so the two read distinctly.
+        let theme = frame::style::ThemeColors::dark();
+        let connected = vec!["openai".to_owned()];
+        let picks = App::model_picks_from_catalogue(
+            &model_catalogue_fixture(),
+            None,
+            "openai/gpt-5",
+            &connected,
+            theme.text,
+        );
+        let openai = picks
+            .iter()
+            .find(|pick| pick.id == "openai/gpt-5")
+            .expect("openai pick");
+        let anthropic = picks
+            .iter()
+            .find(|pick| pick.id == "anthropic/claude-opus-4.1")
+            .expect("anthropic pick");
+        assert!(
+            openai.row.key.starts_with(crate::glyphs::CONNECTED_MARKER),
+            "connected provider model is marked: {:?}",
+            openai.row.key
+        );
+        assert!(
+            !anthropic.row.key.starts_with(crate::glyphs::CONNECTED_MARKER),
+            "not-connected provider model is unmarked: {:?}",
+            anthropic.row.key
+        );
+        // The full model id survives behind the marker so the row stays searchable/selectable.
+        assert!(openai.row.key.contains("openai/gpt-5"));
+        assert!(openai.hay.contains("openai/gpt-5") && openai.hay.contains("gpt-5"));
+    }
+
+    #[test]
+    fn model_picks_meta_is_honest_and_brand_pure() {
+        // VAL-CAT-005: each row shows real ctx/price meta in the mono-orange (non-green) meta tone
+        // and a capability descriptor derived from real metadata (reasoning/multimodal).
+        let theme = frame::style::ThemeColors::dark();
+        let picks = App::model_picks_from_catalogue(
+            &model_catalogue_fixture(),
+            None,
+            "openai/gpt-5",
+            &[],
+            theme.text,
+        );
+        let opus = picks
+            .iter()
+            .find(|pick| pick.id == "anthropic/claude-opus-4.1")
+            .expect("opus pick");
+        assert_eq!(
+            opus.row.meta.as_deref(),
+            Some("200K · $15"),
+            "ctx · price meta from real catalogue"
+        );
+        assert_eq!(
+            opus.row.meta_color,
+            Some(theme.text),
+            "meta uses the mono-orange text tone (no green data numbers)"
+        );
+        let desc = opus.row.desc.as_deref().unwrap_or_default();
+        assert!(
+            desc.contains("reasoning") && desc.contains("multimodal"),
+            "honest capability descriptor: {desc}"
         );
     }
 
