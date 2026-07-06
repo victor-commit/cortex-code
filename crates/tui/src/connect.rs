@@ -350,7 +350,24 @@ impl ConnectState {
     /// provider highlighted on the provider step.
     #[must_use]
     pub fn new() -> Self {
-        let connected = connected_providers();
+        Self::from_connected(&connected_providers())
+    }
+
+    /// Build the connect-flow state resolving each provider's connected state against an EXPLICIT
+    /// auth store at `path` (rather than the process env). This is the hermetic constructor for
+    /// tests / isolated data dirs: it lets the flow be built without reading the ambient
+    /// `~/.local/share/cortex/auth.json`, so a "nothing is connected" precondition is deterministic
+    /// regardless of any credential that happens to live in the real store.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new_at(path: &Path) -> Self {
+        Self::from_connected(&list_stored_providers(path).unwrap_or_default())
+    }
+
+    /// Build the connect-flow state from an explicit set of already-connected provider ids over the
+    /// connectable provider catalogue (all profiles minus the excluded Zen provider), with the first
+    /// provider highlighted on the provider step.
+    fn from_connected(connected: &[String]) -> Self {
         let providers = connectable_providers()
             .into_iter()
             .map(|provider| ProviderRow {

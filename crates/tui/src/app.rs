@@ -5236,6 +5236,14 @@ impl App {
         self.connect = Some(crate::connect::ConnectState::new());
     }
 
+    /// Open the `/connect` flow resolving connected state from an EXPLICIT (isolated) auth store,
+    /// so tests exercise the flow hermetically without reading the ambient
+    /// `~/.local/share/cortex/auth.json` (off-limits user data on this shared host).
+    #[cfg(test)]
+    pub(crate) fn open_connect_at(&mut self, auth_path: &std::path::Path) {
+        self.connect = Some(crate::connect::ConnectState::new_at(auth_path));
+    }
+
     /// Key handling for the `/connect` flow. It is modal: `Ctrl+C` quits; `Esc` backs out one step
     /// (and closes the flow from the provider step); arrows move the active list; `Enter` advances
     /// the step (and, on the key step, stores the masked key via [`crate::connect::ConnectState`]);
@@ -10786,6 +10794,7 @@ mod tests {
     static ATTACH_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static DIFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
     static SHARE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static AUTH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -10820,12 +10829,19 @@ mod tests {
     #[test]
     fn connect_disconnect_key_is_a_safe_noop_when_nothing_is_connected() {
         // VAL-CONN-009: `d` requests a disconnect only for a connected provider. With no stored
-        // credential (the ambient test store is empty), pressing `d` is a safe no-op that keeps the
-        // provider step and the flow open — the confirm-before-remove step is only reached for a
-        // connected provider (exercised deterministically in the connect-state tests).
+        // credential, pressing `d` is a safe no-op that keeps the provider step and the flow open —
+        // the confirm-before-remove step is only reached for a connected provider (exercised
+        // deterministically in the connect-state tests).
+        //
+        // Hermetic: the flow is built against an isolated, empty auth store (a disposable tmp path)
+        // so the connected-provider check never reads the ambient ~/.local/share/cortex/auth.json,
+        // which on this shared host holds a real credential. Without this isolation the highlighted
+        // provider would read as connected and `d` would (incorrectly, for this test) advance to the
+        // confirm step. The `d` key still travels the real App::on_key -> on_connect_key routing.
+        let auth_path = isolated_auth_path("connect-disconnect-noop");
         let mut a = app();
-        a.dispatch_builtin_command("connect", "Connect a provider (API key or OAuth)");
-        assert!(a.connect_active(), "/connect opens the flow");
+        a.open_connect_at(&auth_path);
+        assert!(a.connect_active(), "/connect flow is open");
         a.on_key(key(KeyCode::Char('d')));
         assert!(a.connect_active(), "the flow stays open after a no-op disconnect key");
         assert_eq!(
@@ -10876,6 +10892,18 @@ mod tests {
         // A normally-constructed app (e.g. every other test / a configured launch) is not gated
         // into onboarding.
         assert!(!app().onboarding_active());
+    }
+
+    /// A disposable, guaranteed-empty auth-store path (unique per call) under the temp dir. The file
+    /// is never created, so resolving connected providers from it yields the empty set — letting a
+    /// connect/auth flow be built hermetically, independent of the ambient
+    /// `~/.local/share/cortex/auth.json`. Nothing is written, so there is nothing to clean up.
+    fn isolated_auth_path(test_name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "cortex-tui-auth-{test_name}-{}-{}/auth.json",
+            std::process::id(),
+            AUTH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     fn isolated_share_dir(test_name: &str) -> (PathBuf, PathBuf) {
