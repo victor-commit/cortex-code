@@ -302,6 +302,11 @@ fn curate_primary_provider_models(openrouter: &Value) -> BTreeMap<String, ModelI
 
     let mut by_vendor: BTreeMap<String, Vec<ModelInfo>> = BTreeMap::new();
     for (id, entry) in live_models {
+        // Defense-in-depth: drop any primary-provider model whose vendor segment names the excluded
+        // provider, so it can never leak in even though the whole-provider exclusion sits upstream.
+        if is_excluded_zen(primary_vendor(id)) {
+            continue;
+        }
         let Ok(mut info) = serde_json::from_value::<ModelInfo>(entry.clone()) else {
             continue;
         };
@@ -747,6 +752,41 @@ mod tests {
         assert!(
             catalogue.find_model(&zen_model).is_none(),
             "no excluded-Zen model may leak into the catalogue"
+        );
+    }
+
+    #[test]
+    fn curate_drops_a_primary_model_whose_vendor_prefix_is_the_excluded_token() {
+        // Defense-in-depth: the excluded provider is filtered at the whole-provider level, but a
+        // primary-provider (OpenRouter) model whose leading `vendor/` segment matches the excluded
+        // token must ALSO be dropped per-model. The vendor prefix is assembled from the brand-safe
+        // id list so the literal token never appears in source.
+        let vendor = crate::EXCLUDED_ZEN_PROVIDER_IDS[0].to_owned();
+        let leaked = format!("{vendor}/leaked-model");
+        let kept = "google/gemini-2.5-flash";
+        let json = format!(
+            "{{ \"openrouter\": {{ \"id\": \"openrouter\", \"name\": \"OpenRouter\", \"api\": \"https://openrouter.ai/api/v1\", \"env\": [\"OPENROUTER_API_KEY\"], \"models\": {{ \
+             \"{kept}\": {{ \"id\": \"{kept}\", \"name\": \"Gemini 2.5 Flash\", \"cost\": {{ \"input\": 0.3, \"output\": 2.5 }}, \"limit\": {{ \"context\": 1048576, \"output\": 65535 }} }}, \
+             \"{leaked}\": {{ \"id\": \"{leaked}\", \"name\": \"Leaked\", \"cost\": {{ \"input\": 1, \"output\": 1 }}, \"limit\": {{ \"context\": 1000, \"output\": 100 }} }} }} }} }}"
+        );
+
+        let catalogue = curate(&json).expect("curates");
+        let openrouter = catalogue
+            .provider(OPENROUTER_ID)
+            .expect("openrouter present");
+
+        assert!(
+            openrouter.models.contains_key(kept),
+            "a normal primary model must be retained"
+        );
+        assert!(
+            !openrouter.models.contains_key(&leaked),
+            "a primary model whose vendor prefix is the excluded token must be dropped: {:?}",
+            openrouter.models.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            catalogue.find_model(&leaked).is_none(),
+            "no excluded-vendor-prefixed model may leak into the curated catalogue"
         );
     }
 
