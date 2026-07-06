@@ -171,6 +171,12 @@ fn run(options: LaunchOptions) -> io::Result<()> {
         );
     }
 
+    // Kick off a non-blocking models.dev refresh at STARTUP so the `/models` picker reflects the
+    // current catalogue on its first open (the background worker warms the on-disk cache and this
+    // session's catalogue). Fail-closed under `CORTEX_NO_NET` (spawns nothing); the poll hook in the
+    // event loop drains the result.
+    app.spawn_models_refresh();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -450,6 +456,11 @@ fn event_loop<B: Backend + Write>(
         // "waiting for authorization" screen transitions to connected (or an inline error) once the
         // loopback callback is exchanged, without a restart.
         app.poll_connect_oauth();
+
+        // Drain the background models.dev refresh worker so a live catalogue fetched off-thread
+        // swaps into the `/models` picker in place (and clears the "refreshing…" indicator) without
+        // ever blocking this synchronous loop. Fail-closed/again-offline results degrade silently.
+        app.poll_models_refresh();
 
         // Tail every backgrounded `bash` card's log into its body and complete it once the job's
         // pid has exited, so a running background card stays live-updating instead of the static

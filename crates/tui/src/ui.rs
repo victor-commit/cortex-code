@@ -3295,10 +3295,13 @@ fn draw_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
 
     // Some dialogs carry a right-aligned footer note: the theme picker advertises its live preview,
     // the fork dialog notes it creates a new branch, and the export dialog shows its destination.
+    // The model picker shows a subtle "refreshing…" note while a background models.dev refresh is
+    // in flight, so the live fetch reads as a quiet, non-blocking indicator (never an error toast).
     let note = match dialog.kind {
         DialogKind::Themes => Some("live preview".to_owned()),
         DialogKind::Fork => Some("new branch".to_owned()),
         DialogKind::Export => Some("→ ~/cortex/exports".to_owned()),
+        DialogKind::Models if app.models_refreshing() => Some("refreshing…".to_owned()),
         _ => None,
     };
 

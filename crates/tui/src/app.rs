@@ -616,6 +616,19 @@ struct ModelPick {
     hay: String,
 }
 
+/// A background models.dev refresh result, published to the UI thread over an mpsc channel and
+/// drained by [`App::poll_models_refresh`]. Mirrors the OAuth/turn background pattern so the live
+/// fetch runs OFF the synchronous ratatui event loop (the loop never blocks on the network).
+enum ModelsRefreshMessage {
+    /// The live models.dev fetch (and best-effort cache write) succeeded; carries the curated
+    /// catalogue that replaces the offline one in place. Boxed so the enum is not dominated by this
+    /// large variant.
+    Refreshed(Box<providers::Catalogue>),
+    /// The fetch failed (transport/parse, or the process went offline again). The picker degrades
+    /// silently to the offline list — no toast, no splatter.
+    Failed,
+}
+
 /// One cached skill-picker entry: its name, description, and source label (`builtin`/`project`/
 /// `plugin`). Kept so the rich rows (with the enabled `✓` marker) can be rebuilt on each Space
 /// toggle without re-running discovery.
@@ -1171,6 +1184,16 @@ pub struct App {
     /// Whether the model picker groups rows under vendor headers (`⇥` toggles it); the default flat
     /// view lists every model in one block.
     model_group_by_provider: bool,
+    /// The live-fetched models.dev catalogue for this session, or `None` before any refresh has
+    /// landed. When present it is the base the `/models` picker draws from (in place of the offline
+    /// cache→embedded snapshot), so a background refresh swaps the picker to the current catalogue
+    /// without a manual `cortex models --refresh` or a reopen.
+    models_catalogue: Option<providers::Catalogue>,
+    /// The in-flight background models.dev refresh channel, present only while a refresh runs. The
+    /// worker (a std::thread with its own runtime, mirroring the OAuth/turn pattern) publishes the
+    /// curated catalogue here; [`App::poll_models_refresh`] drains it on the event loop. `Some`
+    /// while refreshing drives the subtle "refreshing…" picker indicator.
+    models_refresh_rx: Option<Receiver<ModelsRefreshMessage>>,
     /// Skill-picker row mapping: selected row -> skill name.
     skill_rows: Vec<String>,
     /// Skill-picker cached entries (name/desc/source), used to rebuild the rich rows with the
@@ -1363,6 +1386,8 @@ impl App {
             session_all: Vec::new(),
             model_all: Vec::new(),
             model_group_by_provider: false,
+            models_catalogue: None,
+            models_refresh_rx: None,
             skill_rows: Vec::new(),
             skill_picks: Vec::new(),
             enabled_skills: BTreeSet::new(),
@@ -4260,15 +4285,21 @@ impl App {
         self.rebuild_model_view();
         let active = self.status.model.clone();
         self.select_model_row(&active);
+        // Kick off a non-blocking live models.dev refresh so the picker reflects the CURRENT
+        // catalogue without a manual `cortex models --refresh`: the offline list shows instantly
+        // (built above) and the fetched catalogue swaps in place on channel receipt. Fail-closed
+        // and coalesced inside the spawn.
+        self.spawn_models_refresh();
     }
 
-    /// Build the full model-picker set from the DYNAMIC merged catalogue (the models.dev cache
-    /// written by a prior refresh, else the embedded snapshot — resolved offline, never the network
-    /// from the synchronous TUI — with configured providers/models folded on top). Every enabled
-    /// provider's models become a rich row (real id/ctx/price + a metadata-derived descriptor and a
-    /// connected marker). Models are grouped by vendor with the LATEST models first WITHIN each group
-    /// (recency, not alphabetical). The disallowed Zen vendor is excluded throughout (the catalogue
-    /// strips it before this projection ever sees it).
+    /// Build the full model-picker set from the DYNAMIC merged catalogue (the live models.dev
+    /// catalogue fetched in the background this session when present, else the on-disk cache /
+    /// embedded snapshot resolved offline — never the network from the synchronous TUI — with
+    /// configured providers/models folded on top). Every enabled provider's models become a rich row
+    /// (real id/ctx/price + a metadata-derived descriptor and a connected marker). Models are grouped
+    /// by vendor with the LATEST models first WITHIN each group (recency, not alphabetical). The
+    /// disallowed Zen vendor is excluded throughout (the catalogue strips it before this projection
+    /// ever sees it).
     fn build_model_picks(&self) -> Vec<ModelPick> {
         let theme = frame::style::ThemeColors::from_name(&self.theme);
         let (merged, provider_config) = self.merged_model_catalogue();
@@ -4282,17 +4313,23 @@ impl App {
     }
 
     /// The merged model catalogue the `/models` picker draws from, plus the provider config used to
-    /// filter disabled providers: the DYNAMIC models.dev catalogue resolved OFFLINE (the on-disk
-    /// cache written by a prior refresh, else the embedded snapshot — no network from the
-    /// synchronous TUI), with configured providers/models folded on top. The disallowed Zen vendor
-    /// is excluded.
+    /// filter disabled providers: the DYNAMIC models.dev catalogue — the live catalogue fetched in
+    /// the background this session when present, else the OFFLINE cache→embedded snapshot (no network
+    /// from the synchronous TUI) — with configured providers/models folded on top. The disallowed
+    /// Zen vendor is excluded.
     fn merged_model_catalogue(
         &self,
     ) -> (providers::Catalogue, Option<providers::ProviderConfigSet>) {
         let provider_config = effective_config()
             .as_ref()
             .and_then(|cfg| providers::ProviderConfigSet::from_table(cfg.table()).ok());
-        let base = providers::offline_catalogue();
+        // Prefer the live-fetched catalogue landed by a background refresh this session; before one
+        // lands (or when it failed), fall back to the OFFLINE cache→embedded snapshot resolved
+        // without touching the network from the synchronous TUI.
+        let base = self
+            .models_catalogue
+            .clone()
+            .unwrap_or_else(providers::offline_catalogue);
         let merged = provider_config
             .as_ref()
             .map_or_else(|| base.clone(), |cfg| cfg.merged_catalogue(&base));
@@ -5312,6 +5349,123 @@ impl App {
     pub fn poll_connect_oauth(&mut self) {
         if let Some(state) = self.connect.as_mut() {
             state.poll_oauth();
+        }
+    }
+
+    /// Whether a background models.dev refresh is running, driving the picker's subtle
+    /// "refreshing…" indicator.
+    #[must_use]
+    pub fn models_refreshing(&self) -> bool {
+        self.models_refresh_rx.is_some()
+    }
+
+    /// The pure spawn-gate decision (separated so the fail-closed + coalescing rules are unit-testable
+    /// without touching the process env or opening a socket): spawn a live refresh only when outbound
+    /// network is permitted AND no refresh is already in flight.
+    #[must_use]
+    fn should_spawn_models_refresh(network_disabled: bool, refresh_in_flight: bool) -> bool {
+        !network_disabled && !refresh_in_flight
+    }
+
+    /// Spawn a NON-BLOCKING background models.dev refresh, mirroring the OAuth/turn worker pattern:
+    /// the fetch runs on a `std::thread` with its own current-thread runtime and publishes the
+    /// curated catalogue back over an mpsc channel that [`App::poll_models_refresh`] drains on the
+    /// event loop — so the synchronous ratatui loop NEVER blocks on the network.
+    ///
+    /// FAIL-CLOSED: returns immediately (spawning nothing, opening no socket) when the `CORTEX_NO_NET`
+    /// kill-switch is engaged, so offline stays cache→embedded with no hang and no error surface;
+    /// also a no-op when a refresh is already in flight (coalesced). The `CORTEX_MODELS_DEV_URL`
+    /// override is honored via [`providers::models_dev_url`], so the live path can be pointed at a
+    /// deterministic loopback fixture.
+    pub fn spawn_models_refresh(&mut self) {
+        if !Self::should_spawn_models_refresh(
+            redaction::network_disabled(),
+            self.models_refresh_rx.is_some(),
+        ) {
+            return;
+        }
+        // In-process unit tests must never touch the real network or write the shared on-disk cache
+        // (an off-limits user path). The live path is exercised end-to-end by the real binary — the
+        // `gap_tui_*` behavioral tests and tuistory QA against a `CORTEX_MODELS_DEV_URL` fixture.
+        if cfg!(test) {
+            return;
+        }
+        let url = providers::models_dev_url();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let message = match Self::fetch_models_catalogue(&url) {
+                Some(catalogue) => {
+                    // Warm the on-disk cache so later cold/offline opens are warm.
+                    let _ = providers::write_models_cache(&catalogue);
+                    ModelsRefreshMessage::Refreshed(Box::new(catalogue))
+                }
+                None => ModelsRefreshMessage::Failed,
+            };
+            // The UI may have dropped the receiver (app exited); a send failure is a benign no-op.
+            let _ = tx.send(message);
+        });
+        self.models_refresh_rx = Some(rx);
+    }
+
+    /// Run the async models.dev fetch to completion on the background thread's own current-thread
+    /// runtime, returning the curated catalogue on success or `None` on any transport/parse failure
+    /// (or a runtime that could not be built). The outbound `CORTEX_NO_NET` guard is consulted inside
+    /// [`providers::refresh_models_dev_catalogue`] as a second line of defense.
+    fn fetch_models_catalogue(url: &str) -> Option<providers::Catalogue> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        runtime
+            .block_on(providers::refresh_models_dev_catalogue(url))
+            .ok()
+    }
+
+    /// Drain the background models.dev refresh worker each tick and apply its result, so an in-flight
+    /// refresh swaps the `/models` picker to the fetched catalogue IN PLACE (rebuilt via
+    /// [`build_model_picks`](App::build_model_picks)/[`rebuild_model_view`](App::rebuild_model_view))
+    /// without a manual reopen, and clears the "refreshing…" indicator. A failed/again-offline fetch
+    /// degrades silently to the offline list (no toast/splatter). A no-op when no refresh is running.
+    pub fn poll_models_refresh(&mut self) {
+        let message = match self.models_refresh_rx.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(message) => message,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.models_refresh_rx = None;
+                    return;
+                }
+            },
+            None => return,
+        };
+        self.models_refresh_rx = None;
+        self.apply_models_refresh(message);
+    }
+
+    /// Apply a background refresh result: on success adopt the fetched catalogue for this session
+    /// and, when the `/models` picker is open, rebuild it in place preserving the highlighted model;
+    /// on failure keep the offline list unchanged with no error surface. Separated from the channel
+    /// drain so the swap-in-place behavior is deterministically unit-testable.
+    fn apply_models_refresh(&mut self, message: ModelsRefreshMessage) {
+        let ModelsRefreshMessage::Refreshed(catalogue) = message else {
+            // Failed/again-offline: degrade silently to the offline list already shown.
+            return;
+        };
+        self.models_catalogue = Some(*catalogue);
+        // If the picker is open, swap the fetched catalogue in place so it replaces the offline one
+        // without a manual reopen, keeping the current highlight where it survives the new set.
+        if self.dialog.as_ref().map(|dialog| dialog.kind) == Some(DialogKind::Models) {
+            let selected = self
+                .dialog
+                .as_ref()
+                .and_then(|dialog| self.model_rows.get(dialog.selected()).cloned())
+                .flatten();
+            self.model_all = self.build_model_picks();
+            self.rebuild_model_view();
+            match selected {
+                Some(id) => self.select_model_row(&id),
+                None => self.ensure_model_selection_selectable(),
+            }
         }
     }
 
@@ -15285,6 +15439,165 @@ mod tests {
             desc.contains("reasoning") && desc.contains("multimodal"),
             "honest capability descriptor: {desc}"
         );
+    }
+
+    /// A models.dev-shaped fixture carrying a model id ABSENT from the embedded snapshot, used to
+    /// prove the background live fetch surfaces the CURRENT catalogue (VAL-CAT-008/010/012).
+    fn snapshot_absent_catalogue() -> providers::Catalogue {
+        let json = r#"{
+            "openrouter": {
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "models": {
+                    "fixturevendor/only-in-fixture-v9": {"id": "fixturevendor/only-in-fixture-v9", "name": "Fixture Only v9", "reasoning": true, "limit": {"context": 128000}, "cost": {"input": 1.0}, "release_date": "2099-01-01"}
+                }
+            }
+        }"#;
+        providers::Catalogue::from_json(json).expect("valid fixture catalogue")
+    }
+
+    const FIXTURE_ONLY_MODEL: &str = "fixturevendor/only-in-fixture-v9";
+
+    #[test]
+    fn models_refresh_spawn_gate_is_fail_closed_and_coalesced() {
+        // VAL-CAT-010/011: the spawn gate refuses when the network kill-switch is engaged
+        // (fail-closed — no socket) and when a refresh is already in flight (coalesced), and permits
+        // a refresh only when network is allowed and none is running.
+        assert!(
+            App::should_spawn_models_refresh(false, false),
+            "spawn when the network is allowed and no refresh is in flight"
+        );
+        assert!(
+            !App::should_spawn_models_refresh(true, false),
+            "FAIL-CLOSED: never spawn under CORTEX_NO_NET (network disabled)"
+        );
+        assert!(
+            !App::should_spawn_models_refresh(false, true),
+            "COALESCE: never stack a second refresh while one is in flight"
+        );
+        assert!(
+            !App::should_spawn_models_refresh(true, true),
+            "both guards hold together"
+        );
+    }
+
+    #[test]
+    fn models_refresh_swaps_the_open_picker_in_place() {
+        // VAL-CAT-008/010: a background refresh landing WHILE /models is open swaps the fetched
+        // catalogue in place — a fixture-only model id (absent from the embedded snapshot) appears
+        // with no manual reopen — and the session adopts the fetched catalogue.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        assert!(
+            !a.model_all.iter().any(|pick| pick.id == FIXTURE_ONLY_MODEL),
+            "precondition: the fixture-only id is not in the offline snapshot"
+        );
+        a.apply_models_refresh(ModelsRefreshMessage::Refreshed(Box::new(
+            snapshot_absent_catalogue(),
+        )));
+        assert!(
+            a.model_all.iter().any(|pick| pick.id == FIXTURE_ONLY_MODEL),
+            "the fetched catalogue's fixture-only id appears in the open picker in place"
+        );
+        assert!(
+            a.models_catalogue.is_some(),
+            "the session adopts the fetched catalogue for later opens"
+        );
+        // It renders on the actual picker surface (design-match: the id reaches the buffer).
+        let text = buffer_text(&render_buffer(&a, 100, 30));
+        assert!(
+            text.contains(FIXTURE_ONLY_MODEL),
+            "the fixture-only model renders in the open picker:\n{text}"
+        );
+    }
+
+    #[test]
+    fn startup_refresh_is_reflected_on_first_models_open() {
+        // VAL-CAT-008: a refresh that lands BEFORE /models is first opened (the startup refresh) is
+        // adopted for the session, so the FIRST open surfaces the current catalogue with no manual
+        // refresh and no reopen.
+        let mut a = app();
+        // No picker open yet — mirrors the startup refresh landing on the home screen.
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.models_refresh_rx = Some(rx);
+        tx.send(ModelsRefreshMessage::Refreshed(Box::new(
+            snapshot_absent_catalogue(),
+        )))
+        .unwrap();
+        a.poll_models_refresh();
+        assert!(
+            a.dialog().is_none(),
+            "the background refresh does not open a picker on its own"
+        );
+        dispatch(&mut a, "models");
+        assert!(
+            a.model_all.iter().any(|pick| pick.id == FIXTURE_ONLY_MODEL),
+            "the first /models open reflects the startup-fetched catalogue"
+        );
+    }
+
+    #[test]
+    fn models_refresh_indicator_shows_while_in_flight_then_clears() {
+        // VAL-CAT-010: while a background refresh runs the picker shows a subtle "refreshing…"
+        // indicator (never an error surface); it clears once the result lands and the list swaps.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        assert!(
+            !a.models_refreshing(),
+            "a cfg(test) open spawns no real refresh"
+        );
+        // Simulate an in-flight refresh by injecting the channel the worker would publish on.
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.models_refresh_rx = Some(rx);
+        assert!(a.models_refreshing(), "the indicator is active while refreshing");
+        let text = buffer_text(&render_buffer(&a, 100, 30));
+        assert!(
+            text.contains("refreshing…"),
+            "the subtle refreshing note renders in the picker:\n{text}"
+        );
+        assert!(!a.has_toasts(), "a refresh never raises a toast");
+        // The result lands; the indicator clears and the note disappears.
+        tx.send(ModelsRefreshMessage::Refreshed(Box::new(
+            snapshot_absent_catalogue(),
+        )))
+        .unwrap();
+        a.poll_models_refresh();
+        assert!(
+            !a.models_refreshing(),
+            "the indicator clears once the refresh lands"
+        );
+        let text = buffer_text(&render_buffer(&a, 100, 30));
+        assert!(
+            !text.contains("refreshing…"),
+            "the refreshing note is gone after the swap:\n{text}"
+        );
+    }
+
+    #[test]
+    fn models_refresh_failure_degrades_silently_to_offline() {
+        // VAL-CAT-011: a failed/again-offline fetch keeps the offline list unchanged with NO toast
+        // or error surface (fail-closed degradation to the offline list).
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let before: Vec<String> = a.model_all.iter().map(|pick| pick.id.clone()).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.models_refresh_rx = Some(rx);
+        tx.send(ModelsRefreshMessage::Failed).unwrap();
+        a.poll_models_refresh();
+        assert!(
+            !a.models_refreshing(),
+            "the indicator clears after a failed fetch"
+        );
+        assert!(
+            a.models_catalogue.is_none(),
+            "a failed fetch adopts no catalogue"
+        );
+        let after: Vec<String> = a.model_all.iter().map(|pick| pick.id.clone()).collect();
+        assert_eq!(
+            before, after,
+            "the offline list is unchanged after a failed fetch"
+        );
+        assert!(!a.has_toasts(), "a failed refresh never raises a toast");
     }
 
     #[test]
