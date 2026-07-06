@@ -31,15 +31,21 @@ One binary exposes several surfaces over the same session engine:
 ## Features
 
 - **Providers & models** — OpenRouter by default, a multi-protocol provider
-  layer, and a dynamic multi-provider model catalogue in the `/models` picker.
-  The catalogue is curated from every supported models.dev provider (endpoint
-  overridable via `CORTEX_MODELS_DEV_URL`), cached on disk next to `auth.json`,
-  grouped by provider with the latest models first in each group, and annotated
-  with honest metadata (context length, price, capability descriptors);
+  layer, and a dynamic multi-provider model catalogue in the `/models`
+  picker. The picker auto-refreshes the live models.dev catalogue in the
+  background on startup and each time it opens (no manual `cortex models
+  --refresh` needed): the offline list shows instantly with a subtle
+  refreshing indicator, then the fetched catalogue swaps in place and a
+  successful fetch warms the on-disk cache next to `auth.json`. The catalogue
+  is curated from every supported models.dev provider (endpoint overridable
+  via `CORTEX_MODELS_DEV_URL`) and grouped by provider with the latest models
+  first; the primary provider is curated dynamically, newest-first and capped
+  per vendor, so current models beyond the embedded snapshot appear. Entries
+  carry honest metadata (context length, price, capability descriptors), and
   providers you hold a credential for are marked as connected. Offline
-  (`CORTEX_NO_NET` or the outbound guards) it resolves from the cache, then an
-  embedded snapshot, with no network attempt. `cortex models --refresh` updates
-  it.
+  (`CORTEX_NO_NET` or the outbound guards) it resolves from the cache, then
+  the embedded snapshot, with no network attempt, hang, or error. `cortex
+  models --refresh` still updates it from the CLI.
 - **Mid-session connect** — the `/connect` slash command opens a
   provider-connect flow in the mono-orange auth style: pick a provider, choose
   an auth method (API key always, OAuth only where the provider supports it),
