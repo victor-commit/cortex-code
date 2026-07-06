@@ -2090,13 +2090,22 @@ impl App {
     /// cadence when [`animation_active`](App::animation_active) requests a wakeup to advance an
     /// animation phase, or when a turn is streaming / a toast is on screen so streamed deltas and
     /// the auto-dismiss timer are applied promptly even under reduced motion (where
-    /// `animation_active` is false); otherwise it blocks for the cheap idle cadence so an idle TUI
-    /// never busy-spins. Routing the wake predicate through `animation_active` keeps the loop
-    /// waking for any idle-only animation that later extends that predicate, without hardcoding a
-    /// second timeout here.
+    /// `animation_active` is false), or while a background models.dev refresh is in flight
+    /// ([`models_refreshing`](App::models_refreshing)) so the off-thread catalogue swap and the
+    /// "refreshing…" indicator clear land promptly rather than after a full idle tick (mirroring how
+    /// an in-flight turn drives the cadence); otherwise it blocks for the cheap idle cadence so an
+    /// idle TUI never busy-spins. The refresh is a bounded background task that clears its own signal
+    /// once [`poll_models_refresh`](App::poll_models_refresh) drains the result, so the cadence
+    /// returns to idle with no busy-spin. Routing the wake predicate through `animation_active` keeps
+    /// the loop waking for any idle-only animation that later extends that predicate, without
+    /// hardcoding a second timeout here.
     #[must_use]
     pub fn poll_timeout(&self) -> Duration {
-        if self.animation_active() || self.is_busy() || self.has_toasts() {
+        if self.animation_active()
+            || self.is_busy()
+            || self.has_toasts()
+            || self.models_refreshing()
+        {
             Duration::from_millis(ANIMATION_TICK_MS)
         } else {
             Duration::from_millis(IDLE_POLL_MS)
@@ -12288,6 +12297,46 @@ mod tests {
             "a streaming turn polls at the ~100ms animation cadence"
         );
         assert_eq!(ANIMATION_TICK_MS, 100, "the active animation tick is ~100ms");
+    }
+
+    #[test]
+    fn models_refresh_in_flight_drives_the_active_poll_cadence() {
+        // An in-flight background models.dev refresh is a busy signal for the event-loop poll
+        // cadence, so the in-place catalogue swap + "refreshing…" indicator clear land promptly
+        // (no ~200ms idle-tick lag) — mirroring how a streaming turn tightens the cadence. It must
+        // NOT busy-spin when idle: the cadence returns to the cheap idle timeout once the refresh
+        // lands.
+        let mut a = app();
+        assert!(!a.models_refreshing(), "precondition: no refresh in flight");
+        assert_eq!(
+            a.poll_timeout(),
+            Duration::from_millis(IDLE_POLL_MS),
+            "an idle TUI with no refresh blocks at the cheap cadence (no busy-spin)"
+        );
+
+        // Simulate an in-flight refresh by injecting the channel the worker would publish on.
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.models_refresh_rx = Some(rx);
+        assert!(a.models_refreshing(), "the refresh is in flight");
+        assert_eq!(
+            a.poll_timeout(),
+            Duration::from_millis(ANIMATION_TICK_MS),
+            "an in-flight models refresh polls at the tighter active cadence"
+        );
+        assert!(
+            !a.is_busy() && !a.has_toasts(),
+            "the refresh tightens the cadence without spoofing a streaming turn or a toast"
+        );
+
+        // The result lands and is drained; the cadence returns to idle (no busy-spin).
+        tx.send(ModelsRefreshMessage::Failed).unwrap();
+        a.poll_models_refresh();
+        assert!(!a.models_refreshing(), "the refresh is no longer in flight");
+        assert_eq!(
+            a.poll_timeout(),
+            Duration::from_millis(IDLE_POLL_MS),
+            "the cadence returns to idle once the refresh lands (no busy-spin)"
+        );
     }
 
     #[test]

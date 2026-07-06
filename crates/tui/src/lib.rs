@@ -411,10 +411,12 @@ fn event_loop<B: Backend + Write>(
         }
 
         // Poll for input with the animation-tick cadence while a turn streams (so the spinner
-        // animates and deltas are applied promptly) or while a toast is on screen (so it
-        // auto-dismisses on time and its depletion animation stays smooth), and the cheap idle
-        // cadence otherwise so the loop blocks rather than busy-spinning. Reduced-motion renders a
-        // static frame, but a turn/toast still polls at the active cadence to apply deltas.
+        // animates and deltas are applied promptly), while a toast is on screen (so it
+        // auto-dismisses on time and its depletion animation stays smooth), or while a background
+        // models.dev refresh is in flight (so its off-thread catalogue swap and the "refreshing…"
+        // indicator clear land promptly), and the cheap idle cadence otherwise so the loop blocks
+        // rather than busy-spinning. Reduced-motion renders a static frame, but a turn/toast/refresh
+        // still polls at the active cadence to apply results.
         let timeout = app.poll_timeout();
         if let Some(key) = pending_keys.pop_front() {
             app.on_key(key);
