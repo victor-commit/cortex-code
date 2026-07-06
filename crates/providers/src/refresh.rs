@@ -4,12 +4,14 @@
 //! This is the one network path in the `providers` crate. It consults the shared `CORTEX_NO_NET`
 //! outbound guard FIRST (before any socket), fetches the live models.dev dataset over the
 //! rustls-only transport, and curates a bounded multi-provider snapshot:
-//! - `openrouter` stays stable by refreshing only the recognizable ids the embedded snapshot tracks;
+//! - the primary provider (`openrouter`) is curated DYNAMICALLY from the fetched list — newest
+//!   models first within each vendor, bounded per vendor — so current models.dev ids appear even
+//!   when they are absent from the tiny embedded snapshot;
 //! - selected secondary providers are refreshed from models.dev and normalized into
 //!   provider-qualified model ids (`provider/model`).
 //!
-//! Curating against a bounded set keeps listings stable and avoids reintroducing retired ids
-//! (for example Claude 3.5 under OpenRouter) while expanding beyond the OpenRouter-only snapshot.
+//! Bounding each vendor keeps the listing sane while still drawing from the dynamic source across
+//! many providers, not just openrouter.
 //!
 //! On success the curated snapshot is written to a per-user cache (alongside the auth store) so a
 //! later offline `cortex models` reflects the refresh. The write is atomic and only happens after
@@ -51,6 +53,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
 /// Keep the per-provider refresh bounded and deterministic; the newest models are kept.
 const MAX_MODELS_PER_SECONDARY_PROVIDER: usize = 6;
+/// Per-vendor cap for the primary provider's dynamic curation. OpenRouter exposes hundreds of
+/// `vendor/model` ids on models.dev; keeping the newest bounded slice per vendor surfaces current
+/// models (including ids absent from the embedded snapshot) without an unbounded listing.
+const MAX_MODELS_PER_PRIMARY_VENDOR: usize = 20;
 
 /// The resolved models.dev endpoint: the `CORTEX_MODELS_DEV_URL` override when set and non-empty,
 /// else the canonical live endpoint.
@@ -67,7 +73,7 @@ pub fn models_dev_url() -> String {
 ///
 /// # Errors
 /// Returns a [`Diagnostic`] for a net-disabled refusal, a transport/connection failure, a non-2xx
-/// response, or a response that does not contain any recognized models.
+/// response, or a response with no usable openrouter models.
 pub async fn refresh_models_dev_catalogue(url: &str) -> Result<Catalogue, Diagnostic> {
     guard_outbound(OUTBOUND_OPERATION)?;
     let bytes = fetch(url).await?;
@@ -219,11 +225,12 @@ async fn fetch(url: &str) -> Result<Vec<u8>, Diagnostic> {
 
 /// Parse a models.dev response and curate a bounded multi-provider snapshot.
 ///
-/// OpenRouter remains intentionally stable by refreshing only the recognizable embedded ids (so a
-/// retired id is never reintroduced). Every OTHER top-level models.dev provider is surfaced too
-/// (except the excluded Zen provider, which is omitted everywhere), normalized to provider-qualified model ids
-/// (`provider/model`) and capped to its most recent models — so the merged catalogue draws from
-/// the dynamic source across many providers, not just openrouter.
+/// The primary provider (OpenRouter) is curated DYNAMICALLY from the fetched list — every
+/// well-formed model, newest-first within each vendor, bounded per vendor — so a current models.dev
+/// id absent from the embedded snapshot still appears. Every OTHER top-level models.dev provider is
+/// surfaced too (except the excluded Zen provider, which is omitted everywhere), normalized to
+/// provider-qualified model ids (`provider/model`) and capped to its most recent models — so the
+/// merged catalogue draws from the dynamic source across many providers, not just openrouter.
 fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
     let root: Value = serde_json::from_slice(bytes).map_err(|err| {
         Diagnostic::transport_unavailable(format!("models.dev response was not valid JSON: {err}"))
@@ -241,20 +248,11 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
         .provider(OPENROUTER_ID)
         .expect("embedded snapshot always carries the openrouter provider");
 
-    let mut models = BTreeMap::new();
-    if let Some(live_models) = openrouter.get("models").and_then(Value::as_object) {
-        for id in embedded.models.keys() {
-            if let Some(entry) = live_models.get(id)
-                && let Ok(info) = serde_json::from_value::<ModelInfo>(entry.clone())
-            {
-                models.insert(id.clone(), info);
-            }
-        }
-    }
+    let models = curate_primary_provider_models(openrouter);
 
     if models.is_empty() {
         return Err(Diagnostic::transport_unavailable(
-            "models.dev response did not contain any of the recognized models".to_owned(),
+            "models.dev response did not contain any usable openrouter models".to_owned(),
         ));
     }
 
@@ -287,6 +285,55 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
         }
     }
     Ok(Catalogue::from_providers(providers))
+}
+
+/// Curate the primary provider's (OpenRouter) models dynamically from the fetched models.dev list.
+///
+/// Every well-formed model in the live openrouter entry is kept — its id is already
+/// `vendor/model`-qualified upstream — grouped by vendor (the id's leading path segment), ordered
+/// newest-first within each vendor (models.dev `release_date`, then id, both descending), and
+/// truncated to [`MAX_MODELS_PER_PRIMARY_VENDOR`]. This replaces the previous intersection with the
+/// embedded snapshot ids, so a current models.dev model absent from the snapshot still appears. A
+/// malformed entry (e.g. missing the required `name`) is skipped rather than failing the curation.
+fn curate_primary_provider_models(openrouter: &Value) -> BTreeMap<String, ModelInfo> {
+    let Some(live_models) = openrouter.get("models").and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+
+    let mut by_vendor: BTreeMap<String, Vec<ModelInfo>> = BTreeMap::new();
+    for (id, entry) in live_models {
+        let Ok(mut info) = serde_json::from_value::<ModelInfo>(entry.clone()) else {
+            continue;
+        };
+        // OpenRouter ids are already `vendor/model`-qualified upstream; key on the map id verbatim.
+        info.id = id.clone();
+        by_vendor
+            .entry(primary_vendor(id).to_owned())
+            .or_default()
+            .push(info);
+    }
+
+    let mut models = BTreeMap::new();
+    for mut group in by_vendor.into_values() {
+        group.sort_by(|a, b| {
+            b.release_date
+                .cmp(&a.release_date)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        group.truncate(MAX_MODELS_PER_PRIMARY_VENDOR);
+        for info in group {
+            models.insert(info.id.clone(), info);
+        }
+    }
+    models
+}
+
+/// The vendor segment of a primary-provider model id (`vendor/model` -> `vendor`); the whole id
+/// when it carries no `/`.
+fn primary_vendor(model_id: &str) -> &str {
+    model_id
+        .split_once('/')
+        .map_or(model_id, |(vendor, _)| vendor)
 }
 
 /// Curate one non-openrouter provider from its models.dev entry: parse every well-formed model,
@@ -530,24 +577,29 @@ mod tests {
     }
 
     #[test]
-    fn curate_keeps_recognizable_models_and_excludes_others() {
+    fn curate_retains_live_primary_models_and_drops_malformed_entries() {
         let catalogue = curate(&fixture()).expect("curates");
         let openrouter = catalogue
             .provider(OPENROUTER_ID)
             .expect("openrouter present");
 
-        // Recognizable, well-formed models are kept.
+        // Well-formed live models are kept, including embedded-snapshot ids.
         assert!(openrouter.models.contains_key("google/gemini-2.5-flash"));
         assert!(openrouter.models.contains_key("anthropic/claude-sonnet-4"));
 
-        // A retired Claude 3.5 id present upstream is NEVER reintroduced (it is not in the
-        // embedded recognizable set), and an unrelated/unlisted id is not added.
+        // The primary provider is curated DYNAMICALLY, not intersected with the embedded ids: live
+        // ids ABSENT from the embedded snapshot are retained (within the per-vendor cap).
         assert!(
-            !openrouter
-                .models
-                .contains_key("anthropic/claude-3.5-sonnet")
+            openrouter.models.contains_key("anthropic/claude-3.5-sonnet"),
+            "a snapshot-absent live model must be retained"
         );
-        assert!(!openrouter.models.contains_key("some/unlisted-model-v9"));
+        assert!(
+            openrouter.models.contains_key("some/unlisted-model-v9"),
+            "a snapshot-absent live model must be retained"
+        );
+
+        // A malformed entry (missing the required `name`) is still dropped.
+        assert!(!openrouter.models.contains_key("openai/o3"));
 
         // Provider metadata comes from the live response.
         assert_eq!(openrouter.name, "OpenRouter");
@@ -556,6 +608,78 @@ mod tests {
             Some("https://openrouter.ai/api/v1")
         );
         assert_eq!(openrouter.env, vec!["OPENROUTER_API_KEY".to_owned()]);
+    }
+
+    #[test]
+    fn curate_retains_snapshot_absent_primary_models_newest_first_within_cap() {
+        // The primary provider (OpenRouter) is curated DYNAMICALLY from the fetched list, not
+        // intersected with the embedded ids: a current model absent from the embedded snapshot
+        // survives into the primary group, ordered newest-first within its vendor, with each vendor
+        // bounded by MAX_MODELS_PER_PRIMARY_VENDOR.
+        let over = MAX_MODELS_PER_PRIMARY_VENDOR + 4;
+        let mut anthropic = String::new();
+        for index in 0..over {
+            if index > 0 {
+                anthropic.push(',');
+            }
+            // The release year climbs with the index, so the highest index is the newest model.
+            anthropic.push_str(&format!(
+                "\"anthropic/claude-opus-{index:02}\": {{ \"id\": \"anthropic/claude-opus-{index:02}\", \"name\": \"Claude Opus {index}\", \"release_date\": \"{:04}-01-01\", \"cost\": {{ \"input\": 1, \"output\": 1 }}, \"limit\": {{ \"context\": 200000, \"output\": 8192 }} }}",
+                2000 + index
+            ));
+        }
+        let json = format!(
+            "{{ \"openrouter\": {{ \"id\": \"openrouter\", \"name\": \"OpenRouter\", \"api\": \"https://openrouter.ai/api/v1\", \"env\": [\"OPENROUTER_API_KEY\"], \"models\": {{ \
+             \"google/gemini-2.5-flash\": {{ \"id\": \"google/gemini-2.5-flash\", \"name\": \"Gemini 2.5 Flash\", \"cost\": {{ \"input\": 0.3, \"output\": 2.5 }}, \"limit\": {{ \"context\": 1048576, \"output\": 65535 }} }}, \
+             \"x-ai/grok-4\": {{ \"id\": \"x-ai/grok-4\", \"name\": \"xAI model\", \"release_date\": \"2025-07-01\", \"cost\": {{ \"input\": 3, \"output\": 15 }}, \"limit\": {{ \"context\": 262144, \"output\": 32768 }} }}, \
+             {anthropic} }} }} }}"
+        );
+
+        let catalogue = curate(&json).expect("curates");
+        let openrouter = catalogue
+            .provider(OPENROUTER_ID)
+            .expect("openrouter present");
+
+        // A current model absent from the embedded snapshot is retained (not intersected away).
+        assert!(
+            openrouter.models.contains_key("x-ai/grok-4"),
+            "a snapshot-absent live model must survive dynamic curation: {:?}",
+            openrouter.models.keys().collect::<Vec<_>>()
+        );
+        let newest_anthropic = format!("anthropic/claude-opus-{:02}", over - 1);
+        assert!(
+            openrouter.models.contains_key(&newest_anthropic),
+            "the newest snapshot-absent anthropic model must be retained"
+        );
+
+        // The per-vendor cap bounds each vendor; the oldest anthropic ids overflow the cap.
+        let anthropic_count = openrouter
+            .models
+            .keys()
+            .filter(|id| id.starts_with("anthropic/"))
+            .count();
+        assert_eq!(
+            anthropic_count, MAX_MODELS_PER_PRIMARY_VENDOR,
+            "each vendor is capped at MAX_MODELS_PER_PRIMARY_VENDOR"
+        );
+        assert!(
+            !openrouter.models.contains_key("anthropic/claude-opus-00"),
+            "the oldest model beyond the cap is dropped"
+        );
+
+        // Ordering within the provider group is recency-first (newest first), NOT alphabetical:
+        // the newest anthropic id (latest release) leads the anthropic subset.
+        let anthropic_recent: Vec<&str> = openrouter
+            .models_recent_first()
+            .into_iter()
+            .map(|model| model.id.as_str())
+            .filter(|id| id.starts_with("anthropic/"))
+            .collect();
+        assert_eq!(
+            anthropic_recent.first().copied(),
+            Some(newest_anthropic.as_str()),
+            "the newest model sorts first (recency, not A->Z): {anthropic_recent:?}"
+        );
     }
 
     #[test]
@@ -752,11 +876,14 @@ mod tests {
     }
 
     #[test]
-    fn curate_errors_when_no_recognized_models_are_present() {
+    fn curate_errors_when_the_primary_provider_has_no_usable_models() {
+        // Under dynamic curation the primary provider only errors when it has NO well-formed model
+        // at all — here its single entry is malformed (missing the required `name`), so curation
+        // yields an empty primary group and the refresh degrades cleanly rather than listing junk.
         let err = curate(
-            r#"{ "openrouter": { "id": "openrouter", "name": "OpenRouter", "models": { "x/y": { "id": "x/y", "name": "XY" } } } }"#,
+            r#"{ "openrouter": { "id": "openrouter", "name": "OpenRouter", "models": { "x/y": { "id": "x/y" } } } }"#,
         )
-        .expect_err("no recognized models is an error");
+        .expect_err("an unusable primary provider is an error");
         assert_eq!(err.kind(), "transport-unavailable");
     }
 

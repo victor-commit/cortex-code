@@ -22,9 +22,9 @@ const NET_DISABLED_CODE: i32 = 4;
 
 const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
 
-/// A models.dev-shaped fixture: the openrouter provider with several recognizable ids, a retired
-/// Claude 3.5 id (which must NOT be reintroduced), an unlisted extra, and one malformed entry. A
-/// second provider mirrors the real multi-provider response shape.
+/// A models.dev-shaped fixture: the openrouter provider with several live ids (two absent from the
+/// embedded snapshot, which dynamic curation must retain) and a second provider that mirrors the
+/// real multi-provider response shape.
 const FIXTURE: &str = r#"{
   "anthropic": { "id": "anthropic", "name": "Anthropic", "models": {} },
   "openrouter": {
@@ -392,19 +392,21 @@ fn refresh_against_local_endpoint_lists_curated_models_and_caches() {
         .map(|m| m["id"].as_str().unwrap_or_default().to_owned())
         .collect();
 
-    // Recognizable models are listed; the retired Claude 3.5 id and the unlisted extra are not.
+    // The primary provider is curated DYNAMICALLY from the fetched list: well-formed live ids are
+    // listed, INCLUDING ids absent from the tiny embedded snapshot (they are no longer intersected
+    // away). Only malformed entries are dropped.
     assert!(ids.iter().any(|id| id == DEFAULT_MODEL), "ids: {ids:?}");
     assert!(
         ids.iter().any(|id| id == "anthropic/claude-sonnet-4"),
         "ids: {ids:?}"
     );
     assert!(
-        !ids.iter().any(|id| id == "anthropic/claude-3.5-sonnet"),
-        "a removed Claude 3.5 id must not be reintroduced: {ids:?}"
+        ids.iter().any(|id| id == "anthropic/claude-3.5-sonnet"),
+        "a snapshot-absent live id must be retained by dynamic curation: {ids:?}"
     );
     assert!(
-        !ids.iter().any(|id| id == "some/unlisted-model-v9"),
-        "an unrecognized id must not be added: {ids:?}"
+        ids.iter().any(|id| id == "some/unlisted-model-v9"),
+        "a snapshot-absent live id must be retained by dynamic curation: {ids:?}"
     );
 
     // The refresh wrote a cache, and a subsequent offline listing reads it (source = "cached").
@@ -594,11 +596,13 @@ fn live_refresh_fetches_models_dev() {
     no_panic(&String::from_utf8_lossy(&output.stderr));
     assert!(
         stdout.contains(DEFAULT_MODEL),
-        "the live refresh lists the recognizable default model: {stdout}"
+        "the live refresh lists the default model: {stdout}"
     );
+    // The primary provider is curated dynamically from the CURRENT models.dev list (not pinned to
+    // the embedded ids), so it surfaces current models across many vendors.
     assert!(
-        !stdout.contains("claude-3.5"),
-        "the live refresh must not reintroduce a removed Claude 3.5 id: {stdout}"
+        stdout.contains("anthropic/"),
+        "the live refresh surfaces current anthropic-vendor models: {stdout}"
     );
     assert!(
         sandbox.cache_file().exists(),
