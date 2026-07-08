@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /connect    · 14:22:07
+
+   Pick a provider to connect for this session
+╭ Connect a provider ──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   OpenRouter        unified gateway · many models                                                         ✓ connected│
+│ › Anthropic         Claude Opus · Sonnet · Haiku                                                      ○ not connected│
+│   OpenAI            GPT-4o · o-series reasoning                                                           ✓ connected│
+│   Google            Gemini 2.5 Pro · Flash                                                            ○ not connected│
+│   Azure OpenAI      enterprise-hosted OpenAI                                                          ○ not connected│
+│   GitHub Copilot    OAuth · editor models                                                             ○ not connected│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter connect · ↑↓ select · d disconnect · esc close                              claude-opus · 47% · $0.0184 · ● live

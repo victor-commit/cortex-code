@@ -1,0 +1,40 @@
+ flow   ● OPEN 1  →  ● READY 2  →  ● CLAIMED 1  →  ● ACTIVE 1  →  ● SUBMITTED 1  →  ● CLOSED 2      ● BLOCKED 1
+
+ board · tasks ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌────────┬─────────────┬────────────────────────────────────────┬───────────┬──────────────────────────────────────────┐
+│ ID     │ STATE       │ TASK                                   │ OWNER     │ DEPENDS / ARTIFACT                       │
+├────────┼─────────────┼────────────────────────────────────────┼───────────┼──────────────────────────────────────────┤
+│ T-102  │ ● ACTIVE    │ add rate-limit middleware to /login    │ ws-77b1e0 │ in progress · test pending               │
+│ T-103  │ ● CLAIMED   │ extract token-refresh into a service   │ ws-3f9a2c │ T-100                                    │
+│ T-101  │ ● SUBMITTED │ wire /session revocation endpoint      │ ws-2c4d10 │ awaiting accept                          │
+│ T-104  │ ● READY     │ add audit-log sink for auth events     │ —         │ T-102                                    │
+│ T-105  │ ● READY     │ rotate signing keys on deploy          │ —         │ T-100                                    │
+│ T-107  │ ● OPEN      │ backfill legacy password hashes        │ —         │ —                                        │
+│ T-106  │ ✗ BLOCKED   │ migrate sessions table to v3           │ —         │ failed dep · missing contract field      │
+│ T-100  │ ● CLOSED    │ create sessions table + schema         │ ws-3f9a2c │ ✓ accepted                               │
+│ T-099  │ ● CLOSED    │ scaffold auth crate + wiring           │ ws-2c4d10 │ ✓ accepted                               │
+└────────┴─────────────┴────────────────────────────────────────┴───────────┴──────────────────────────────────────────┘
+
+ focused · item T-102 · contract ──────────────────────────────── coordinator · assignments ────────────────────────────
+  id                T-102                                          posts contracts · workers claim · core moves
+  state             ● ACTIVE
+  task              add rate-limit middleware to /login            post → claim → submit → accept
+  expected          429 on 6th attempt; test green
+  tools             read_span, edit_span, run                      ● single ownership  one per CLAIMED/ACTIVE
+  forbidden         crates/db/**, prod config                      ● no self-closing   never closes own item
+  context           crates/server/src/auth/*                       ● reconcile         vs expected → re-post
+  depends on        T-100 (CLOSED)
+  owner             ws-77b1e0                                      assignments   ws-3f9a2c→T-103   ws-77b1e0→T-102
+  result            status + artifact ref + error                                ws-2c4d10→T-101 (reconciling)
+ recent · board activity ───────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────┬───────────────┬────────────────────────────────────┬──────────────────────────────────────────────────────┐
+│ TIME     │ WHO           │ EVENT                              │ NOTE                                                 │
+├──────────┼───────────────┼────────────────────────────────────┼──────────────────────────────────────────────────────┤
+│ 14:02:11 │ ● ws-77b1e0   │ claimed T-102 → ACTIVE             │ rate-limit middleware                                │
+│ 14:01:47 │ ● core        │ posted T-104, T-105 → READY        │ wave 2 unblocked by T-102                            │
+│ 14:00:32 │ ● ws-2c4d10   │ submitted T-101 → review           │ awaiting coordinator accept                          │
+└──────────┴───────────────┴────────────────────────────────────┴──────────────────────────────────────────────────────┘
+
+
+
+ enter open item · c claim READY · j/k move · q close view                         claude-opus · 47% · $0.0184 · ● live

@@ -1,0 +1,40 @@
+
+                                                                              ╭──────────────────────────────────────╮
+                                                                              │ ✗  BAD  Could not save your settings │
+                                                                              │      s retry save                    │
+                                                                              ╰──────────────────────────────────────╯
+
+                                                                              ╭──────────────────────────────────────╮
+                                                                              │ ✓  OK   Saved checkpoint             │
+                                                                              │      auth-refactor · 2 files kept    │
+                                                                              ╰──────────────────────────────────────╯
+
+                                                                              ╭──────────────────────────────────────╮
+                                                                              │ ●  INFO Switched to claude-opus      │
+                                                                              │      applies from the next turn      │
+                                                                              ╰──────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /checkpoint save auth-refactor    · 17:02:19
+
+   Checkpoint saved — you can restore this point at any time
+   name   auth-refactor     files  2 tracked     size  18.4 KB
+   scope  crates/server/src/auth/*     restore with  /checkpoint restore auth-refactor
+
+   Ready — continue the refactor, the session picks up from here.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › keep going — toasts clear on their own, or press t to dismiss them…                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ s retry save · t dismiss toasts · enter send · u undo · q quit                    claude-opus · 47% · $0.0184 · ● live

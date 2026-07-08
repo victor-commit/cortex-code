@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › how does the rate limiter decide when to reject a request?    · 14:23:41
+
+   Cortex
+
+   The limiter keeps one token bucket per client key. Each bucket holds up to 60 tokens and refills
+   at 1 token/second, so a caller can burst briefly but settles to ~1 request per second over time.
+
+   On every request the middleware removes one token. If the bucket still has a token, the call is
+   admitted; if it is empty the request is rejected with 429 Too Many Requests and a Retry-After
+   header telling the client how many seconds until the next token is available.
+
+   The client key is the authenticated user id when present, and falls back to the source IP for
+   anonymous traffic, so one noisy caller cannot spend everyone else's budget.
+
+   ● In short  60-request burst, 1 request/second sustained, per user or per IP.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send · ↑ edit last · / commands · q quit                                    claude-opus · 47% · $0.0184 · ● live

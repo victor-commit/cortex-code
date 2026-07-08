@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /diff routes.rs    · 14:52:10
+
+   Pending change — file 2 of 6 · +9 −4
+   file  crates/server/src/routes.rs
+
+   @@ -134,7 +134,12 @@ fn register_routes(app: &mut Router)
+  134 134       app.route("/health", get(health));
+  135 135       app.route("/login", post(login));
+  136     −     // TODO: rate limiting
+      136 +     let limiter = RateLimiter::per_ip(5, Duration::from_secs(60));
+      137 +     app.layer(limiter.clone());
+  137 138       app.route("/logout", post(logout));
+
+   @@ -148,3 +153,4 @@ async fn login(body: Json<Creds>)
+  148 153       let user = verify(&body).await?;
+  149     −     Ok(Json(Token::issue(user)))
+      154 +     let token = Token::issue(user);
+      155 +     Ok(Json(token))
+
+   summary  +9  −4     2 hunks     next  util.rs (file 3 of 6)
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › press n / p to step files — or type a follow-up instruction…                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ n next file · p prev file · a stage · q quit                                      claude-opus · 47% · $0.0184 · ● live

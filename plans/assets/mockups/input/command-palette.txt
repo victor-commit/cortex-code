@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › add a rate limiter to the login route
+
+   Edited crates/server/src/auth/routes.rs · +214 −37
+   Ran cargo test --all · 42 passed
+
+ ›
+╭ Command palette ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › prompt                                                                                                             │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│ › Recall an older prompt                                                                                    Ctrl+G H │
+│   Move toward the stashed prompt                                                                            Ctrl+G L │
+│   Stash the current prompt draft                                                                            Ctrl+G G │
+│   Restore the stashed prompt                                                                                Ctrl+G F │
+│   Palette submenu: queued prompts                                                                         Ctrl+G 8 › │
+│                                                                                                                      │
+│                                                                                                      5 of 28 actions │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ move · enter run · esc close                                                   claude-opus · 47% · $0.0184 · ● live

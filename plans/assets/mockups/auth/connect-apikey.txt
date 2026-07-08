@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /connect anthropic    · 14:22:07
+
+   Paste your Anthropic API key to connect
+╭ Add API key ─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Provider  Anthropic                                                                                                   │
+│                                                                                                                      │
+│sk-ant-••••••••••••1234█                                                                                              │
+│                                                                                                                      │
+│● Format looks valid — 108 characters                                                                                 │
+│                                                                                                                      │
+│ Save    Cancel   stored locally in auth.json                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter save · esc cancel · paste insert key                                        claude-opus · 47% · $0.0184 · ● live

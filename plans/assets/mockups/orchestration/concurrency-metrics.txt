@@ -1,0 +1,40 @@
+ waves  ● w1 clear 0%  →  ● w2 clear 0%  →  ◐ w3 hot 16.7%      decision hold @ N=3      workers 3/3      quarantine 1
+
+ waves · conflict rate ─────────────────────────────────────────────────────────────────────────────────────────────────
+ WAVE     PAIRS   INTERSECTING     RATE  DECISION
+ wave 1       1              0     0.0%  ● WIDEN
+ wave 2       3              0     0.0%  ● WIDEN
+ wave 3       6              1    16.7%  ● HOLD
+
+ merge-back · integration ──────────────────────────────────── quarantine · held ───────────────────────────────────────
+  feat-db-schema      ● completed     wave 1                    ref         refs/workflow/quarantine/
+  feat-auth-login     ● completed     wave 2                                feat-api-routes
+  feat-api-routes     ● merge blocked wave 3 · routes.rs
+                                                                ● merge conflict  overlapping
+  worker branch → integration branch                                        edits in routes.rs
+  on conflict: merge blocked · never force-resolves             ● test regression  suite red
+
+
+                                                                disposition held for triage
+                                                                reattach    re-post as READY once resolved
+ recent · concurrency events ───────────────────────────────────────────────────────────────────────────────────────────
+┌──────────┬───────────────┬────────────────────────────────────┬──────────────────────────────────────────────────────┐
+│ TIME     │ WHO           │ EVENT                              │ NOTE                                                 │
+├──────────┼───────────────┼────────────────────────────────────┼──────────────────────────────────────────────────────┤
+│ 14:07:12 │ ● wave 3      │ conflict on routes.rs → HOLD       │ 16.7% ≥ 15% threshold                                │
+│ 14:07:04 │ ● core        │ feat-api-routes → merge blocked    │ routed to quarantine                                 │
+│ 14:06:58 │ ● core        │ quarantine ref created             │ held for triage                                      │
+│ 14:06:41 │ ● wave 3      │ intersecting pair detected         │ routes.rs · handlers.rs                              │
+│ 14:06:15 │ ● core        │ wave 3 dispatched → 6 pairs        │ N=3 workers live                                     │
+│ 14:05:31 │ ● wave 2      │ feat-auth-login merged clean       │ 0 intersecting pairs                                 │
+│ 14:05:02 │ ● wave 2      │ feat-session-store merged clean    │ 0 intersecting pairs                                 │
+│ 14:04:48 │ ● core        │ wave 2 dispatched → 3 pairs        │ parallelism widened                                  │
+│ 14:03:22 │ ● wave 1      │ feat-db-schema merged clean        │ 0 intersecting pairs                                 │
+│ 14:02:55 │ ● core        │ integration branch synced          │ fast-forward @ main                                  │
+│ 14:02:10 │ ● core        │ parallelism widened → N=3          │ wave 3 dispatched                                    │
+│ 14:01:37 │ ● core        │ wave 1 dispatched → 1 pair         │ cold start N=1                                       │
+└──────────┴───────────────┴────────────────────────────────────┴──────────────────────────────────────────────────────┘
+
+
+
+ ←→ wave · e expand event · R reattach → READY · j/k move · q close view           claude-opus · 47% · $0.0184 · ● live

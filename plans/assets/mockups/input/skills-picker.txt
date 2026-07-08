@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › enable the vision skill for this screenshot
+
+   Loaded 4 of 6 skills for this session
+   Opening the skill picker
+
+ › /skills
+╭ Select skill ────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › filter skills                                                                                                      │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│   commit-identity     Attribute commits to the linked identity                                                  ● on │
+│   use-figma           Implement Figma designs pixel-perfect                                                     ● on │
+│ › vision-opus         Route image analysis to a vision model                                                   ● off │
+│   firecrawl           Search and scrape the web                                                                 ● on │
+│   security-review     Parallel vulnerability audit                                                             ● off │
+│   debugging           Hypothesis-driven runtime debugging                                                       ● on │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ move · space toggle · enter apply · esc close                                  claude-opus · 47% · $0.0184 · ● live

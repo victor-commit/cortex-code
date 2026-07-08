@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › run the test suite and summarize failures    · 16:18:44
+
+   Turn paused — the model is receiving too many requests
+   ● Rate limit reached  —  sending requests faster than the plan allows
+
+   limit    requests per minute   ·   plan  Pro
+   resets   16:19   ·   the paused turn resumes on its own
+
+   Usage this minute
+   requests  ████████████████████████████████████████  50 / 50   at the cap
+   tokens    ████████████████████████████░░░░░░░░░░░░  58k / 80k 72%
+
+   ● Waiting  —  the turn will resume automatically once the limit clears.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › the paused turn resumes automatically when the limit clears…                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ q quit                                                                            claude-opus · 47% · $0.0184 · ● live

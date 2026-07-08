@@ -1,0 +1,40 @@
+
+
+
+
+ › /mode agent    · 14:24:02
+
+   Mode switch — Edit → Agent · promotion requested
+   current  Edit Mode · 9 tools      requested  Agent Mode · 11 tools      delta  +2 grants
+   policy   auto-grant within allow-rules  ·  scoped to this session  ·  revertible with /mode edit
+
+   Modes — the runtime grants your tools per mode
+     ○ Plan Mode   8 tools   read-only inspection
+     ○ Edit Mode   9 tools   read + write + run
+     › Agent Mode 11 tools   read + write + run + subagents  ● selected
+     ○ Chat Mode   6 tools   interactive Q&A
+     ○ Headless   10 tools   non-interactive single-shot
+
+   Tool grants by mode   (Δ = unlocked by this switch)
+   tool              Plan    Edit   Agent    Chat    Head    Δ    purpose
+   ──────────────────────────────────────────────────────────────────────────────────────────
+   Find files        yes     yes     yes     yes     yes          by name or glob
+   Search code       yes     yes     yes     yes     yes          regex across the tree
+   Read file         yes     yes     yes     yes     yes          a specific line range
+   Run shell          ro    gated   gated     —     gated         execute commands
+   Edit file          —      yes     yes      —      yes          change a line range
+   Write file         —      yes     yes      —      yes          create or overwrite
+   Web lookup       gated   gated   gated   gated   gated         fetch external docs
+   Ask user          yes     yes     yes     yes      —           prompt for input
+   Plan note         yes      —      yes      —      yes     Δ    record plan steps
+   Spawn subagent     —       —      yes      —      yes     Δ    launch scoped agents
+
+   Promotion & permission flow
+   1 request →  2 policy check →  3 grant / gate →  4 scoped grant
+   legend   yes granted   gated needs confirmation   ro read-only   — not granted   Δ new here
+
+   Grant Plan note + Spawn subagent for this session? Confirm to switch to Agent Mode.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › confirm to switch to Agent Mode — or type a mode name to pick another…                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter confirm switch · ↑↓ pick mode · ? grants · q quit                           claude-opus · 47% · $0.0184 · ● live

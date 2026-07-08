@@ -1,0 +1,40 @@
+ scorer  ● D1  →  ● D2  →  ◐ D3  →  ● D4  →  ◐ D5        total 8/10
+
+ scores · 5 dimensions ─────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────┬──────────────┬────────────┬───────────────────────────────────────────────────────────────┐
+│ DIMENSION                │ SCORE        │ GATE       │ EVIDENCE                                                      │
+├──────────────────────────┼──────────────┼────────────┼───────────────────────────────────────────────────────────────┤
+│ D1 Intent fidelity       │ ● full       │ ● ok       │ did exactly what was asked                                    │
+│ D2 Execution-verified    │ ● full       │ —          │ tests + curl surface captured                                 │
+│ D3 Scope discipline      │ ◐ partial    │ ● ok       │ one unrequested helper added                                  │
+│ D4 Report honesty        │ ● full       │ ● ok       │ claims match the diff                                         │
+│ D5 Reliability           │ ◐ partial    │ —          │ one flaky retry observed                                      │
+└──────────────────────────┴──────────────┴────────────┴───────────────────────────────────────────────────────────────┘
+
+ verdict · feat-api-routes ────────────────────────────────────── rubric · scoring ─────────────────────────────────────
+  subject         feat-api-routes @ wf-42                          each dimension is earned 0/1/2 and gate-checked
+  worker          ws-77b1e0
+                                                                   ● full     did it · scores 2
+  total           8/10  ████████░░                                 ◐ partial  incomplete · scores 1
+  effectiveness   ● PASS     (PASS / FAIL / PARTIAL)               ○ miss     absent · scores 0
+  repo-readiness  ● PASS     (PASS / FAIL / N-A)
+  gates           ● 3/3 met                                        ● gated dims  D1 · D3 · D4 must be ≥ 1
+                                                                   ● any miss    a gated 0 fails the run
+  note            D3 cleared the ≥1 gate · trim dead weight next   ● threshold   ≥ 8/10 to pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter open dimension · e show evidence · j/k move · q close view                  claude-opus · 47% · $0.0184 · ● live

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /mcp    · 15:01:44
+
+   MCP servers — 4 configured · 3 connected · 1 failed
+
+┌─────────────┬────────────┬───────────┬──────────┬────────────────────────────────┐
+│ STATE       │ SERVER     │ TRANSPORT │ TOOLS    │ NOTE                           │
+├─────────────┼────────────┼───────────┼──────────┼────────────────────────────────┤
+│ ✓ connected │ filesystem │ stdio     │ 12 tools │                                │
+│ ✓ connected │ git        │ stdio     │ 8 tools  │                                │
+│ ✓ connected │ context7   │ http      │ 3 tools  │                                │
+│ ✗ failed    │ playwright │ stdio     │ 0 tools  │ spawn error: command not found │
+└─────────────┴────────────┴───────────┴──────────┴────────────────────────────────┘
+
+   total  23 tools available     ✗ 1 server needs attention
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › press r to reconnect a failed server — or type a follow-up…                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ r reconnect · enter details · q quit                                              claude-opus · 47% · $0.0184 · ● live

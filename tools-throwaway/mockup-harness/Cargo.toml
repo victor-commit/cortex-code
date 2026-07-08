@@ -1,0 +1,40 @@
+# THROWAWAY design tooling — NOT product code, NOT a workspace member.
+#
+# The empty `[workspace]` table below makes this package its OWN workspace root,
+# so it is fully detached from the parent Cortex Code workspace. `cargo build`
+# at the repo root never sees it, and building this manifest never tries to
+# attach to the parent workspace. Do not add this to the root `members` list.
+[workspace]
+
+[package]
+name = "mockup-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Throwaway ratatui harness that renders static Cortex Code TUI mockups to deterministic terminal frames."
+
+[[bin]]
+name = "mockup-harness"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the exact versions already vendored in the parent workspace's
+# Cargo.lock so the build reuses the local crate cache (offline, fast).
+ratatui = "=0.29.0"
+crossterm = "=0.28.1"
+
+# PNG rasterization is OPTIONAL and soft-fail. `.txt` is the source of truth.
+# Enable with `--features png` to also emit `<screen>.png`.
+image = { version = "=0.25.9", optional = true }
+# Pure-Rust TrueType rasterizer. Renders real DejaVu Sans Mono glyphs (incl.
+# box-drawing) per cell so the PNG is legible. Deterministic for a given
+# (font, px, char). Only pulled in under `--features png`.
+fontdue = { version = "=0.9.3", optional = true }
+
+[features]
+default = []
+png = ["dep:image", "dep:fontdue"]
+
+[profile.dev]
+# Keep the throwaway build lean.
+debug = false

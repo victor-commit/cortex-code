@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /help    · 15:04:19
+
+   Keybindings — leader is ctrl+g, then a key
+
+┌──────────┬─────────────┬─────────────────────────────┐
+│ SCOPE    │ KEY         │ ACTION                      │
+├──────────┼─────────────┼─────────────────────────────┤
+│ Session  │ ctrl+g n    │ start a new session         │
+│          │ ctrl+g s    │ open the session picker     │
+│          │ ctrl+g f    │ fork from the current turn  │
+│          │ ctrl+c      │ interrupt the running turn  │
+│ Views    │ ctrl+g m    │ switch model                │
+│          │ ctrl+g a    │ switch agent                │
+│          │ ctrl+g d    │ show the pending diff       │
+│          │ ctrl+g t    │ show the session timeline   │
+│ Composer │ /           │ open the slash command menu │
+│          │ ctrl+p      │ open the command palette    │
+│          │ enter       │ send the message            │
+│          │ shift+enter │ insert a newline            │
+└──────────┴─────────────┴─────────────────────────────┘
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a command with / — or ask a question in plain English…                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ / commands · ctrl+g leader · q quit                                               claude-opus · 47% · $0.0184 · ● live

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+ › /review feat-api-routes    · 14:41:07
+
+   Review complete — feat-api-routes · two gates ran
+   diff  6 files · +214 −37     worker  ws-3f9a2c     branch  workflow/wf-42/feat-api-routes
+   verdict  ● CHANGES REQUESTED   ·   any fail blocks the merge
+
+   Code Reviewer — L3 intent audit   (5 checks · 3 pass · 2 fail · “intent, not just diff”)
+  ● pass Q1  Scope fidelity                  6 files
+         changes map to the request; nothing extra
+  ● pass Q2  Correctness                     ACC-API-010
+         logic satisfies the acceptance contract
+  ● fail Q3  Dead weight                     server/util.rs:88
+         unused helper build_stub() left behind
+  ● fail Q4  Swallowed failure               routes.rs:142
+         catch {} drops the error, masking a 500
+  ● pass Q5  Honest report                   pr-summary
+         the summary matches the actual diff
+
+   QA Validator — L4 process check   (4 checks · 2 pass · 2 fail · “un-run is not done”)
+  ● pass Q6  Tests executed                  cargo test
+         42 passed, 0 failed
+  ● pass Q7  Surface exercised               curl :8080/login
+         rate-limit held at call 6
+  ● fail Q8  Evidence captured               run-log.txt
+         absent for feat-audit-log
+  ● fail Q9  Regression re-run               cargo test --all
+         never re-run after the fix landed
+
+   Gate — merge withheld · 4 findings (2 code · 2 process) · cannot confirm without evidence
+   next  re-post to ws-3f9a2c with: Q3, Q4, Q8, Q9  ·  worker fixes → re-review
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a reply to the worker — or press a to accept, r to re-post the findings…                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ r re-post findings ·  a accept · d open diff · q quit                             claude-opus · 47% · $0.0184 · ● live

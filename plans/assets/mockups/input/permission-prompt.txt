@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › run the full test suite and report the result    · 14:41:02
+
+   Prepared command: cargo test --all
+   Paused — waiting for you to allow the command below
+╭ Permission required ─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Allow run to execute a shell command?                                                                                 │
+│                                                                                                                      │
+│  $ cargo test --all    in ~/projects/cortex-code                                                                     │
+│                                                                                                                      │
+│ › ● Allow once     run this command a single time                                                                    │
+│   ● Allow always   remember for this session                                                                         │
+│   ● Deny           refuse and tell the agent why                                                                     │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter confirm · ↑↓ choose · esc deny                                              claude-opus · 47% · $0.0184 · ● live

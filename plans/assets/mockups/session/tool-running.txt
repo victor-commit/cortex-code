@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › where do we enforce the rate limit?    · 14:24:02
+
+ ● Exploring
+   └ Search "rate limit" in crates/
+
+ ● Working  (4s · Esc to interrupt)
+   └ Searching crates/ · 128 files scanned · 3 matches so far
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ esc interrupt · ctrl+o expand · / commands · q quit                               claude-opus · 47% · $0.0184 · ● live

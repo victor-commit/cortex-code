@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › where do we enforce the rate limit?    · 14:24:02
+
+   ✓ Searched the codebase for where the rate limit is enforced
+     → pattern "rate_limit" in crates/server/src
+     → 3 matches across 221 files · scanned in 0.4s
+     → middleware/rate_limit.rs:42   pub fn enforce(limit: Quota)
+     → routes/login.rs:88   enforce(login_quota())
+     → routes/api.rs:17   enforce(api_quota())
+
+   Cortex
+
+   The limit is enforced in one place — middleware/rate_limit.rs, and the login and
+   API routes both call enforce() with their own quota. Want me to walk through it?
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send · ctrl+o collapse · / commands · q quit                                claude-opus · 47% · $0.0184 · ● live

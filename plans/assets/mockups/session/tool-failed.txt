@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › run the test suite    · 14:41:55
+
+   ✗ Ran the workspace test suite   › exit 1
+
+   Cortex
+
+   The suite never ran — the build failed first. api.rs uses serde_json,
+   but that crate is not listed in crates/server/Cargo.toml. I can add the
+   dependency and re-run the suite — say the word and I'll apply the fix.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send · r retry · ctrl+o expand · q quit                                     claude-opus · 47% · $0.0184 · ● live
