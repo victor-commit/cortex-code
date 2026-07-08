@@ -346,7 +346,8 @@ Full-height view (`cli_view`):
   (`rule_head`) between sections. Never boxes, never decorative divider rows.
 - **No automatic wrapping exists.** Prose is hand-broken by the author; tables are
   hand-summed so each row is exactly the intended width. Transcript overflow silently
-  truncates from the top: keep `cli_page` transcript content within its 34-row body.
+  truncates from the top: keep `cli_page` transcript content within its 35-row body
+  (40 rows minus composer 3, statusline 1, hints 1).
 - **Trailing spaces are trimmed** in the `.txt`; never rely on trailing pads for layout
   proofs, and verify background washes (`SURFACE`, `ADD_BG`, `DEL_BG`) on the PNG.
 - **One emphasis channel at a time**; bold for at most one phrase per screen.

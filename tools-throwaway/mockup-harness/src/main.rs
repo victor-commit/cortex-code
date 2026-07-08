@@ -39,7 +39,11 @@ type Entry = (&'static str, &'static str, RenderFn);
 /// wholesale: its 45 screen sources are parked uncompiled under
 /// `src/screens_v1_reference/` and live in git history.
 fn registry() -> Vec<Entry> {
-    vec![]
+    vec![
+        ("session", "home", screens::home::render),
+        ("session", "chat-turn", screens::chat_turn::render),
+        ("session", "tool-calls", screens::tool_calls::render),
+    ]
 }
 
 fn out_dir() -> PathBuf {
@@ -252,6 +256,13 @@ mod png {
                     continue;
                 }
                 let fg = color_to_rgb(cell.fg, DEFAULT_FG);
+                if ch == '\u{23bf}' {
+                    // U+23BF (the result elbow) is absent from DejaVu Sans
+                    // Mono, so fontdue would draw the .notdef box; synthesize
+                    // the light vertical-and-bottom-right stroke instead.
+                    draw_elbow(&mut img, ox, oy, fg);
+                    continue;
+                }
                 let bold = cell.modifier.contains(Modifier::BOLD);
                 let font = if bold { &fonts.bold } else { &fonts.regular };
                 draw_glyph(&mut img, ox, oy, ch, font, fg, bg);
@@ -268,6 +279,26 @@ mod png {
                     img.put_pixel(px, py, Rgb(rgb));
                 }
             }
+        }
+    }
+
+    // Stroke weight and corner height chosen to sit flush with DejaVu's box
+    // glyphs: 2 px strokes match the rendered weight of `│`/`─` at 17 px, and
+    // the corner lands just above the text baseline.
+    fn draw_elbow(img: &mut RgbImage, ox: u32, oy: u32, fg: [u8; 3]) {
+        let put = |img: &mut RgbImage, x: u32, y: u32| {
+            if x < img.width() && y < img.height() {
+                img.put_pixel(x, y, Rgb(fg));
+            }
+        };
+        let corner_y = oy + 13;
+        for y in oy + 1..=corner_y {
+            put(img, ox + 4, y);
+            put(img, ox + 5, y);
+        }
+        for x in ox + 4..ox + CW {
+            put(img, x, corner_y);
+            put(img, x, corner_y + 1);
         }
     }
 

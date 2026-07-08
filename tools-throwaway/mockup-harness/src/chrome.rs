@@ -249,6 +249,26 @@ pub fn elbow_note(text: &str) -> Vec<Line<'static>> {
     elbow(vec![vec![m(text)]])
 }
 
+/// Verdict lead for elbow rows: `✓ text` (OK) or `✗ text` (BAD). The glyph
+/// carries the outcome color, the text stays TXT - glyph + color, and only
+/// one emphasis channel. Append muted meta (` · exit 0 · 0.2s`) after it.
+pub fn verdict(ok: bool, text: &str) -> Vec<Span<'static>> {
+    let (glyph, hue) = if ok { ("✓", OK) } else { ("✗", BAD) };
+    vec![
+        Span::styled(format!("{glyph} "), Style::default().fg(hue)),
+        Span::styled(text.to_string(), Style::default().fg(TXT)),
+    ]
+}
+
+/// Inline key-hint spans in the footer grammar (key MUTED, label FAINT):
+/// recovery affordances like `r retry` attached to a failed block.
+pub fn key_span(key: &str, label: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(key.to_string(), Style::default().fg(MUTED)),
+        Span::styled(format!(" {label}"), Style::default().fg(FAINT)),
+    ]
+}
+
 // ============================================================================
 // DIFFS (pattern 6) - tinted background lines, ASCII +/- markers (never
 // U+2212), line numbers. The wash only shows in the PNG, not the .txt.
@@ -520,7 +540,8 @@ pub fn hints(pairs: &[(&str, &str)]) -> Line<'static> {
 // ============================================================================
 
 /// Chat frame: transcript column + composer + statusline + hints. The
-/// transcript body is 34 rows tall at the fixed 120x40 capture.
+/// transcript body is 35 rows tall at the fixed 120x40 capture
+/// (40 minus composer 3, statusline 1, hints 1).
 pub fn cli_page(
     f: &mut Frame,
     composer_ghost: &str,
@@ -622,6 +643,26 @@ fn composer(f: &mut Frame, area: Rect, ghost: &str) {
 // TRANSCRIPT VOCABULARY - turns, headings, dividers, cards.
 // ============================================================================
 
+/// Brand wordmark row: `   Cortex Code  vX.Y.Z` - the copper accent's one
+/// home in the transcript (welcome blocks, auth screens). Indented to the
+/// transcript's column-4 text edge.
+pub fn wordmark(version: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("   "),
+        Span::styled("Cortex Code".to_string(), Style::default().fg(ACCENT)),
+        Span::styled(format!("  {version}"), Style::default().fg(MUTED)),
+    ])
+}
+
+/// A plain FAINT `─` rule as a transcript line, one-space left margin -
+/// separates regions without a title (use `rule_head` for titled rules).
+pub fn rule_line(width: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled("\u{2500}".repeat(width), Style::default().fg(FAINT)),
+    ])
+}
+
 /// A user turn: ` › cmd` with an optional trailing muted age (`2m ago`).
 pub fn user_cmd(cmd: &str, meta: Option<&str>) -> Line<'static> {
     let mut spans = vec![
@@ -635,7 +676,7 @@ pub fn user_cmd(cmd: &str, meta: Option<&str>) -> Line<'static> {
     if let Some(meta) = meta {
         spans.push(Span::styled(
             format!("  {SEP} {meta}"),
-            Style::default().fg(FAINT),
+            Style::default().fg(MUTED),
         ));
     }
     Line::from(spans)
@@ -652,7 +693,7 @@ pub fn agent_head(title: &str) -> Line<'static> {
 /// Render transcript lines bottom-anchored in `body`: the newest turn hugs
 /// the composer, spare space sits at the top - real scrollback behavior.
 /// Lines beyond the body height are truncated from the top; keep counts under
-/// the body height (34 rows in `cli_page`).
+/// the body height (35 rows in `cli_page`).
 pub fn transcript(f: &mut Frame, body: Rect, lines: Vec<Line<'static>>) {
     let n = lines.len() as u16;
     let area = if n < body.height {

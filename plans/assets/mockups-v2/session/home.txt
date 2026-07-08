@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   Cortex Code  v0.3.0
+   Welcome back.
+
+   directory ~/projects/cortex-code · model claude-opus · mode agent · branch master
+
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ › summarize what changed since yesterday  · 2m ago
+
+   Cortex
+
+   Two commits landed overnight: the poll cadence fix and a models.dev catalogue refresh.
+   Tests are green on master; nothing needs your attention.
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · claude-opus · ctx 6% · $0.02                                                  ● idle
+ enter send · / commands · @ files · ? help
