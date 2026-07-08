@@ -8,7 +8,7 @@ ever disagree, architecture.md wins: stop and escalate, never improvise.
 
 The whole system exists as code in `tools-throwaway/mockup-harness/src/chrome.rs`.
 Screens compose those primitives (`tool_line`/`elbow`, `diff_lines`, `select_list`,
-`working_band`, `bar`, `statusbar`, `hints`, `timefmt`, `cli_page`/`cli_view`/
+`working_band`, `bar`, `statusbar`, `hints`, `banner`, `timefmt`, `cli_page`/`cli_view`/
 `cli_action`, `card`) and never hand-roll their own versions. Every example below is a
 literal excerpt of what those primitives render; spaces are significant.
 
@@ -107,7 +107,7 @@ them once, here, for reference only):
 
 ---
 
-## 3. The 12 core patterns
+## 3. The 13 core patterns
 
 ### Pattern 1: tool call = one line + elbow result
 
@@ -144,8 +144,8 @@ modal (rule N-7). Everything else separates by whitespace and `─` rules.
 ╰────────────────────────────────────────────╯
 ```
 
-The dock variant (a `card()` with an embedded title, no filled surface, hints stay in
-the global footer row, active option marked by `›` + clear text):
+The dock variant (a `card()` with an embedded title, no filled surface, the card's keys
+on ONE MUTED line INSIDE the card, active option marked by `›` + clear text):
 
 ```
 ╭ Permission required ───────────────────────────╮
@@ -153,38 +153,63 @@ the global footer row, active option marked by `›` + clear text):
 │                                                │
 │  › yes, run it                                 │
 │    yes, and don't ask again this session       │
-│    no (esc)                                    │
+│    no                                          │
+│                                                │
+│  1-3 choose · enter confirm · esc deny         │
 ╰────────────────────────────────────────────────╯
 ```
 
 ### Pattern 3: statusline (bottom)
 
-One dim gray row, NO filled background (rule N-1). Left: `path · branch · model ·
-ctx N% · cost` in `MUTED` with `FAINT` separators. Right: an optional fixed-slot mode
-badge, then the state dot ALWAYS paired with a one-word label. The dot carries the state
-hue (`MUTED` when idle, `OK` when live/healthy); its word label renders `MUTED`. The
-mode badge is a filled pill (`CANVAS` text on the badge hue): the plan-mode badge is the
-single `INFO` badge; any elevated/active mode badge is `ACCENT`. Auth/state screens that
-forbid green/red do so OUTSIDE the statusline state dot: the dot keeps its state hue.
+One dim gray row, the last row of the screen, NO filled background (rule N-1) and
+MINIMAL content (rule N-8): `~/path · branch · <Model Display Name>` in `MUTED` with
+`FAINT` separators, NOTHING else. No context percentage, no cost, no state dot: those
+live in `/status`. Liveness is conveyed by the working band or on-screen content, never
+by the statusline. The single optional right-side element is the mode badge, shown only
+when a non-default mode is active: a filled pill (`CANVAS` text on the badge hue), the
+plan-mode badge being the single `INFO` badge and any elevated/active mode badge
+`ACCENT`. The model always renders as its human display name ("Claude Opus 4.8"), never
+a raw id like `claude-opus` (rule N-10/F-7) in the statusline, pickers, and `/status`
+alike.
 
 ```
- ~/projects/cortex-code · master · claude-opus · ctx 42% · $0.14              plan  ● live
+ ~/projects/cortex-code · master · Claude Opus 4.8
 ```
 
-### Pattern 4: footer hints
-
-The last row. 3-6 keys maximum, keys in `MUTED`, labels in `FAINT`, `·` separators,
-chords lowercase. Progressive disclosure: the full list lives in `/help`, never in the
-footer; `? more` is the escape hatch.
+With the plan-mode badge active:
 
 ```
- enter send · ctrl+p palette · shift+tab plan · @ files · ? more
+ ~/projects/cortex-code · master · Claude Opus 4.8                                                                plan
+```
+
+### Pattern 4: hint placement (no global hint row)
+
+There is NO global footer hint row, on any screen (rule N-9): the old
+`key label · key label` row under the statusline is gone, and so is the `? help` escape
+hatch. Keyboard affordances render where they act:
+
+- **Dock/picker cards** carry ONE `MUTED` key line INSIDE the card (max ~5 items),
+  rendered by `hints(&[...])` on the card's last interior row.
+- **Failure blocks** carry their recovery keys ADJACENT to the block (same line or the
+  line below), rendered with `key_span`, e.g. `r retry` under a failed tool call.
+- **Full-screen views** put navigation keys, where needed, on ONE `MUTED` line inside
+  the view header or directly attached to the interactive element.
+- **The composer placeholder** may carry at most one inline hint.
+
+Keys are `MUTED`, labels `FAINT`, `·` separators, chords lowercase. The full key
+reference lives in `/help`.
+
+```
+│  enter select · esc cancel · type to filter    │   (inside a picker card)
+
+   ⎿ ✗ 2 of 38 tests failed · exit 101
+     r retry                                         (adjacent to the failure)
 ```
 
 ### Pattern 5: one canonical status band (elapsed once)
 
 A working/streaming state announces itself ONCE: the working band above the composer.
-Never repeat the same status inline + band + footer. A screen with an in-flight
+Never repeat the same status inline and in the band. A screen with an in-flight
 tool/shell/task shows at most one band; showcase screens may omit it. Elapsed time
 renders exactly once per activity: in the band when one is shown (the tool line then
 omits it), on the tool line when no band is shown.
@@ -226,9 +251,9 @@ Selection is never red and never a filled color bar.
 
 ```
   / type to filter
- › claude-opus    thinking · 200k ctx                                current
-   claude-sonnet  fast · 200k ctx
-   gpt-5          balanced · 400k ctx
+ › Claude Opus 4.8    thinking · 200k ctx                             current
+   Claude Sonnet 4.6  fast · 200k ctx
+   GPT-5              balanced · 400k ctx
 ```
 
 ### Pattern 8: failure escalation + borderless left-bar toasts
@@ -305,8 +330,7 @@ Chat frame (`cli_page`), bottom-anchored:
 ╭────────────────────────────────────────────╮
 │ › reply to Cortex, or ask a follow-up…     │
 ╰────────────────────────────────────────────╯
- ~/projects/cortex-code · master · claude-opus · ctx 42% · $0.14                    ● idle
- enter send · ↑ edit last · ? more
+ ~/projects/cortex-code · master · Claude Opus 4.8
 ```
 
 Full-height view (`cli_view`):
@@ -314,12 +338,33 @@ Full-height view (`cli_view`):
 ```
  status ──────────────────────────────────────────────────────────
 
- agent      claude-opus
+ agent      Claude Opus 4.8
  context    ████████░░░░░░░░░░░░  42% of 200k
  mcp        ● live · 3 servers
 
- ~/projects/cortex-code · master · claude-opus · ctx 42% · $0.14                    ● idle
- esc back · ? more
+ ~/projects/cortex-code · master · Claude Opus 4.8
+```
+
+### Pattern 13: the ASCII "Code" banner
+
+`home` and `onboarding` open with a droid-style ASCII-art wordmark reading "Code" in
+`ACCENT` copper (rule F-6): 6 rows tall, built ONLY from authorized glyphs/ASCII (block
+letters in `█`), rendered by the single shared chrome primitive `banner()` at the
+column-4 text edge, with product version and greeting nearby. It replaces the old
+one-line wordmark on those two screens and is the only large brand mark in the gallery:
+NO other screen carries a banner. On home and onboarding the banner counts as ONE accent
+element, and the accent budget is amended there to the banner + at most 2 other accent
+elements.
+
+```
+    ██████              ██
+   ██                   ██
+   ██        ████    █████   ████
+   ██       ██  ██  ██  ██  ██████
+   ██       ██  ██  ██  ██  ██
+    ██████   ████    █████   █████
+
+   Welcome back.  v0.3.0
 ```
 
 ---
@@ -334,7 +379,7 @@ Full-height view (`cli_view`):
   for the single border, header rules, the statusline and diff wash bands (108 columns).
 - **The indent grid** (all columns 1-based):
   - column 1: one-space left margin on every chrome row (`›` turns, `●` tool lines,
-    toasts, statusline, hints);
+    toasts, the statusline, in-card key lines);
   - column 2: markers (`●` tool dot, `›` user marker, `│` toast bar, band spinner);
   - column 3: two-space indent rows (`label: value` info rows, the `/` filter line, the
     diff block's left edge);
@@ -346,8 +391,8 @@ Full-height view (`cli_view`):
   (`rule_head`) between sections. Never boxes, never decorative divider rows.
 - **No automatic wrapping exists.** Prose is hand-broken by the author; tables are
   hand-summed so each row is exactly the intended width. Transcript overflow silently
-  truncates from the top: keep `cli_page` transcript content within its 35-row body
-  (40 rows minus composer 3, statusline 1, hints 1).
+  truncates from the top: keep `cli_page` transcript content within its 36-row body
+  (40 rows minus composer 3, statusline 1; there is no hint row, rule N-9).
 - **Trailing spaces are trimmed** in the `.txt`; never rely on trailing pads for layout
   proofs, and verify background washes (`SURFACE`, `ADD_BG`, `DEL_BG`) on the PNG.
 - **One emphasis channel at a time**; bold for at most one phrase per screen.

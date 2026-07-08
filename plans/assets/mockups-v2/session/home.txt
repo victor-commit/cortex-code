@@ -14,15 +14,16 @@
 
 
 
+    ██████              ██
+   ██                   ██
+   ██        ████    █████   ████
+   ██       ██  ██  ██  ██  ██████
+   ██       ██  ██  ██  ██  ██
+    ██████   ████    █████   █████
 
+   Welcome back.  v0.3.0
 
-
-
-
-   Cortex Code  v0.3.0
-   Welcome back.
-
-   directory ~/projects/cortex-code · model claude-opus · mode agent · branch master
+   directory ~/projects/cortex-code · model Claude Opus 4.8 · mode agent · branch master
 
  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -36,5 +37,4 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ › reply to Cortex, or ask a follow-up…                                                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ~/projects/cortex-code · master · claude-opus · ctx 6% · $0.02                                                  ● idle
- enter send · / commands · @ files · ? help
+ ~/projects/cortex-code · master · Claude Opus 4.8

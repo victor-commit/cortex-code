@@ -16,6 +16,7 @@
 
 
 
+
  › find where the poll cadence is set and run the tui tests  · 1m ago
 
    Cortex
@@ -36,5 +37,4 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ › reply to Cortex, or ask a follow-up…                                                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ~/projects/cortex-code · master · claude-opus · ctx 34% · $0.11                                                 ● busy
- enter send · ctrl+o expand · esc interrupt · ? help
+ ~/projects/cortex-code · master · Claude Opus 4.8

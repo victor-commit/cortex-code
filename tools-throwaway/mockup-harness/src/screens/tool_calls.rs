@@ -9,25 +9,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::chrome::{self, m, t, StatusLine, ToolStatus, OK};
+use crate::chrome::{self, m, t, StatusLine, ToolStatus};
 
 pub fn render(f: &mut Frame) {
-    let status = StatusLine {
-        ctx_pct: 34,
-        cost: "$0.11",
-        state: (OK, "busy"),
-        ..Default::default()
-    };
+    let status = StatusLine::default();
     let body = chrome::cli_page(
         f,
         "reply to Cortex, or ask a follow-up\u{2026}",
         &status,
-        &[
-            ("enter", "send"),
-            ("ctrl+o", "expand"),
-            ("esc", "interrupt"),
-            ("?", "help"),
-        ],
     );
 
     let mut done = chrome::verdict(true, "214 lines");

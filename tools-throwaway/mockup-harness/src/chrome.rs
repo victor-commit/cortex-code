@@ -439,23 +439,24 @@ pub fn working_band(verb: &str, elapsed: f64, tokens: Option<&str>) -> Line<'sta
 }
 
 // ============================================================================
-// STATUSLINE (pattern 3) - dim gray, NO filled background (rule N-1).
+// STATUSLINE (pattern 3, rule N-8) - dim gray, NO filled background (rule
+// N-1), and MINIMAL: `~/path · branch · <Model Display Name>` and nothing
+// else. No ctx %, no cost, no state dot - those live in /status. Liveness is
+// conveyed by the working band / on-screen content, never by the statusline.
 // ============================================================================
 
-/// Statusline content. Left: `path · branch · model · ctx N% · cost`; right:
-/// an optional fixed-slot mode badge, then the state dot ALWAYS paired with a
-/// one-word label (`● live`, `● busy`) - glyph + color, never color alone.
+/// Statusline content. Left: `path · branch · model`; right: the single
+/// optional element, a mode badge shown only when a non-default mode is
+/// active.
 pub struct StatusLine {
     pub path: &'static str,
     pub branch: &'static str,
+    /// Human display name ("Claude Opus 4.8"), NEVER a raw id like
+    /// `claude-opus` (rule N-10/F-7) - here, in pickers, and in /status alike.
     pub model: &'static str,
-    pub ctx_pct: u8,
-    pub cost: &'static str,
-    /// Mode badge before the dot: `("plan", INFO)` is the single INFO badge;
-    /// any elevated/active mode badge is ACCENT.
+    /// Mode badge in the fixed right-side slot: `("plan", INFO)` is the
+    /// single INFO badge; any elevated/active mode badge is ACCENT.
     pub badge: Option<(&'static str, Color)>,
-    /// `(hue, label)`: MUTED "idle" at rest, OK "live" when healthy.
-    pub state: (Color, &'static str),
 }
 
 impl Default for StatusLine {
@@ -463,11 +464,8 @@ impl Default for StatusLine {
         Self {
             path: "~/projects/cortex-code",
             branch: "master",
-            model: "claude-opus",
-            ctx_pct: 42,
-            cost: "$0.14",
+            model: "Claude Opus 4.8",
             badge: None,
-            state: (MUTED, "idle"),
         }
     }
 }
@@ -483,41 +481,31 @@ pub fn statusbar(f: &mut Frame, area: Rect, s: &StatusLine) {
         seg(s.branch),
         sep(),
         seg(s.model),
-        sep(),
-        seg(&format!("ctx {}%", s.ctx_pct)),
-        sep(),
-        seg(s.cost),
     ];
     f.render_widget(Paragraph::new(Line::from(left)), area);
 
-    let mut right: Vec<Span<'static>> = Vec::new();
     if let Some((label, hue)) = s.badge {
-        right.push(Span::styled(
-            format!(" {label} "),
-            Style::default().fg(CANVAS).bg(hue),
-        ));
-        right.push(Span::raw("  "));
+        let right = vec![
+            Span::styled(format!(" {label} "), Style::default().fg(CANVAS).bg(hue)),
+            Span::raw(" "),
+        ];
+        f.render_widget(
+            Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+            area,
+        );
     }
-    right.push(Span::styled(
-        format!("{DOT} "),
-        Style::default().fg(s.state.0),
-    ));
-    right.push(Span::styled(
-        format!("{} ", s.state.1),
-        Style::default().fg(MUTED),
-    ));
-    f.render_widget(
-        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
-        area,
-    );
 }
 
 // ============================================================================
-// FOOTER HINTS (pattern 4) - 3-6 keys max, progressive disclosure (`? more`).
+// KEY LINES (pattern 4, rule N-9) - there is NO global footer hint row.
+// Keyboard affordances render where they act: ONE MUTED key line INSIDE a
+// dock/picker card (max ~5 items), recovery keys ADJACENT to a failure block
+// (see `key_span`), or at most one inline hint in the composer placeholder.
 // ============================================================================
 
-/// ` key label · key label · ? more` - keys MUTED, labels FAINT, chords
-/// lowercase (`ctrl+p`, `esc`, `enter`).
+/// ` key label · key label` - the in-card / adjacent key line. Keys MUTED,
+/// labels FAINT, chords lowercase (`ctrl+p`, `esc`). Max ~5 pairs; never
+/// rendered as a global row under the statusline.
 pub fn hints(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
     for (i, (k, l)) in pairs.iter().enumerate() {
@@ -534,20 +522,15 @@ pub fn hints(pairs: &[(&str, &str)]) -> Line<'static> {
 }
 
 // ============================================================================
-// FRAMES - the three screen shapes. Each paints CANVAS, draws the statusline
-// and the hints row, and returns the content Rect(s). The composer (or the
-// dock that replaces it) is the screen's ONE bordered zone.
+// FRAMES - the three screen shapes. Each paints CANVAS and draws the
+// statusline as the last row; there is NO hint row under it (rule N-9). The
+// composer (or the dock that replaces it) is the screen's ONE bordered zone.
 // ============================================================================
 
-/// Chat frame: transcript column + composer + statusline + hints. The
-/// transcript body is 35 rows tall at the fixed 120x40 capture
-/// (40 minus composer 3, statusline 1, hints 1).
-pub fn cli_page(
-    f: &mut Frame,
-    composer_ghost: &str,
-    status: &StatusLine,
-    keys: &[(&str, &str)],
-) -> Rect {
+/// Chat frame: transcript column + composer + statusline. The transcript
+/// body is 36 rows tall at the fixed 120x40 capture (40 minus composer 3,
+/// statusline 1).
+pub fn cli_page(f: &mut Frame, composer_ghost: &str, status: &StatusLine) -> Rect {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
     let rows = Layout::default()
@@ -556,24 +539,19 @@ pub fn cli_page(
             Constraint::Min(0),    // transcript body
             Constraint::Length(3), // composer
             Constraint::Length(1), // statusline
-            Constraint::Length(1), // hints
         ])
         .split(area);
     composer(f, rows[1], composer_ghost);
     statusbar(f, rows[2], status);
-    f.render_widget(Paragraph::new(hints(keys)), rows[3]);
     rows[0]
 }
 
 /// Full-screen view frame (help / status / sidebar / gallery): a one-row
-/// header (` title ` + faint rule), full-height body, statusline + hints.
-/// No composer - you read these, you don't type.
-pub fn cli_view(
-    f: &mut Frame,
-    title: &str,
-    status: &StatusLine,
-    keys: &[(&str, &str)],
-) -> Rect {
+/// header (` title ` + faint rule), full-height body, statusline. No
+/// composer - you read these, you don't type. Navigation keys, where needed,
+/// render inside the view (header line or attached to the interactive
+/// element), never as a global row.
+pub fn cli_view(f: &mut Frame, title: &str, status: &StatusLine) -> Rect {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
     let rows = Layout::default()
@@ -583,25 +561,19 @@ pub fn cli_view(
             Constraint::Length(1), // spacer
             Constraint::Min(0),    // body
             Constraint::Length(1), // statusline
-            Constraint::Length(1), // hints
         ])
         .split(area);
     rule_head(f, rows[0], title);
     statusbar(f, rows[3], status);
-    f.render_widget(Paragraph::new(hints(keys)), rows[4]);
     rows[2]
 }
 
 /// Dock frame: the composer slot is REPLACED by an action dock `dock_h` rows
 /// tall (rule F-5 / N-7: decisions and pickers anchor where the user would
 /// type, never a floating centered modal). Returns `(transcript, dock)`;
-/// the caller draws a `card()` into the dock.
-pub fn cli_action(
-    f: &mut Frame,
-    dock_h: u16,
-    status: &StatusLine,
-    keys: &[(&str, &str)],
-) -> (Rect, Rect) {
+/// the caller draws a `card()` into the dock and puts the card's key line
+/// INSIDE it (rule N-9).
+pub fn cli_action(f: &mut Frame, dock_h: u16, status: &StatusLine) -> (Rect, Rect) {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
     let rows = Layout::default()
@@ -610,11 +582,9 @@ pub fn cli_action(
             Constraint::Min(0),         // transcript body
             Constraint::Length(dock_h), // action dock
             Constraint::Length(1),      // statusline
-            Constraint::Length(1),      // hints
         ])
         .split(area);
     statusbar(f, rows[2], status);
-    f.render_widget(Paragraph::new(hints(keys)), rows[3]);
     (rows[0], rows[1])
 }
 
@@ -652,6 +622,38 @@ pub fn wordmark(version: &str) -> Line<'static> {
         Span::styled("Cortex Code".to_string(), Style::default().fg(ACCENT)),
         Span::styled(format!("  {version}"), Style::default().fg(MUTED)),
     ])
+}
+
+// ============================================================================
+// BANNER (pattern 13, rule F-6) - the droid-style ASCII-art "Code" wordmark.
+// home and onboarding open with it; NO other screen carries a banner. On
+// those two screens it counts as ONE accent element (budget: banner + <=2
+// other accent elements).
+// ============================================================================
+
+/// The block-letter rows spelling "Code" - built only from `█` and spaces
+/// (authorized set), 6 rows tall, 31 columns wide.
+const BANNER_ROWS: [&str; 6] = [
+    " ██████              ██",
+    "██                   ██",
+    "██        ████    █████   ████",
+    "██       ██  ██  ██  ██  ██████",
+    "██       ██  ██  ██  ██  ██",
+    " ██████   ████    █████   █████",
+];
+
+/// The ASCII-art "Code" banner in ACCENT copper, indented to the col-4 text
+/// edge. Returns the 6 transcript lines; put version + greeting nearby.
+pub fn banner() -> Vec<Line<'static>> {
+    BANNER_ROWS
+        .iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled((*row).to_string(), Style::default().fg(ACCENT)),
+            ])
+        })
+        .collect()
 }
 
 /// A plain FAINT `─` rule as a transcript line, one-space left margin -
@@ -725,9 +727,11 @@ pub fn rule_head(f: &mut Frame, area: Rect, title: &str) -> Rect {
 }
 
 /// A rounded FAINT-bordered card with an embedded ` title `, no filled
-/// surface - the dock's single bordered zone. Hints belong in the global
-/// footer row, never inside the card (rule F-5). Returns the content Rect.
-pub fn card(f: &mut Frame, area: Rect, title: &str) -> Rect {
+/// surface - the dock's single bordered zone. `keys` is the card's ONE MUTED
+/// key line (rule N-9: a card's shortcuts live INSIDE it, max ~5 pairs),
+/// drawn on the card's last interior row; pass `&[]` for a keyless card.
+/// Returns the content Rect above the key line.
+pub fn card(f: &mut Frame, area: Rect, title: &str, keys: &[(&str, &str)]) -> Rect {
     let b = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -738,7 +742,12 @@ pub fn card(f: &mut Frame, area: Rect, title: &str) -> Rect {
         ));
     let inner = b.inner(area);
     f.render_widget(b, area);
-    inner
+    if keys.is_empty() || inner.height == 0 {
+        return inner;
+    }
+    let key_row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+    f.render_widget(Paragraph::new(hints(keys)), key_row);
+    Rect::new(inner.x, inner.y, inner.width, inner.height - 1)
 }
 
 // ============================================================================

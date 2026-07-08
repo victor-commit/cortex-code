@@ -21,21 +21,11 @@ fn http(s: &str) -> Span<'static> {
 }
 
 pub fn render(f: &mut Frame) {
-    let status = StatusLine {
-        ctx_pct: 18,
-        cost: "$0.07",
-        ..Default::default()
-    };
+    let status = StatusLine::default();
     let body = chrome::cli_page(
         f,
         "reply to Cortex, or ask a follow-up\u{2026}",
         &status,
-        &[
-            ("enter", "send"),
-            ("\u{2191}", "edit last"),
-            ("/", "commands"),
-            ("?", "help"),
-        ],
     );
 
     let lines: Vec<Line> = vec![
