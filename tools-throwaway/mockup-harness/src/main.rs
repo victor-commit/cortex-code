@@ -1,10 +1,10 @@
-//! THROWAWAY mockup harness — renders static Cortex Code TUI screens to
+//! THROWAWAY mockup harness - renders static Cortex Code TUI screens to
 //! deterministic terminal frames.
 //!
 //! NOT product code. NOT a workspace member. This exists only to produce
 //! "screenshot" text assets (and optional PNGs) for a design doc. Every screen
 //! is rendered with `ratatui::backend::TestBackend` at a FIXED 120x40 size,
-//! from static seed data, with NO clock, NO randomness, NO env, NO network —
+//! from static seed data, with NO clock, NO randomness, NO env, NO network -
 //! so re-running produces byte-identical `.txt` output.
 //!
 //! Usage:
@@ -13,7 +13,7 @@
 //!   mockup-harness <category>          render every screen in a category
 //!   mockup-harness --list              list screens grouped by category
 //!
-//! Output: plans/assets/mockups/<category>/<screen>.txt
+//! Output: plans/assets/mockups-v2/<category>/<screen>.txt
 //!         (+ <category>/<screen>.png with --features png)
 
 use std::path::{Path, PathBuf};
@@ -34,62 +34,16 @@ type Entry = (&'static str, &'static str, RenderFn);
 
 /// The screen registry, in a fixed order (no HashMap → deterministic).
 /// Grouped by category; each category maps to an output subfolder.
+///
+/// v2 screens register here as they are built. The v1 registry was retired
+/// wholesale: its 45 screen sources are parked uncompiled under
+/// `src/screens_v1_reference/` and live in git history.
 fn registry() -> Vec<Entry> {
-    vec![
-        ("orchestration", "mode-switch", screens::mode_switch::render as RenderFn),
-        ("orchestration", "workflow-launch", screens::workflow_launch::render as RenderFn),
-        ("orchestration", "workflow-monitor", screens::workflow_monitor::render as RenderFn),
-        ("orchestration", "team-board", screens::team_board::render as RenderFn),
-        ("orchestration", "reviewer-output", screens::reviewer_output::render as RenderFn),
-        ("orchestration", "intent-scorer-report", screens::intent_scorer_report::render as RenderFn),
-        ("orchestration", "concurrency-metrics", screens::concurrency_metrics::render as RenderFn),
-        ("orchestration", "verification-ladder", screens::verification_ladder::render as RenderFn),
-        ("orchestration", "tool-envelope", screens::tool_envelope::render as RenderFn),
-        // session
-        ("session", "home", screens::home::render as RenderFn),
-        ("session", "onboarding", screens::onboarding::render as RenderFn),
-        ("session", "chat-turn", screens::chat_turn::render as RenderFn),
-        ("session", "streaming", screens::streaming::render as RenderFn),
-        ("session", "reasoning", screens::reasoning::render as RenderFn),
-        ("session", "tool-running", screens::tool_running::render as RenderFn),
-        ("session", "tool-success", screens::tool_success::render as RenderFn),
-        ("session", "tool-failed", screens::tool_failed::render as RenderFn),
-        ("session", "diff-edit", screens::diff_edit::render as RenderFn),
-        ("session", "tool-task", screens::tool_task::render as RenderFn),
-        ("session", "rich-response", screens::rich_response::render as RenderFn),
-        ("session", "shell", screens::shell::render as RenderFn),
-        ("session", "compact", screens::compact::render as RenderFn),
-        ("session", "todo-list", screens::todo_list::render as RenderFn),
-        // input
-        ("input", "slash-menu", screens::slash_menu::render as RenderFn),
-        ("input", "command-palette", screens::command_palette::render as RenderFn),
-        ("input", "model-picker", screens::model_picker::render as RenderFn),
-        ("input", "agent-picker", screens::agent_picker::render as RenderFn),
-        ("input", "skills-picker", screens::skills_picker::render as RenderFn),
-        ("input", "session-picker", screens::session_picker::render as RenderFn),
-        ("input", "permission-prompt", screens::permission_prompt::render as RenderFn),
-        ("input", "diff-viewer", screens::diff_viewer::render as RenderFn),
-        ("input", "status", screens::status::render as RenderFn),
-        ("input", "timeline", screens::timeline::render as RenderFn),
-        ("input", "mcp", screens::mcp::render as RenderFn),
-        ("input", "help", screens::help::render as RenderFn),
-        // auth
-        ("auth", "login", screens::login::render as RenderFn),
-        ("auth", "connect-provider", screens::connect_provider::render as RenderFn),
-        ("auth", "connect-apikey", screens::connect_apikey::render as RenderFn),
-        ("auth", "connect-oauth", screens::connect_oauth::render as RenderFn),
-        // states
-        ("states", "error-network", screens::error_network::render as RenderFn),
-        ("states", "error-context", screens::error_context::render as RenderFn),
-        ("states", "rate-limit", screens::rate_limit::render as RenderFn),
-        ("states", "empty", screens::empty::render as RenderFn),
-        ("states", "toasts", screens::toasts::render as RenderFn),
-        ("states", "interrupt", screens::interrupt::render as RenderFn),
-    ]
+    vec![]
 }
 
 fn out_dir() -> PathBuf {
-    // Resolve `plans/assets/mockups/` relative to the repo root. The harness
+    // Resolve `plans/assets/mockups-v2/` relative to the repo root. The harness
     // lives at `<root>/tools-throwaway/mockup-harness/`, so walk up two levels
     // from CARGO_MANIFEST_DIR. Falls back to CWD-relative if unset.
     match option_env!("CARGO_MANIFEST_DIR") {
@@ -97,8 +51,8 @@ fn out_dir() -> PathBuf {
             .ancestors()
             .nth(2)
             .unwrap_or_else(|| Path::new("."))
-            .join("plans/assets/mockups"),
-        None => PathBuf::from("plans/assets/mockups"),
+            .join("plans/assets/mockups-v2"),
+        None => PathBuf::from("plans/assets/mockups-v2"),
     }
 }
 
@@ -106,7 +60,7 @@ fn out_dir() -> PathBuf {
 fn render_buffer(render: RenderFn) -> Buffer {
     let backend = TestBackend::new(WIDTH, HEIGHT);
     let mut terminal = Terminal::new(backend).expect("construct TestBackend terminal");
-    terminal.draw(|f| render(f)).expect("draw frame");
+    terminal.draw(render).expect("draw frame");
     terminal.backend().buffer().clone()
 }
 
@@ -185,7 +139,7 @@ fn main() {
 
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         eprintln!(
-            "mockup-harness — throwaway Cortex Code TUI mockup renderer\n\n\
+            "mockup-harness - throwaway Cortex Code TUI mockup renderer\n\n\
              USAGE:\n  mockup-harness --all\n  mockup-harness <screen>\n  \
              mockup-harness <category>\n  mockup-harness --list\n"
         );
@@ -259,7 +213,7 @@ mod png {
     const BASELINE: i32 = 16;
 
     const DEFAULT_BG: [u8; 3] = [13, 13, 13];
-    const DEFAULT_FG: [u8; 3] = [208, 208, 206];
+    const DEFAULT_FG: [u8; 3] = [200, 205, 214];
 
     const FONT_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
     const FONT_BOLD: &[u8] = include_bytes!("../assets/DejaVuSansMono-Bold.ttf");
@@ -363,27 +317,28 @@ mod png {
 
     // Map a ratatui Color onto RGB. The screens use Color::Rgb from the chrome
     // palette plus a handful of named/default colors; unknown indexed colors
-    // fall back to the supplied default so the render never panics.
+    // fall back to the supplied default so the render never panics. Named ANSI
+    // colors approximate the v2 chrome tokens.
     fn color_to_rgb(c: Color, default: [u8; 3]) -> [u8; 3] {
         match c {
             Color::Rgb(r, g, b) => [r, g, b],
             Color::Reset => default,
             Color::Black => [0, 0, 0],
-            Color::Red => [224, 96, 96],
-            Color::Green => [96, 204, 110],
-            Color::Yellow => [242, 183, 120],
-            Color::Blue => [96, 170, 224],
-            Color::Magenta => [200, 120, 200],
-            Color::Cyan => [96, 200, 200],
-            Color::Gray => [140, 140, 140],
-            Color::DarkGray => [92, 92, 98],
-            Color::LightRed => [240, 120, 120],
-            Color::LightGreen => [140, 224, 150],
-            Color::LightYellow => [248, 214, 160],
-            Color::LightBlue => [150, 200, 240],
-            Color::LightMagenta => [224, 160, 224],
-            Color::LightCyan => [160, 224, 224],
-            Color::White => [230, 230, 230],
+            Color::Red => [217, 108, 117],
+            Color::Green => [127, 176, 105],
+            Color::Yellow => [217, 179, 108],
+            Color::Blue => [108, 155, 217],
+            Color::Magenta => [186, 130, 200],
+            Color::Cyan => [108, 190, 200],
+            Color::Gray => [154, 163, 175],
+            Color::DarkGray => [76, 85, 102],
+            Color::LightRed => [232, 150, 158],
+            Color::LightGreen => [166, 204, 148],
+            Color::LightYellow => [232, 206, 158],
+            Color::LightBlue => [158, 192, 232],
+            Color::LightMagenta => [212, 172, 222],
+            Color::LightCyan => [162, 216, 224],
+            Color::White => [230, 233, 239],
             Color::Indexed(_) => default,
         }
     }
