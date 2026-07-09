@@ -1462,6 +1462,145 @@ pub fn cli_page(f: &mut Frame, composer_ghost: &str, status: &StatusLine) -> Rec
     rows[0]
 }
 
+// ============================================================================
+// SIDEBAR PANEL - shared split-chat anatomy for all seven sidebar views.
+// ============================================================================
+
+/// Fixed sidebar anatomy at the 120-column gallery capture width: a 68-column
+/// real transcript, one FAINT rule column, and a 51-column panel. The fixed
+/// geometry ensures tab labels and the rule column cannot drift between tabs.
+pub const SIDEBAR_TRANSCRIPT_WIDTH: u16 = 68;
+pub const SIDEBAR_PANEL_WIDTH: u16 = 51;
+
+/// The seven ordered sidebar tabs. Their short labels are intentionally
+/// stable because the tab strip must be byte-identical across all sidebar
+/// screens apart from its color-only active treatment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTab {
+    Context,
+    Files,
+    Lsp,
+    Mcp,
+    Todo,
+    Subs,
+    Queue,
+}
+
+impl SidebarTab {
+    fn short(self) -> &'static str {
+        match self {
+            Self::Context => "Ctx",
+            Self::Files => "Files",
+            Self::Lsp => "LSP",
+            Self::Mcp => "MCP",
+            Self::Todo => "Todo",
+            Self::Subs => "Subs",
+            Self::Queue => "Queue",
+        }
+    }
+}
+
+/// The content rectangle below the fixed tab strip and its attached key line.
+/// Sidebar screens render only their tab-specific body into this area.
+pub struct SidebarFrame {
+    pub panel: Rect,
+}
+
+/// Draw the shared sidebar chrome: a real narrowed transcript, a single
+/// vertical panel rule, a seven-tab strip, a panel-attached tab key, the
+/// canonical composer, and the minimal statusline. The active label changes
+/// color only, so every rendered tab-strip row remains byte-identical.
+pub fn sidebar_panel(
+    f: &mut Frame,
+    active: SidebarTab,
+    composer_ghost: &str,
+    status: &StatusLine,
+) -> SidebarFrame {
+    let area = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // split transcript and panel
+            Constraint::Length(3), // composer
+            Constraint::Length(1), // statusline
+        ])
+        .split(area);
+    composer(f, rows[1], composer_ghost);
+    statusbar(f, rows[2], status);
+
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(SIDEBAR_TRANSCRIPT_WIDTH),
+            Constraint::Length(1),
+            Constraint::Length(SIDEBAR_PANEL_WIDTH),
+        ])
+        .split(rows[0]);
+    sidebar_transcript(f, split[0]);
+    f.render_widget(
+        Paragraph::new(
+            (0..split[1].height)
+                .map(|_| Line::from(c("│", FAINT)))
+                .collect::<Vec<_>>(),
+        ),
+        split[1],
+    );
+    sidebar_tabs(f, split[2], active);
+    f.render_widget(
+        Paragraph::new(hints(&[("tab", "next panel")])),
+        Rect::new(split[2].x, split[2].y + 1, split[2].width, 1),
+    );
+
+    SidebarFrame {
+        panel: Rect::new(
+            split[2].x,
+            split[2].y + 2,
+            split[2].width,
+            split[2].height.saturating_sub(2),
+        ),
+    }
+}
+
+fn sidebar_tabs(f: &mut Frame, area: Rect, active: SidebarTab) {
+    let tabs = [
+        SidebarTab::Context,
+        SidebarTab::Files,
+        SidebarTab::Lsp,
+        SidebarTab::Mcp,
+        SidebarTab::Todo,
+        SidebarTab::Subs,
+        SidebarTab::Queue,
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    for (i, tab) in tabs.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(c(&format!(" {SEP} "), FAINT));
+        }
+        let hue = if tab == active { BRIGHT } else { MUTED };
+        spans.push(c(tab.short(), hue));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn sidebar_transcript(f: &mut Frame, area: Rect) {
+    let result = vec![t("1,842 lines indexed"), m(" · no edits made")];
+    let mut lines = vec![
+        user_cmd("trace the first request path", Some("1m ago")),
+        Line::from(""),
+        agent_head("Cortex"),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("   "),
+            t("I am checking the workspace state before changing anything."),
+        ]),
+        Line::from(""),
+        tool_line(ToolStatus::Running(None), "Read", "crates/tui/src/app.rs"),
+    ];
+    lines.extend(elbow(vec![result]));
+    transcript(f, area, lines);
+}
+
 /// Chat frame with a typed multi-line composer. The lines are rendered inside
 /// the same single rounded composer zone as `cli_page`; the first row has the
 /// prompt marker and continuation rows hang under its text edge.

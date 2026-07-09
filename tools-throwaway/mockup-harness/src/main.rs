@@ -122,6 +122,13 @@ fn registry() -> Vec<Entry> {
             screens::permission_deny_reason::render,
         ),
         ("views", "status", screens::status::render),
+        (
+            "views",
+            "sidebar-context",
+            screens::sidebar_context::render,
+        ),
+        ("views", "sidebar-files", screens::sidebar_files::render),
+        ("views", "sidebar-lsp", screens::sidebar_lsp::render),
         ("views", "timeline", screens::timeline::render),
         ("views", "help", screens::help::render),
         ("views", "mcp", screens::mcp::render),
