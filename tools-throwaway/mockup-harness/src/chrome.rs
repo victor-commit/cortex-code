@@ -488,6 +488,120 @@ pub fn select_list(
     out
 }
 
+/// One fuzzy file row, split around the matched substring so it can receive
+/// the stronger BRIGHT bold treatment without hiding the remainder of the
+/// path.
+pub struct FuzzyFileRow {
+    pub before: &'static str,
+    pub matched: &'static str,
+    pub after: &'static str,
+    pub meta: &'static str,
+}
+
+/// Render file matches with the shared selection treatment and a right-aligned
+/// `dir · size` meta column. Matched filename characters are BRIGHT and bold
+/// in every row, making the fuzzy query legible at a glance.
+pub fn fuzzy_file_list(
+    width: usize,
+    rows: &[FuzzyFileRow],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let name_w = rows
+        .iter()
+        .map(|row| row.before.len() + row.matched.len() + row.after.len())
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let sel = i == selected;
+        let sty = |hue: Color| {
+            let s = Style::default().fg(hue);
+            if sel {
+                s.bg(SURFACE)
+            } else {
+                s
+            }
+        };
+        let name_hue = if sel { BRIGHT } else { TXT };
+        let name_len = row.before.len() + row.matched.len() + row.after.len();
+        let name_pad = " ".repeat(name_w.saturating_sub(name_len) + 2);
+        let used = 3 + name_w + 2 + row.meta.chars().count();
+        let pad = width.saturating_sub(used + 1).max(1);
+        let marker = if sel {
+            Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+        } else {
+            Span::styled("   ".to_string(), sty(TXT))
+        };
+        out.push(Line::from(vec![
+            marker,
+            Span::styled(row.before.to_string(), sty(name_hue)),
+            Span::styled(
+                row.matched.to_string(),
+                sty(BRIGHT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(row.after.to_string(), sty(name_hue)),
+            Span::styled(name_pad, sty(name_hue)),
+            Span::styled(" ".repeat(pad), sty(name_hue)),
+            Span::styled(row.meta.to_string(), sty(MUTED)),
+            Span::styled(" ".to_string(), sty(MUTED)),
+        ]));
+    }
+    out
+}
+
+/// One queued prompt row. The visible position is a separate fixed-width
+/// column so the queue order remains scannable when prompts have different
+/// lengths.
+pub struct NumberedListRow {
+    pub prompt: &'static str,
+    pub meta: &'static str,
+}
+
+/// Render numbered queue rows with the normal list selection wash. The active
+/// row makes both its marker and its position copper so reordering has an
+/// obvious target without using a second border or a status color.
+pub fn numbered_select_list(
+    width: usize,
+    rows: &[NumberedListRow],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let number_w = rows.len().to_string().chars().count();
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let sel = i == selected;
+        let sty = |hue: Color| {
+            let s = Style::default().fg(hue);
+            if sel {
+                s.bg(SURFACE)
+            } else {
+                s
+            }
+        };
+        let meta_hue = if sel { MUTED } else { FAINT };
+        let used = 3 + number_w + 2 + row.prompt.chars().count();
+        let pad = width
+            .saturating_sub(used + row.meta.chars().count() + 1)
+            .max(1);
+        let marker = if sel {
+            Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+        } else {
+            Span::styled("   ".to_string(), sty(TXT))
+        };
+        let number_hue = if sel { ACCENT } else { MUTED };
+        let prompt_hue = if sel { BRIGHT } else { TXT };
+        out.push(Line::from(vec![
+            marker,
+            Span::styled(format!("{:>number_w$}", i + 1), sty(number_hue)),
+            Span::styled("  ".to_string(), sty(prompt_hue)),
+            Span::styled(row.prompt.to_string(), sty(prompt_hue)),
+            Span::styled(" ".repeat(pad), sty(prompt_hue)),
+            Span::styled(row.meta.to_string(), sty(meta_hue)),
+            Span::styled(" ".to_string(), sty(meta_hue)),
+        ]));
+    }
+    out
+}
+
 /// A row for a sectioned selection list. Section labels are chrome, so they
 /// always render in FAINT; items retain the shared selection treatment.
 pub enum ListRow {
@@ -811,6 +925,30 @@ pub fn cli_page(f: &mut Frame, composer_ghost: &str, status: &StatusLine) -> Rec
     rows[0]
 }
 
+/// Chat frame with a typed multi-line composer. The lines are rendered inside
+/// the same single rounded composer zone as `cli_page`; the first row has the
+/// prompt marker and continuation rows hang under its text edge.
+pub fn cli_page_multiline(
+    f: &mut Frame,
+    typed_lines: Vec<Line<'static>>,
+    status: &StatusLine,
+) -> Rect {
+    let area = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
+    let composer_h = (typed_lines.len() as u16).saturating_add(2).max(3);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(composer_h),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    composer_lines(f, rows[1], typed_lines);
+    statusbar(f, rows[2], status);
+    rows[0]
+}
+
 /// Full-screen view frame (help / status / sidebar / gallery): a one-row
 /// header (` title ` + faint rule), full-height body, statusline. No
 /// composer - you read these, you don't type. Navigation keys, where needed,
@@ -871,6 +1009,21 @@ fn composer(f: &mut Frame, area: Rect, ghost: &str) {
             Span::styled(ghost.to_string(), Style::default().fg(FAINT)),
         ])),
         Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(1), 1),
+    );
+}
+
+/// Typed composer rows for `cli_page_multiline`, retaining the canonical
+/// rounded border and one copper prompt marker on the first draft row.
+fn composer_lines(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
+    let b = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(FAINT));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(1), inner.height),
     );
 }
 

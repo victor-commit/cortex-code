@@ -76,6 +76,13 @@ fn registry() -> Vec<Entry> {
             "command-palette-submenu",
             screens::command_palette_submenu::render,
         ),
+        ("input", "file-mention", screens::file_mention::render),
+        ("input", "queue-manager", screens::queue_manager::render),
+        (
+            "input",
+            "composer-multiline",
+            screens::composer_multiline::render,
+        ),
     ]
 }
 

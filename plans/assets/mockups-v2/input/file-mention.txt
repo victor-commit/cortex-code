@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › trace how provider metadata reaches the model picker  · 2m ago
+
+   Cortex
+   I found the catalog boundary. Which file should I inspect next?
+╭ @ files ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                              4 matching project files│
+│ › crates/providers/src/openrouter.rs                                                               providers · 24.6k │
+│   crates/server/tests/config_provider_auth_routes.rs                                            server/tests · 18.2k │
+│   crates/server/tests/session_routes.rs                                                         server/tests · 12.4k │
+│   crates/server/tests/file_find_catalog_routes.rs                                                server/tests · 9.8k │
+│                                                                                                                      │
+│  › explain @rou                                                                                                      │
+│                                                                                                                      │
+│ tab insert · ↑↓ move · esc dismiss                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
