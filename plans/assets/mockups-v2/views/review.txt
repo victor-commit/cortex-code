@@ -1,0 +1,40 @@
+ /review · 3 files · 5 findings · ↑↓ select · enter open file:line ─────────────────────────────────────────────────────
+
+   reviewed the working tree against master
+
+   severity  location                  finding
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
+ › ● high    buffer.rs:42              unbounded growth when cap == 0
+   ● med     mod.rs:18                 parse error dropped without context
+   ● med     stream_processor.rs:39    magic number 64*1024 - name it
+   ● low     lib.rs:90                 redundant .clone() on &str
+   ● info    tests/buffer.rs:1         consider a proptest for the cap
+
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
+   verdict  changes requested · 1 high · 2 med · 1 low · 1 info
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

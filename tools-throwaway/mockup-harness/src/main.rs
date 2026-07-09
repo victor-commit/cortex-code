@@ -124,6 +124,8 @@ fn registry() -> Vec<Entry> {
         ("views", "status", screens::status::render),
         ("views", "timeline", screens::timeline::render),
         ("views", "help", screens::help::render),
+        ("views", "mcp", screens::mcp::render),
+        ("views", "review", screens::review::render),
     ]
 }
 

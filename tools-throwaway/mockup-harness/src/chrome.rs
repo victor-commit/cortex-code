@@ -461,6 +461,93 @@ pub fn diff_lines(old_start: u32, new_start: u32, rows: &[DiffRow]) -> Vec<Line<
 }
 
 // ============================================================================
+// REVIEW FINDINGS - severity and location columns with the canonical selected
+// row treatment. Findings remain a sparse, scan-first full-screen list.
+// ============================================================================
+
+/// Semantic severity for a review finding. The severity dot and word share
+/// one hue, while the finding text stays neutral for readable scanning.
+pub enum ReviewSeverity {
+    High,
+    Med,
+    Low,
+    Info,
+}
+
+impl ReviewSeverity {
+    fn word(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Med => "med",
+            Self::Low => "low",
+            Self::Info => "info",
+        }
+    }
+
+    fn color(&self) -> Color {
+        match self {
+            Self::High => BAD,
+            Self::Med => WARN,
+            Self::Low => MUTED,
+            Self::Info => FAINT,
+        }
+    }
+}
+
+/// One `/review` finding in severity order. The location is rendered in the
+/// fixed location column, separate from the explanation text.
+pub struct ReviewFindingRow {
+    pub severity: ReviewSeverity,
+    pub location: &'static str,
+    pub text: &'static str,
+}
+
+/// Render findings with fixed severity, location, and text columns. The
+/// selected item uses the standard SURFACE plus ACCENT marker pattern and
+/// never uses a semantic failure color as its selection treatment.
+pub fn review_findings_list(
+    width: usize,
+    rows: &[ReviewFindingRow],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    const SEVERITY_W: usize = 10;
+    const LOCATION_W: usize = 24;
+
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let active = i == selected;
+            let sty = |hue: Color| {
+                let style = Style::default().fg(hue);
+                if active {
+                    style.bg(SURFACE)
+                } else {
+                    style
+                }
+            };
+            let marker = if active {
+                Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+            } else {
+                Span::styled("   ".to_string(), sty(TXT))
+            };
+            let severity_cell = format!("{} {:<8}", DOT, row.severity.word());
+            let location_cell = format!("{:<LOCATION_W$}", row.location);
+            let text_hue = if active { BRIGHT } else { TXT };
+            let used = 3 + SEVERITY_W + LOCATION_W + 2 + row.text.chars().count();
+            let pad = width.saturating_sub(used);
+            Line::from(vec![
+                marker,
+                Span::styled(severity_cell, sty(row.severity.color())),
+                Span::styled(location_cell, sty(MUTED)),
+                Span::styled("  ".to_string(), sty(MUTED)),
+                Span::styled(row.text.to_string(), sty(text_hue)),
+                Span::styled(" ".repeat(pad), sty(text_hue)),
+            ])
+        })
+        .collect()
+}
+
+// ============================================================================
 // SELECTION LISTS (pattern 7) - SURFACE wash + ACCENT `›` + BRIGHT text on
 // the selected row; fixed name / detail / meta columns; optional filter line
 // (REQUIRED when the list is longer than 8 rows).
