@@ -933,6 +933,13 @@ pub enum ListRow {
         detail: &'static str,
         meta: &'static str,
     },
+    /// A selectable item whose metadata is a normal secondary value, such as
+    /// a command shortcut, rather than FAINT chrome or an unavailable state.
+    ItemWithMutedMeta {
+        name: &'static str,
+        detail: &'static str,
+        meta: &'static str,
+    },
     /// A dedicated-key action, visually grouped with a section but excluded
     /// from the arrow-key selection cycle.
     Action {
@@ -978,7 +985,9 @@ pub fn sectioned_select_list(
     let name_w = rows
         .iter()
         .filter_map(|row| match row {
-            ListRow::Item { name, .. } | ListRow::Action { name, .. } => {
+            ListRow::Item { name, .. }
+            | ListRow::ItemWithMutedMeta { name, .. }
+            | ListRow::Action { name, .. } => {
                 Some(name.chars().count())
             }
             ListRow::Section(_) => None,
@@ -1000,7 +1009,8 @@ pub fn sectioned_select_list(
                     Span::styled(rule, Style::default().fg(FAINT)),
                 ]));
             }
-            ListRow::Item { name, detail, meta } => {
+            ListRow::Item { name, detail, meta }
+            | ListRow::ItemWithMutedMeta { name, detail, meta } => {
                 let selected_item = item_index == selected;
                 item_index += 1;
                 let sty = |hue: Color| {
@@ -1018,7 +1028,11 @@ pub fn sectioned_select_list(
                 };
                 let name_hue = if selected_item { BRIGHT } else { TXT };
                 let detail_hue = if selected_item { TXT } else { MUTED };
-                let meta_hue = if selected_item { MUTED } else { FAINT };
+                let meta_hue = if selected_item || matches!(row, ListRow::ItemWithMutedMeta { .. }) {
+                    MUTED
+                } else {
+                    FAINT
+                };
                 let name_cell = format!("{name:<w$}  ", w = name_w);
                 let used = 3 + name_cell.chars().count() + detail.chars().count();
                 let pad = width

@@ -11,28 +11,28 @@ const ROWS: &[ListRow] = &[
         detail: "Show the command reference and keybindings",
         meta: "",
     },
-    ListRow::Item {
+    ListRow::ItemWithMutedMeta {
         name: "/new",
         detail: "Start a fresh session",
         meta: "ctrl+g n",
     },
-    ListRow::Item {
+    ListRow::ItemWithMutedMeta {
         name: "/sessions",
         detail: "Open the session picker",
         meta: "ctrl+g s",
     },
     ListRow::Section("pickers"),
-    ListRow::Item {
+    ListRow::ItemWithMutedMeta {
         name: "/models",
         detail: "Open the model picker",
         meta: "ctrl+g m",
     },
-    ListRow::Item {
+    ListRow::ItemWithMutedMeta {
         name: "/agents",
         detail: "Open the agent picker",
         meta: "ctrl+g a",
     },
-    ListRow::Item {
+    ListRow::ItemWithMutedMeta {
         name: "/skills",
         detail: "Open the skill picker",
         meta: "ctrl+g 5",
