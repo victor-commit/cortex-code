@@ -1278,11 +1278,13 @@ pub fn sectioned_select_list(
 /// State of one step row.
 pub enum StepState {
     Done,
+    DoneDim,
     /// Current onboarding step, using the shared selection marker.
     Current,
     /// Current transcript plan item, using the required state dot.
     CurrentDot,
     Pending,
+    PendingText,
 }
 
 /// One leader-dot step row: ` <glyph> <label>  <detail> ···· <status>`.
@@ -1301,9 +1303,11 @@ pub fn step_row(
 ) -> Line<'static> {
     let (glyph, glyph_hue, label_hue, detail_hue, status_hue, wash) = match state {
         StepState::Done => ("✓", OK, TXT, MUTED, MUTED, None),
+        StepState::DoneDim => ("✓", OK, MUTED, MUTED, MUTED, None),
         StepState::Current => (SELECT_MARKER, ACCENT, BRIGHT, TXT, BRIGHT, Some(SURFACE)),
         StepState::CurrentDot => (DOT, ACCENT, BRIGHT, TXT, BRIGHT, None),
         StepState::Pending => (DOT_EMPTY, MUTED, MUTED, MUTED, MUTED, None),
+        StepState::PendingText => (DOT_EMPTY, MUTED, TXT, MUTED, MUTED, None),
     };
     let sty = |hue: Color| {
         let s = Style::default().fg(hue);

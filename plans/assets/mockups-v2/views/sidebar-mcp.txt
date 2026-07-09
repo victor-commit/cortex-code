@@ -1,0 +1,40 @@
+                                                                    │ Ctx · Files · LSP · MCP · Todo · Subs · Queue
+                                                                    │ tab next panel
+                                                                    │  MCP servers · 3 configured
+                                                                    │ ──────────────────────────────────────────────────
+                                                                    │  ✓ context7 connected                     2 tools
+                                                                    │  ✓ github connected                       5 tools
+                                                                    │  ● playwright needs auth                  0 tools
+                                                                    │
+                                                                    │  2 connected · 1 needs attention
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+ › trace the first request path  · 1m ago                           │
+                                                                    │
+   Cortex                                                           │
+                                                                    │
+   I am checking the workspace state before changing anything.      │
+                                                                    │
+ ● Read(crates/tui/src/app.rs)                                      │
+   ⎿ 1,842 lines indexed · no edits made                            │
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

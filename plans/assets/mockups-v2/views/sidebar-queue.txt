@@ -1,0 +1,40 @@
+                                                                    │ Ctx · Files · LSP · MCP · Todo · Subs · Queue
+                                                                    │ tab next panel
+                                                                    │  queued prompts · 3 waiting
+                                                                    │ ──────────────────────────────────────────────────
+                                                                    │  1 Add regression coverage for refresh       next
+                                                                    │  2 Trace retry backoff after timeout       queued
+                                                                    │  3 Review session catalog duplicate rows   queued
+                                                                    │
+                                                                    │ ctrl+↑ move · ctrl+↓ move · d drop
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+                                                                    │
+ › trace the first request path  · 1m ago                           │
+                                                                    │
+   Cortex                                                           │
+                                                                    │
+   I am checking the workspace state before changing anything.      │
+                                                                    │
+ ● Read(crates/tui/src/app.rs)                                      │
+   ⎿ 1,842 lines indexed · no edits made                            │
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
