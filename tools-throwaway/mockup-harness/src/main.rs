@@ -41,7 +41,10 @@ type Entry = (&'static str, &'static str, RenderFn);
 fn registry() -> Vec<Entry> {
     vec![
         ("session", "home", screens::home::render),
+        ("session", "onboarding", screens::onboarding::render),
         ("session", "chat-turn", screens::chat_turn::render),
+        ("session", "chat-long-scroll", screens::chat_long_scroll::render),
+        ("session", "streaming", screens::streaming::render),
         ("session", "tool-calls", screens::tool_calls::render),
     ]
 }

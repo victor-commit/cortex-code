@@ -412,6 +412,61 @@ pub fn select_list(
 }
 
 // ============================================================================
+// STEP LISTS - onboarding / plan-progress rows: state glyph + label, `·`
+// leader dots, and a right-aligned status-label column (audit: the status
+// labels align at one column across the 120-col width). The current row is
+// marked by glyph + SURFACE wash + BRIGHT label, never color alone.
+// ============================================================================
+
+/// State of one step row.
+pub enum StepState {
+    Done,
+    Current,
+    Pending,
+}
+
+/// One leader-dot step row: ` <glyph> <label>  <detail> ···· <status>`.
+/// `label` pads to `label_w` and `status` left-aligns in a fixed `status_w`
+/// column at the right edge so the columns line up across rows; FAINT `·`
+/// dots fill the gap. The current row washes SURFACE across `width` (its
+/// extra emphasis channel besides the marker glyph).
+pub fn step_row(
+    width: usize,
+    state: StepState,
+    label: &str,
+    label_w: usize,
+    detail: &str,
+    status: &str,
+    status_w: usize,
+) -> Line<'static> {
+    let (glyph, glyph_hue, label_hue, detail_hue, status_hue, wash) = match state {
+        StepState::Done => ("✓", OK, TXT, MUTED, MUTED, None),
+        StepState::Current => (SELECT_MARKER, ACCENT, BRIGHT, TXT, BRIGHT, Some(SURFACE)),
+        StepState::Pending => (DOT_EMPTY, MUTED, MUTED, MUTED, MUTED, None),
+    };
+    let sty = |hue: Color| {
+        let s = Style::default().fg(hue);
+        match wash {
+            Some(b) => s.bg(b),
+            None => s,
+        }
+    };
+    let label_cell = format!("{label:<label_w$}  ");
+    let used = 3 + label_cell.chars().count() + detail.chars().count() + 2 + status_w;
+    let dots = width.saturating_sub(used);
+    Line::from(vec![
+        Span::styled(" ".to_string(), sty(TXT)),
+        Span::styled(format!("{glyph} "), sty(glyph_hue)),
+        Span::styled(label_cell, sty(label_hue)),
+        Span::styled(detail.to_string(), sty(detail_hue)),
+        Span::styled(" ".to_string(), sty(FAINT)),
+        Span::styled(SEP.repeat(dots), sty(FAINT)),
+        Span::styled(" ".to_string(), sty(FAINT)),
+        Span::styled(format!("{status:<status_w$}"), sty(status_hue)),
+    ])
+}
+
+// ============================================================================
 // WORKING BAND (patterns 5/10) - the ONE canonical status band, drawn above
 // the composer. A screen shows at most one; personality lives in the verb.
 // ============================================================================

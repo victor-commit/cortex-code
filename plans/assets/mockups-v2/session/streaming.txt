@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › summarize what changed in the auth refactor and why  · 1m ago
+
+   Cortex
+
+   The refactor pulls token handling out of the login handler and into a dedicated
+   TokenService, so login, refresh and logout now go through one place. That removes the
+   duplicated expiry checks that had drifted apart and were the root cause of the
+   intermittent 401s.
+
+   The new service also validates the token signature before it touches the session
+   store, so a forged token is rejected before█
+
+ ● Composing… 24s · 2.4k tokens · esc to interrupt
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a follow-up, it runs after this turn…                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

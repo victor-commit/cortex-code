@@ -6,6 +6,9 @@
 //! retired v1 chrome API and must not be re-declared here.
 
 // session
+pub mod chat_long_scroll;
 pub mod chat_turn;
 pub mod home;
+pub mod onboarding;
+pub mod streaming;
 pub mod tool_calls;
