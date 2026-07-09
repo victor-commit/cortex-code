@@ -488,6 +488,62 @@ pub fn select_list(
     out
 }
 
+/// One numbered choice in a permission dock.
+pub struct PermissionChoice {
+    pub label: &'static str,
+    pub detail: &'static str,
+}
+
+/// Render numbered permission choices with the shared neutral selection
+/// treatment. Numbers stay muted even for the selected choice so red and
+/// green remain reserved for verdicts.
+pub fn permission_choices(
+    width: usize,
+    choices: &[PermissionChoice],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let label_w = choices
+        .iter()
+        .map(|choice| choice.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    choices
+        .iter()
+        .enumerate()
+        .map(|(i, choice)| {
+            let active = i == selected;
+            let sty = |hue: Color| {
+                let style = Style::default().fg(hue);
+                if active {
+                    style.bg(SURFACE)
+                } else {
+                    style
+                }
+            };
+            let marker = if active {
+                Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+            } else {
+                Span::styled("   ".to_string(), sty(TXT))
+            };
+            let number = format!("{} ", i + 1);
+            let label = format!("{:<label_w$}", choice.label);
+            let label_hue = if active { BRIGHT } else { TXT };
+            let detail_hue = if active { TXT } else { MUTED };
+            let used = 3 + number.chars().count() + label.chars().count() + 2
+                + choice.detail.chars().count();
+            let pad = width.saturating_sub(used + 1).max(1);
+            Line::from(vec![
+                marker,
+                Span::styled(number, sty(MUTED)),
+                Span::styled(label, sty(label_hue)),
+                Span::styled("  ".to_string(), sty(detail_hue)),
+                Span::styled(choice.detail.to_string(), sty(detail_hue)),
+                Span::styled(" ".repeat(pad), sty(detail_hue)),
+            ])
+        })
+        .collect()
+}
+
 /// One skills-picker row. The source column makes skills loaded for the
 /// current session distinct from discoverable but inactive skills, while the
 /// rightmost state stays readable with color removed.

@@ -94,6 +94,21 @@ fn registry() -> Vec<Entry> {
         ("input", "session-picker", screens::session_picker::render),
         ("input", "variant-picker", screens::variant_picker::render),
         ("input", "theme-picker", screens::theme_picker::render),
+        (
+            "input",
+            "permission-shell",
+            screens::permission_shell::render,
+        ),
+        (
+            "input",
+            "permission-file-edit",
+            screens::permission_file_edit::render,
+        ),
+        (
+            "input",
+            "permission-deny-reason",
+            screens::permission_deny_reason::render,
+        ),
     ]
 }
 

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › add token validation to the auth route  · 1m ago
+
+   Cortex
+   I prepared the edit and need your approval.
+
+ ● Edit(crates/server/src/auth/routes.rs)
+   ⎿ 3 lines changed · waiting for permission
+╭ Permission required ─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Allow Cortex to edit crates/server/src/auth/routes.rs?  +2 -1                                                       │
+│                                                                                                                      │
+│    42   42   fn route_for(request: Request) -> Response {                                                            │
+│    43      -     let token = request.token();                                                                        │
+│         43 +     let token = request.auth_token()?;                                                                  │
+│    44   44       authorize(token)                                                                                    │
+│    45   45   }                                                                                                       │
+│                                                                                                                      │
+│ › 1 Allow once    edit this file once                                                                                │
+│   2 Allow always  this exact file, this session                                                                      │
+│   3 Deny          leave the file unchanged                                                                           │
+│ 1-3 choose · enter confirm · esc deny                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

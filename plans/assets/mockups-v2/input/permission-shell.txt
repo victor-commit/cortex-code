@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › run the full test suite and report the result  · 1m ago
+
+   Cortex
+   I prepared the test command and need your approval.
+
+ ● Bash(cargo test --all)
+   ⎿ waiting for permission
+╭ Permission required ─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Allow Cortex to run this shell command?                                                                             │
+│                                                                                                                      │
+│  $ cargo test --all    in ~/projects/cortex-code                                                                     │
+│                                                                                                                      │
+│ › 1 Allow once    run this command once                                                                              │
+│   2 Allow always  this exact command, this session                                                                   │
+│   3 Deny          do not run it                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ 1-3 choose · enter confirm · esc deny                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
