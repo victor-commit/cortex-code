@@ -246,6 +246,26 @@ fn registry() -> Vec<Entry> {
             "verification-ladder",
             screens::verification_ladder::render,
         ),
+        (
+            "orchestration",
+            "intent-scorer-pass",
+            screens::intent_scorer_pass::render,
+        ),
+        (
+            "orchestration",
+            "intent-scorer-fail",
+            screens::intent_scorer_fail::render,
+        ),
+        (
+            "orchestration",
+            "concurrency-metrics",
+            screens::concurrency_metrics::render,
+        ),
+        (
+            "orchestration",
+            "tool-envelope",
+            screens::tool_envelope::render,
+        ),
     ]
 }
 

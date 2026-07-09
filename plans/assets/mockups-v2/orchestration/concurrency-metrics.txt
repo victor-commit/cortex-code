@@ -1,0 +1,40 @@
+ concurrency metrics · wf-42 ───────────────────────────────────────────────────────────────────────────────────────────
+
+   enter inspect wave  ·  e expand event  ·  j/k move
+
+   waves  ✓ 1 clear  →  ✓ 2 clear  →  ✗ 3 HOLD  ·  workers  3/3  ·  throughput  1.8k tokens/s
+
+   per-wave conflicts
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+     WAVE         PAIRS     INTERSECTING       RATE  DECISION
+     wave 1           1                0       0.0%  ● WIDEN
+     wave 2           3                0       0.0%  ● WIDEN
+   │ wave 3           6                1      16.7%  ✗ HOLD
+
+   merge-back · integration
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+     FEATURE                 OUTCOME             REFERENCE
+     feat-db-schema          ✓ merged            wave 1
+     feat-auth-login         ✓ merged            wave 2
+   │ feat-api-routes         ✗ merge blocked     wave 3 · routes.rs
+
+   quarantine
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   │ feat-api-routes  ·  ✗ held for triage  ·  wave 3 · routes.rs
+     action       r reattach → READY
+
+   legend  merge conflicts block merge-back · HOLD starts at 15% intersecting pairs
+   legend  held work returns READY only after the named conflict is resolved
+
+   recent concurrency events
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   TIME    WHO        EVENT                 DETAIL
+   14:07   wave 3     conflict → HOLD       routes.rs · 16.7%
+   14:06   core       merge blocked         feat-api-routes quarantined
+   14:05   core       workers widened       3/3 workers · 1.8k tokens/s
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

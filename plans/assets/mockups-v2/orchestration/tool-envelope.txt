@@ -1,0 +1,40 @@
+ tool envelope · session ───────────────────────────────────────────────────────────────────────────────────────────────
+
+   filters  ✓ [o] ok 41  ·  ✗ [e] error 2  ·  ○ [r] refused 3
+
+   response contract
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   FIELD         TYPE                       DETAIL
+   status        ok | error | refused       read outcome first
+   payload       object                     result or reason
+   truncated     bool                       true when output was clipped
+   fixed shape  ·  every reply carries all three fields
+
+   example payloads
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ✓ ok  completed call                            ○ refused  never ran
+   {                                               {
+     "status": "ok",                                 "status": "refused",
+     "payload": {                                    "payload": {
+       "result": "3 matches"                           "reason": "read the project first"
+     },                                              },
+     "truncated": false                              "truncated": false
+   }                                               }
+
+   recent tool calls
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   error = ran and failed  ·  refused = never ran
+   TIME    STATUS       ACTION           DETAIL
+   10:24   ✓ ok         Read             routes.rs:12-48
+   10:23   ○ refused    Edit             policy requires project read
+   10:23   ✗ error      Web lookup       request timed out after 10s
+   10:22   ✓ ok         Run shell        48 checks passed · clipped
+   10:22   ✓ ok         Search           rate limit · 3 matches
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8
