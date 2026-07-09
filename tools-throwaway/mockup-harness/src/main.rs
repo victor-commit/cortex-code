@@ -80,10 +80,17 @@ fn registry() -> Vec<Entry> {
         ("input", "model-picker", screens::model_picker::render),
         (
             "input",
+            "attachment-picker",
+            screens::attachment_picker::render,
+        ),
+        (
+            "input",
             "model-picker-filtered",
             screens::model_picker_filtered::render,
         ),
         ("input", "file-mention", screens::file_mention::render),
+        ("input", "export-picker", screens::export_picker::render),
+        ("input", "fork-picker", screens::fork_picker::render),
         ("input", "queue-manager", screens::queue_manager::render),
         (
             "input",
@@ -92,6 +99,11 @@ fn registry() -> Vec<Entry> {
         ),
         ("input", "skills-picker", screens::skills_picker::render),
         ("input", "session-picker", screens::session_picker::render),
+        (
+            "input",
+            "subagent-picker",
+            screens::subagent_picker::render,
+        ),
         ("input", "variant-picker", screens::variant_picker::render),
         ("input", "theme-picker", screens::theme_picker::render),
         (

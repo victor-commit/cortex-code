@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › branch from the earlier cache investigation  · 1m ago
+
+   Cortex
+   Pick a message to use as the starting point for the new branch.
+
+ › /fork
+╭ Fork from message ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   14:22  you     trace the token refresh path before editing                                                         │
+│   14:23  cortex  I found the cache boundary and its callers.                                                         │
+│   14:26  you     keep the existing invalidation behavior                                                             │
+│   14:27  cortex  The change can stay within the provider cache.                                                      │
+│ › 14:31  you     show the smallest safe patch before applying it                                                     │
+│                                                                                                                      │
+│  enter fork → new session from this turn                                                                             │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ↑↓ move · enter fork · esc close                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

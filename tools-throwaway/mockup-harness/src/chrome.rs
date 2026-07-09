@@ -488,6 +488,125 @@ pub fn select_list(
     out
 }
 
+/// One annotated picker row with a state-specific right-side meta field.
+/// `disabled` renders an unavailable candidate in FAINT while preserving its
+/// visibility, which lets file pickers surface unsupported types honestly.
+pub struct AnnotatedListRow {
+    pub name: &'static str,
+    pub detail: &'static str,
+    pub meta: String,
+    pub meta_color: Color,
+    pub disabled: bool,
+}
+
+/// Render a picker list with the canonical selection wash plus semantic
+/// right-aligned metadata. This covers live status rows, export defaults, and
+/// attachable versus unavailable file candidates without duplicating list math.
+pub fn annotated_select_list(
+    width: usize,
+    rows: &[AnnotatedListRow],
+    selected: usize,
+    filter: Option<&str>,
+) -> Vec<Line<'static>> {
+    let name_w = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len() + usize::from(filter.is_some()));
+    if let Some(query) = filter {
+        out.push(list_filter("/", query, "type to filter"));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let active = i == selected && !row.disabled;
+        let sty = |hue: Color| {
+            let style = Style::default().fg(hue);
+            if active {
+                style.bg(SURFACE)
+            } else {
+                style
+            }
+        };
+        let marker = if active {
+            Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+        } else {
+            Span::styled("   ".to_string(), sty(TXT))
+        };
+        let (name_hue, detail_hue, meta_hue) = if row.disabled {
+            (FAINT, FAINT, FAINT)
+        } else if active {
+            (BRIGHT, TXT, MUTED)
+        } else {
+            (TXT, MUTED, row.meta_color)
+        };
+        let name_cell = format!("{:<name_w$}  ", row.name);
+        let used = 3 + name_cell.chars().count() + row.detail.chars().count();
+        let pad = width
+            .saturating_sub(used + row.meta.chars().count() + 1)
+            .max(1);
+        out.push(Line::from(vec![
+            marker,
+            Span::styled(name_cell, sty(name_hue)),
+            Span::styled(row.detail.to_string(), sty(detail_hue)),
+            Span::styled(" ".repeat(pad), sty(detail_hue)),
+            Span::styled(row.meta.clone(), sty(meta_hue)),
+            Span::styled(" ".to_string(), sty(meta_hue)),
+        ]));
+    }
+    out
+}
+
+/// One timeline-backed fork row. The timestamp and author form a fixed
+/// MUTED key column, while the excerpt carries selection emphasis.
+pub struct TimelineListRow {
+    pub key: &'static str,
+    pub excerpt: &'static str,
+}
+
+/// Render fork targets from a message timeline. Keeping the key column MUTED
+/// preserves timestamp and author metadata, while the selected excerpt is
+/// BRIGHT inside the canonical SURFACE selection wash.
+pub fn timeline_select_list(
+    width: usize,
+    rows: &[TimelineListRow],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let key_w = rows
+        .iter()
+        .map(|row| row.key.chars().count())
+        .max()
+        .unwrap_or(0);
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let active = i == selected;
+            let sty = |hue: Color| {
+                let style = Style::default().fg(hue);
+                if active {
+                    style.bg(SURFACE)
+                } else {
+                    style
+                }
+            };
+            let marker = if active {
+                Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+            } else {
+                Span::styled("   ".to_string(), sty(TXT))
+            };
+            let key_cell = format!("{:<key_w$}  ", row.key);
+            let excerpt_hue = if active { BRIGHT } else { TXT };
+            let used = 3 + key_cell.chars().count() + row.excerpt.chars().count();
+            let pad = width.saturating_sub(used + 1).max(1);
+            Line::from(vec![
+                marker,
+                Span::styled(key_cell, sty(MUTED)),
+                Span::styled(row.excerpt.to_string(), sty(excerpt_hue)),
+                Span::styled(" ".repeat(pad), sty(excerpt_hue)),
+            ])
+        })
+        .collect()
+}
+
 /// One numbered choice in a permission dock.
 pub struct PermissionChoice {
     pub label: &'static str,

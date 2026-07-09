@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › save this investigation for the release review  · 1m ago
+
+   Cortex
+   Choose the format that best fits where you will use the session.
+
+ › /export
+╭ Export session ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › Markdown  readable .md · headings + code                                                                   default │
+│   JSON      structured messages (.json)                                                                              │
+│   HTML      styled, shareable (.html)                                                                                │
+│   Patch     git-applyable diff (.patch)                                                                              │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ↑↓ move · enter export · esc close                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

@@ -7,6 +7,7 @@
 
 // session
 pub mod agent_picker;
+pub mod attachment_picker;
 pub mod chat_long_scroll;
 pub mod chat_turn;
 pub mod blocked_command;
@@ -14,7 +15,9 @@ pub mod command_palette;
 pub mod command_palette_submenu;
 pub mod composer_multiline;
 pub mod diff_edit;
+pub mod export_picker;
 pub mod file_mention;
+pub mod fork_picker;
 pub mod home;
 pub mod model_picker;
 pub mod model_picker_filtered;
@@ -31,6 +34,7 @@ pub mod slash_menu;
 pub mod streaming;
 pub mod skills_picker;
 pub mod session_picker;
+pub mod subagent_picker;
 pub mod variant_picker;
 pub mod theme_picker;
 pub mod turn_error;
