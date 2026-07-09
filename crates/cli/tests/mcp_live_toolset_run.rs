@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,6 +25,7 @@ static NEXT_PORT: AtomicU16 = AtomicU16::new(3240);
 enum Scenario {
     AddOnly,
     AddThenRemove,
+    ResourcesPromptsAndError,
 }
 
 struct Scratch {
@@ -89,15 +90,16 @@ struct ProviderFixture {
 
 impl ProviderFixture {
     fn spawn(mcp_port: u16, scenario: Scenario) -> Self {
+        let port = free_port();
         let listener =
-            TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral provider loopback fixture");
-        let port = listener.local_addr().expect("local addr").port();
+            TcpListener::bind(("127.0.0.1", port)).expect("bind provider loopback fixture");
         let captures = Arc::new(Mutex::new(Vec::new()));
         let thread_captures = captures.clone();
         let thread = thread::spawn(move || {
             let requests = match scenario {
                 Scenario::AddOnly => 2,
                 Scenario::AddThenRemove => 3,
+                Scenario::ResourcesPromptsAndError => 4,
             };
             for round in 0..requests {
                 let (mut stream, _) = listener.accept().expect("accept provider request");
@@ -115,6 +117,29 @@ impl ProviderFixture {
                         post_control(mcp_port, "/control/remove-tool");
                         thread::sleep(CONTROL_SETTLE);
                         write_sse_response(&mut stream, &tool_call_frames("call_2", "api_echo"));
+                    }
+                    (Scenario::ResourcesPromptsAndError, 0) => write_sse_response(
+                        &mut stream,
+                        &tool_call_frames_with_arguments(
+                            "call_resource",
+                            "demo_resource_notes___demo",
+                            json!({}),
+                        ),
+                    ),
+                    (Scenario::ResourcesPromptsAndError, 1) => write_sse_response(
+                        &mut stream,
+                        &tool_call_frames_with_arguments(
+                            "call_prompt",
+                            "demo_prompt_greet",
+                            json!({ "name": "cortex" }),
+                        ),
+                    ),
+                    (Scenario::ResourcesPromptsAndError, 2) => write_sse_response(
+                        &mut stream,
+                        &tool_call_frames_with_arguments("call_boom", "demo_boom", json!({})),
+                    ),
+                    (Scenario::ResourcesPromptsAndError, 3) => {
+                        write_sse_response(&mut stream, &error_acknowledgement_frames());
                     }
                     _ => {
                         write_sse_response(&mut stream, &final_answer_frames());
@@ -257,6 +282,115 @@ fn jsonl_emits_refreshed_mcp_tool_definitions_for_add_and_remove() {
     );
 }
 
+#[test]
+fn cortex_run_reads_mcp_resources_gets_prompts_and_relays_tool_errors() {
+    let Some(echo) = echo_server_bin() else {
+        eprintln!("skipping: cortex-mcp-echo-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("resources-prompts-error");
+    let log = scratch.project.join("mcp.log");
+    let process_tag = format!("cortex-mcp-resources-{}", std::process::id());
+    let resource_content = format!("RESOURCE-CONTENT-{}", std::process::id());
+    std::fs::write(
+        scratch.project.join("cortex.toml"),
+        format!(
+            r#"[mcp.demo]
+type = "local"
+command = ["{}", "{process_tag}"]
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS = "1"
+CORTEX_MCP_ECHO_RESOURCE_CONTENT = "{resource_content}"
+CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL = "1"
+"#,
+            toml_string(&echo),
+            toml_string(&log),
+        ),
+    )
+    .expect("write MCP fixture config");
+
+    let provider = ProviderFixture::spawn(0, Scenario::ResourcesPromptsAndError);
+    let out = run(cortex_in(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--format",
+            "json",
+            "Use the MCP resource and prompt, then report any MCP tool error accurately.",
+        ],
+    ));
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("strict JSON document");
+    let advertised = doc_tool_names(&doc);
+    for name in [
+        "demo_resource_notes___demo",
+        "demo_prompt_greet",
+        "demo_boom",
+    ] {
+        assert!(
+            advertised.contains(&name.to_owned()),
+            "MCP capability `{name}` must be materialized for the turn: {doc}"
+        );
+    }
+
+    let results = doc["tool_results"].as_array().expect("tool results");
+    let resource = tool_result(results, "demo_resource_notes___demo");
+    assert_eq!(resource["is_error"], false, "resource result: {resource}");
+    assert!(
+        serde_json::to_string(resource)
+            .expect("resource result JSON")
+            .contains(&resource_content),
+        "resources/read content must reach the turn: {resource}"
+    );
+    let prompt = tool_result(results, "demo_prompt_greet");
+    assert_eq!(prompt["is_error"], false, "prompt result: {prompt}");
+    assert!(
+        serde_json::to_string(prompt)
+            .expect("prompt result JSON")
+            .contains("Hello cortex from MCP"),
+        "prompts/get content with applied arguments must reach the turn: {prompt}"
+    );
+    let boom = tool_result(results, "demo_boom");
+    assert_eq!(boom["is_error"], true, "error result: {boom}");
+    assert!(
+        serde_json::to_string(boom)
+            .expect("error result JSON")
+            .contains("MCP-TOOL-FAILED"),
+        "the MCP error payload must not be swallowed: {boom}"
+    );
+    assert!(
+        doc["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("MCP tool failed")),
+        "the continuation must acknowledge failure rather than claim success: {doc}"
+    );
+
+    let requests = provider.captured_requests();
+    assert_eq!(requests.len(), 4, "one provider request per round-trip");
+    assert_tool_message_contains(&requests[1], "call_resource", &resource_content);
+    assert_tool_message_contains(&requests[2], "call_prompt", "Hello cortex from MCP");
+    assert_tool_message_contains(&requests[3], "call_boom", "Tool error from demo_boom");
+    assert_tool_message_contains(&requests[3], "call_boom", "MCP-TOOL-FAILED");
+
+    let server_log = std::fs::read_to_string(&log).expect("fixture log");
+    assert!(
+        server_log.contains("resources/read uri=notes://demo"),
+        "the fixture must observe a real resources/read:\n{server_log}"
+    );
+    assert!(
+        server_log.contains("prompts/get name=greet") && server_log.contains(r#""name":"cortex""#),
+        "the fixture must observe prompts/get with the declared argument:\n{server_log}"
+    );
+    assert!(
+        server_log.contains("tools/call name=boom"),
+        "the fixture must observe the failing tools/call:\n{server_log}"
+    );
+    assert_process_tag_reaped(&process_tag);
+}
+
 fn cortex_in(scratch: &Scratch, provider: &ProviderFixture, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(&scratch.project);
@@ -339,6 +473,18 @@ url = "http://127.0.0.1:{mcp_port}/mcp"
 fn remote_server_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(resolve_remote_server_bin).clone()
+}
+
+fn echo_server_bin() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let bin = current.parent()?.parent()?.join("cortex-mcp-echo-server");
+    bin.exists().then_some(bin)
+}
+
+fn toml_string(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 fn resolve_remote_server_bin() -> PathBuf {
@@ -461,7 +607,11 @@ fn write_sse_response(stream: &mut TcpStream, frames: &[String]) {
 }
 
 fn tool_call_frames(id: &str, name: &str) -> Vec<String> {
-    let arguments = json!({ "message": format!("hello from {id}") }).to_string();
+    tool_call_frames_with_arguments(id, name, json!({ "message": format!("hello from {id}") }))
+}
+
+fn tool_call_frames_with_arguments(id: &str, name: &str, arguments: Value) -> Vec<String> {
+    let arguments = arguments.to_string();
     vec![
         format!(
             "data: {}\n\n",
@@ -492,6 +642,23 @@ fn final_answer_frames() -> Vec<String> {
             json!({
                 "choices": [{
                     "delta": { "content": "MCP live toolset refreshed." },
+                    "finish_reason": "stop"
+                }]
+            })
+        ),
+        "data: [DONE]\n\n".to_owned(),
+    ]
+}
+
+fn error_acknowledgement_frames() -> Vec<String> {
+    vec![
+        format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{
+                    "delta": {
+                        "content": "The resource and prompt were read, but the MCP tool failed."
+                    },
                     "finish_reason": "stop"
                 }]
             })
@@ -537,4 +704,48 @@ fn doc_tool_names(doc: &Value) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn tool_result<'a>(results: &'a [Value], name: &str) -> &'a Value {
+    results
+        .iter()
+        .find(|result| result["name"] == name)
+        .unwrap_or_else(|| panic!("missing tool result for `{name}`: {results:?}"))
+}
+
+fn assert_tool_message_contains(request: &Value, call_id: &str, expected: &str) {
+    let message = request["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+        .unwrap_or_else(|| panic!("missing tool result message for `{call_id}`: {request}"));
+    let rendered = serde_json::to_string(message).expect("tool message JSON");
+    assert!(
+        rendered.contains(expected),
+        "tool result `{call_id}` must contain `{expected}`, got: {rendered}"
+    );
+}
+
+fn assert_process_tag_reaped(tag: &str) {
+    for _ in 0..50 {
+        let output = Command::new("ps")
+            .args(["-eo", "stat,args"])
+            .output()
+            .expect("scan process table");
+        let alive = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.contains(tag))
+            .any(|line| {
+                !line
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|state| state.starts_with('Z'))
+            });
+        if !alive {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("stdio MCP fixture tagged `{tag}` remained alive after cortex run");
 }
