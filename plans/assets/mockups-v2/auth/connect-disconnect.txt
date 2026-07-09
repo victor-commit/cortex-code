@@ -1,0 +1,40 @@
+ /connect · Anthropic ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+   Review what will change before disconnecting
+
+
+
+
+
+
+
+╭ Disconnect provider ─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Disconnect Anthropic?                                                                                               │
+│                                                                                                                      │
+│  This removes the stored credential from auth.json                                                                   │
+│  Its models will require reconnecting before you can use them                                                        │
+│                                                                                                                      │
+│  Nothing has been removed yet                                                                                        │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ esc cancel, keep connected · enter disconnect                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

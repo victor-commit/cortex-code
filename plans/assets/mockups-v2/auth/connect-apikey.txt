@@ -1,0 +1,40 @@
+ /connect · Anthropic ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+   Add an API key to use Anthropic models
+
+
+
+
+
+╭ Add API key ─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Provider: Anthropic · locked                                                                                        │
+│                                                                                                                      │
+│  sk-ant-············1234█                                                                                            │
+│  ● Format looks valid · 108 characters                                                                               │
+│                                                                                                                      │
+│  Will be stored to auth.json (0600) · never shown                                                                    │
+│  Back to chat once verified · usable in /models immediately                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ctrl+v paste key from clipboard · enter connect · esc back                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

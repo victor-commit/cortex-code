@@ -1,0 +1,40 @@
+ /connect · GitHub Copilot ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+   Authorize GitHub Copilot to use its models
+
+
+
+
+╭ Authorize device ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  1  Open this URL in your browser                                                                                    │
+│     https://github.com/login/device  [o] open                                                                        │
+│                                                                                                                      │
+│  2  Enter this one-time code                                                                                         │
+│     WDJB-MJHT  y copy                                                                                                │
+│     Code expires in 14m32s                                                                                           │
+│     ⎿ refreshing                                                                                                     │
+│                                                                                                                      │
+│  ● Waiting for authorization…                                                                                        │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ o open · y copy code · esc cancel                                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

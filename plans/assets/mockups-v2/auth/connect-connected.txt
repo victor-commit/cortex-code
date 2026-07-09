@@ -1,0 +1,40 @@
+ /connect · Anthropic ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+   Your provider is ready to use
+
+
+
+
+
+
+
+╭ Connected ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ✓ connected Anthropic                                                                                               │
+│  Authentication method: API key                                                                                      │
+│                                                                                                                      │
+│  Usable now · open /models to pick a model                                                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ enter done, return to chat · esc close                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

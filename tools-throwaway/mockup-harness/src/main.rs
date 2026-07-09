@@ -128,6 +128,22 @@ fn registry() -> Vec<Entry> {
             screens::connect_provider::render,
         ),
         ("auth", "connect-method", screens::connect_method::render),
+        (
+            "auth",
+            "connect-apikey",
+            screens::connect_apikey::render,
+        ),
+        (
+            "auth",
+            "connect-connected",
+            screens::connect_connected::render,
+        ),
+        (
+            "auth",
+            "connect-disconnect",
+            screens::connect_disconnect::render,
+        ),
+        ("auth", "connect-oauth", screens::connect_oauth::render),
         ("views", "status", screens::status::render),
         (
             "views",
