@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › audit the auth module and add the rate-limit tests  · 5m ago
+
+   Cortex
+
+   I split the audit from the test work so the findings can guide the patch.
+
+ ● Task(explore: audit the auth module)
+   ⎿ ✓ 6 findings · 3m12s · ctrl+o collapse
+     ✗ blocking  Refresh tokens do not check a revoked session.               crates/auth/src/refresh.rs:84
+     ✗ blocking  The test helper creates a session without token state.       tests/login_ratelimit.rs:31
+     ● review    Login retries share no per-user limit.                       crates/auth/src/login.rs:118
+     ✓ confirmed Logout already invalidates the active token.                 crates/auth/src/logout.rs:57
+     ✓ confirmed The migration keeps existing session rows valid.             crates/db/src/migrate.rs:204
+     ✓ confirmed Password reset clears stale login attempts.                  crates/auth/src/reset.rs:92
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

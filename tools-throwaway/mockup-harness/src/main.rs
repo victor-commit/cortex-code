@@ -53,6 +53,13 @@ fn registry() -> Vec<Entry> {
         ("session", "tool-success", screens::tool_success::render),
         ("session", "tool-success-expanded", screens::tool_success_expanded::render),
         ("session", "tool-failed", screens::tool_failed::render),
+        ("session", "tool-task", screens::tool_task::render),
+        (
+            "session",
+            "tool-task-expanded",
+            screens::tool_task_expanded::render,
+        ),
+        ("session", "diff-edit", screens::diff_edit::render),
     ]
 }
 

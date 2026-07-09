@@ -198,6 +198,8 @@ pub enum ToolStatus {
 }
 
 /// ` ● Name(args)` - dot MUTED while running, OK when done, BAD when failed.
+/// Empty `args` keep a plain one-line semantic header, for pending proposals
+/// whose path belongs in the label rather than function-style parentheses.
 pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
     let (hue, elapsed) = match status {
         ToolStatus::Running(e) => (MUTED, e),
@@ -208,8 +210,10 @@ pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
         Span::raw(" "),
         Span::styled(format!("{DOT} "), Style::default().fg(hue)),
         Span::styled(name.to_string(), Style::default().fg(BRIGHT)),
-        Span::styled(format!("({args})"), Style::default().fg(MUTED)),
     ];
+    if !args.is_empty() {
+        spans.push(Span::styled(format!("({args})"), Style::default().fg(MUTED)));
+    }
     if let Some(secs) = elapsed {
         spans.push(Span::styled(
             format!(" {SEP} {}", timefmt(secs)),

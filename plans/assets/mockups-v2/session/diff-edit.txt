@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › give login rows a default token_version  · 4m ago
+
+ ● Proposed an edit to crates/server/src/models/session.rs
+   ⎿ +3 -1 · 1 hunk
+
+    18   18   pub fn new(user: UserId) -> Self {
+    19   19       Self {
+    20   20           user,
+    21      -         token_version: None,
+         21 +         token_version: Some(1),
+         22 +         created_at: Clock::now(),
+         23 +         refresh_after: now + TOKEN_TTL,
+    22   24       }
+    23   25   }
+
+   Rationale token_version: None → Some(1)
+   New session rows start with a version, so refresh checks can compare it safely.
+╭ Proposed edit ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│[y/n/e] key prompt                                                                                                    │
+│○ Pending decision · no files changed                                                                                 │
+│ y apply · n skip · e edit                                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

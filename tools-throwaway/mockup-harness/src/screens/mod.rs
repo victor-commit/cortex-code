@@ -8,6 +8,7 @@
 // session
 pub mod chat_long_scroll;
 pub mod chat_turn;
+pub mod diff_edit;
 pub mod home;
 pub mod onboarding;
 pub mod reasoning;
@@ -19,3 +20,5 @@ pub mod tool_failed;
 pub mod tool_running;
 pub mod tool_success;
 pub mod tool_success_expanded;
+pub mod tool_task;
+pub mod tool_task_expanded;

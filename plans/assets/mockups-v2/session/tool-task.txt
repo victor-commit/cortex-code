@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › audit the auth module and add the rate-limit tests  · 5m ago
+
+   Cortex
+
+   I split the audit from the test work so the findings can guide the patch.
+
+ ● Task(explore: audit the auth module)
+   ⎿ ✓ 6 findings · 3m12s · ctrl+o expand
+
+ ● Task(build: add rate-limit tests) · 48s
+   ⎿ 2 of 3 files · tests/login_ratelimit.rs · esc to interrupt
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a follow-up, it runs after this turn…                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
