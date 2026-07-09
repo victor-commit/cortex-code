@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › inspect the production incident before changing anything  · 2m ago
+
+   Cortex
+   I can switch to a read-only agent for this investigation.
+
+ › /agents
+╭ Select agent ────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  / type to filter                                                                                                    │
+│   build    Default coding agent that implements requested changes · ● current                                primary │
+│ › plan     Planning agent that investigates and returns an implementation plan                              subagent │
+│   general  General-purpose assistant for broad questions and guidance                                       subagent │
+│   explore  Read-only exploration agent for inspecting and reporting findings                                subagent │
+│                                                                                                                      │
+│  plan grants: read, glob, grep, and lsp · no shell, no writes                                                        │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ↑↓ move · enter select · esc cancel · type filter                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

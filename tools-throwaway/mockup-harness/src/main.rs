@@ -70,11 +70,18 @@ fn registry() -> Vec<Entry> {
         ("session", "todo-list", screens::todo_list::render),
         ("session", "compact", screens::compact::render),
         ("input", "slash-menu", screens::slash_menu::render),
+        ("input", "agent-picker", screens::agent_picker::render),
         ("input", "command-palette", screens::command_palette::render),
         (
             "input",
             "command-palette-submenu",
             screens::command_palette_submenu::render,
+        ),
+        ("input", "model-picker", screens::model_picker::render),
+        (
+            "input",
+            "model-picker-filtered",
+            screens::model_picker_filtered::render,
         ),
         ("input", "file-mention", screens::file_mention::render),
         ("input", "queue-manager", screens::queue_manager::render),

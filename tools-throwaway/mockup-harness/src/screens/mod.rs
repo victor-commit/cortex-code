@@ -6,6 +6,7 @@
 //! retired v1 chrome API and must not be re-declared here.
 
 // session
+pub mod agent_picker;
 pub mod chat_long_scroll;
 pub mod chat_turn;
 pub mod blocked_command;
@@ -15,6 +16,8 @@ pub mod composer_multiline;
 pub mod diff_edit;
 pub mod file_mention;
 pub mod home;
+pub mod model_picker;
+pub mod model_picker_filtered;
 pub mod onboarding;
 pub mod reasoning;
 pub mod reasoning_collapsed;
