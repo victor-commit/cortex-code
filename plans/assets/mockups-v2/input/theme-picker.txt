@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › make the review comfortable in daylight  · 2m ago
+
+   Cortex
+   Move through the themes to preview each palette before applying.
+
+ › /themes
+╭ Themes ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › dark         cortex default                                                               ● current  warm          │
+│   light        daytime                                                                                 cool          │
+│   vscode-dark  familiar                                                                                neutral       │
+│   monokai      vivid                                                                                   high-contrast │
+│   ocean        cool blues                                                                              calm          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ↑↓ preview · enter apply · esc restores previous theme                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

@@ -488,6 +488,153 @@ pub fn select_list(
     out
 }
 
+/// One skills-picker row. The source column makes skills loaded for the
+/// current session distinct from discoverable but inactive skills, while the
+/// rightmost state stays readable with color removed.
+pub struct ToggleListRow {
+    pub name: &'static str,
+    pub detail: &'static str,
+    pub source: &'static str,
+    pub enabled: bool,
+}
+
+/// Render a selection list whose final column is an explicit on/off toggle.
+/// This keeps selection treatment, semantic state color, and right-aligned
+/// toggle anatomy in one shared primitive for settings-style pickers.
+pub fn toggle_select_list(
+    width: usize,
+    rows: &[ToggleListRow],
+    selected: usize,
+    filter: Option<&str>,
+) -> Vec<Line<'static>> {
+    let name_w = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let source_w = rows
+        .iter()
+        .map(|row| row.source.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len() + usize::from(filter.is_some()));
+    if let Some(query) = filter {
+        out.push(list_filter("/", query, "filter skills"));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let sel = i == selected;
+        let sty = |hue: Color| {
+            let s = Style::default().fg(hue);
+            if sel {
+                s.bg(SURFACE)
+            } else {
+                s
+            }
+        };
+        let name_hue = if sel { BRIGHT } else { TXT };
+        let detail_hue = if sel { TXT } else { MUTED };
+        let source_hue = if row.enabled { MUTED } else { FAINT };
+        let marker = if sel {
+            Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+        } else {
+            Span::styled("   ".to_string(), sty(TXT))
+        };
+        let name_cell = format!("{:<name_w$}  ", row.name);
+        let source_cell = format!("{:<source_w$}  ", row.source);
+        let state_word = if row.enabled { "on" } else { "off" };
+        let state_glyph = if row.enabled { "●" } else { "○" };
+        let state_hue = if row.enabled { OK } else { FAINT };
+        let used = 3
+            + name_cell.chars().count()
+            + row.detail.chars().count()
+            + source_cell.chars().count()
+            + state_glyph.chars().count()
+            + 1
+            + state_word.chars().count();
+        let pad = width.saturating_sub(used + 1).max(1);
+        out.push(Line::from(vec![
+            marker,
+            Span::styled(name_cell, sty(name_hue)),
+            Span::styled(row.detail.to_string(), sty(detail_hue)),
+            Span::styled(" ".repeat(pad), sty(detail_hue)),
+            Span::styled(source_cell, sty(source_hue)),
+            Span::styled(format!("{state_glyph} "), sty(state_hue)),
+            Span::styled(state_word.to_string(), sty(state_hue)),
+            Span::styled(" ".to_string(), sty(state_hue)),
+        ]));
+    }
+    out
+}
+
+/// One row of a session picker. Age and message count are deliberately
+/// separate fields so their right-aligned columns never drift as text varies.
+pub struct SessionListRow {
+    pub title: &'static str,
+    pub age: &'static str,
+    pub messages: &'static str,
+    pub matches_query: bool,
+}
+
+/// Render session rows with fixed title, match, age, and message-count
+/// columns. A textual match badge makes the typed query's corresponding row
+/// observable without introducing a second selection convention.
+pub fn session_select_list(
+    width: usize,
+    rows: &[SessionListRow],
+    selected: usize,
+    query: &str,
+) -> Vec<Line<'static>> {
+    const MATCH_W: usize = 7;
+    const AGE_W: usize = 11;
+    const MSG_W: usize = 9;
+
+    let title_w = rows
+        .iter()
+        .map(|row| row.title.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![list_filter("/", query, "filter sessions")];
+    for (i, row) in rows.iter().enumerate() {
+        let sel = i == selected;
+        let sty = |hue: Color| {
+            let s = Style::default().fg(hue);
+            if sel {
+                s.bg(SURFACE)
+            } else {
+                s
+            }
+        };
+        let marker = if sel {
+            Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+        } else {
+            Span::styled("   ".to_string(), sty(TXT))
+        };
+        let title_hue = if sel { BRIGHT } else { TXT };
+        let detail_hue = if sel { MUTED } else { FAINT };
+        let title_cell = format!("{:<title_w$}  ", row.title);
+        let match_cell = if row.matches_query { "● match" } else { "" };
+        let match_cell = format!("{match_cell:<MATCH_W$}");
+        let age_cell = format!("{:<AGE_W$}", row.age);
+        let message_cell = format!("{:<MSG_W$}", row.messages);
+        let used = 3
+            + title_cell.chars().count()
+            + match_cell.chars().count()
+            + age_cell.chars().count()
+            + message_cell.chars().count();
+        let pad = width.saturating_sub(used + 1).max(1);
+        out.push(Line::from(vec![
+            marker,
+            Span::styled(title_cell, sty(title_hue)),
+            Span::styled(match_cell, sty(INFO)),
+            Span::styled(" ".repeat(pad), sty(detail_hue)),
+            Span::styled(age_cell, sty(MUTED)),
+            Span::styled(message_cell, sty(MUTED)),
+            Span::styled(" ".to_string(), sty(MUTED)),
+        ]));
+    }
+    out
+}
+
 /// One fuzzy file row, split around the matched substring so it can receive
 /// the stronger BRIGHT bold treatment without hiding the remainder of the
 /// path.
@@ -1173,41 +1320,135 @@ pub fn card(f: &mut Frame, area: Rect, title: &str, keys: &[(&str, &str)]) -> Re
 // screens still never touch raw `Color::Rgb`.
 // ============================================================================
 
-/// `(name, [canvas, text, accent, ok, bad])` swatches per selectable theme.
-pub fn theme_previews() -> Vec<(&'static str, [Color; 5])> {
-    vec![
-        ("cortex dark", [CANVAS, TXT, ACCENT, OK, BAD]),
-        (
-            "cortex light",
-            [
+/// A brand theme's picker labels and swatch hues. This is the shared source
+/// of truth for the theme picker and the later gallery previews.
+pub struct ThemePreview {
+    pub name: &'static str,
+    pub descriptor: &'static str,
+    pub tag: &'static str,
+    pub swatches: [Color; 5],
+}
+
+/// The five supported brand themes, in the order shown by `/themes`.
+pub fn theme_previews() -> &'static [ThemePreview] {
+    &[
+        ThemePreview {
+            name: "dark",
+            descriptor: "cortex default",
+            tag: "warm",
+            swatches: [CANVAS, TXT, ACCENT, OK, BAD],
+        },
+        ThemePreview {
+            name: "light",
+            descriptor: "daytime",
+            tag: "cool",
+            swatches: [
                 Color::Rgb(250, 247, 242),
                 Color::Rgb(51, 56, 63),
                 Color::Rgb(192, 107, 68),
                 Color::Rgb(79, 121, 66),
                 Color::Rgb(181, 74, 85),
             ],
-        ),
-        (
-            "high contrast",
-            [
-                Color::Rgb(0, 0, 0),
-                Color::Rgb(255, 255, 255),
-                Color::Rgb(255, 158, 108),
-                Color::Rgb(150, 210, 128),
-                Color::Rgb(255, 132, 142),
+        },
+        ThemePreview {
+            name: "vscode-dark",
+            descriptor: "familiar",
+            tag: "neutral",
+            swatches: [
+                Color::Rgb(30, 30, 30),
+                Color::Rgb(212, 212, 212),
+                Color::Rgb(79, 193, 255),
+                Color::Rgb(137, 190, 116),
+                Color::Rgb(239, 83, 80),
             ],
-        ),
-        (
-            "solarized dark",
-            [
-                Color::Rgb(0, 43, 54),
-                Color::Rgb(131, 148, 150),
-                Color::Rgb(203, 75, 22),
-                Color::Rgb(133, 153, 0),
-                Color::Rgb(220, 50, 47),
+        },
+        ThemePreview {
+            name: "monokai",
+            descriptor: "vivid",
+            tag: "high-contrast",
+            swatches: [
+                Color::Rgb(39, 40, 34),
+                Color::Rgb(248, 248, 242),
+                Color::Rgb(253, 151, 31),
+                Color::Rgb(166, 226, 46),
+                Color::Rgb(249, 38, 114),
             ],
-        ),
+        },
+        ThemePreview {
+            name: "ocean",
+            descriptor: "cool blues",
+            tag: "calm",
+            swatches: [
+                Color::Rgb(15, 34, 52),
+                Color::Rgb(214, 225, 236),
+                Color::Rgb(74, 164, 209),
+                Color::Rgb(108, 190, 143),
+                Color::Rgb(216, 106, 120),
+            ],
+        },
     ]
+}
+
+/// Render the brand theme rows with the normal picker selection treatment and
+/// an explicit glyph-plus-color current indicator for the live theme.
+pub fn theme_select_list(
+    width: usize,
+    themes: &[ThemePreview],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    const CURRENT_W: usize = 9;
+    let name_w = themes
+        .iter()
+        .map(|theme| theme.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let tag_w = themes
+        .iter()
+        .map(|theme| theme.tag.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    themes
+        .iter()
+        .enumerate()
+        .map(|(i, theme)| {
+            let selected_row = i == selected;
+            let sty = |hue: Color| {
+                let s = Style::default().fg(hue);
+                if selected_row {
+                    s.bg(SURFACE)
+                } else {
+                    s
+                }
+            };
+            let marker = if selected_row {
+                Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+            } else {
+                Span::styled("   ".to_string(), sty(TXT))
+            };
+            let name_hue = if selected_row { BRIGHT } else { TXT };
+            let detail_hue = if selected_row { TXT } else { MUTED };
+            let name_cell = format!("{:<name_w$}  ", theme.name);
+            let current = if selected_row { "● current" } else { "" };
+            let current_cell = format!("{current:<CURRENT_W$}  ");
+            let tag_cell = format!("{:<tag_w$}", theme.tag);
+            let used = 3
+                + name_cell.chars().count()
+                + theme.descriptor.chars().count()
+                + current_cell.chars().count()
+                + tag_cell.chars().count();
+            let pad = width.saturating_sub(used + 1).max(1);
+            Line::from(vec![
+                marker,
+                Span::styled(name_cell, sty(name_hue)),
+                Span::styled(theme.descriptor.to_string(), sty(detail_hue)),
+                Span::styled(" ".repeat(pad), sty(detail_hue)),
+                Span::styled(current_cell, sty(INFO)),
+                Span::styled(tag_cell, sty(MUTED)),
+                Span::styled(" ".to_string(), sty(MUTED)),
+            ])
+        })
+        .collect()
 }
 
 /// The light-theme token table (used by theme previews / light-mode mocks).

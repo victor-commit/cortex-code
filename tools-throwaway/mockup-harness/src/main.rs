@@ -90,6 +90,10 @@ fn registry() -> Vec<Entry> {
             "composer-multiline",
             screens::composer_multiline::render,
         ),
+        ("input", "skills-picker", screens::skills_picker::render),
+        ("input", "session-picker", screens::session_picker::render),
+        ("input", "variant-picker", screens::variant_picker::render),
+        ("input", "theme-picker", screens::theme_picker::render),
     ]
 }
 

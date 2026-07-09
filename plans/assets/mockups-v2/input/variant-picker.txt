@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › keep this refactor responsive without losing coverage  · 3m ago
+
+   Cortex
+   Balanced is active for the next turn.
+
+ › /variant
+╭ Reasoning variant ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   default   default reasoning effort                                                                                 │
+│   fast      fastest, minimal reasoning                                                                               │
+│ › balanced  balanced latency / quality                                                                               │
+│   quality   maximum reasoning effort                                                                                 │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ ↑↓ move · enter select · esc close                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
