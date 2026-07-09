@@ -460,6 +460,80 @@ pub fn diff_lines(old_start: u32, new_start: u32, rows: &[DiffRow]) -> Vec<Line<
     out
 }
 
+/// Staging state for one diff hunk. Each state uses a glyph and hue so it
+/// remains readable without relying on color alone.
+pub enum DiffHunkState {
+    Staged,
+    Pending,
+    Skipped,
+}
+
+impl DiffHunkState {
+    fn glyph(&self) -> &'static str {
+        match self {
+            Self::Staged => "✓",
+            Self::Pending | Self::Skipped => DOT_EMPTY,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Pending => "pending",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    fn hue(&self) -> Color {
+        match self {
+            Self::Staged => OK,
+            Self::Pending => MUTED,
+            Self::Skipped => FAINT,
+        }
+    }
+}
+
+/// Hunk header for the staging review surface. Actions attach directly to the
+/// hunk they operate on. The focused header uses the canonical SURFACE wash
+/// plus ACCENT selection marker, never red.
+pub fn diff_hunk_header(
+    text: &str,
+    state: DiffHunkState,
+    focused: bool,
+) -> Line<'static> {
+    let sty = |hue: Color| {
+        let style = Style::default().fg(hue);
+        if focused {
+            style.bg(SURFACE)
+        } else {
+            style
+        }
+    };
+    let marker = if focused {
+        format!("{SELECT_MARKER} ")
+    } else {
+        "  ".to_string()
+    };
+    let actions = "s stage · x skip";
+    let used = 2 + 2 + 1 + 8 + 2 + text.chars().count() + 2 + actions.chars().count();
+    let pad = DIFF_BAND.saturating_sub(used);
+
+    Line::from(vec![
+        Span::styled("  ".to_string(), sty(TXT)),
+        Span::styled(marker, sty(ACCENT)),
+        Span::styled(state.glyph().to_string(), sty(state.hue())),
+        Span::styled(format!(" {:<7}", state.label()), sty(state.hue())),
+        Span::styled("  ".to_string(), sty(FAINT)),
+        Span::styled(
+            text.to_string(),
+            sty(if focused { BRIGHT } else { MUTED }),
+        ),
+        Span::styled("  ".to_string(), sty(FAINT)),
+        Span::styled(actions.to_string(), sty(MUTED)),
+        Span::styled(" ".repeat(pad), sty(TXT)),
+    ])
+}
+
 // ============================================================================
 // REVIEW FINDINGS - severity and location columns with the canonical selected
 // row treatment. Findings remain a sparse, scan-first full-screen list.

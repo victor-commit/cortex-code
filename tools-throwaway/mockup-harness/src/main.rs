@@ -126,6 +126,12 @@ fn registry() -> Vec<Entry> {
         ("views", "help", screens::help::render),
         ("views", "mcp", screens::mcp::render),
         ("views", "review", screens::review::render),
+        ("views", "diff-viewer", screens::diff_viewer::render),
+        (
+            "views",
+            "diff-viewer-staging",
+            screens::diff_viewer_staging::render,
+        ),
     ]
 }
 

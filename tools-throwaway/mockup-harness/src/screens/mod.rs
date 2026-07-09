@@ -15,6 +15,8 @@ pub mod command_palette;
 pub mod command_palette_submenu;
 pub mod composer_multiline;
 pub mod diff_edit;
+pub mod diff_viewer;
+pub mod diff_viewer_staging;
 pub mod export_picker;
 pub mod file_mention;
 pub mod fork_picker;
