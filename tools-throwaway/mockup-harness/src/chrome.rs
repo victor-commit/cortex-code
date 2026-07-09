@@ -757,6 +757,84 @@ pub fn annotated_select_list(
     out
 }
 
+/// One provider row for the connection catalogue. Connection state keeps its
+/// redundant glyph and word together, while `active` distinguishes the
+/// session provider from a provider that merely has stored credentials.
+pub struct ConnectionListRow {
+    pub name: &'static str,
+    pub detail: &'static str,
+    pub connected: bool,
+    pub active: bool,
+}
+
+/// Render provider rows with the canonical picker selection treatment and
+/// explicit connection state. Green is reserved for the `✓ connected` verdict;
+/// unconnected rows use a neutral `○ not connected` state.
+pub fn connection_select_list(
+    width: usize,
+    rows: &[ConnectionListRow],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let name_w = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let selected_row = i == selected;
+            let sty = |hue: Color| {
+                let style = Style::default().fg(hue);
+                if selected_row {
+                    style.bg(SURFACE)
+                } else {
+                    style
+                }
+            };
+            let marker = if selected_row {
+                Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+            } else {
+                Span::styled("   ".to_string(), sty(TXT))
+            };
+            let name_hue = if selected_row { BRIGHT } else { TXT };
+            let detail_hue = if selected_row { TXT } else { MUTED };
+            let status = if row.connected {
+                if row.active {
+                    "✓ connected · active"
+                } else {
+                    "✓ connected"
+                }
+            } else {
+                "○ not connected"
+            };
+            let name_cell = format!("{:<name_w$}  ", row.name);
+            let used = 3 + name_cell.chars().count() + row.detail.chars().count();
+            let pad = width
+                .saturating_sub(used + status.chars().count() + 1)
+                .max(1);
+            let mut spans = vec![
+                marker,
+                Span::styled(name_cell, sty(name_hue)),
+                Span::styled(row.detail.to_string(), sty(detail_hue)),
+                Span::styled(" ".repeat(pad), sty(detail_hue)),
+            ];
+            if row.connected {
+                spans.push(Span::styled("✓ connected".to_string(), sty(OK)));
+                if row.active {
+                    spans.push(Span::styled(format!(" {SEP} active"), sty(MUTED)));
+                }
+            } else {
+                spans.push(Span::styled("○".to_string(), sty(FAINT)));
+                spans.push(Span::styled(" not connected".to_string(), sty(MUTED)));
+            }
+            spans.push(Span::styled(" ".to_string(), sty(MUTED)));
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// One timeline-backed fork row. The timestamp and author form a fixed
 /// MUTED key column, while the excerpt carries selection emphasis.
 pub struct TimelineListRow {

@@ -121,6 +121,13 @@ fn registry() -> Vec<Entry> {
             "permission-deny-reason",
             screens::permission_deny_reason::render,
         ),
+        ("auth", "login", screens::login::render),
+        (
+            "auth",
+            "connect-provider",
+            screens::connect_provider::render,
+        ),
+        ("auth", "connect-method", screens::connect_method::render),
         ("views", "status", screens::status::render),
         (
             "views",

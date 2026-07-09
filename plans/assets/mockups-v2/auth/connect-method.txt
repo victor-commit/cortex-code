@@ -1,0 +1,40 @@
+ /connect · GitHub Copilot ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+   Sign in to GitHub Copilot
+
+
+
+
+
+
+
+
+
+
+
+
+╭ Choose a sign-in method ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › API key  paste a provider API key                                                                                  │
+│   OAuth    authorize in your browser                                                                                 │
+│                                                                                                                      │
+│ ↑↓ select · enter choose · esc back                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8
