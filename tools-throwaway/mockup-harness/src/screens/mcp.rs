@@ -113,11 +113,18 @@ fn server_row(
     attempt: &str,
     exposes: &str,
 ) -> Line<'static> {
+    let (glyph, state_word) = state
+        .split_once(' ')
+        .expect("state must contain a verdict glyph and word");
     let marker = if failed { c("  │ ", BAD) } else { t("    ") };
     Line::from(vec![
         marker,
         c(&format!("{name:<NAME_W$}"), if failed { BRIGHT } else { TXT }),
-        c(&format!("{state:<STATE_W$}"), state_color),
+        c(glyph, state_color),
+        t(&format!(
+            " {state_word:<width$}",
+            width = STATE_W - 2
+        )),
         m(&format!("{transport:<TRANSPORT_W$}")),
         t(&format!("{tools:<TOOLS_W$}")),
         m(&format!("{attempt:<ATTEMPT_W$}")),
