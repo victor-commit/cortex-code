@@ -28,7 +28,7 @@
    The refactor pulls token handling out of the login handler and into a dedicated
    TokenService, so login, refresh and logout now go through one place. That removes the
    duplicated expiry checks that had drifted apart and were the root cause of the
-   intermittent 401s.
+   intermittent HTTP 401 errors.
 
    The new service also validates the token signature before it touches the session
    store, so a forged token is rejected before█

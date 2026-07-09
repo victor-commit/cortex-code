@@ -21,6 +21,7 @@
 #   - at most one bordered zone per .txt (a single U+256D top-left corner)
 # Always:
 #   - every src/screens/*.rs holds only ASCII + the closed glyph set
+#   - no src/screens/*.rs file bypasses semantic tokens with raw Color::Rgb
 #   - every non-ASCII glyph of the closed set is either in the DejaVu Sans
 #     Mono cmap or synthesized by the PNG rasterizer (U+23BF -> draw_elbow;
 #     the synthesized list is overridable via CHECK_FONT_SYNTH for testing)
@@ -134,6 +135,13 @@ for f in "$HARNESS_DIR"/src/screens/*.rs; do
     scan_list+="src	$HARNESS_REL/src/screens/${f##*/}"$'\n'
     src_count=$((src_count + 1))
 done
+
+raw_color_lines="$(grep -nH 'Color::Rgb' "$HARNESS_DIR"/src/screens/*.rs || true)"
+if [[ -n "$raw_color_lines" ]]; then
+    printf '%s\n' "$raw_color_lines" |
+        sed "s#${HARNESS_DIR}/#${HARNESS_REL}/#; s#$#: raw Color::Rgb is forbidden in screen sources#"
+    violations=$((violations + $(printf '%s\n' "$raw_color_lines" | grep -c .)))
+fi
 
 py_out="$(
     cd "$REPO_ROOT" &&

@@ -56,7 +56,7 @@ pub fn render(f: &mut Frame) {
         ),
         Line::from(""),
         Line::from(head),
-        trace("The 500s started right after the deploy, so a migration or a config change is the suspect."),
+        trace("HTTP 500 errors started after the deploy, so a migration or config change is the suspect."),
         trace("The new sessions table added a not-null token_version column with no default value."),
         trace("Existing rows were backfilled, but sessions created before the deploy still hold null."),
         trace("When a returning user hits /login, the token refresh reads token_version and fails."),

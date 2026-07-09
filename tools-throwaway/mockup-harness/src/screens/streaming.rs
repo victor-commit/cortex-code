@@ -47,7 +47,7 @@ pub fn render(f: &mut Frame) {
         para(vec![
             t("duplicated expiry checks that had drifted apart and were the root cause of the"),
         ]),
-        para(vec![t("intermittent "), http("401"), t("s.")]),
+        para(vec![t("intermittent HTTP "), http("401"), t(" errors.")]),
         Line::from(""),
         para(vec![
             t("The new service also validates the token signature before it touches the session"),

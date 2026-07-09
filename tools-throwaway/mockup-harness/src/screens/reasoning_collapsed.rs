@@ -33,7 +33,7 @@ pub fn render(f: &mut Frame) {
     let mut collapsed: Vec<Span> = vec![
         Span::raw(" "),
         m(&format!(
-            "{} Thinking {} traced the 500s to a null token_version column {} {}",
+            "{} Thinking {} traced HTTP 500 errors to a null token_version column {} {}",
             chrome::DISCLOSURE_CLOSED,
             chrome::SEP,
             chrome::SEP,

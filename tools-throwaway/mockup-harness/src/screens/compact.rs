@@ -27,7 +27,7 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(""),
     ];
-    lines.extend(recap("Traced the /login 500s to a missing token version on older sessions."));
+    lines.extend(recap("Traced HTTP 500 errors to a missing token version on older sessions."));
     lines.extend(recap("Backfilled affected rows and defaulted new sessions to version 1."));
     lines.extend(recap("Added a regression test for the refreshed login path."));
     lines.extend(recap("Next: run cargo fmt, then open the change for review."));

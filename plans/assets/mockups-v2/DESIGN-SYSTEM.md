@@ -166,9 +166,9 @@ MINIMAL content (rule N-8): `~/path · branch · <Model Display Name>` in `MUTED
 `FAINT` separators, NOTHING else. No context percentage, no cost, no state dot: those
 live in `/status`. Liveness is conveyed by the working band or on-screen content, never
 by the statusline. The single optional right-side element is the mode badge, shown only
-when a non-default mode is active: a filled pill (`CANVAS` text on the badge hue), the
-plan-mode badge being the single `INFO` badge and any elevated/active mode badge
-`ACCENT`. The model always renders as its human display name ("Claude Opus 4.8"), never
+when a non-default mode is active: a colored label in the fixed right-side slot while
+the cell background remains `CANVAS`; the plan-mode label is the single `INFO` badge and
+any elevated/active mode label is `ACCENT`. The model always renders as its human display name ("Claude Opus 4.8"), never
 a raw id like `claude-opus` (rule N-10/F-7) in the statusline, pickers, and `/status`
 alike.
 

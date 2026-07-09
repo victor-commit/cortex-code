@@ -1503,7 +1503,9 @@ impl Default for StatusLine {
     }
 }
 
-/// Draw the statusline into `area` (one row, canvas background).
+/// Draw the statusline into `area` (one row, canvas background). State dots
+/// belong in screen content, not this line: their pinned vocabulary is
+/// `idle`, `busy`, or `live`, with every dot paired to its word label.
 pub fn statusbar(f: &mut Frame, area: Rect, s: &StatusLine) {
     let sep = || Span::styled(format!(" {SEP} "), Style::default().fg(FAINT));
     let seg = |v: &str| Span::styled(v.to_string(), Style::default().fg(MUTED));
@@ -1519,7 +1521,7 @@ pub fn statusbar(f: &mut Frame, area: Rect, s: &StatusLine) {
 
     if let Some((label, hue)) = s.badge {
         let right = vec![
-            Span::styled(format!(" {label} "), Style::default().fg(CANVAS).bg(hue)),
+            Span::styled(format!(" {label} "), Style::default().fg(hue)),
             Span::raw(" "),
         ];
         f.render_widget(

@@ -21,7 +21,7 @@
 
  › why is /login returning 500 for some users after the deploy?  · 2m ago
 
- ▸ Thinking · traced the 500s to a null token_version column · 8s · ctrl+o expand reasoning
+ ▸ Thinking · traced HTTP 500 errors to a null token_version column · 8s · ctrl+o expand reasoning
 
    Cortex
 

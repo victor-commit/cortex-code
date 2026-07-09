@@ -16,7 +16,7 @@
  › why is /login returning 500 for some users after the deploy?  · 2m ago
 
  ▾ Thinking · 8s · ctrl+o hide reasoning
-   │ The 500s started right after the deploy, so a migration or a config change is the suspect.
+   │ HTTP 500 errors started after the deploy, so a migration or config change is the suspect.
    │ The new sessions table added a not-null token_version column with no default value.
    │ Existing rows were backfilled, but sessions created before the deploy still hold null.
    │ When a returning user hits /login, the token refresh reads token_version and fails.
