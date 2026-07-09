@@ -368,16 +368,30 @@ events = ["error"]
             .status
             .success()
     );
-    assert!(tuistory(&session, &["press", "enter"]).status.success());
-    let enabled_screen = wait_for_contains_snapshot(
+    let enabled_capture = tuistory(
         &session,
-        "attention error",
-        Duration::from_secs(20),
-    )
-    .expect("error turns should trigger documented visual attention cue when enabled");
+        &[
+            "capture-frames",
+            "enter",
+            "--count",
+            "12",
+            "--interval",
+            "250",
+        ],
+    );
     assert!(
-        enabled_screen.contains("attention error"),
-        "enabled run should expose the attention cue in the captured screen:\n{enabled_screen}"
+        enabled_capture.status.success(),
+        "capture-frames failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&enabled_capture.stdout),
+        String::from_utf8_lossy(&enabled_capture.stderr)
+    );
+    let enabled_frames: Vec<String> =
+        serde_json::from_slice(&enabled_capture.stdout).expect("capture-frames JSON");
+    assert!(
+        enabled_frames.iter().any(|frame| {
+            frame.contains("attention error") && frame.contains("network disabled: CORTEX_NO_NET=1")
+        }),
+        "enabled run should capture both the attention cue and normal error output:\n{enabled_frames:#?}"
     );
     drop(_guard);
 
@@ -400,24 +414,36 @@ events = ["error"]
             .status
             .success()
     );
-    assert!(
-        tuistory(&session_quiet, &["press", "enter"])
-            .status
-            .success()
+    let quiet_capture = tuistory(
+        &session_quiet,
+        &[
+            "capture-frames",
+            "enter",
+            "--count",
+            "12",
+            "--interval",
+            "250",
+        ],
     );
-    std::thread::sleep(Duration::from_millis(1200));
-    let quiet_screen = snapshot(&session_quiet, &["--trim"]);
     assert!(
-        !quiet_screen.contains("attention error"),
-        "quiet mode should suppress documented attention cues"
+        quiet_capture.status.success(),
+        "capture-frames failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&quiet_capture.stdout),
+        String::from_utf8_lossy(&quiet_capture.stderr)
+    );
+    let quiet_frames: Vec<String> =
+        serde_json::from_slice(&quiet_capture.stdout).expect("capture-frames JSON");
+    assert!(
+        quiet_frames
+            .iter()
+            .any(|frame| frame.contains("network disabled: CORTEX_NO_NET=1")),
+        "quiet mode should keep the normal error output visible:\n{quiet_frames:#?}"
     );
     assert!(
-        quiet_screen.contains("network disabled: CORTEX_NO_NET=1"),
-        "quiet mode should keep the normal error output visible:\n{quiet_screen}"
-    );
-    assert_ne!(
-        enabled_screen, quiet_screen,
-        "enabled and quiet captures should differ clearly"
+        quiet_frames
+            .iter()
+            .all(|frame| !frame.contains("attention error")),
+        "quiet mode should suppress documented attention cues:\n{quiet_frames:#?}"
     );
 }
 
