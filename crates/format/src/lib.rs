@@ -703,7 +703,7 @@ fn run_builtin_formatter(
         return run_overridden_command(path, command_override, env, current_dir, kind);
     }
 
-    let Some(program) = resolve_program_path(kind.binary(), Some(search_root)) else {
+    let Some(program) = resolve_builtin_program(kind, search_root) else {
         return FormatOutcome::Skipped(SkipReason::MissingBinary {
             binary: kind.binary(),
         });
@@ -788,6 +788,57 @@ fn run_builtin_formatter(
     }
 
     run_command(command, kind)
+}
+
+/// Resolve a built-in formatter executable, substituting a concrete toolchain `rustfmt` binary
+/// when PATH resolves to rustup's launcher proxy. Formatter subprocesses intentionally run in a
+/// secret-stripped environment, and a surface may also provide an isolated `HOME`; a rustup proxy
+/// then cannot discover the toolchain that was available to the parent process. Running the
+/// concrete binary preserves the real formatter behavior without exposing the parent's secrets.
+fn resolve_builtin_program(kind: FormatterKind, search_root: &Path) -> Option<PathBuf> {
+    let program = resolve_program_path(kind.binary(), Some(search_root))?;
+    if kind == FormatterKind::Rustfmt {
+        return concrete_rustfmt_for_rustup_proxy(&program).or(Some(program));
+    }
+    Some(program)
+}
+
+/// Return a concrete `rustfmt` path when `program` is a rustup launcher proxy.
+fn concrete_rustfmt_for_rustup_proxy(program: &Path) -> Option<PathBuf> {
+    if program.canonicalize().ok()?.file_name()? != "rustup" {
+        return None;
+    }
+
+    program.ancestors().find_map(|ancestor| {
+        let rustup_home = ancestor.join(".rustup");
+        let toolchains = rustup_home.join("toolchains");
+        toolchains.is_dir().then(|| {
+            configured_rustup_toolchain(&rustup_home)
+                .map(|toolchain| toolchains.join(toolchain).join("bin").join("rustfmt"))
+                .filter(|path| is_executable_file(path))
+                .or_else(|| {
+                    let mut candidates = fs::read_dir(&toolchains)
+                        .ok()?
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path().join("bin").join("rustfmt"))
+                        .filter(|path| is_executable_file(path))
+                        .collect::<Vec<_>>();
+                    candidates.sort();
+                    candidates.into_iter().next()
+                })
+        })?
+    })
+}
+
+/// Read rustup's selected default toolchain from its on-disk settings, if one exists.
+fn configured_rustup_toolchain(rustup_home: &Path) -> Option<String> {
+    fs::read_to_string(rustup_home.join("settings.toml"))
+        .ok()?
+        .parse::<toml::Value>()
+        .ok()?
+        .get("default_toolchain")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 fn run_custom_formatter(

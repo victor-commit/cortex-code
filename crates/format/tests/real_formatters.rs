@@ -151,6 +151,57 @@ fn rustfmt_formats_rust_files_with_edition_2024() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn rustfmt_works_with_an_isolated_home_when_its_rustup_proxy_is_on_path() {
+    if !binary_available("rustfmt") {
+        eprintln!("skipping isolated-home rustfmt test: rustfmt is not on PATH");
+        return;
+    }
+
+    let isolated_home = temp_dir("rustfmt-isolated-home");
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .arg("--exact")
+        .arg("rustfmt_works_with_an_isolated_home_child")
+        .arg("--nocapture")
+        .env("CORTEX_FORMAT_RUSTFMT_ISOLATED_HOME_CHILD", "1")
+        .env("HOME", isolated_home)
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN");
+    let output = command.output().expect("spawn isolated-home rustfmt child");
+    assert!(
+        output.status.success(),
+        "isolated-home rustfmt child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rustfmt_works_with_an_isolated_home_child() {
+    if std::env::var("CORTEX_FORMAT_RUSTFMT_ISOLATED_HOME_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(
+        std::env::var_os("RUSTUP_HOME").is_none() && std::env::var_os("RUSTUP_TOOLCHAIN").is_none(),
+        "the child must simulate a formatter subprocess without inherited rustup settings"
+    );
+
+    let dir = temp_dir("rustfmt-isolated-home-child");
+    let path = dir.join("main.rs");
+    fs::write(&path, "fn  main( ){let x=1;}\n").expect("write Rust input");
+
+    let outcome = FormatterRunner::new(&dir).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+    assert_eq!(
+        fs::read_to_string(path).expect("read formatted Rust"),
+        "fn main() {\n    let x = 1;\n}\n"
+    );
+}
+
 #[test]
 fn prettier_formats_supported_files_only_when_a_marker_is_present() {
     let no_marker_dir = temp_dir("prettier-no-marker");
