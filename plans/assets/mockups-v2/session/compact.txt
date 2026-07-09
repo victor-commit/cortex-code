@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /compact  · 1m ago
+
+ ● Conversation compacted
+
+   → Traced the /login 500s to a missing token version on older sessions.
+   → Backfilled affected rows and defaulted new sessions to version 1.
+   → Added a regression test for the refreshed login path.
+   → Next: run cargo fmt, then open the change for review.
+
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+   18 turns collapsed · 31,400 tokens reclaimed · context now 12%
+
+   The full transcript is preserved in this session.
+
+ ctrl+o expand full transcript
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › resume from the compacted summary…                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › explain how the login rate limit behaves under load  · 2m ago
+
+   Cortex
+
+   The limiter allows a short burst, then refills each account bucket at a steady rate.
+   Once the bucket is empty, later requests wait until capacity returns, so…
+
+   │ ✗ Reply interrupted
+   │ The provider closed the connection before the reply finished.
+   │ Retry sends the same request again.
+   │ r retry
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply when ready…                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

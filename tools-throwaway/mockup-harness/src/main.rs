@@ -60,6 +60,15 @@ fn registry() -> Vec<Entry> {
             screens::tool_task_expanded::render,
         ),
         ("session", "diff-edit", screens::diff_edit::render),
+        ("session", "shell", screens::shell::render),
+        (
+            "session",
+            "blocked-command",
+            screens::blocked_command::render,
+        ),
+        ("session", "turn-error", screens::turn_error::render),
+        ("session", "todo-list", screens::todo_list::render),
+        ("session", "compact", screens::compact::render),
     ]
 }
 

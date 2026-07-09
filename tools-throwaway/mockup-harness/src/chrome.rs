@@ -223,6 +223,50 @@ pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Shell command line with a shared status column. Finished commands pair
+/// their OK dot with `✓ exit 0`; running commands expose their elapsed time
+/// in the same column so the outcome remains readable without color.
+pub enum ShellStatus {
+    Done(f64),
+    Running(f64),
+}
+
+/// ` ● ! command                                  ✓ exit 0 · 0.2s`
+///
+/// Shell commands follow the tool-line plus elbow anatomy, but keep their
+/// outcome at one fixed scan column across completed and running commands.
+pub fn shell_line(status: ShellStatus, command: &str) -> Line<'static> {
+    const STATUS_COL: usize = 82;
+
+    let (dot_hue, done, elapsed) = match status {
+        ShellStatus::Done(secs) => (OK, true, secs),
+        ShellStatus::Running(secs) => (MUTED, false, secs),
+    };
+    let used = 4 + command.chars().count();
+    let pad = " ".repeat(STATUS_COL.saturating_sub(used).max(2));
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(format!("{DOT} "), Style::default().fg(dot_hue)),
+        Span::styled("! ".to_string(), Style::default().fg(MUTED)),
+        Span::styled(command.to_string(), Style::default().fg(BRIGHT)),
+        Span::raw(pad),
+    ];
+    if done {
+        spans.push(Span::styled("✓".to_string(), Style::default().fg(OK)));
+        spans.push(Span::styled(" exit 0 ".to_string(), Style::default().fg(TXT)));
+    } else {
+        spans.push(Span::styled(
+            "running ".to_string(),
+            Style::default().fg(BRIGHT),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("{SEP} {}", timefmt(elapsed)),
+        Style::default().fg(MUTED),
+    ));
+    Line::from(spans)
+}
+
 /// Attach result rows under a tool line: the first row gets the `⎿` elbow,
 /// continuation rows indent to the same content column.
 ///
@@ -288,6 +332,18 @@ pub fn fail_rows(rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
             Line::from(out)
         })
         .collect()
+}
+
+/// Failure header for an inline transcript block: the BAD bar and `✗` begin
+/// at the same columns as `fail_rows`, so the entire failure reads as one
+/// contiguous region without a box.
+pub fn fail_head(label: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("   "),
+        Span::styled("│ ".to_string(), Style::default().fg(BAD)),
+        Span::styled("✗ ".to_string(), Style::default().fg(BAD)),
+        Span::styled(label.to_string(), Style::default().fg(TXT)),
+    ])
 }
 
 // ============================================================================
@@ -442,15 +498,18 @@ pub fn select_list(
 /// State of one step row.
 pub enum StepState {
     Done,
+    /// Current onboarding step, using the shared selection marker.
     Current,
+    /// Current transcript plan item, using the required state dot.
+    CurrentDot,
     Pending,
 }
 
 /// One leader-dot step row: ` <glyph> <label>  <detail> ···· <status>`.
 /// `label` pads to `label_w` and `status` left-aligns in a fixed `status_w`
 /// column at the right edge so the columns line up across rows; FAINT `·`
-/// dots fill the gap. The current row washes SURFACE across `width` (its
-/// extra emphasis channel besides the marker glyph).
+/// dots fill the gap. Current rows use a BRIGHT label and may use a SURFACE
+/// wash as their extra emphasis channel, depending on the state marker.
 pub fn step_row(
     width: usize,
     state: StepState,
@@ -463,6 +522,7 @@ pub fn step_row(
     let (glyph, glyph_hue, label_hue, detail_hue, status_hue, wash) = match state {
         StepState::Done => ("✓", OK, TXT, MUTED, MUTED, None),
         StepState::Current => (SELECT_MARKER, ACCENT, BRIGHT, TXT, BRIGHT, Some(SURFACE)),
+        StepState::CurrentDot => (DOT, ACCENT, BRIGHT, TXT, BRIGHT, None),
         StepState::Pending => (DOT_EMPTY, MUTED, MUTED, MUTED, MUTED, None),
     };
     let sty = |hue: Color| {

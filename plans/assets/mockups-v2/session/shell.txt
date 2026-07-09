@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › check the branch, then run the tests  · 2m ago
+
+ ● ! git status --short --branch                                                   ✓ exit 0 · 0.2s
+   ⎿ ## master...origin/master [ahead 1]
+     M crates/server/src/models/session.rs
+     ?? crates/server/tests/login_regression.rs
+
+ ● ! cargo test --workspace                                                        running · 4s
+   ⎿ Compiling cortex-server v0.1.0
+     Finished test profile in 3.1s
+     test routes::login::rate_limited ... ok
+     test routes::api::quota_enforced ... █
+     esc to interrupt
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply to Cortex, or ask a follow-up…                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
