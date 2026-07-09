@@ -831,7 +831,7 @@ pub fn agent_head(title: &str) -> Line<'static> {
 /// Render transcript lines bottom-anchored in `body`: the newest turn hugs
 /// the composer, spare space sits at the top - real scrollback behavior.
 /// Lines beyond the body height are truncated from the top; keep counts under
-/// the body height (35 rows in `cli_page`).
+/// the body height (36 rows in `cli_page`).
 pub fn transcript(f: &mut Frame, body: Rect, lines: Vec<Line<'static>>) {
     let n = lines.len() as u16;
     let area = if n < body.height {
