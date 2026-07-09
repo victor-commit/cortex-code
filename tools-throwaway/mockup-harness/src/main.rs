@@ -200,6 +200,26 @@ fn registry() -> Vec<Entry> {
             "theme-gallery-light",
             screens::theme_gallery_light::render,
         ),
+        (
+            "orchestration",
+            "mode-switch",
+            screens::mode_switch::render,
+        ),
+        (
+            "orchestration",
+            "mode-switch-refused",
+            screens::mode_switch_refused::render,
+        ),
+        (
+            "orchestration",
+            "workflow-launch",
+            screens::workflow_launch::render,
+        ),
+        (
+            "orchestration",
+            "workflow-launch-blocked",
+            screens::workflow_launch_blocked::render,
+        ),
     ]
 }
 

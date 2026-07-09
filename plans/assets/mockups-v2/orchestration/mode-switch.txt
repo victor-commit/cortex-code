@@ -1,0 +1,40 @@
+
+
+
+
+
+
+ › /mode agent  · now
+
+   Mode change requested
+   current  Edit Mode  ·  requested  Agent Mode  ·  2 new grants
+   policy   the runtime grants modes after this confirmation
+
+   Modes
+   Plan      read-only investigation                                                                            8 tools
+   Edit      read, write, and run                                                                    13 tools · current
+ › Agent     autonomous work with subagents                                                         15 tools · selected
+   Chat      interactive conversation                                                                           6 tools
+   Headless  non-interactive single shot                                                                       10 tools
+
+   Tool grants by mode  ·  + unlocked by this switch
+   tool                  Plan   Edit   Agent  Chat   Headless
+   ─────────────────────────────────────────────────────────────────────
+     Read file          yes    yes    yes    yes    yes
+     Search code        yes    yes    yes    yes    yes
+     Run shell           ro   gated  gated    -    gated
+     Edit file           -     yes    yes     -     yes
+   + Plan note          yes     -     yes     -     yes
+   + Spawn subagent      -      -     yes     -     yes
+   promotion  Edit → Agent  ·  policy check → session grant
+╭ Confirm Agent mode ──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Request Agent Mode for this session.                                                                                │
+│                                                                                                                      │
+│  › Agent Mode  ·  selected target                                                                                    │
+│  + Plan note and Spawn subagent will be granted.                                                                     │
+│  The mode changes only after the runtime approves this request.                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ enter request · esc cancel                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
