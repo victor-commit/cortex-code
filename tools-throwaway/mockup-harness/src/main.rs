@@ -132,6 +132,16 @@ fn registry() -> Vec<Entry> {
             "diff-viewer-staging",
             screens::diff_viewer_staging::render,
         ),
+        (
+            "views",
+            "theme-gallery-dark",
+            screens::theme_gallery_dark::render,
+        ),
+        (
+            "views",
+            "theme-gallery-light",
+            screens::theme_gallery_light::render,
+        ),
     ]
 }
 

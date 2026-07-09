@@ -1859,3 +1859,265 @@ pub fn light_palette() -> Vec<(&'static str, Color)> {
         ("DEL_BG", Color::Rgb(243, 224, 221)),
     ]
 }
+
+// ============================================================================
+// THEME GALLERY - one shared layout rendered on dark or light palette.
+// ============================================================================
+
+/// Which full-screen palette renders the shared theme gallery layout.
+pub enum ThemeGalleryScheme {
+    Dark,
+    Light,
+}
+
+/// The small subset of semantic roles needed by the gallery frame. The light
+/// scheme resolves each role from `light_palette()` so screen files only ever
+/// select a scheme, never construct colors.
+struct ThemeGalleryPalette {
+    canvas: Color,
+    accent: Color,
+    bright: Color,
+    text: Color,
+    muted: Color,
+    faint: Color,
+    surface: Color,
+}
+
+impl ThemeGalleryPalette {
+    fn style(&self, foreground: Color, background: Color) -> Style {
+        Style::default().fg(foreground).bg(background)
+    }
+}
+
+fn theme_gallery_palette(scheme: ThemeGalleryScheme) -> ThemeGalleryPalette {
+    match scheme {
+        ThemeGalleryScheme::Dark => ThemeGalleryPalette {
+            canvas: CANVAS,
+            accent: ACCENT,
+            bright: BRIGHT,
+            text: TXT,
+            muted: MUTED,
+            faint: FAINT,
+            surface: SURFACE,
+        },
+        ThemeGalleryScheme::Light => {
+            let colors = light_palette();
+            let hue = |name| {
+                colors
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, color)| *color)
+                    .expect("light palette includes every gallery token")
+            };
+            ThemeGalleryPalette {
+                canvas: hue("CANVAS"),
+                accent: hue("ACCENT"),
+                bright: hue("BRIGHT"),
+                text: hue("TXT"),
+                muted: hue("MUTED"),
+                faint: hue("FAINT"),
+                surface: hue("SURFACE"),
+            }
+        }
+    }
+}
+
+/// Render the theme gallery with one content layout and a scheme-specific
+/// frame. The full canvas is painted first, which keeps the light variant free
+/// of dark fall-through cells. Theme-preview hues appear only in the swatch
+/// strips, while labels and rules remain palette-neutral chrome.
+pub fn theme_gallery(f: &mut Frame, scheme: ThemeGalleryScheme) {
+    let palette = theme_gallery_palette(scheme);
+    let status = StatusLine::default();
+    let area = f.area();
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(palette.canvas)),
+        area,
+    );
+
+    let header = Rect::new(area.x, area.y, area.width, 1);
+    let body = Rect::new(
+        area.x,
+        area.y.saturating_add(2),
+        area.width,
+        area.height.saturating_sub(3),
+    );
+    let status_row = Rect::new(
+        area.x,
+        area.y.saturating_add(area.height.saturating_sub(1)),
+        area.width,
+        1,
+    );
+
+    f.render_widget(
+        Paragraph::new(theme_gallery_header(&palette, area.width as usize))
+            .style(Style::default().bg(palette.canvas)),
+        header,
+    );
+    f.render_widget(
+        Paragraph::new(theme_gallery_body(&palette, body.width as usize))
+            .style(Style::default().bg(palette.canvas)),
+        body,
+    );
+    f.render_widget(
+        Paragraph::new(theme_gallery_statusline(&palette, &status))
+            .style(Style::default().bg(palette.canvas)),
+        status_row,
+    );
+}
+
+fn theme_gallery_header(palette: &ThemeGalleryPalette, width: usize) -> Line<'static> {
+    let title = " theme gallery ";
+    let keys = "· ↑↓ preview · enter apply ";
+    let rule = "─".repeat(width.saturating_sub(title.chars().count() + keys.chars().count()));
+    Line::from(vec![
+        Span::styled(
+            title.to_string(),
+            palette.style(palette.bright, palette.canvas),
+        ),
+        Span::styled(
+            keys.to_string(),
+            palette.style(palette.muted, palette.canvas),
+        ),
+        Span::styled(rule, palette.style(palette.faint, palette.canvas)),
+    ])
+}
+
+fn theme_gallery_body(palette: &ThemeGalleryPalette, width: usize) -> Vec<Line<'static>> {
+    let themes = theme_previews();
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "   ".to_string(),
+                palette.style(palette.text, palette.canvas),
+            ),
+            Span::styled(
+                "Five brand themes from /themes".to_string(),
+                palette.style(palette.muted, palette.canvas),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    for (index, theme) in themes.iter().enumerate() {
+        lines.push(theme_gallery_tile(palette, width, theme, index == 0));
+        if index + 1 != themes.len() {
+            lines.push(Line::from(""));
+            lines.push(theme_gallery_rule(palette, width));
+            lines.push(Line::from(""));
+        }
+    }
+    lines
+}
+
+fn theme_gallery_tile(
+    palette: &ThemeGalleryPalette,
+    width: usize,
+    theme: &ThemePreview,
+    active: bool,
+) -> Line<'static> {
+    const NAME_W: usize = 12;
+    const DESCRIPTOR_W: usize = 16;
+    const TAG_W: usize = 14;
+    const SWATCH_W: usize = 3;
+
+    let background = if active {
+        palette.surface
+    } else {
+        palette.canvas
+    };
+    let style = |foreground| palette.style(foreground, background);
+    let marker = if active { " › " } else { "   " };
+    let active_label = if active { "  active" } else { "" };
+    let swatch_cells = theme.swatches.len() * SWATCH_W + theme.swatches.len().saturating_sub(1);
+    let used = marker.chars().count()
+        + NAME_W
+        + 2
+        + DESCRIPTOR_W
+        + 2
+        + TAG_W
+        + 3
+        + swatch_cells
+        + 1
+        + active_label.chars().count();
+    let pad = " ".repeat(width.saturating_sub(used));
+
+    let mut spans = vec![
+        Span::styled(
+            marker.to_string(),
+            style(if active { palette.accent } else { palette.text }),
+        ),
+        Span::styled(
+            format!("{:<NAME_W$}", theme.name),
+            style(if active { palette.bright } else { palette.text }),
+        ),
+        Span::styled("  ".to_string(), style(palette.muted)),
+        Span::styled(
+            format!("{:<DESCRIPTOR_W$}", theme.descriptor),
+            style(palette.muted),
+        ),
+        Span::styled("  ".to_string(), style(palette.muted)),
+        Span::styled(format!("{:<TAG_W$}", theme.tag), style(palette.muted)),
+        Span::styled("  [".to_string(), style(palette.muted)),
+    ];
+    for (index, hue) in theme.swatches.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ".to_string(), style(palette.muted)));
+        }
+        spans.push(Span::styled(
+            "█".repeat(SWATCH_W),
+            Style::default().fg(*hue).bg(*hue),
+        ));
+    }
+    spans.extend([
+        Span::styled("]".to_string(), style(palette.muted)),
+        Span::styled(
+            active_label.to_string(),
+            style(if active {
+                palette.bright
+            } else {
+                palette.muted
+            }),
+        ),
+        Span::styled(pad, style(palette.text)),
+    ]);
+    Line::from(spans)
+}
+
+fn theme_gallery_rule(palette: &ThemeGalleryPalette, width: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "   ".to_string(),
+            palette.style(palette.faint, palette.canvas),
+        ),
+        Span::styled(
+            "─".repeat(width.saturating_sub(6)),
+            palette.style(palette.faint, palette.canvas),
+        ),
+    ])
+}
+
+fn theme_gallery_statusline(palette: &ThemeGalleryPalette, status: &StatusLine) -> Line<'static> {
+    let separator = || {
+        Span::styled(
+            format!(" {SEP} "),
+            palette.style(palette.faint, palette.canvas),
+        )
+    };
+    let segment = |text: &str| {
+        Span::styled(
+            text.to_string(),
+            palette.style(palette.muted, palette.canvas),
+        )
+    };
+    Line::from(vec![
+        Span::styled(" ".to_string(), palette.style(palette.text, palette.canvas)),
+        segment(status.path),
+        separator(),
+        segment(status.branch),
+        separator(),
+        segment(status.model),
+    ])
+}

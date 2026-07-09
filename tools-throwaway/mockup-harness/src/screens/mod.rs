@@ -43,6 +43,8 @@ pub mod session_picker;
 pub mod subagent_picker;
 pub mod variant_picker;
 pub mod theme_picker;
+pub mod theme_gallery_dark;
+pub mod theme_gallery_light;
 pub mod timeline;
 pub mod turn_error;
 pub mod tool_calls;
