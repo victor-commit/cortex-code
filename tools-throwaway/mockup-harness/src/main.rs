@@ -220,6 +220,17 @@ fn registry() -> Vec<Entry> {
             "workflow-launch-blocked",
             screens::workflow_launch_blocked::render,
         ),
+        (
+            "orchestration",
+            "workflow-monitor",
+            screens::workflow_monitor::render,
+        ),
+        (
+            "orchestration",
+            "workflow-monitor-failure",
+            screens::workflow_monitor_failure::render,
+        ),
+        ("orchestration", "team-board", screens::team_board::render),
     ]
 }
 

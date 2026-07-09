@@ -82,3 +82,6 @@ pub mod connect_provider;
 pub mod todo_list;
 pub mod workflow_launch;
 pub mod workflow_launch_blocked;
+pub mod workflow_monitor;
+pub mod workflow_monitor_failure;
+pub mod team_board;

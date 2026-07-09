@@ -1,0 +1,40 @@
+ workflow monitor · wf-42 ──────────────────────────────────────────────────────────────────────────────────────────────
+
+   f filter · unverified by default  ·  enter inspect feature  ·  j/k move
+
+   workflow wf-42  ·  verified 4/7  ·  current phase D
+   ● A plan  →  ● B design  →  ● C build  →  › D runtime  →  ○ E validate  →  ○ F gate
+   runner drives features.json while the workflow is running
+
+   feature progress · filter shows unverified by default
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+     FEATURE            MILESTONE  VERDICT     CHECKS  ARTIFACT                    FULFILLS
+     feat-api-routes    api        ● partial   2/4     rate-limit middleware       ACC-API-010
+     feat-web-ui        api        ○ pending   0/3     login form and guard        ACC-WEB-003
+     feat-audit-log     api        ○ pending   0/2     auth events audit sink      ACC-AUD-004
+
+   runtime loop · D1-D8
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● D1 spawn  ·  ● D2 worktree  ·  ● D3 gate  ·  › D4 work
+   ○ D5 check  ·  ○ D6 end feature  ·  ○ D7 reduce  ·  ○ D8 merge-back
+   worker  ws-3f9a2c  ·  branch  workflow/wf-42/feat-api-routes
+ ● Orchestrating… 4m12s · 3 workers · esc to interrupt
+
+   wave scheduling · parallel metrics
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   wave  2 of 3  ·  pairs  3  ·  worktrees  3  ·  dispatch  3/3
+   conflicts  ░░░░░░░░░░░░░░░░░░░░░░  0.0%  ·  below 15% threshold
+   end gate  ○ 2 of 4 passed  ·  README present
+
+   recent workflow events
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   TIME    WHO          EVENT                 NOTE
+   14:07   runner       checkpoint recorded   worker result received
+   14:06   ws-3f9a2c    D4 work               routes.rs and handlers.rs
+   14:05   runner       D2 worktree           wave 2 dispatched
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8
