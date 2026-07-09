@@ -20,10 +20,18 @@ pub fn render(f: &mut Frame) {
     let lines = vec![
         Line::from(vec![Span::raw("  "), m("subagents"), m(" · 3 agents")]),
         chrome::rule_line(sidebar.panel.width as usize - 1),
-        agent_row("explore", "● running 12s", MUTED),
+        agent_row(
+            "explore",
+            &format!("● running {}", chrome::timefmt(12.0)),
+            MUTED,
+        ),
         task_row("find existing auth middleware"),
         Line::from(""),
-        agent_row("general", "✓ done 1m04s", OK),
+        agent_row(
+            "general",
+            &format!("✓ done {}", chrome::timefmt(64.0)),
+            OK,
+        ),
         task_row("summarize redaction audit"),
         Line::from(""),
         agent_row("plan", "○ queued", FAINT),
