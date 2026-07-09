@@ -26,6 +26,7 @@ pub const MAX_MESSAGE_CHARS: usize = 500;
 const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
 const PULL_DIAGNOSTICS_WAIT_BEFORE_FALLBACK: Duration = Duration::from_millis(1200);
 const LSP_CRASH_STATE_DIR: &str = "lsp/crash-state";
+const LSP_RUNTIME_STATE_DIR: &str = "lsp/runtime-state";
 // LSP cancellation/readiness errors that rust-analyzer may return while a just-opened workspace is
 // still loading or while it invalidates an in-flight query after didOpen/didChange. Treat these as
 // retryable for navigation only, without weakening fatal transport/process handling.
@@ -281,12 +282,96 @@ impl DurableCrashState {
     }
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct ManagedServer {
+    pid: u32,
+    program: String,
+}
+
+/// Per-workspace ownership records let a status-only Cortex process identify a server another
+/// still-running Cortex process launched. This intentionally avoids guessing from an unrelated
+/// process with the same executable name.
+struct RuntimeServerState {
+    path: Option<PathBuf>,
+    servers: BTreeMap<String, ManagedServer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegisteredServer {
+    None,
+    Running(u32),
+    Stale,
+}
+
+impl RuntimeServerState {
+    fn load(root: &Path) -> Self {
+        let path = runtime_state_path(root);
+        let servers = path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| {
+                serde_json::from_slice::<BTreeMap<String, ManagedServer>>(&bytes).ok()
+            })
+            .unwrap_or_default();
+        Self { path, servers }
+    }
+
+    fn status_for(&mut self, language_id: &str, program: &str) -> RegisteredServer {
+        let Some(server) = self.servers.get(language_id).cloned() else {
+            return RegisteredServer::None;
+        };
+        if server.program == program && pid_matches_program(server.pid, program) {
+            return RegisteredServer::Running(server.pid);
+        }
+        self.servers.remove(language_id);
+        self.persist();
+        RegisteredServer::Stale
+    }
+
+    fn register(&mut self, language_id: &str, program: &str, pid: u32) {
+        self.servers.insert(
+            language_id.to_owned(),
+            ManagedServer {
+                pid,
+                program: program.to_owned(),
+            },
+        );
+        self.persist();
+    }
+
+    fn unregister(&mut self, language_id: &str) {
+        if self.servers.remove(language_id).is_some() {
+            self.persist();
+        }
+    }
+
+    fn persist(&self) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let Ok(bytes) = serde_json::to_vec(&self.servers) else {
+            return;
+        };
+        let temporary = path.with_extension("tmp");
+        if std::fs::write(&temporary, bytes).is_ok() {
+            let _ = std::fs::rename(temporary, path);
+        }
+    }
+}
+
 /// Lazy per-language server pool plus bounded diagnostics collection.
 pub struct FeedbackManager {
     root: PathBuf,
     config: LspConfigSet,
     servers: BTreeMap<String, ServerSlot>,
     crash_state: DurableCrashState,
+    runtime_state: RuntimeServerState,
     budget: Duration,
 }
 
@@ -297,6 +382,7 @@ impl FeedbackManager {
         let root = root.into();
         Self {
             crash_state: DurableCrashState::load(&root),
+            runtime_state: RuntimeServerState::load(&root),
             root,
             config,
             servers: BTreeMap::new(),
@@ -738,32 +824,53 @@ impl FeedbackManager {
             let state = match self.servers.get_mut(server.language_id()) {
                 _ if !server.is_enabled() => ServerRunState::Disabled,
                 None => {
-                    if let Some(pid) = find_running_pid(server.program()) {
-                        clear_crashed = true;
-                        ServerRunState::Running(pid)
-                    } else {
-                        match install_readiness(server, no_net) {
-                            InstallReadiness::Available(_) => {
-                                if self.crash_state.is_crashed(server.language_id()) {
-                                    ServerRunState::Crashed
-                                } else {
-                                    ServerRunState::Available
+                    match self
+                        .runtime_state
+                        .status_for(server.language_id(), server.program())
+                    {
+                        RegisteredServer::Running(pid) => {
+                            clear_crashed = true;
+                            ServerRunState::Running(pid)
+                        }
+                        RegisteredServer::Stale => {
+                            mark_crashed = true;
+                            ServerRunState::Crashed
+                        }
+                        RegisteredServer::None => {
+                            if let Some(pid) = find_running_pid(server.program()) {
+                                clear_crashed = true;
+                                ServerRunState::Running(pid)
+                            } else {
+                                match install_readiness(server, no_net) {
+                                    InstallReadiness::Available(_) => {
+                                        if self.crash_state.is_crashed(server.language_id()) {
+                                            ServerRunState::Crashed
+                                        } else {
+                                            ServerRunState::Available
+                                        }
+                                    }
+                                    InstallReadiness::Installable => ServerRunState::Installing,
+                                    InstallReadiness::NoPlan
+                                    | InstallReadiness::NetDisabled
+                                    | InstallReadiness::MissingPrerequisite { .. } => {
+                                        ServerRunState::Unavailable
+                                    }
                                 }
-                            }
-                            InstallReadiness::Installable => ServerRunState::Installing,
-                            InstallReadiness::NoPlan
-                            | InstallReadiness::NetDisabled
-                            | InstallReadiness::MissingPrerequisite { .. } => {
-                                ServerRunState::Unavailable
                             }
                         }
                     }
                 }
                 Some(ServerSlot::Running { client, .. }) => {
                     if client.is_running() {
+                        self.runtime_state.register(
+                            server.language_id(),
+                            server.program(),
+                            client.child_id(),
+                        );
                         clear_crashed = true;
                         ServerRunState::Running(client.child_id())
                     } else {
+                        self.runtime_state.unregister(server.language_id());
                         mark_crashed = true;
                         ServerRunState::Crashed
                     }
@@ -810,6 +917,7 @@ impl FeedbackManager {
             {
                 let _ = client.shutdown();
                 let _ = client.exit();
+                self.runtime_state.unregister(&language_id);
                 self.crash_state.clear_crashed(&language_id);
             }
         }
@@ -849,6 +957,11 @@ impl FeedbackManager {
         match started {
             Some(client) => {
                 self.crash_state.clear_crashed(server.language_id());
+                self.runtime_state.register(
+                    server.language_id(),
+                    server.program(),
+                    client.child_id(),
+                );
                 self.servers.insert(
                     server.language_id().to_owned(),
                     ServerSlot::Running {
@@ -897,6 +1010,7 @@ impl FeedbackManager {
     }
 
     fn mark_broken(&mut self, language_id: &str) {
+        self.runtime_state.unregister(language_id);
         self.servers
             .insert(language_id.to_owned(), ServerSlot::Broken);
         self.crash_state.mark_crashed(language_id);
@@ -1292,24 +1406,32 @@ fn crash_state_path(root: &Path) -> Option<PathBuf> {
     crash_state_base_dir().map(|base| base.join(format!("{workspace_key}.json")))
 }
 
+fn runtime_state_path(root: &Path) -> Option<PathBuf> {
+    let workspace_key = checkpoints::workspace_key(root);
+    runtime_state_base_dir().map(|base| base.join(format!("{workspace_key}.json")))
+}
+
 fn crash_state_base_dir() -> Option<PathBuf> {
+    lsp_state_base_dir(LSP_CRASH_STATE_DIR)
+}
+
+fn runtime_state_base_dir() -> Option<PathBuf> {
+    lsp_state_base_dir(LSP_RUNTIME_STATE_DIR)
+}
+
+fn lsp_state_base_dir(kind: &str) -> Option<PathBuf> {
     if let Some(data_dir) = non_empty_var("CORTEX_DATA_DIR") {
-        return Some(data_dir.join(LSP_CRASH_STATE_DIR));
+        return Some(data_dir.join(kind));
     }
     if let Some(db_path) = non_empty_var("CORTEX_DB_PATH") {
         if let Some(parent) = db_path.parent() {
-            return Some(parent.join(LSP_CRASH_STATE_DIR));
+            return Some(parent.join(kind));
         }
     }
     if let Some(xdg_data_home) = non_empty_var("XDG_DATA_HOME") {
-        return Some(xdg_data_home.join("cortex").join(LSP_CRASH_STATE_DIR));
+        return Some(xdg_data_home.join("cortex").join(kind));
     }
-    non_empty_var("HOME").map(|home| {
-        home.join(".local")
-            .join("share")
-            .join("cortex")
-            .join(LSP_CRASH_STATE_DIR)
-    })
+    non_empty_var("HOME").map(|home| home.join(".local").join("share").join("cortex").join(kind))
 }
 
 fn non_empty_var(name: &str) -> Option<PathBuf> {
@@ -1446,6 +1568,26 @@ fn find_running_pid(program: &str) -> Option<u32> {
             (command == program_name).then_some(pid)
         })
         .next()
+}
+
+fn pid_matches_program(pid: u32, program: &str) -> bool {
+    let Some(output) = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let program_name = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == program_name)
 }
 
 /// Convert an absolute filesystem path to a `file://` URI.
