@@ -2,6 +2,28 @@
 
 use std::time::Duration;
 
+use redaction::PLACEHOLDER;
+
+/// Scrub known opaque credentials as well as generally recognizable secret-shaped values from
+/// untrusted MCP server messages before they reach a status, tool result, or log sink.
+///
+/// OAuth bearer tokens are provider-defined and need not resemble API keys, so the shared generic
+/// redactor alone cannot recognize them. The active credentials are supplied by the connection
+/// layer and replaced exactly here, before errors can leave the MCP crate.
+#[must_use]
+pub(crate) fn redact_message(message: impl AsRef<str>, secrets: &[String]) -> String {
+    let mut redacted = redaction::redact(message.as_ref());
+    let mut known = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .collect::<Vec<_>>();
+    known.sort_unstable_by_key(|secret| std::cmp::Reverse(secret.len()));
+    for secret in known {
+        redacted = redacted.replace(secret.as_str(), PLACEHOLDER);
+    }
+    redaction::redact(&redacted)
+}
+
 /// A failure connecting to or operating an MCP server.
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -139,5 +161,22 @@ impl McpError {
 
     pub(crate) fn unknown_prompt(id: &str) -> Self {
         Self::UnknownPrompt { id: id.to_owned() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_an_opaque_bearer_token_reflected_by_a_remote_server() {
+        let token = "opaque-oauth-access-token-value".to_owned();
+        let reflected = format!("remote error included Bearer {token}");
+        let redacted = redact_message(reflected, &[token]);
+
+        assert_eq!(
+            redacted,
+            format!("remote error included Bearer {PLACEHOLDER}")
+        );
     }
 }

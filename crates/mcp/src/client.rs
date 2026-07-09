@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt::Display;
 use std::time::Duration;
 
 use http::{HeaderMap, HeaderName, HeaderValue};
@@ -43,6 +44,39 @@ pub struct McpClient {
     pid: Option<u32>,
     service: Mutex<Option<RunningService<RoleClient, NotifyHandler>>>,
     timeout: Duration,
+    sensitive_values: Vec<String>,
+}
+
+/// Reap a stdio child tree if connection setup is cancelled or returns before ownership transfers
+/// into an [`McpClient`].
+///
+/// `connect_stdio` contains several await points after spawning the server. A process-wide signal
+/// can cancel that future before it returns a client whose normal shutdown owns cleanup, so this
+/// guard snapshots and kills the exact process tree during unwinding.
+struct SpawnedTreeGuard {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl SpawnedTreeGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SpawnedTreeGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(pid) = self.pid
+        {
+            let tree = crate::process_tree::process_tree(pid);
+            crate::process_tree::kill_all_now(&tree);
+        }
+    }
 }
 
 impl McpClient {
@@ -87,21 +121,21 @@ impl McpClient {
                 source,
             })?;
         let pid = transport.id();
+        let mut spawned = SpawnedTreeGuard::new(pid);
 
         let handler = NotifyHandler::new(
             server_name.to_owned(),
             catalogue.clone(),
             timeout,
             roots.to_vec(),
+            Vec::new(),
         );
         let service = match tokio::time::timeout(timeout, handler.serve(transport)).await {
             Ok(Ok(service)) => service,
             Ok(Err(err)) => {
-                kill_spawned_tree(pid).await;
                 return Err(McpError::handshake(server_name, err.to_string()));
             }
             Err(_) => {
-                kill_spawned_tree(pid).await;
                 return Err(McpError::timeout(server_name, "initialize", timeout));
             }
         };
@@ -111,8 +145,10 @@ impl McpClient {
             pid,
             service: Mutex::new(Some(service)),
             timeout,
+            sensitive_values: Vec::new(),
         };
         let tools = client.list_and_record(catalogue).await?;
+        spawned.disarm();
         Ok((client, tools))
     }
 
@@ -140,8 +176,9 @@ impl McpClient {
             .ok_or_else(|| McpError::config(server_name, "a remote server requires a `url`"))?;
         let timeout = Self::timeout_of(config);
         let header_map = build_header_map(server_name, &config.headers, auth_header.as_deref())?;
+        let sensitive_values = sensitive_values(&header_map, auth_header.as_deref());
 
-        match probe(url, &header_map, timeout).await {
+        match probe(url, &header_map, timeout, &sensitive_values).await {
             Probe::NeedsAuth(www) => Err(McpError::needs_auth(server_name, www)),
             Probe::Streamable => {
                 Self::connect_streamable(
@@ -172,6 +209,7 @@ impl McpClient {
         catalogue: &LiveCatalogue,
         roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
+        let sensitive_values = sensitive_values(header_map, auth_header.as_deref());
         let mut custom: HashMap<HeaderName, HeaderValue> = HashMap::new();
         let oauth_header_supplied = auth_header.is_some();
         for (name, value) in header_map {
@@ -195,17 +233,24 @@ impl McpClient {
             catalogue.clone(),
             timeout,
             roots.to_vec(),
+            sensitive_values.clone(),
         );
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
-            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+            .map_err(|err| {
+                McpError::handshake(
+                    server_name,
+                    crate::error::redact_message(err.to_string(), &sensitive_values),
+                )
+            })?;
 
         let client = Self {
             server_name: server_name.to_owned(),
             pid: None,
             service: Mutex::new(Some(service)),
             timeout,
+            sensitive_values,
         };
         let tools = client.list_and_record(catalogue).await?;
         Ok((client, tools))
@@ -220,26 +265,39 @@ impl McpClient {
         catalogue: &LiveCatalogue,
         roots: &[rmcp::model::Root],
     ) -> Result<(Self, McpServerCatalogue), McpError> {
+        let sensitive_values = sensitive_values(&header_map, None);
         let transport = SseClientTransport::connect(url, header_map, timeout)
             .await
-            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+            .map_err(|err| {
+                McpError::handshake(
+                    server_name,
+                    crate::error::redact_message(err.to_string(), &sensitive_values),
+                )
+            })?;
 
         let handler = NotifyHandler::new(
             server_name.to_owned(),
             catalogue.clone(),
             timeout,
             roots.to_vec(),
+            sensitive_values.clone(),
         );
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
-            .map_err(|err| McpError::handshake(server_name, err.to_string()))?;
+            .map_err(|err| {
+                McpError::handshake(
+                    server_name,
+                    crate::error::redact_message(err.to_string(), &sensitive_values),
+                )
+            })?;
 
         let client = Self {
             server_name: server_name.to_owned(),
             pid: None,
             service: Mutex::new(Some(service)),
             timeout,
+            sensitive_values,
         };
         let tools = client.list_and_record(catalogue).await?;
         Ok((client, tools))
@@ -294,6 +352,10 @@ impl McpClient {
         self.pid
     }
 
+    fn redact_error(&self, error: impl Display) -> String {
+        crate::error::redact_message(error.to_string(), &self.sensitive_values)
+    }
+
     /// Issue `tools/list` (following pagination) and return the server's advertised tools.
     ///
     /// # Errors
@@ -306,7 +368,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.list_all_tools())
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "tools/list", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "tools/list", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "tools/list", self.redact_error(err))
+            })
     }
 
     /// Issue `resources/list` (following pagination) and return the server's advertised resources.
@@ -321,7 +385,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.list_all_resources())
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "resources/list", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "resources/list", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "resources/list", self.redact_error(err))
+            })
     }
 
     /// Issue `resources/read` for a resource URI and return the server's content.
@@ -337,7 +403,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.read_resource(params))
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "resources/read", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "resources/read", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "resources/read", self.redact_error(err))
+            })
     }
 
     /// Issue `prompts/list` (following pagination) and return the server's advertised prompts.
@@ -352,7 +420,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.list_all_prompts())
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "prompts/list", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "prompts/list", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "prompts/list", self.redact_error(err))
+            })
     }
 
     /// Issue `prompts/get` with arguments and return the server's prompt messages.
@@ -387,7 +457,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.get_prompt(params))
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "prompts/get", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "prompts/get", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "prompts/get", self.redact_error(err))
+            })
     }
 
     /// Issue a real `tools/call` for `tool` with `arguments` and return the server's result.
@@ -423,7 +495,9 @@ impl McpClient {
         tokio::time::timeout(self.timeout, service.call_tool(params))
             .await
             .map_err(|_| McpError::timeout(&self.server_name, "tools/call", self.timeout))?
-            .map_err(|err| McpError::service(&self.server_name, "tools/call", err.to_string()))
+            .map_err(|err| {
+                McpError::service(&self.server_name, "tools/call", self.redact_error(err))
+            })
     }
 
     /// Cancel the session and terminate the child and every descendant by exact PID.
@@ -441,7 +515,8 @@ impl McpClient {
                     tracing::warn!(
                         target: "cortex::events",
                         server = %self.server_name,
-                        "failed to cancel MCP session cleanly: {err}"
+                        "failed to cancel MCP session cleanly: {}",
+                        self.redact_error(err)
                     );
                 }
             }
@@ -477,15 +552,6 @@ where
         .collect()
 }
 
-/// Kill a stdio child and every currently visible descendant after a failed initialize path, where
-/// no [`McpClient`] exists yet to run the normal shutdown path.
-async fn kill_spawned_tree(pid: Option<u32>) {
-    if let Some(pid) = pid {
-        let pids = crate::process_tree::process_tree(pid);
-        crate::process_tree::kill_all(&pids).await;
-    }
-}
-
 /// The classification of a remote server from a lightweight probe.
 enum Probe {
     /// The server answered `401`/needs-auth; the contained challenge is its `WWW-Authenticate`.
@@ -499,10 +565,20 @@ enum Probe {
 }
 
 /// Probe a remote MCP endpoint with a single `initialize` POST to classify how to connect.
-async fn probe(url: &str, headers: &HeaderMap, timeout: Duration) -> Probe {
+async fn probe(
+    url: &str,
+    headers: &HeaderMap,
+    timeout: Duration,
+    sensitive_values: &[String],
+) -> Probe {
     let client = match reqwest::Client::builder().build() {
         Ok(client) => client,
-        Err(err) => return Probe::Unreachable(err.to_string()),
+        Err(err) => {
+            return Probe::Unreachable(crate::error::redact_message(
+                err.to_string(),
+                sensitive_values,
+            ));
+        }
     };
     let body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -522,7 +598,12 @@ async fn probe(url: &str, headers: &HeaderMap, timeout: Duration) -> Probe {
 
     let response = match tokio::time::timeout(timeout, request.send()).await {
         Ok(Ok(response)) => response,
-        Ok(Err(err)) => return Probe::Unreachable(err.to_string()),
+        Ok(Err(err)) => {
+            return Probe::Unreachable(crate::error::redact_message(
+                err.to_string(),
+                sensitive_values,
+            ));
+        }
         Err(_) => {
             return Probe::Unreachable("the remote server did not respond in time".to_owned());
         }
@@ -543,6 +624,29 @@ async fn probe(url: &str, headers: &HeaderMap, timeout: Duration) -> Probe {
     // Method-not-allowed / not-found / not-implemented signal a non-streamable endpoint; fall back
     // to the legacy SSE transport. Any other non-success status also gets the SSE attempt.
     Probe::Sse
+}
+
+/// Return OAuth bearer values from the effective request headers so an untrusted remote error that
+/// reflects an `Authorization` header cannot disclose the opaque credential.
+fn sensitive_values(headers: &HeaderMap, auth_header: Option<&str>) -> Vec<String> {
+    let mut values = auth_header
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(authorization) = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })
+    {
+        values.push(authorization.to_owned());
+    }
+    values.sort();
+    values.dedup();
+    values
 }
 
 /// Build the HTTP header map sent with every remote request: the configured headers plus an optional

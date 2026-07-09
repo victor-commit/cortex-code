@@ -34,6 +34,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use checkpoints::TurnRecorder;
@@ -59,10 +60,10 @@ use crate::custom_agents;
 use crate::custom_modes;
 use crate::permission;
 use crate::permission_store;
-use crate::style;
 use crate::plugin_bridge::{
     CommandBeforeOutcome, CommandInvocation, PluginState, WorkspaceAdapterDoc,
 };
+use crate::style;
 use crate::tooling::RegistryDispatcher;
 
 /// The outbound operation named in a `net-disabled` refusal raised before the turn starts.
@@ -592,6 +593,11 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             return Exit::Failure;
         }
     };
+    let lifecycle_signal = Arc::new(LifecycleSignal::new());
+    let signal_watcher = lifecycle_signal.clone();
+    runtime.spawn(async move {
+        signal_watcher.watch().await;
+    });
 
     // Connect every configured MCP server (spawn the stdio child, handshake, list tools) before the
     // turn so its server-qualified tools materialize into the per-turn catalogue. A failed/disabled
@@ -605,10 +611,21 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             credentials: crate::mcp_store::store_from_process(),
             roots: vec![cwd.clone()],
         };
-        Some(std::sync::Arc::new(runtime.block_on(
-            mcp::McpManager::connect_with(mcp_servers, options),
-        )))
+        runtime
+            .block_on(async {
+                tokio::select! {
+                    manager = mcp::McpManager::connect_with(mcp_servers, options) => Some(manager),
+                    () = lifecycle_signal.wait() => None,
+                }
+            })
+            .map(std::sync::Arc::new)
     };
+    if lifecycle_signal.is_cancelled() {
+        if let Some(manager) = &mcp_manager {
+            runtime.block_on(manager.shutdown());
+        }
+        return Exit::Failure;
+    }
 
     // Materialize the per-turn tool set for the model's family, scoped to the process working
     // directory, so the model can read/edit the filesystem for real this turn. A GPT-family model
@@ -739,6 +756,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     checkpoint_recorder.as_ref(),
                     &plugin_state,
                     bus.clone(),
+                    lifecycle_signal.as_ref(),
                 )
                 .await
             }
@@ -759,6 +777,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     checkpoint_recorder.as_ref(),
                     &plugin_state,
                     bus.clone(),
+                    lifecycle_signal.as_ref(),
                 )
                 .await
             }
@@ -777,6 +796,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                     checkpoint_recorder.as_ref(),
                     &plugin_state,
                     bus.clone(),
+                    lifecycle_signal.as_ref(),
                     structured_schema.as_ref(),
                     &workspace_adapters,
                 )
@@ -1747,8 +1767,70 @@ impl Provider for AuditedProvider {
     }
 }
 
-/// Run a turn against the provider, racing it against a SIGINT so the process cancels cleanly at a
-/// safe boundary instead of being hard-killed mid-write.
+/// A process-wide lifecycle signal shared by MCP setup and the model turn.
+///
+/// The MCP manager can spawn stdio children before a turn begins, so cleanup must observe signals
+/// during that setup phase as well as while a provider stream is active.
+struct LifecycleSignal {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl LifecycleSignal {
+    const fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: tokio::sync::Notify::const_new(),
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn wait(&self) {
+        while !self.is_cancelled() {
+            self.notify.notified().await;
+        }
+    }
+
+    async fn watch(&self) {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            match (
+                signal(SignalKind::interrupt()),
+                signal(SignalKind::terminate()),
+            ) {
+                (Ok(mut interrupt), Ok(mut terminate)) => {
+                    tokio::select! {
+                        _ = interrupt.recv() => {}
+                        _ = terminate.recv() => {}
+                    }
+                }
+                (Ok(mut interrupt), Err(_)) => {
+                    let _ = interrupt.recv().await;
+                }
+                (Err(_), Ok(mut terminate)) => {
+                    let _ = terminate.recv().await;
+                }
+                (Err(_), Err(_)) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+}
+
+/// Run a turn against the provider, racing it against a lifecycle signal so the process cancels
+/// cleanly at a safe boundary instead of being hard-killed mid-write.
 ///
 /// On interrupt the in-flight runner future is dropped, which drops the upstream SSE stream and
 /// aborts the connection (no orphaned children, no panic), and [`TurnResult::Interrupted`] is
@@ -1757,6 +1839,7 @@ async fn run_turn<F>(
     provider: &dyn llm::Provider,
     turn: Turn,
     dispatcher: &dyn ToolDispatcher,
+    lifecycle_signal: &LifecycleSignal,
     sink: F,
 ) -> TurnResult
 where
@@ -1767,17 +1850,7 @@ where
         outcome = runner.run_with_tools(provider, turn, dispatcher, sink) => {
             TurnResult::Completed(Box::new(outcome))
         }
-        () = interrupt() => TurnResult::Interrupted,
-    }
-}
-
-/// Resolve when the process receives a SIGINT (Ctrl-C).
-///
-/// If the signal handler cannot be installed the future never resolves, so the turn proceeds and
-/// the OS default disposition applies rather than silently swallowing interrupts.
-async fn interrupt() {
-    if tokio::signal::ctrl_c().await.is_err() {
-        std::future::pending::<()>().await;
+        () = lifecycle_signal.wait() => TurnResult::Interrupted,
     }
 }
 
@@ -1820,6 +1893,7 @@ async fn stream_text(
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     plugin_state: &PluginState,
     bus: Arc<EventBus>,
+    lifecycle_signal: &LifecycleSignal,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -1827,7 +1901,7 @@ async fn stream_text(
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
 
-    let result = run_turn(provider, turn, dispatcher, |event| {
+    let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
         publish_runner_event(&bus, &event);
         let _ = lifecycle.observe(&event);
         if let RunnerEvent::TextDelta { text } = &event {
@@ -1921,6 +1995,7 @@ async fn stream_jsonl(
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     plugin_state: &PluginState,
     bus: Arc<EventBus>,
+    lifecycle_signal: &LifecycleSignal,
 ) -> Exit {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -1936,7 +2011,7 @@ async fn stream_jsonl(
         write_jsonl_line(&mut handle, styler, &line, &mut event_count);
     }
 
-    let result = run_turn(provider, turn, dispatcher, |event| {
+    let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
         publish_runner_event(&bus, &event);
         for part_event in lifecycle.observe(&event) {
             if let Ok(line) = render_part_lifecycle_line(&part_event) {
@@ -1968,10 +2043,7 @@ async fn stream_jsonl(
     // TTY-only stream footer: a faint `stream complete · N events` summary. Suppressed off a TTY
     // (the styler is disabled) so piped JSONL stays byte-identical to the baseline (VAL-CLI-010/011).
     if styler.is_enabled() {
-        let footer = format!(
-            "stream complete {} {event_count} events",
-            style::SEPARATOR
-        );
+        let footer = format!("stream complete {} {event_count} events", style::SEPARATOR);
         let _ = handle.write_all(styler.paint(&footer, style::FAINT).as_bytes());
         let _ = handle.write_all(b"\n");
         let _ = handle.flush();
@@ -2115,6 +2187,7 @@ async fn emit_json(
     checkpoint_recorder: Option<&Arc<TurnRecorder>>,
     plugin_state: &PluginState,
     bus: Arc<EventBus>,
+    lifecycle_signal: &LifecycleSignal,
     schema: Option<&serde_json::Value>,
     workspace_adapters: &[WorkspaceAdapterDoc],
 ) -> Exit {
@@ -2123,7 +2196,7 @@ async fn emit_json(
     let mut tool_results: Vec<ToolResultDoc> = Vec::new();
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
-    let result = run_turn(provider, turn, dispatcher, |event| {
+    let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
         publish_runner_event(&bus, &event);
         let _ = lifecycle.observe(&event);
         if let RunnerEvent::ToolResult {
@@ -4287,7 +4360,10 @@ mod tests {
         )
         .expect("render");
         let piped = json_tty_render(style::Styler::new(false), &line);
-        assert_eq!(piped, line, "piped json is the untouched serialized document");
+        assert_eq!(
+            piped, line,
+            "piped json is the untouched serialized document"
+        );
         assert!(!piped.contains('\x1b'), "piped json carries no ANSI byte");
         assert_eq!(piped.matches('\n').count(), 1, "piped json is one line");
     }
@@ -4337,7 +4413,8 @@ mod tests {
     #[test]
     fn jsonl_piped_is_raw_bytes_no_footer_tty_adds_footer() {
         let events = [
-            render_session_line("build", None, "ses_j", &["edit".to_owned()], &[]).expect("session"),
+            render_session_line("build", None, "ses_j", &["edit".to_owned()], &[])
+                .expect("session"),
             render_event_line(&RunnerEvent::TextDelta {
                 text: "hi".to_owned(),
             })
@@ -4358,7 +4435,10 @@ mod tests {
         }
         let piped_text = String::from_utf8(piped).expect("utf8");
         let expected: String = events.iter().map(|l| format!("{l}\n")).collect();
-        assert_eq!(piped_text, expected, "piped jsonl is the raw serialized lines");
+        assert_eq!(
+            piped_text, expected,
+            "piped jsonl is the raw serialized lines"
+        );
         assert!(!piped_text.contains('\x1b'), "piped jsonl carries no ANSI");
         assert!(
             !piped_text.contains("stream complete"),

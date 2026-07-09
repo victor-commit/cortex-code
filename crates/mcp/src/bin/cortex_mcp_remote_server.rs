@@ -53,6 +53,7 @@ struct State {
     token_seq: AtomicU64,
     expires_in: u64,
     required_authorization: Option<String>,
+    echo_authorization_in_errors: bool,
 }
 
 impl State {
@@ -193,6 +194,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let required_authorization = std::env::var("CORTEX_MCP_REQUIRE_AUTHORIZATION")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    let echo_authorization_in_errors =
+        std::env::var_os("CORTEX_MCP_ECHO_AUTHORIZATION_IN_ERROR").is_some();
 
     let state = Arc::new(State {
         mode,
@@ -208,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         token_seq: AtomicU64::new(1),
         expires_in,
         required_authorization,
+        echo_authorization_in_errors,
     });
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
@@ -343,7 +347,13 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
             if !authorized(&state, &request).await {
                 return write_unauthorized(&mut stream).await;
             }
-            handle_streamable_post(&mut stream, &state, &request.body).await
+            handle_streamable_post(
+                &mut stream,
+                &state,
+                &request.body,
+                request.headers.get("authorization").map(String::as_str),
+            )
+            .await
         }
         (Mode::Streamable, "GET", _) | (Mode::Oauth, "GET", _) => {
             if !authorized(&state, &request).await {
@@ -395,12 +405,13 @@ async fn handle_streamable_post(
     stream: &mut TcpStream,
     state: &State,
     body: &[u8],
+    authorization: Option<&str>,
 ) -> std::io::Result<()> {
     let request: Value = match serde_json::from_slice(body) {
         Ok(value) => value,
         Err(_) => return write_text(stream, 400, "invalid JSON").await,
     };
-    match dispatch(state, &request).await {
+    match dispatch(state, &request, authorization).await {
         Some(response) => {
             let session = "cortex-remote-session";
             write_json_with_session(stream, 200, &response, session).await
@@ -411,7 +422,7 @@ async fn handle_streamable_post(
 
 /// Dispatch a JSON-RPC request, returning the response JSON for a request id, or `None` for a
 /// notification.
-async fn dispatch(state: &State, request: &Value) -> Option<Value> {
+async fn dispatch(state: &State, request: &Value, authorization: Option<&str>) -> Option<Value> {
     let method = request
         .get("method")
         .and_then(Value::as_str)
@@ -441,6 +452,17 @@ async fn dispatch(state: &State, request: &Value) -> Option<Value> {
         }
         "notifications/initialized" | "notifications/cancelled" => None,
         "ping" => Some(json!({"jsonrpc":"2.0","id":id,"result":{}})),
+        "tools/list" if state.echo_authorization_in_errors => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32603,
+                "message": format!(
+                    "fixture reflected authorization header: {}",
+                    authorization.unwrap_or("(absent)")
+                )
+            }
+        })),
         "tools/list" => Some(json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -567,7 +589,7 @@ async fn handle_sse_message(
         Ok(value) => value,
         Err(_) => return write_text(stream, 400, "invalid JSON").await,
     };
-    if let Some(response) = dispatch(state, &request).await {
+    if let Some(response) = dispatch(state, &request, None).await {
         let frame = format!("event: message\ndata: {response}\n\n");
         let mut streams = state.streams.lock().await;
         streams.retain(|tx| tx.send(frame.clone()).is_ok());

@@ -513,10 +513,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if std::env::var("CORTEX_MCP_ECHO_STALL_BEFORE_SERVE").is_ok() {
-        std::future::pending::<()>().await;
-    }
-
     // Optionally fork a long-lived grandchild so a black-box validator can prove the whole process
     // tree (not just the direct child) is terminated by PID on shutdown. The grandchild's PID is
     // written to the requested file so the test can assert it is reaped.
@@ -527,6 +523,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             std::mem::forget(child);
         }
+    }
+
+    if std::env::var("CORTEX_MCP_ECHO_STALL_BEFORE_SERVE").is_ok() {
+        std::future::pending::<()>().await;
     }
 
     let service = EchoServer::new()

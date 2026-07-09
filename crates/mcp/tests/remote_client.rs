@@ -771,3 +771,52 @@ async fn stdio_descendants_are_killed_by_pid_on_shutdown() {
     );
     let _ = std::fs::remove_file(&pid_file);
 }
+
+#[tokio::test]
+async fn cancelled_stdio_setup_reaps_spawned_server_and_descendant() {
+    let bin = echo_server_bin();
+    let pid_file = temp_path("cancelled-setup-grandchild-pid");
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "environment": {
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": pid_file.to_string_lossy(),
+                "CORTEX_MCP_ECHO_STALL_BEFORE_SERVE": "1"
+            }
+        }
+    }));
+
+    // `connect` is deliberately left waiting in initialize after the fixture has spawned its
+    // descendant. Cancelling this future simulates a process lifecycle signal arriving during MCP
+    // setup, before a manager exists to perform normal shutdown.
+    let task = tokio::spawn(async move { McpManager::connect(servers).await });
+    let mut grandchild_pid = None;
+    for _ in 0..100 {
+        if let Ok(contents) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            grandchild_pid = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    task.abort();
+    let _ = task.await;
+
+    let grandchild_pid = grandchild_pid.expect("the stalled server must report its descendant PID");
+    let mut reaped = false;
+    for _ in 0..50 {
+        if !pid_alive(grandchild_pid) {
+            reaped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        reaped,
+        "cancelling setup must reap the spawned descendant ({grandchild_pid})"
+    );
+    let _ = std::fs::remove_file(&pid_file);
+}

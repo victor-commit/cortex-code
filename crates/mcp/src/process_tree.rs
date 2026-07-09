@@ -42,6 +42,22 @@ pub async fn kill_all(pids: &[u32]) {
     }
 }
 
+/// Synchronously kill a previously captured process tree by exact PID.
+///
+/// This is used by the stdio connection guard's [`Drop`] implementation. A cancelled async
+/// connection future cannot await cleanup, but it must still reap the child it already spawned
+/// before unwinding on a lifecycle signal.
+pub fn kill_all_now(pids: &[u32]) {
+    for &pid in pids.iter().rev() {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 /// Whether `pid` is still present in the process table (Linux `/proc`).
 #[must_use]
 pub fn pid_alive(pid: u32) -> bool {

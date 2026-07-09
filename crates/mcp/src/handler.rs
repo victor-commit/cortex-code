@@ -23,6 +23,7 @@ pub(crate) struct NotifyHandler {
     catalogue: LiveCatalogue,
     timeout: Duration,
     roots: Arc<Vec<rmcp::model::Root>>,
+    sensitive_values: Arc<Vec<String>>,
 }
 
 impl NotifyHandler {
@@ -32,12 +33,14 @@ impl NotifyHandler {
         catalogue: LiveCatalogue,
         timeout: Duration,
         roots: Vec<rmcp::model::Root>,
+        sensitive_values: Vec<String>,
     ) -> Self {
         Self {
             server,
             catalogue,
             timeout,
             roots: Arc::new(roots),
+            sensitive_values: Arc::new(sensitive_values),
         }
     }
 }
@@ -64,8 +67,9 @@ impl ClientHandler for NotifyHandler {
         params: LoggingMessageNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
-        let redacted_data = redacted_json(&params.data);
-        let redacted_for_log = redaction::redact(&redacted_data.to_string());
+        let redacted_data = redacted_json(&params.data, &self.sensitive_values);
+        let redacted_for_log =
+            crate::error::redact_message(redacted_data.to_string(), &self.sensitive_values);
         tracing::info!(
             target: "cortex::events",
             server = %self.server,
@@ -93,7 +97,8 @@ impl ClientHandler for NotifyHandler {
                 tracing::warn!(
                     target: "cortex::events",
                     server = %self.server,
-                    "failed to re-list MCP tools after a change notification: {err}"
+                    "failed to re-list MCP tools after a change notification: {}",
+                    crate::error::redact_message(err.to_string(), &self.sensitive_values)
                 );
             }
             Err(_) => {
@@ -117,7 +122,8 @@ impl ClientHandler for NotifyHandler {
                 tracing::warn!(
                     target: "cortex::events",
                     server = %self.server,
-                    "failed to re-list MCP resources after a change notification: {err}"
+                    "failed to re-list MCP resources after a change notification: {}",
+                    crate::error::redact_message(err.to_string(), &self.sensitive_values)
                 );
             }
             Err(_) => {
@@ -141,7 +147,8 @@ impl ClientHandler for NotifyHandler {
                 tracing::warn!(
                     target: "cortex::events",
                     server = %self.server,
-                    "failed to re-list MCP prompts after a change notification: {err}"
+                    "failed to re-list MCP prompts after a change notification: {}",
+                    crate::error::redact_message(err.to_string(), &self.sensitive_values)
                 );
             }
             Err(_) => {
@@ -168,11 +175,11 @@ fn logging_level_name(level: LoggingLevel) -> &'static str {
     }
 }
 
-fn redacted_json(value: &serde_json::Value) -> serde_json::Value {
+fn redacted_json(value: &serde_json::Value, sensitive_values: &[String]) -> serde_json::Value {
     let serialized = match serde_json::to_string(value) {
         Ok(serialized) => serialized,
         Err(_) => return serde_json::Value::String(redaction::PLACEHOLDER.to_owned()),
     };
-    let redacted = redaction::redact(&serialized);
+    let redacted = crate::error::redact_message(serialized, sensitive_values);
     serde_json::from_str(&redacted).unwrap_or(serde_json::Value::String(redacted))
 }

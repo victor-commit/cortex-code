@@ -755,6 +755,73 @@ url = "http://127.0.0.1:3226/mcp"
 }
 
 #[test]
+fn mcp_list_redacts_an_opaque_oauth_token_reflected_by_a_server_error() {
+    let Some(bin) = remote_server_bin() else {
+        eprintln!("skipping: cortex-mcp-remote-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("opaque-oauth-token");
+    let log = scratch.root.join("opaque-oauth-token.log");
+    let token = "opaque-oauth-access-token-value";
+    let mut fixture = Command::new(bin);
+    fixture
+        .env("CORTEX_MCP_MODE", "streamable")
+        .env("CORTEX_MCP_PORT", "3237")
+        .env("CORTEX_MCP_LOG", &log)
+        .env(
+            "CORTEX_MCP_REQUIRE_AUTHORIZATION",
+            format!("Bearer {token}"),
+        )
+        .env("CORTEX_MCP_ECHO_AUTHORIZATION_IN_ERROR", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut fixture = fixture.spawn().expect("spawn remote MCP fixture");
+    wait_for_port(3237);
+
+    scratch.write_project_config(
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3237/mcp"
+"#,
+    );
+    fs::create_dir_all(scratch.data()).expect("credential store directory");
+    fs::write(
+        scratch.data().join("mcp-oauth.json"),
+        format!(
+            r#"{{"api":{{"access_token":"{token}","token_endpoint":"http://127.0.0.1:3237/token","client_id":"cortex"}}}}"#
+        ),
+    )
+    .expect("write opaque OAuth credential");
+
+    let output = run_command(cortex_command(
+        &scratch,
+        &["mcp", "list", "--format", "json"],
+    ));
+    let _ = fixture.kill();
+    let _ = fixture.wait();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "mcp list should report failure"
+    );
+    let observed = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !observed.contains(token),
+        "an opaque OAuth token reflected by an MCP error must never escape:\n{observed}"
+    );
+    assert!(
+        observed.contains(redaction::PLACEHOLDER),
+        "the reflected opaque OAuth token must be replaced by the canonical placeholder:\n{observed}"
+    );
+}
+
+#[test]
 fn mcp_auth_honors_oauth_config_overrides_without_cli_mutation() {
     let Some(_bin) = remote_server_bin() else {
         eprintln!("skipping: cortex-mcp-remote-server fixture not built");
