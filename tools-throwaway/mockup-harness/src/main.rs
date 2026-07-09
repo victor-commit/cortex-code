@@ -231,6 +231,21 @@ fn registry() -> Vec<Entry> {
             screens::workflow_monitor_failure::render,
         ),
         ("orchestration", "team-board", screens::team_board::render),
+        (
+            "orchestration",
+            "reviewer-output",
+            screens::reviewer_output::render,
+        ),
+        (
+            "orchestration",
+            "reviewer-approved",
+            screens::reviewer_approved::render,
+        ),
+        (
+            "orchestration",
+            "verification-ladder",
+            screens::verification_ladder::render,
+        ),
     ]
 }
 

@@ -1,0 +1,40 @@
+ reviewer output · changes requested ───────────────────────────────────────────────────────────────────────────────────
+
+   diff  6 files · +214 -37  ·  worker  ws-3f9a2c  ·  branch  workflow/wf-42/feat-api-routes
+   ✗ CHANGES REQUESTED  ·  four findings block the merge
+
+   L3 Code Reviewer  ·  intent audit  ·  Q1-Q5
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+     RESULT  QUESTION  CHECK                   FINDING                                         FILE:LINE
+     ✓ pass Q1        Scope fidelity          changes map to the stated request               review/scope.rs:34
+     ✓ pass Q2        Correctness             rate limit holds on the sixth call              routes/login.rs:119
+   │ ✗ fail Q3        Dead weight             remove the unused build_stub helper             server/util.rs:88
+   │ ✗ fail Q4        Swallowed failure       return the error instead of dropping it         routes.rs:142
+     ✓ pass Q5        Honest report           summary matches the submitted diff              review/report.rs:27
+
+   L4 QA Validator  ·  process check  ·  Q6-Q9
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+     RESULT  QUESTION  CHECK                   FINDING                                         FILE:LINE
+     ✓ pass Q6        Tests executed          42 workspace tests completed                    tests/api.rs:44
+     ✓ pass Q7        Surface exercised       login rate limit was exercised                  tests/login.rs:67
+   │ ✗ fail Q8        Evidence captured       attach the missing audit run log                artifacts/run-log.txt:1
+   │ ✗ fail Q9        Regression re-run       run tests again after the fix                   tests/regression.rs:91
+
+   ✗ merge withheld  ·  4 findings  ·  worker changes require re-review
+   re-post to ws-3f9a2c with: Q3 Q4 Q8 Q9  ·  fix, then submit the same gate
+   r re-post findings  ·  a accept
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

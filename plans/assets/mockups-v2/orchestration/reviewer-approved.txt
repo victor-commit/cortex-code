@@ -1,0 +1,40 @@
+ reviewer output · approved ────────────────────────────────────────────────────────────────────────────────────────────
+
+   diff  6 files · +214 -37  ·  worker  ws-3f9a2c  ·  branch  workflow/wf-42/feat-api-routes
+   ✓ APPROVED  ·  all reviewer and validator checks passed
+
+   L3 Code Reviewer  ·  intent audit  ·  Q1-Q5
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   RESULT  QUESTION  CHECK                   EVIDENCE                                        FILE:LINE
+   ✓ pass Q1        Scope fidelity          changes map to the stated request               review/scope.rs:34
+   ✓ pass Q2        Correctness             rate limit holds on the sixth call              routes/login.rs:119
+   ✓ pass Q3        Dead weight             no unused helpers remain                        server/util.rs:88
+   ✓ pass Q4        Failure path            login errors reach the caller                   routes.rs:142
+   ✓ pass Q5        Honest report           summary matches the submitted diff              review/report.rs:27
+
+   L4 QA Validator  ·  process check  ·  Q6-Q9
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+   RESULT  QUESTION  CHECK                   EVIDENCE                                        FILE:LINE
+   ✓ pass Q6        Tests executed          42 workspace tests completed                    tests/api.rs:44
+   ✓ pass Q7        Surface exercised       login rate limit was exercised                  tests/login.rs:67
+   ✓ pass Q8        Evidence captured       audit run log is attached                       artifacts/run-log.txt:1
+   ✓ pass Q9        Regression re-run       post-fix suite passed                           tests/regression.rs:91
+
+   ✓ merge proceeds  ·  accept the reviewed diff to continue to the next gate
+   a accept merge  ·  enter inspect the submitted diff
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8
