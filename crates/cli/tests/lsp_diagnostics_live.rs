@@ -160,3 +160,113 @@ fn write_tool_reinjects_real_ruff_diagnostics_and_clean_file_has_none() {
         "clean file must not report diagnostics: {clean_text}"
     );
 }
+
+#[test]
+fn real_turn_edit_fix_loop_clears_reinjected_ruff_diagnostics() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    if !has_ruff() {
+        eprintln!("skipping live test: ruff is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("edit-fix-loop");
+    let session = format!(
+        "lsp-edit-fix-loop-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let introduce = run(
+        cortex_in(
+            &dir,
+            &key,
+            &[
+                "run",
+                "--format",
+                "json",
+                "--session",
+                &session,
+                "Use the write tool exactly once to create loop.py with this exact content: import os\\nprint(undefined_name)\\n. Then stop.",
+            ],
+        ),
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        introduce.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&introduce.stderr)
+    );
+    let introduce_doc: serde_json::Value =
+        serde_json::from_slice(&introduce.stdout).expect("introduce json output");
+    let introduce_text = tool_text(&introduce_doc, "write");
+    assert!(
+        introduce_text.contains("Undefined name `undefined_name`"),
+        "the real Ruff diagnostic must reach the model through write: {introduce_text}"
+    );
+
+    let fix = run(
+        cortex_in(
+            &dir,
+            &key,
+            &[
+                "run",
+                "--format",
+                "json",
+                "--session",
+                &session,
+                "First use read on loop.py because edit requires a current read. Then use edit to replace the exact full content import os\\nprint(undefined_name)\\n with print('ok')\\n. Do not use write or bash. Then stop.",
+            ],
+        ),
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        fix.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&fix.stderr)
+    );
+    let fix_doc: serde_json::Value = serde_json::from_slice(&fix.stdout).expect("fix json output");
+    let fix_text = tool_text(&fix_doc, "edit");
+    assert!(
+        !fix_text.is_empty(),
+        "the follow-up real turn must use edit after seeing the prior diagnostic: {fix_doc}"
+    );
+    assert!(
+        !fix_text.contains("Diagnostics:"),
+        "the corrected edit must clear diagnostics in the model-visible result: {fix_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("loop.py")).expect("read corrected file"),
+        "print('ok')\n",
+        "the follow-up edit must persist the diagnostic-driven correction"
+    );
+
+    let mut clean_command = cortex_in(
+        &dir,
+        &key,
+        &["lsp", "diagnostics", "loop.py", "--format", "json"],
+    );
+    clean_command.env("CORTEX_NO_NET", "1");
+    let clean = run(clean_command, Duration::from_secs(30));
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let clean_doc: serde_json::Value =
+        serde_json::from_slice(&clean.stdout).expect("clean lsp json output");
+    assert_eq!(
+        clean_doc["status"], "clean",
+        "a fresh pre-installed Ruff server must confirm the corrected file is clean: {clean_doc}"
+    );
+    assert!(
+        clean_doc["diagnostics"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "the corrected file must have no stale diagnostics: {clean_doc}"
+    );
+}
