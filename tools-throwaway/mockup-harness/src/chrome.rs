@@ -488,6 +488,135 @@ pub fn select_list(
     out
 }
 
+/// A row for a sectioned selection list. Section labels are chrome, so they
+/// always render in FAINT; items retain the shared selection treatment.
+pub enum ListRow {
+    Section(&'static str),
+    Item {
+        name: &'static str,
+        detail: &'static str,
+        meta: &'static str,
+    },
+    /// A dedicated-key action, visually grouped with a section but excluded
+    /// from the arrow-key selection cycle.
+    Action {
+        name: &'static str,
+        detail: &'static str,
+        meta: &'static str,
+    },
+}
+
+/// One list filter row. The marker is intentionally neutral so the ACCENT
+/// marker remains exclusive to the active selection.
+pub fn list_filter(prompt: &str, query: &str, placeholder: &str) -> Line<'static> {
+    let text = if query.is_empty() {
+        Span::styled(placeholder.to_string(), Style::default().fg(FAINT))
+    } else {
+        Span::styled(query.to_string(), Style::default().fg(TXT))
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{prompt} "), Style::default().fg(MUTED)),
+        text,
+    ])
+}
+
+/// A right-aligned MUTED result count for a list or palette.
+pub fn list_counter(width: usize, note: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(width.saturating_sub(note.chars().count()))),
+        Span::styled(note.to_string(), Style::default().fg(MUTED)),
+    ])
+}
+
+/// Render a selection list with FAINT-only section separators. `selected`
+/// indexes items only, never section labels. This is the shared list anatomy
+/// for long command menus where grouping improves scanning without introducing
+/// an extra card or semantic color.
+pub fn sectioned_select_list(
+    width: usize,
+    rows: &[ListRow],
+    selected: usize,
+    filter: Option<&str>,
+) -> Vec<Line<'static>> {
+    let name_w = rows
+        .iter()
+        .filter_map(|row| match row {
+            ListRow::Item { name, .. } | ListRow::Action { name, .. } => {
+                Some(name.chars().count())
+            }
+            ListRow::Section(_) => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len() + usize::from(filter.is_some()));
+    if let Some(fil) = filter {
+        out.push(list_filter("/", fil, "type to filter"));
+    }
+    let mut item_index = 0;
+    for row in rows {
+        match row {
+            ListRow::Section(title) => {
+                let label = format!("  {title} ");
+                let rule = "─".repeat(width.saturating_sub(label.chars().count()));
+                out.push(Line::from(vec![
+                    Span::styled(label, Style::default().fg(FAINT)),
+                    Span::styled(rule, Style::default().fg(FAINT)),
+                ]));
+            }
+            ListRow::Item { name, detail, meta } => {
+                let selected_item = item_index == selected;
+                item_index += 1;
+                let sty = |hue: Color| {
+                    let s = Style::default().fg(hue);
+                    if selected_item {
+                        s.bg(SURFACE)
+                    } else {
+                        s
+                    }
+                };
+                let marker = if selected_item {
+                    Span::styled(format!(" {SELECT_MARKER} "), sty(ACCENT))
+                } else {
+                    Span::styled("   ".to_string(), sty(TXT))
+                };
+                let name_hue = if selected_item { BRIGHT } else { TXT };
+                let detail_hue = if selected_item { TXT } else { MUTED };
+                let meta_hue = if selected_item { MUTED } else { FAINT };
+                let name_cell = format!("{name:<w$}  ", w = name_w);
+                let used = 3 + name_cell.chars().count() + detail.chars().count();
+                let pad = width
+                    .saturating_sub(used + meta.chars().count() + 1)
+                    .max(1);
+                out.push(Line::from(vec![
+                    marker,
+                    Span::styled(name_cell, sty(name_hue)),
+                    Span::styled(detail.to_string(), sty(detail_hue)),
+                    Span::styled(" ".repeat(pad), sty(detail_hue)),
+                    Span::styled(meta.to_string(), sty(meta_hue)),
+                    Span::styled(" ".to_string(), sty(meta_hue)),
+                ]));
+            }
+            ListRow::Action { name, detail, meta } => {
+                let name_cell = format!("{name:<w$}  ", w = name_w);
+                let used = 3 + name_cell.chars().count() + detail.chars().count();
+                let pad = width
+                    .saturating_sub(used + meta.chars().count() + 1)
+                    .max(1);
+                out.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(name_cell, Style::default().fg(MUTED)),
+                    Span::styled(detail.to_string(), Style::default().fg(FAINT)),
+                    Span::styled(" ".repeat(pad), Style::default().fg(FAINT)),
+                    Span::styled(meta.to_string(), Style::default().fg(MUTED)),
+                    Span::styled(" ".to_string(), Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+    }
+    out
+}
+
 // ============================================================================
 // STEP LISTS - onboarding / plan-progress rows: state glyph + label, `·`
 // leader dots, and a right-aligned status-label column (audit: the status

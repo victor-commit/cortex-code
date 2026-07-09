@@ -69,6 +69,13 @@ fn registry() -> Vec<Entry> {
         ("session", "turn-error", screens::turn_error::render),
         ("session", "todo-list", screens::todo_list::render),
         ("session", "compact", screens::compact::render),
+        ("input", "slash-menu", screens::slash_menu::render),
+        ("input", "command-palette", screens::command_palette::render),
+        (
+            "input",
+            "command-palette-submenu",
+            screens::command_palette_submenu::render,
+        ),
     ]
 }
 

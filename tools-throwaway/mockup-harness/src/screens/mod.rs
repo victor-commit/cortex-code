@@ -9,6 +9,8 @@
 pub mod chat_long_scroll;
 pub mod chat_turn;
 pub mod blocked_command;
+pub mod command_palette;
+pub mod command_palette_submenu;
 pub mod diff_edit;
 pub mod home;
 pub mod onboarding;
@@ -16,6 +18,7 @@ pub mod reasoning;
 pub mod reasoning_collapsed;
 pub mod rich_response;
 pub mod shell;
+pub mod slash_menu;
 pub mod streaming;
 pub mod turn_error;
 pub mod tool_calls;
