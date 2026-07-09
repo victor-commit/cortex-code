@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › where do we enforce the rate limit?  · 1m ago
+
+   Cortex
+
+   Searching the server crate for every place the limit is enforced.
+
+ ● Search(pattern: "rate_limit", path: crates/server/src)
+   ⎿ 128 of 400 files · 3 matches so far
+
+ ● Scouring… 4s · esc to interrupt
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a follow-up, it runs after this turn…                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

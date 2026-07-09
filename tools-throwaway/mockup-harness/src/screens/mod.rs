@@ -15,3 +15,7 @@ pub mod reasoning_collapsed;
 pub mod rich_response;
 pub mod streaming;
 pub mod tool_calls;
+pub mod tool_failed;
+pub mod tool_running;
+pub mod tool_success;
+pub mod tool_success_expanded;

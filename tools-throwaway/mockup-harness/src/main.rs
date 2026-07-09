@@ -49,6 +49,10 @@ fn registry() -> Vec<Entry> {
         ("session", "reasoning-collapsed", screens::reasoning_collapsed::render),
         ("session", "rich-response", screens::rich_response::render),
         ("session", "tool-calls", screens::tool_calls::render),
+        ("session", "tool-running", screens::tool_running::render),
+        ("session", "tool-success", screens::tool_success::render),
+        ("session", "tool-success-expanded", screens::tool_success_expanded::render),
+        ("session", "tool-failed", screens::tool_failed::render),
     ]
 }
 

@@ -269,6 +269,23 @@ pub fn key_span(key: &str, label: &str) -> Vec<Span<'static>> {
     ]
 }
 
+/// Failure-escalation rows (pattern 8): rows of a failed block carry a BAD
+/// `│` left bar aligned under the `⎿` elbow, content on the elbow's text
+/// column. Put the verdict on the elbow row above; the recovery keys
+/// (`key_span`) belong in the block as its last row.
+pub fn fail_rows(rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
+    rows.into_iter()
+        .map(|spans| {
+            let mut out = vec![
+                Span::raw("   "),
+                Span::styled("\u{2502} ".to_string(), Style::default().fg(BAD)),
+            ];
+            out.extend(spans);
+            Line::from(out)
+        })
+        .collect()
+}
+
 // ============================================================================
 // DIFFS (pattern 6) - tinted background lines, ASCII +/- markers (never
 // U+2212), line numbers. The wash only shows in the PNG, not the .txt.
