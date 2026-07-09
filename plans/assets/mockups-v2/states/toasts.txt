@@ -1,0 +1,40 @@
+
+                                                                         │ ✗ BAD   Settings were not saved
+                                                                         │   s retry save · stays until you act
+
+                                                                         │ ✓ OK    Checkpoint saved
+                                                                         │   clears on its own
+
+                                                                         │ ● INFO  Model switched
+                                                                         │   clears on its own
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /settings save  · 1m ago
+
+   Cortex
+
+   Your preferences stay in this project after they are saved.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply when ready…                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

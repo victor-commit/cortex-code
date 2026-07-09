@@ -156,6 +156,14 @@ fn registry() -> Vec<Entry> {
             screens::error_context::render,
         ),
         ("states", "rate-limit", screens::rate_limit::render),
+        ("states", "interrupt", screens::interrupt::render),
+        ("states", "toasts", screens::toasts::render),
+        (
+            "states",
+            "checkpoint-undo",
+            screens::checkpoint_undo::render,
+        ),
+        ("states", "share", screens::share::render),
         ("views", "status", screens::status::render),
         (
             "views",
