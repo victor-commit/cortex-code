@@ -45,6 +45,9 @@ fn registry() -> Vec<Entry> {
         ("session", "chat-turn", screens::chat_turn::render),
         ("session", "chat-long-scroll", screens::chat_long_scroll::render),
         ("session", "streaming", screens::streaming::render),
+        ("session", "reasoning", screens::reasoning::render),
+        ("session", "reasoning-collapsed", screens::reasoning_collapsed::render),
+        ("session", "rich-response", screens::rich_response::render),
         ("session", "tool-calls", screens::tool_calls::render),
     ]
 }

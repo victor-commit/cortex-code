@@ -10,5 +10,8 @@ pub mod chat_long_scroll;
 pub mod chat_turn;
 pub mod home;
 pub mod onboarding;
+pub mod reasoning;
+pub mod reasoning_collapsed;
+pub mod rich_response;
 pub mod streaming;
 pub mod tool_calls;
