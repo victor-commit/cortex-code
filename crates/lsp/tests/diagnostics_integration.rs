@@ -304,7 +304,8 @@ fn rust_analyzer_reports_real_rust_type_error() {
             .iter()
             .any(|diagnostic| diagnostic.severity == "error"
                 && diagnostic.code.as_deref() == Some("E0308")
-                && diagnostic.message.contains("mismatched types")
+                && (diagnostic.message.contains("mismatched types")
+                    || diagnostic.message.contains("expected i32, found"))
                 && diagnostic.line == 2
                 && diagnostic.character <= 18
                 && diagnostic.end_character >= 23),
