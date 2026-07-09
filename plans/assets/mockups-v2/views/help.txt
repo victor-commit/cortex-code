@@ -1,0 +1,40 @@
+ help · leader is ctrl+g ───────────────────────────────────────────────────────────────────────────────────────────────
+
+
+   › filter: _
+   curated shortcuts · ctrl+p for all actions
+
+   Session                                             │ Views
+   ─────────────────────────────────────────────────── │ ───────────────────────────────────────────────────
+   ctrl+g n      new session                           │ ctrl+g t      open timeline
+   ctrl+g s      open sessions                         │ ctrl+g d      open diff
+   ctrl+g f      fork current turn                     │ ctrl+g r      open review
+   ctrl+c        interrupt a turn                      │ ctrl+g m      switch model
+
+   Composer                                            │ Global
+   ─────────────────────────────────────────────────── │ ───────────────────────────────────────────────────
+   enter         send message                          │ ctrl+p        all actions
+   shift+enter   insert newline                        │ ctrl+g h      open help
+   /             slash commands                        │ ctrl+g l      switch theme
+   @             mention a file                        │ esc           close a picker
+
+   keys are scoped to the active view or composer
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ~/projects/cortex-code · master · Claude Opus 4.8

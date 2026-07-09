@@ -135,6 +135,46 @@ pub fn info(label: &str, value: &str, value_color: Color) -> Line<'static> {
     Line::from(spans)
 }
 
+/// One paired field row for full-screen views. The two label/value pairs
+/// share fixed columns and a single FAINT vertical separator, without
+/// drawing a boxed table.
+pub struct FieldPair<'a> {
+    pub left_label: &'a str,
+    pub left_value: &'a str,
+    pub right_label: &'a str,
+    pub right_value: &'a str,
+}
+
+/// Render aligned split field columns for metadata-heavy views such as
+/// `/status`. Labels stay MUTED, values stay TXT, and the only separator is
+/// the single vertical rule between the two field/value pairs.
+pub fn paired_field_rows(rows: &[FieldPair<'_>]) -> Vec<Line<'static>> {
+    const LABEL_W: usize = 11;
+    const VALUE_W: usize = 24;
+
+    rows.iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("{:<LABEL_W$}", row.left_label),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(
+                    format!("{:<VALUE_W$}", row.left_value),
+                    Style::default().fg(TXT),
+                ),
+                Span::styled(" │ ".to_string(), Style::default().fg(FAINT)),
+                Span::styled(
+                    format!("{:<LABEL_W$}", row.right_label),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(row.right_value.to_string(), Style::default().fg(TXT)),
+            ])
+        })
+        .collect()
+}
+
 // ============================================================================
 // TIME (pattern 9) - ONE duration formatter used everywhere.
 // ============================================================================

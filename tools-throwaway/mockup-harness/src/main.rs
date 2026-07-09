@@ -121,6 +121,9 @@ fn registry() -> Vec<Entry> {
             "permission-deny-reason",
             screens::permission_deny_reason::render,
         ),
+        ("views", "status", screens::status::render),
+        ("views", "timeline", screens::timeline::render),
+        ("views", "help", screens::help::render),
     ]
 }
 
