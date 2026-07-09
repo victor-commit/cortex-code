@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › run the test suite and summarize failures
+
+   ● Rate limit reached
+     plan      Pro · per-minute limits
+
+   Usage this minute
+     requests  ██████████████████████████  50 / 50 · at cap
+     tokens    ███████████████████░░░░░░░  58k / 80k · 73%
+
+ ● Retry in… 42s · esc to interrupt
+   ⎿ refreshing
+     Your paused turn resumes on its own.
+     r retry now · q quit
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › type a follow-up, it runs after this turn…                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8

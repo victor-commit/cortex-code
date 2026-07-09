@@ -222,6 +222,30 @@ pub fn bar_in(filled: usize, total: usize, width: usize, color: Color) -> Vec<Sp
     ]
 }
 
+/// A near-limit bar with an amber body and a critical red tail. This keeps
+/// the ramp in the shared bar primitive while reserving BAD for the final,
+/// urgent segment rather than the whole gauge.
+pub fn bar_ramped(
+    filled: usize,
+    total: usize,
+    width: usize,
+    critical_tail: usize,
+) -> Vec<Span<'static>> {
+    let cells = (filled.min(total) * width + total / 2)
+        .checked_div(total)
+        .unwrap_or(0);
+    let bad_cells = cells.min(critical_tail);
+    let warn_cells = cells.saturating_sub(bad_cells);
+    vec![
+        Span::styled(PROGRESS_FULL.repeat(warn_cells), Style::default().fg(WARN)),
+        Span::styled(PROGRESS_FULL.repeat(bad_cells), Style::default().fg(BAD)),
+        Span::styled(
+            PROGRESS_EMPTY.repeat(width - cells),
+            Style::default().fg(FAINT),
+        ),
+    ]
+}
+
 // ============================================================================
 // TOOL CALLS (pattern 1) - one line + elbow result. Never a box.
 // ============================================================================
@@ -1434,6 +1458,17 @@ pub fn working_band(verb: &str, elapsed: f64, tokens: Option<&str>) -> Line<'sta
         Style::default().fg(FAINT),
     ));
     Line::from(spans)
+}
+
+/// A dim live-refresh cue attached to a countdown or other self-updating
+/// status. The elbow keeps this secondary line visibly attached without
+/// introducing another status band.
+pub fn refreshing_note() -> Line<'static> {
+    Line::from(vec![
+        Span::raw("   "),
+        Span::styled(format!("{ELBOW} "), Style::default().fg(FAINT)),
+        Span::styled("refreshing".to_string(), Style::default().fg(MUTED)),
+    ])
 }
 
 // ============================================================================

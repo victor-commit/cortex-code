@@ -144,6 +144,18 @@ fn registry() -> Vec<Entry> {
             screens::connect_disconnect::render,
         ),
         ("auth", "connect-oauth", screens::connect_oauth::render),
+        ("states", "empty", screens::empty::render),
+        (
+            "states",
+            "error-network",
+            screens::error_network::render,
+        ),
+        (
+            "states",
+            "error-context",
+            screens::error_context::render,
+        ),
+        ("states", "rate-limit", screens::rate_limit::render),
         ("views", "status", screens::status::render),
         (
             "views",

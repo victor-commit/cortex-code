@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › update the login retry path
+
+   │ ✗ Network unreachable
+     endpoint  api.anthropic.com
+     model     Claude Opus 4.8
+     attempts  3 of 3 · retries exhausted
+     backoff   2s → 4s → 8s
+     reason    Connection timed out after 8s
+     Your work is saved · nothing was lost
+     r retry same request · enter continue from saved draft
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › reply when ready…                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ~/projects/cortex-code · master · Claude Opus 4.8
