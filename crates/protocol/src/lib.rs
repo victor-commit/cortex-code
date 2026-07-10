@@ -6,4 +6,7 @@ mod tool;
 
 pub use message::{MessagePart, MessagePartBody, StepPartPhase, ToolPartState};
 pub use todo::{TodoItem, TodoPriority, TodoStatus};
-pub use tool::ToolResultPart;
+pub use tool::{
+    McpContentBlock, McpEmbeddedResource, McpPayload, McpSpillReference, McpStructuredContent,
+    McpToolResult, ToolResultPart,
+};

@@ -218,6 +218,7 @@ impl ToolDispatcher for TurnDispatcher {
                         return ToolDispatchResult {
                             content: message.clone(),
                             parts: vec![protocol::ToolResultPart::text(message)],
+                            mcp_result: None,
                             is_error: true,
                         };
                     }
@@ -248,6 +249,7 @@ impl ToolDispatcher for TurnDispatcher {
             ToolDispatchResult {
                 content: output.model_content(),
                 parts: output.parts,
+                mcp_result: None,
                 is_error: output.is_error,
             }
         })
@@ -276,6 +278,7 @@ async fn dispatch_mcp(
                         "{}: invalid arguments JSON: {err}",
                         call.name
                     ))],
+                    mcp_result: None,
                     is_error: true,
                 };
             }
@@ -298,6 +301,7 @@ async fn dispatch_mcp(
         Ok(relayed) => ToolDispatchResult {
             content: relayed.content,
             parts: relayed.parts,
+            mcp_result: Some(relayed.mcp_result),
             is_error: relayed.is_error,
         },
         Err(err) => {
@@ -305,6 +309,7 @@ async fn dispatch_mcp(
             ToolDispatchResult {
                 content: message.clone(),
                 parts: vec![protocol::ToolResultPart::text(message)],
+                mcp_result: None,
                 is_error: true,
             }
         }

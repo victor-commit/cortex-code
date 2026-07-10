@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use db::{Database, DbError, latest_version};
-use protocol::{MessagePart, MessagePartBody, ToolPartState};
+use protocol::{
+    McpContentBlock, McpPayload, McpToolResult, MessagePart, MessagePartBody, ToolPartState,
+};
 
 /// A self-cleaning scratch directory under the system temp dir.
 struct Scratch {
@@ -155,12 +157,28 @@ fn counts_by_session_tallies_every_session_in_one_pass() {
     db.messages().create(&two.id, "user", "c").expect("m3");
 
     let counts = db.messages().counts_by_session().expect("counts");
-    assert_eq!(counts.get(&one.id).copied(), Some(2), "two messages under `one`");
-    assert_eq!(counts.get(&two.id).copied(), Some(1), "one message under `two`");
-    assert_eq!(counts.get(&empty.id).copied(), None, "empty session is absent from the map");
+    assert_eq!(
+        counts.get(&one.id).copied(),
+        Some(2),
+        "two messages under `one`"
+    );
+    assert_eq!(
+        counts.get(&two.id).copied(),
+        Some(1),
+        "one message under `two`"
+    );
+    assert_eq!(
+        counts.get(&empty.id).copied(),
+        None,
+        "empty session is absent from the map"
+    );
     // The tally matches per-session listing for every session.
     for session in [&one, &two, &empty] {
-        let listed = db.messages().list_for_session(&session.id).expect("list").len();
+        let listed = db
+            .messages()
+            .list_for_session(&session.id)
+            .expect("list")
+            .len();
         assert_eq!(counts.get(&session.id).copied().unwrap_or(0), listed);
     }
 }
@@ -522,6 +540,18 @@ fn rich_message_parts_persist_across_reopen() {
                     input: Some("{\"todos\":[]}".to_owned()),
                     output: Some("ok".to_owned()),
                     attachments: Vec::new(),
+                    mcp_result: Some(McpToolResult {
+                        blocks: vec![McpContentBlock::Text {
+                            text: McpPayload::Inline("lossless MCP source".to_owned()),
+                            annotations: None,
+                            metadata: None,
+                        }],
+                        structured_content: Some(protocol::McpStructuredContent::Inline(
+                            serde_json::json!({"nested": [1, true]}),
+                        )),
+                        metadata: Some(serde_json::json!({"fixture": true})),
+                        is_error: Some(true),
+                    }),
                     metadata: serde_json::json!({"demo": true}),
                 },
             },
@@ -565,6 +595,25 @@ fn rich_message_parts_persist_across_reopen() {
                 .is_some_and(|timestamp| !timestamp.is_empty())
         }),
         "persisted parts carry timestamps"
+    );
+    let mcp_result = message
+        .parts
+        .iter()
+        .find_map(|part| match &part.body {
+            MessagePartBody::Tool { mcp_result, .. } => mcp_result.as_ref(),
+            _ => None,
+        })
+        .expect("lossless MCP source result persists with the tool part");
+    assert_eq!(mcp_result.is_error, Some(true));
+    assert_eq!(
+        mcp_result.metadata,
+        Some(serde_json::json!({"fixture": true}))
+    );
+    assert_eq!(
+        mcp_result.structured_content,
+        Some(protocol::McpStructuredContent::Inline(
+            serde_json::json!({"nested": [1, true]})
+        ))
     );
 }
 

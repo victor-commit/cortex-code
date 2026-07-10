@@ -2141,12 +2141,14 @@ struct RunDocument<'a> {
 }
 
 /// One tool result in the completed-turn document: the call id, the tool name, the structured
-/// result parts, and whether the tool reported an error.
+/// result parts, the optional lossless MCP source result, and whether the tool reported an error.
 #[derive(Serialize)]
 struct ToolResultDoc {
     id: String,
     name: String,
     parts: Vec<ToolResultPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_result: Option<protocol::McpToolResult>,
     is_error: bool,
 }
 
@@ -2213,6 +2215,7 @@ async fn emit_json(
             id,
             name,
             parts,
+            mcp_result,
             is_error,
         } = &event
         {
@@ -2220,6 +2223,7 @@ async fn emit_json(
                 id: id.clone(),
                 name: name.clone(),
                 parts: parts.clone(),
+                mcp_result: mcp_result.clone(),
                 is_error: *is_error,
             });
         }
@@ -2480,8 +2484,18 @@ fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
             arguments.clone(),
         )),
         RunnerEvent::ToolResult {
-            id, name, is_error, ..
-        } => bus.publish(&Event::tool_result(id.clone(), name.clone(), *is_error)),
+            id,
+            name,
+            parts,
+            mcp_result,
+            is_error,
+        } => bus.publish(&Event::tool_result_with_parts(
+            id.clone(),
+            name.clone(),
+            parts.clone(),
+            mcp_result.clone(),
+            *is_error,
+        )),
         RunnerEvent::Retry { .. } => {}
         _ => {}
     }

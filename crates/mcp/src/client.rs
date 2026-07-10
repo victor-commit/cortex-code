@@ -798,12 +798,11 @@ mod tests {
                 "{stripped} must not be inherited by an MCP child"
             );
         }
-        for kept in ["PATH"] {
-            assert!(
-                names.contains(&kept.to_owned()),
-                "{kept} should survive inherited env filtering"
-            );
-        }
+        let kept = "PATH";
+        assert!(
+            names.contains(&kept.to_owned()),
+            "{kept} should survive inherited env filtering"
+        );
         for (_, value) in &filtered {
             assert!(
                 !value.to_string_lossy().contains("deadbeef"),

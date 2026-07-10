@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mcp::{CapabilityRoute, McpConnectOptions, McpManager, McpServerConfig, servers_from_value};
+use protocol::{McpContentBlock, McpEmbeddedResource};
 use serde_json::json;
 
 /// The path to the compiled echo-server fixture binary (Cargo sets this for the package's tests).
@@ -133,11 +134,25 @@ async fn connects_lists_calls_and_kills_child_on_shutdown() {
         .await
         .expect("big call succeeds");
     assert!(
-        big.content.contains("output truncated"),
+        big.content.contains("MCP text payload spilled"),
         "got head: {:.80}",
         big.content
     );
     assert!(big.content.len() < 200_000, "must be truncated");
+    let [
+        McpContentBlock::Text {
+            text: protocol::McpPayload::Spill { spill },
+            ..
+        },
+    ] = big.mcp_result.blocks.as_slice()
+    else {
+        panic!("oversized source output must be represented by one typed spill");
+    };
+    assert_eq!(
+        std::fs::read_to_string(&spill.path).expect("recover typed spill"),
+        "x".repeat(200_000),
+        "oversized result is recoverable from the typed source spill"
+    );
 
     // The shutdown kills the child by PID — no orphan survives.
     manager.shutdown().await;
@@ -591,6 +606,83 @@ async fn mcp_tool_is_error_result_is_relayed_as_error() {
         result.content.contains("MCP-TOOL-FAILED"),
         "server error message must be preserved, got: {}",
         result.content
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn real_fixture_preserves_all_mcp_content_kinds_in_source_order() {
+    let bin = echo_server_bin();
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "environment": { "CORTEX_MCP_ECHO_ENABLE_TYPED_RESULT": "1" }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    let result = manager
+        .call("demo_all_kinds", json!({}))
+        .await
+        .expect("the real stdio fixture returns its mixed typed result");
+    assert!(
+        result.is_error,
+        "the fixture deliberately marks its typed result as an error"
+    );
+    assert!(
+        !result.content.contains("aW1hZ2UtcGF5bG9hZA==")
+            && !result.content.contains("YXVkaW8tcGF5bG9hZA=="),
+        "the bounded model projection must not receive raw binary base64: {}",
+        result.content
+    );
+
+    let kinds = result
+        .mcp_result
+        .blocks
+        .iter()
+        .map(|block| match block {
+            McpContentBlock::Text { .. } => "text",
+            McpContentBlock::Image { .. } => "image",
+            McpContentBlock::Audio { .. } => "audio",
+            McpContentBlock::EmbeddedResource { resource, .. } => match resource {
+                McpEmbeddedResource::Text { .. } => "embedded_text",
+                McpEmbeddedResource::Blob { .. } => "embedded_blob",
+            },
+            McpContentBlock::ResourceLink { .. } => "resource_link",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "text",
+            "image",
+            "audio",
+            "embedded_text",
+            "embedded_blob",
+            "resource_link"
+        ],
+        "source block order and kind identity must survive the real MCP hop"
+    );
+    assert_eq!(
+        result.mcp_result.structured_content,
+        Some(protocol::McpStructuredContent::Inline(json!({
+            "nested": [1, { "typed": true }],
+            "source": "all_kinds"
+        }))),
+        "structured content must remain JSON, not a flattened text suffix"
+    );
+    assert_eq!(
+        result.mcp_result.metadata,
+        Some(json!({ "result_meta": "fixture" }))
+    );
+
+    let serialized = serde_json::to_string(&result.mcp_result).expect("serialize typed result");
+    let round_trip: protocol::McpToolResult =
+        serde_json::from_str(&serialized).expect("deserialize typed result");
+    assert_eq!(
+        round_trip, result.mcp_result,
+        "the source result is a stable JSON wire/persistence representation"
     );
     manager.shutdown().await;
 }

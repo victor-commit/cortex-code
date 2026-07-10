@@ -9,15 +9,19 @@
 use errors::Diagnostic;
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
-use protocol::ToolResultPart;
+use protocol::{McpToolResult, ToolResultPart};
 
 /// The structured result of executing one tool call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolDispatchResult {
     /// The text re-injected into the conversation as the tool-result message the model reads back.
     pub content: String,
     /// The structured parts surfaced to machine consumers (text plus any attachments).
     pub parts: Vec<ToolResultPart>,
+    /// The lossless MCP source result when this dispatch originated from an MCP capability.
+    ///
+    /// Ordinary tools leave this absent and continue to use `parts` alone.
+    pub mcp_result: Option<McpToolResult>,
     /// Whether the tool reported an error. The turn still continues so the model can recover; this
     /// only marks the result so a consumer can distinguish a tool failure from a success.
     pub is_error: bool,
@@ -30,6 +34,7 @@ impl ToolDispatchResult {
         let content = content.into();
         Self {
             parts: vec![ToolResultPart::text(content.clone())],
+            mcp_result: None,
             content,
             is_error: false,
         }

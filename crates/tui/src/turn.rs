@@ -32,6 +32,7 @@ use subagent_runner::custom_agents;
 
 /// A message published by the turn worker for the UI thread to apply.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TurnMessage {
     /// One normalized runner event (text/reasoning delta, usage, error, …).
     Event(RunnerEvent),
@@ -349,12 +350,18 @@ fn event_for_runner(session_id: &str, message_id: &str, event: &RunnerEvent) -> 
             arguments.clone(),
         )),
         RunnerEvent::ToolResult {
-            id, name, is_error, ..
-        } => Some(Event::tool_result_for_turn(
+            id,
+            name,
+            parts,
+            mcp_result,
+            is_error,
+        } => Some(Event::tool_result_for_turn_with_parts(
             session_id.to_owned(),
             message_id.to_owned(),
             id.clone(),
             name.clone(),
+            parts.clone(),
+            mcp_result.clone(),
             *is_error,
         )),
         RunnerEvent::Usage(usage) => Some(Event::turn_usage(

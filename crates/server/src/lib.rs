@@ -2794,12 +2794,15 @@ fn publish_runner_event(
             name,
             is_error,
             parts,
+            mcp_result,
         } => {
-            bus.publish(&Event::tool_result_for_turn(
+            bus.publish(&Event::tool_result_for_turn_with_parts(
                 session_id.to_owned(),
                 message_id.to_owned(),
                 id.clone(),
                 name.clone(),
+                parts.clone(),
+                mcp_result.clone(),
                 *is_error,
             ));
             let call = pending_tool_calls.remove(id);
@@ -3382,6 +3385,7 @@ impl ToolDispatcher for ServerToolDispatcher {
             ToolDispatchResult {
                 content: output.model_content(),
                 parts: output.parts,
+                mcp_result: None,
                 is_error: output.is_error,
             }
         })
@@ -3899,7 +3903,10 @@ mod access_log_tests {
         let records: Arc<Mutex<Vec<AccessLogRecord>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = records.clone();
         let sink: AccessLogSink = Arc::new(move |record| {
-            captured.lock().expect("access-log records lock").push(record);
+            captured
+                .lock()
+                .expect("access-log records lock")
+                .push(record);
         });
         (sink, records)
     }

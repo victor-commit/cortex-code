@@ -26,6 +26,7 @@ enum Scenario {
     AddOnly,
     AddThenRemove,
     ResourcesPromptsAndError,
+    TypedResult,
     FinalOnly,
 }
 
@@ -91,9 +92,11 @@ struct ProviderFixture {
 
 impl ProviderFixture {
     fn spawn(mcp_port: u16, scenario: Scenario) -> Self {
-        let port = free_port();
-        let listener =
-            TcpListener::bind(("127.0.0.1", port)).expect("bind provider loopback fixture");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind provider loopback fixture");
+        let port = listener
+            .local_addr()
+            .expect("provider listener address")
+            .port();
         let captures = Arc::new(Mutex::new(Vec::new()));
         let thread_captures = captures.clone();
         let thread = thread::spawn(move || {
@@ -101,6 +104,7 @@ impl ProviderFixture {
                 Scenario::AddOnly => 2,
                 Scenario::AddThenRemove => 3,
                 Scenario::ResourcesPromptsAndError => 4,
+                Scenario::TypedResult => 2,
                 Scenario::FinalOnly => 1,
             };
             for round in 0..requests {
@@ -141,6 +145,17 @@ impl ProviderFixture {
                         &tool_call_frames_with_arguments("call_boom", "demo_boom", json!({})),
                     ),
                     (Scenario::ResourcesPromptsAndError, 3) => {
+                        write_sse_response(&mut stream, &error_acknowledgement_frames());
+                    }
+                    (Scenario::TypedResult, 0) => write_sse_response(
+                        &mut stream,
+                        &tool_call_frames_with_arguments(
+                            "call_all_kinds",
+                            "demo_all_kinds",
+                            json!({}),
+                        ),
+                    ),
+                    (Scenario::TypedResult, 1) => {
                         write_sse_response(&mut stream, &error_acknowledgement_frames());
                     }
                     _ => {
@@ -464,6 +479,144 @@ CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS = "1"
 
     assert_process_tag_reaped(&apply_tag);
     assert_process_tag_reaped(&demo_tag);
+}
+
+#[test]
+fn typed_mcp_results_survive_json_jsonl_and_persisted_session_surfaces() {
+    let echo = echo_server_bin();
+    let scratch = Scratch::new("typed-result-relay");
+    let process_tag = format!("cortex-mcp-typed-result-{}", std::process::id());
+    std::fs::write(
+        scratch.project.join("cortex.toml"),
+        format!(
+            r#"[mcp.demo]
+type = "local"
+command = ["{}", "{process_tag}"]
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_ENABLE_TYPED_RESULT = "1"
+"#,
+            toml_string(&echo),
+        ),
+    )
+    .expect("write typed MCP fixture config");
+
+    let json_provider = ProviderFixture::spawn(0, Scenario::TypedResult);
+    let session = "ses_typed_mcp_json";
+    let json_out = run(cortex_in(
+        &scratch,
+        &json_provider,
+        &[
+            "run",
+            "--format",
+            "json",
+            "--session",
+            session,
+            "Call the MCP all-kinds fixture and acknowledge its error.",
+        ],
+    ));
+    assert_success(&json_out);
+    let document: Value = serde_json::from_slice(&json_out.stdout).expect("strict JSON");
+    let result = tool_result(
+        document["tool_results"].as_array().expect("tool results"),
+        "demo_all_kinds",
+    );
+    assert_eq!(result["is_error"], true, "isError survives the JSON result");
+    let typed = &result["mcp_result"];
+    assert_eq!(typed["is_error"], true);
+    assert_eq!(
+        typed["blocks"]
+            .as_array()
+            .expect("typed source blocks")
+            .iter()
+            .map(|block| block["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec![
+            "text",
+            "image",
+            "audio",
+            "embedded_resource",
+            "embedded_resource",
+            "resource_link"
+        ],
+        "the CLI JSON document preserves source order and all MCP kinds"
+    );
+    assert_eq!(
+        typed["structured_content"]["value"]["nested"][1]["typed"], true,
+        "structured content remains JSON"
+    );
+    assert_eq!(typed["metadata"]["result_meta"], "fixture");
+    assert!(
+        serde_json::to_string(&document)
+            .expect("document JSON")
+            .contains("aW1hZ2UtcGF5bG9hZA=="),
+        "machine-facing JSON retains the image payload"
+    );
+
+    let persisted = run(cortex_in(
+        &scratch,
+        &json_provider,
+        &["session", "show", session, "--format", "json"],
+    ));
+    assert_success(&persisted);
+    let persisted: Value = serde_json::from_slice(&persisted.stdout).expect("session JSON");
+    let persisted_tool = persisted["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .rev()
+        .flat_map(|message| message["parts"].as_array().into_iter().flatten())
+        .find(|part| {
+            part["type"] == "tool"
+                && part["name"] == "demo_all_kinds"
+                && part["mcp_result"].is_object()
+        })
+        .expect("persisted typed MCP tool part");
+    assert_eq!(
+        persisted_tool
+            .get("mcp_result")
+            .expect("persisted MCP source result"),
+        typed,
+        "persistence/resume retains source blocks exactly"
+    );
+
+    let jsonl_provider = ProviderFixture::spawn(0, Scenario::TypedResult);
+    let jsonl_out = run(cortex_in(
+        &scratch,
+        &jsonl_provider,
+        &[
+            "run",
+            "--jsonl",
+            "--session",
+            "ses_typed_mcp_jsonl",
+            "Call the MCP all-kinds fixture.",
+        ],
+    ));
+    assert_success(&jsonl_out);
+    let jsonl_events = String::from_utf8(jsonl_out.stdout)
+        .expect("UTF-8 JSONL")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSONL event"))
+        .collect::<Vec<_>>();
+    let jsonl_result = jsonl_events
+        .iter()
+        .find(|event| event["type"] == "tool_result" && event["name"] == "demo_all_kinds")
+        .expect("typed tool-result JSONL event");
+    assert_eq!(jsonl_result["is_error"], true);
+    assert_eq!(jsonl_result["mcp_result"]["blocks"], typed["blocks"]);
+    assert!(
+        jsonl_result["parts"]
+            .as_array()
+            .expect("bounded projection parts")
+            .iter()
+            .any(|part| {
+                part["type"] == "text"
+                    && part["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("MCP image"))
+            }),
+        "the model-facing projection is separate from the typed payload"
+    );
+    assert_process_tag_reaped(&process_tag);
 }
 
 fn cortex_in(scratch: &Scratch, provider: &ProviderFixture, args: &[&str]) -> Command {

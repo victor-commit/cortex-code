@@ -86,6 +86,7 @@ pub fn build_assistant_message_parts(
                         input: Some(arguments.clone()),
                         output: None,
                         attachments: Vec::new(),
+                        mcp_result: None,
                         metadata: serde_json::Value::Null,
                     },
                 });
@@ -100,6 +101,7 @@ pub fn build_assistant_message_parts(
                         input: Some(arguments.clone()),
                         output: None,
                         attachments: Vec::new(),
+                        mcp_result: None,
                         metadata: serde_json::Value::Null,
                     },
                 });
@@ -108,6 +110,7 @@ pub fn build_assistant_message_parts(
                 id,
                 name,
                 parts: result_parts,
+                mcp_result,
                 is_error,
             } => {
                 let output = result_parts
@@ -130,6 +133,7 @@ pub fn build_assistant_message_parts(
                         input: None,
                         output: (!output.is_empty()).then_some(output),
                         attachments: result_parts.clone(),
+                        mcp_result: mcp_result.clone(),
                         metadata: serde_json::json!({ "is_error": is_error }),
                     },
                 });
@@ -400,6 +404,7 @@ mod tests {
                 id: "call_1".to_owned(),
                 name: "todo".to_owned(),
                 parts: vec![ToolResultPart::text("ok")],
+                mcp_result: None,
                 is_error: false,
             },
             RunnerEvent::Usage(Usage {
@@ -491,6 +496,7 @@ mod tests {
                 id: "call_write".to_owned(),
                 name: "write".to_owned(),
                 parts: vec![ToolResultPart::text("write: created src/main.rs")],
+                mcp_result: None,
                 is_error: false,
             },
         ];

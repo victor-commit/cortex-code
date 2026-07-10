@@ -13,6 +13,29 @@
 
 import type { CortexEventKind, RichMessagePart } from "./gen/types.ts";
 
+/** A bounded tool-result projection safe to present to a model or a UI. */
+export type ToolResultPart =
+  | { type: "text"; text: string }
+  | { type: "image" | "document"; media_type: string; path: string };
+
+/** File reference for a typed payload too large to relay inline. */
+export interface McpSpillReference {
+  path: string;
+  sha256: string;
+  byte_length: number;
+  encoding: string;
+}
+
+/** Complete MCP source result emitted with `tool.result` for MCP-routed calls. */
+export interface McpToolResult {
+  blocks: Array<{ type: string; [key: string]: unknown }>;
+  structured_content?:
+    | { kind: "inline"; value: unknown }
+    | { kind: "spill"; value: { spill: McpSpillReference } };
+  metadata?: unknown;
+  is_error?: boolean;
+}
+
 /** Strongly typed payloads for the turn-relevant event families. */
 export interface KnownEventPayloads {
   "turn.started": { session_id: string; message_id: string };
@@ -34,6 +57,10 @@ export interface KnownEventPayloads {
     message_id?: string;
     id: string;
     name: string;
+    /** Bounded model-facing projection, independent from raw MCP source blocks. */
+    parts: ToolResultPart[];
+    /** Complete source result for MCP-routed tool calls. */
+    mcp_result?: McpToolResult;
     is_error: boolean;
   };
   "turn.usage": {

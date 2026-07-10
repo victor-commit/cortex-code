@@ -1730,6 +1730,7 @@ impl ToolDispatcher for PluginToolDefinitionDispatcher<'_> {
                 return engine::ToolDispatchResult {
                     content: message.clone(),
                     parts: vec![protocol::ToolResultPart::text(message)],
+                    mcp_result: None,
                     is_error: true,
                 };
             }
@@ -2116,6 +2117,7 @@ mod tests {
             Box::pin(ready(engine::ToolDispatchResult {
                 content: "ok".to_owned(),
                 parts: vec![protocol::ToolResultPart::text("ok")],
+                mcp_result: None,
                 is_error: false,
             }))
         }

@@ -12628,6 +12628,7 @@ mod tests {
             id: "call_1".to_owned(),
             name: "read".to_owned(),
             parts: vec![tool_part("1: fn main() {}")],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -12674,6 +12675,7 @@ mod tests {
             id: "bg".to_owned(),
             name: "bash".to_owned(),
             parts: vec![tool_part(&ack)],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -12792,6 +12794,7 @@ mod tests {
             id: "bglong".to_owned(),
             name: "bash".to_owned(),
             parts: vec![tool_part(&ack)],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -12884,6 +12887,7 @@ mod tests {
             id: "fg".to_owned(),
             name: "bash".to_owned(),
             parts: vec![tool_part(fake)],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -12933,6 +12937,7 @@ mod tests {
             id: "call_secret".to_owned(),
             name: "bash".to_owned(),
             parts: vec![tool_part(&format!("stdout: {secret}"))],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -12965,6 +12970,7 @@ mod tests {
             id: "c".to_owned(),
             name: "read".to_owned(),
             parts: vec![tool_part("file not found: nope.txt")],
+            mcp_result: None,
             is_error: true,
         }))
         .unwrap();
@@ -13024,6 +13030,7 @@ mod tests {
             id: "missing".to_owned(),
             name: "read".to_owned(),
             parts: vec![tool_part("x")],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();
@@ -18030,6 +18037,7 @@ mod tests {
                 protocol::ToolResultPart::text("edit: replaced 1 occurrence in src/broken.rs"),
                 protocol::ToolResultPart::text(&feedback_block),
             ],
+            mcp_result: None,
             is_error: false,
         }))
         .unwrap();

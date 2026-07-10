@@ -1,6 +1,6 @@
 //! Typed event definitions carried on the [`EventBus`](crate::EventBus).
 
-use protocol::MessagePart;
+use protocol::{McpToolResult, MessagePart, ToolResultPart};
 use serde::{Deserialize, Serialize};
 
 use crate::families::{
@@ -239,6 +239,12 @@ pub struct ToolResultEvent {
     pub id: String,
     /// Tool name.
     pub name: String,
+    /// Bounded model-facing result parts, retained for immediate surface rendering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ToolResultPart>,
+    /// Complete typed MCP source result, when the tool call was routed to MCP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_result: Option<McpToolResult>,
     /// Whether the tool result is an error.
     pub is_error: bool,
 }
@@ -855,11 +861,26 @@ impl Event {
     /// Construct a `tool.result` event naming the completed tool call.
     #[must_use]
     pub fn tool_result(id: impl Into<String>, name: impl Into<String>, is_error: bool) -> Self {
+        Self::tool_result_with_parts(id, name, Vec::new(), None, is_error)
+    }
+
+    /// Construct a `tool.result` event with both the bounded result projection and, when present,
+    /// a lossless typed MCP source result.
+    #[must_use]
+    pub fn tool_result_with_parts(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        parts: Vec<ToolResultPart>,
+        mcp_result: Option<McpToolResult>,
+        is_error: bool,
+    ) -> Self {
         Event::ToolResult(ToolResultEvent {
             session_id: None,
             message_id: None,
             id: id.into(),
             name: name.into(),
+            parts,
+            mcp_result,
             is_error,
         })
     }
@@ -873,11 +894,35 @@ impl Event {
         name: impl Into<String>,
         is_error: bool,
     ) -> Self {
+        Self::tool_result_for_turn_with_parts(
+            session_id,
+            message_id,
+            id,
+            name,
+            Vec::new(),
+            None,
+            is_error,
+        )
+    }
+
+    /// Construct a session-correlated typed `tool.result` event.
+    #[must_use]
+    pub fn tool_result_for_turn_with_parts(
+        session_id: impl Into<String>,
+        message_id: impl Into<String>,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        parts: Vec<ToolResultPart>,
+        mcp_result: Option<McpToolResult>,
+        is_error: bool,
+    ) -> Self {
         Event::ToolResult(ToolResultEvent {
             session_id: Some(session_id.into()),
             message_id: Some(message_id.into()),
             id: id.into(),
             name: name.into(),
+            parts,
+            mcp_result,
             is_error,
         })
     }
@@ -1433,11 +1478,28 @@ mod tests {
         assert_eq!(value["id"], "call_1");
         assert_eq!(value["name"], "cortex_echo");
 
-        let result = Event::tool_result("call_1", "cortex_echo", false);
+        let result = Event::tool_result_with_parts(
+            "call_1",
+            "cortex_echo",
+            vec![ToolResultPart::text("bounded projection")],
+            Some(McpToolResult {
+                blocks: vec![protocol::McpContentBlock::Text {
+                    text: protocol::McpPayload::Inline("source text".to_owned()),
+                    annotations: None,
+                    metadata: None,
+                }],
+                structured_content: None,
+                metadata: None,
+                is_error: Some(false),
+            }),
+            false,
+        );
         assert_eq!(result.kind(), "tool.result");
         let value = serde_json::to_value(&result).expect("serialize");
         assert_eq!(value["kind"], "tool.result");
         assert_eq!(value["is_error"], false);
+        assert_eq!(value["parts"][0]["text"], "bounded projection");
+        assert_eq!(value["mcp_result"]["blocks"][0]["text"], "source text");
     }
 
     #[test]

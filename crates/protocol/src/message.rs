@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::ToolResultPart;
+use crate::{McpToolResult, ToolResultPart};
 
 /// One persisted message part with a stable id and optional persistence timestamp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -68,6 +68,7 @@ pub enum StepPartPhase {
 
 /// Discriminated rich message-part payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessagePartBody {
     Text {
@@ -88,6 +89,11 @@ pub enum MessagePartBody {
         output: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<ToolResultPart>,
+        /// Complete source MCP result, when this tool invocation came from an MCP capability.
+        ///
+        /// The `output` and `attachments` fields remain the bounded presentation/model projection.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_result: Option<McpToolResult>,
         #[serde(default, skip_serializing_if = "message_part_json_is_empty_or_null")]
         metadata: JsonValue,
     },

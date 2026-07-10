@@ -184,6 +184,7 @@ impl PartLifecycleTracker {
                 name,
                 parts,
                 is_error,
+                ..
             } => {
                 let running_id = tool_running_part_id(&self.turn_id, id);
                 if self.running_tools.insert(id.clone()) {
@@ -496,6 +497,7 @@ mod tests {
             id: "call_a".to_owned(),
             name: "todo".to_owned(),
             parts: vec![protocol::ToolResultPart::text("ok")],
+            mcp_result: None,
             is_error: false,
         }));
         out.extend(tracker.observe(&RunnerEvent::TextDelta {

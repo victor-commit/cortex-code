@@ -333,7 +333,7 @@ mod tests {
         let mut after = reloaded;
         assert!(after.remove("PROJECT_REGION").is_some());
         write(&path, &after).expect("write after remove");
-        assert!(read(&path).get("PROJECT_REGION").is_none());
+        assert!(!read(&path).contains_key("PROJECT_REGION"));
     }
 
     #[test]

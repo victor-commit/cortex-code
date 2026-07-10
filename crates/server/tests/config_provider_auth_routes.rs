@@ -131,16 +131,15 @@ async fn config_providers_lists_catalog_with_default_model() {
         "default_model should be a fully-qualified id: {body}"
     );
     let providers = body["providers"].as_array().expect("providers array");
-    let openrouter = providers
-        .iter()
-        .find(|provider| provider["id"] == "openrouter")
-        .expect("openrouter provider present");
-    let models = openrouter["models"].as_array().expect("models array");
+    let default_model = body["default_model"]
+        .as_str()
+        .expect("default model is a string");
     assert!(
-        models
+        providers
             .iter()
-            .any(|model| model["id"] == "google/gemini-2.5-flash"),
-        "openrouter should list the default model: {body}"
+            .flat_map(|provider| provider["models"].as_array().into_iter().flatten())
+            .any(|model| model["id"] == default_model),
+        "the provider catalogue should include its default model: {body}"
     );
     assert!(
         body["provider_config"].is_object(),
@@ -525,7 +524,9 @@ async fn json_body_large<T>(response: axum::response::Response) -> T
 where
     T: serde::de::DeserializeOwned,
 {
-    let bytes = to_bytes(response.into_body(), 262_144).await.expect("body");
+    let bytes = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
 }
 

@@ -8,6 +8,165 @@
 //! capability and the `engine` runner can name it without depending on each other.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+
+/// A recoverable on-disk reference to an MCP payload too large to carry inline.
+///
+/// The bytes at `path` are exactly the source payload in the declared `encoding`; `sha256` and
+/// `byte_length` let consumers verify that a recovered payload has not changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpSpillReference {
+    /// Absolute path to the protected spill file.
+    pub path: String,
+    /// Lowercase SHA-256 digest of the spill file bytes.
+    pub sha256: String,
+    /// Exact byte length of the spill file.
+    pub byte_length: u64,
+    /// Encoding of the original source payload stored in the file.
+    pub encoding: String,
+}
+
+/// An MCP string payload retained inline or replaced by a recoverable spill reference.
+///
+/// The untagged representation intentionally keeps a normal inline MCP payload as a JSON string,
+/// while an oversized payload becomes `{ "spill": { ... } }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpPayload {
+    /// The original source string (text or base64) is available inline.
+    Inline(String),
+    /// The original source string is recoverable from the named spill file.
+    Spill {
+        /// Integrity-checked location of the original payload.
+        spill: McpSpillReference,
+    },
+}
+
+impl McpPayload {
+    /// Return an inline source payload, when no spill was necessary.
+    #[must_use]
+    pub fn inline(&self) -> Option<&str> {
+        match self {
+            Self::Inline(payload) => Some(payload),
+            Self::Spill { .. } => None,
+        }
+    }
+}
+
+/// MCP structured content retained as JSON, or as an integrity-checked JSON spill when it exceeds
+/// the configured relay bound.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum McpStructuredContent {
+    /// The server-provided JSON value, with its JSON type preserved.
+    Inline(JsonValue),
+    /// A UTF-8 JSON serialization recoverable from a spill file.
+    Spill {
+        /// Integrity-checked location of the complete JSON serialization.
+        spill: McpSpillReference,
+    },
+}
+
+/// A resource embedded inside an MCP tool-result content block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpEmbeddedResource {
+    /// Text bytes embedded directly in the MCP resource.
+    Text {
+        uri: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        text: McpPayload,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+    /// Base64 bytes embedded directly in the MCP resource.
+    Blob {
+        uri: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        blob: McpPayload,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+}
+
+/// One source-ordered MCP `tools/call` result content block.
+///
+/// This is deliberately independent from [`ToolResultPart`]: these blocks faithfully retain the
+/// MCP protocol's source shape and metadata, whereas tool-result parts are the bounded projection
+/// intended for model continuation and generic surface rendering.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpContentBlock {
+    /// A source text block.
+    Text {
+        text: McpPayload,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+    /// A source image block whose `data` is base64.
+    Image {
+        data: McpPayload,
+        media_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+    /// A source audio block whose `data` is base64.
+    Audio {
+        data: McpPayload,
+        media_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<JsonValue>,
+    },
+    /// A source embedded resource block.
+    EmbeddedResource {
+        resource: McpEmbeddedResource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+    /// A source resource-link block, including all MCP resource metadata.
+    ResourceLink {
+        uri: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        icons: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<JsonValue>,
+    },
+}
+
+/// The lossless MCP `tools/call` result retained alongside a bounded model-facing projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolResult {
+    /// Source-order MCP content blocks.
+    pub blocks: Vec<McpContentBlock>,
+    /// The server's structured JSON result, kept as JSON rather than rendered into text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<McpStructuredContent>,
+    /// The result-level MCP `_meta` object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<JsonValue>,
+    /// The protocol-level `isError` value, including an omitted value when the server omitted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
 
 /// One part of a tool's structured result.
 ///

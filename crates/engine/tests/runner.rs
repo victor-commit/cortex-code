@@ -167,6 +167,7 @@ impl ToolDispatcher for CountingTodoDispatcher {
             ToolDispatchResult {
                 content: "todo updated".to_owned(),
                 parts: vec![protocol::ToolResultPart::text("todo updated")],
+                mcp_result: None,
                 is_error: false,
             }
         })
@@ -390,6 +391,7 @@ async fn errored_tool_results_are_reinjected_with_error_context() {
                 ToolDispatchResult {
                     content: "MCP-TOOL-FAILED".to_owned(),
                     parts: vec![protocol::ToolResultPart::text("MCP-TOOL-FAILED")],
+                    mcp_result: None,
                     is_error: true,
                 }
             })
@@ -492,6 +494,7 @@ async fn tool_result_media_parts_are_reinjected_for_follow_up_rounds() {
                         protocol::ToolResultPart::text("read: fixture.png returned an image"),
                         protocol::ToolResultPart::image("image/png", "fixture.png"),
                     ],
+                    mcp_result: None,
                     is_error: false,
                 }
             })
@@ -818,6 +821,7 @@ async fn successful_skill_tool_result_is_appended_to_system_context() {
                     parts: vec![protocol::ToolResultPart::text(
                         "Skill `skill-ok` engaged.\n\nAlways append SKILL-OK.",
                     )],
+                    mcp_result: None,
                     is_error: false,
                 }
             })
@@ -929,6 +933,7 @@ async fn multiple_engaged_skills_are_independently_appended_to_system_context() 
                 ToolDispatchResult {
                     content: guidance.to_owned(),
                     parts: vec![protocol::ToolResultPart::text(guidance)],
+                    mcp_result: None,
                     is_error: false,
                 }
             })

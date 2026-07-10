@@ -557,6 +557,7 @@ impl SessionRunner {
                             id: safeguard_call.id,
                             name: safeguard_call.name,
                             parts: safeguard_result.parts.clone(),
+                            mcp_result: safeguard_result.mcp_result.clone(),
                             is_error: safeguard_result.is_error,
                         });
                         if !loop_safeguard_was_denied(&safeguard_result) {
@@ -605,6 +606,7 @@ impl SessionRunner {
                             id: call.id.clone(),
                             name: call.name.clone(),
                             parts: result.parts.clone(),
+                            mcp_result: result.mcp_result.clone(),
                             is_error: result.is_error,
                         });
                         completed_results[index] = Some((call, result));
@@ -1026,6 +1028,7 @@ fn timed_out_tool_result(call: &ToolCall, timeout: Duration) -> ToolDispatchResu
     );
     ToolDispatchResult {
         parts: vec![protocol::ToolResultPart::text(content.clone())],
+        mcp_result: None,
         content,
         is_error: true,
     }
@@ -1039,6 +1042,7 @@ fn missing_tool_result(call: &ToolCall) -> ToolDispatchResult {
     );
     ToolDispatchResult {
         parts: vec![protocol::ToolResultPart::text(content.clone())],
+        mcp_result: None,
         content,
         is_error: true,
     }

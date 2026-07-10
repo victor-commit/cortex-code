@@ -22,11 +22,12 @@ use rmcp::ErrorData as McpError;
 use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams,
-    GetPromptResult, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
-    PromptMessage, PromptMessageRole, RawResource, ReadResourceRequestParams, ReadResourceResult,
-    ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    AnnotateAble, Annotations, CallToolRequestParams, CallToolResult, Content,
+    GetPromptRequestParams, GetPromptResult, InitializeRequestParams, InitializeResult, JsonObject,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParams, Prompt,
+    PromptArgument, PromptMessage, PromptMessageRole, RawAudioContent, RawContent,
+    RawEmbeddedResource, RawImageContent, RawResource, RawTextContent, ReadResourceRequestParams,
+    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Value, json};
@@ -45,6 +46,7 @@ struct EchoServer {
     stall_list_tools: bool,
     resource_content: String,
     collision_tools: bool,
+    typed_result: bool,
     extra_tool: Option<String>,
 }
 
@@ -63,6 +65,7 @@ impl EchoServer {
             resource_content: std::env::var("CORTEX_MCP_ECHO_RESOURCE_CONTENT")
                 .unwrap_or_else(|_| "RESOURCE-CONTENT-default".to_owned()),
             collision_tools: std::env::var("CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS").is_ok(),
+            typed_result: std::env::var("CORTEX_MCP_ECHO_ENABLE_TYPED_RESULT").is_ok(),
             extra_tool: std::env::var("CORTEX_MCP_ECHO_EXTRA_TOOL")
                 .ok()
                 .filter(|name| !name.trim().is_empty()),
@@ -190,6 +193,9 @@ impl EchoServer {
 
     fn optional_tool_names(&self) -> Vec<String> {
         let mut names = self.extra_tool.clone().into_iter().collect::<Vec<_>>();
+        if self.typed_result {
+            names.push("all_kinds".to_owned());
+        }
         if self.collision_tools {
             names.extend([
                 "apply_patch".to_owned(),
@@ -443,6 +449,81 @@ impl ServerHandler for EchoServer {
                 Ok(CallToolResult::success(vec![Content::text(
                     "x".repeat(size),
                 )]))
+            }
+            "all_kinds" if self.typed_result => {
+                let mut annotations = Annotations::default();
+                annotations.priority = Some(0.75);
+                let block_meta = || {
+                    Meta(JsonObject::from_iter([(
+                        "block_meta".to_owned(),
+                        json!("fixture"),
+                    )]))
+                };
+                let resource_meta = || {
+                    Meta(JsonObject::from_iter([(
+                        "resource_meta".to_owned(),
+                        json!(true),
+                    )]))
+                };
+                let content = vec![
+                    RawContent::Text(RawTextContent {
+                        text: "typed-first-text".to_owned(),
+                        meta: Some(block_meta()),
+                    })
+                    .annotate(annotations.clone()),
+                    RawContent::Image(RawImageContent {
+                        data: "aW1hZ2UtcGF5bG9hZA==".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        meta: Some(block_meta()),
+                    })
+                    .annotate(annotations.clone()),
+                    RawContent::Audio(RawAudioContent {
+                        data: "YXVkaW8tcGF5bG9hZA==".to_owned(),
+                        mime_type: "audio/wav".to_owned(),
+                    })
+                    .annotate(annotations.clone()),
+                    RawContent::Resource(RawEmbeddedResource {
+                        meta: Some(block_meta()),
+                        resource: ResourceContents::TextResourceContents {
+                            uri: "fixture://embedded-text".to_owned(),
+                            mime_type: Some("text/plain".to_owned()),
+                            text: "typed-embedded-text".to_owned(),
+                            meta: Some(resource_meta()),
+                        },
+                    })
+                    .annotate(annotations.clone()),
+                    RawContent::Resource(RawEmbeddedResource {
+                        meta: Some(block_meta()),
+                        resource: ResourceContents::BlobResourceContents {
+                            uri: "fixture://embedded-blob".to_owned(),
+                            mime_type: Some("application/octet-stream".to_owned()),
+                            blob: "YmxvYi1wYXlsb2Fk".to_owned(),
+                            meta: Some(resource_meta()),
+                        },
+                    })
+                    .annotate(annotations.clone()),
+                    RawContent::ResourceLink(RawResource {
+                        uri: "fixture://resource-link".to_owned(),
+                        name: "typed-resource-link".to_owned(),
+                        title: Some("Typed resource link".to_owned()),
+                        description: Some("fixture metadata survives".to_owned()),
+                        mime_type: Some("application/octet-stream".to_owned()),
+                        size: Some(12),
+                        icons: None,
+                        meta: Some(block_meta()),
+                    })
+                    .annotate(annotations),
+                ];
+                let mut result = CallToolResult::error(content);
+                result.structured_content = Some(json!({
+                    "nested": [1, { "typed": true }],
+                    "source": "all_kinds"
+                }));
+                result.meta = Some(Meta(JsonObject::from_iter([(
+                    "result_meta".to_owned(),
+                    json!("fixture"),
+                )])));
+                Ok(result)
             }
             "boom" if self.error_tool => Ok(CallToolResult::error(vec![Content::text(
                 "MCP-TOOL-FAILED",

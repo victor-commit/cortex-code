@@ -120,6 +120,12 @@ pub enum RunnerEvent {
         name: String,
         /// The structured result parts (text and/or attachment references).
         parts: Vec<protocol::ToolResultPart>,
+        /// The complete source MCP result when this tool call was routed to an MCP capability.
+        ///
+        /// `parts` remains the bounded model-facing projection; this field is the independently
+        /// persisted machine-facing representation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_result: Option<protocol::McpToolResult>,
         /// Whether the tool reported an error (the turn still continues).
         is_error: bool,
     },

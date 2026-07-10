@@ -80,6 +80,7 @@ impl ToolDispatcher for RegistryDispatcher {
             ToolDispatchResult {
                 content: output.model_content(),
                 parts: output.parts,
+                mcp_result: None,
                 is_error: output.is_error,
             }
         })

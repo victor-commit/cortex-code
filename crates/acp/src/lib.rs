@@ -1102,9 +1102,22 @@ fn write_acp_update<W>(
             return;
         }
         RunnerEvent::ToolResult {
-            id, name, is_error, ..
+            id,
+            name,
+            parts,
+            mcp_result,
+            is_error,
         } => {
-            emit_tool_result_update(writer, session_id, db_path, id, name, *is_error);
+            emit_tool_result_update(
+                writer,
+                session_id,
+                db_path,
+                id,
+                name,
+                parts,
+                mcp_result.as_ref(),
+                *is_error,
+            );
             return;
         }
         _ => {}
@@ -1216,12 +1229,15 @@ fn emit_tool_call_update<W: Write>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_tool_result_update<W: Write>(
     writer: &JsonRpcWriter<W>,
     session_id: &str,
     db_path: &std::path::Path,
     call_id: &str,
     name: &str,
+    parts: &[protocol::ToolResultPart],
+    mcp_result: Option<&protocol::McpToolResult>,
     is_error: bool,
 ) {
     send_session_update_json(
@@ -1231,6 +1247,10 @@ fn emit_tool_result_update<W: Write>(
             "sessionUpdate": "tool_call_update",
             "toolCallId": call_id,
             "status": if is_error { "failed" } else { "completed" },
+            "content": {
+                "parts": parts,
+                "mcp_result": mcp_result,
+            },
         }),
     );
     if name == "todo"
@@ -1405,12 +1425,18 @@ fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, even
             arguments.clone(),
         )),
         RunnerEvent::ToolResult {
-            id, name, is_error, ..
-        } => bus.publish(&Event::tool_result_for_turn(
+            id,
+            name,
+            parts,
+            mcp_result,
+            is_error,
+        } => bus.publish(&Event::tool_result_for_turn_with_parts(
             session_id.to_owned(),
             message_id.to_owned(),
             id.clone(),
             name.clone(),
+            parts.clone(),
+            mcp_result.clone(),
             *is_error,
         )),
         RunnerEvent::Usage(usage) => bus.publish(&Event::turn_usage(
@@ -1737,6 +1763,7 @@ impl ToolDispatcher for AcpToolDispatcher {
             ToolDispatchResult {
                 content: output.model_content(),
                 parts: output.parts,
+                mcp_result: None,
                 is_error: output.is_error,
             }
         })
