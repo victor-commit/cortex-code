@@ -437,7 +437,11 @@ extensions = ["typ", "typc"]
     };
     assert_eq!(state_for("python"), "disabled");
     assert_eq!(state_for("unavailablefixture"), "unavailable");
-    assert_eq!(state_for("runningfixture"), "running");
+    assert_eq!(
+        state_for("runningfixture"),
+        "available",
+        "an externally launched same-basename process is not Cortex-owned"
+    );
     assert_eq!(state_for("crashedfixture"), "available");
     assert_eq!(state_for("tinymist"), "installing");
 }

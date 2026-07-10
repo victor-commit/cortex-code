@@ -241,6 +241,135 @@ fn cortex_run_lsp_tool_returns_real_navigation_and_reaps_server_pid() {
     assert_pid_gone(pid);
 }
 
+#[cfg(unix)]
+#[test]
+fn cortex_run_status_keeps_wrapper_hosted_lsp_running_by_owned_identity() {
+    if !has_command("python3") {
+        eprintln!("skipping wrapper LSP identity proof: python3 is not on PATH");
+        return;
+    }
+
+    let scratch = Arc::new(Scratch::new("wrapper-runtime-identity"));
+    let fixture = scratch.project.join("fixture.wrp");
+    fs::write(&fixture, "wrapper-hosted language server fixture\n").expect("write LSP fixture");
+
+    let server_script = scratch.project.join("fixture_lsp.py");
+    fs::write(
+        &server_script,
+        r#"import json
+import sys
+
+def read_message():
+    headers = {}
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+    while line not in (b"\r\n", b"\n", b""):
+        name, value = line.decode("ascii", "replace").split(":", 1)
+        headers[name.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+    length = int(headers.get("content-length", "0"))
+    if length <= 0:
+        return None
+    body = sys.stdin.buffer.read(length)
+    return json.loads(body) if body else None
+
+def send(payload):
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get("method")
+    if method == "initialize" and "id" in message:
+        send({"jsonrpc":"2.0","id":message["id"],"result":{"capabilities":{"textDocumentSync":1}}})
+    elif method == "shutdown" and "id" in message:
+        send({"jsonrpc":"2.0","id":message["id"],"result":None})
+    elif "id" in message:
+        send({"jsonrpc":"2.0","id":message["id"],"result":[]})
+"#,
+    )
+    .expect("write wrapper-hosted LSP");
+
+    let wrapper = scratch.project.join("fixture-wrapper.sh");
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nexec python3 \"{}\"\n", server_script.display()),
+    )
+    .expect("write LSP wrapper");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(&wrapper)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper, permissions).expect("make LSP wrapper executable");
+
+    fs::write(
+        scratch.project.join("cortex.toml"),
+        format!(
+            r#"
+[lsp.servers.wrapperfixture]
+program = "{}"
+extensions = ["wrp"]
+"#,
+            wrapper.display()
+        ),
+    )
+    .expect("write wrapper LSP configuration");
+
+    let observed_status = Arc::new(Mutex::new(None));
+    let status_scratch = scratch.clone();
+    let status_slot = observed_status.clone();
+    let provider = ScriptedProvider::start(
+        vec![
+            ProviderStep::Tool {
+                call_id: "call_wrapper_symbols",
+                name: "lsp",
+                arguments: json!({
+                    "action":"documentSymbols",
+                    "filePath":"fixture.wrp"
+                }),
+            },
+            ProviderStep::Final,
+        ],
+        move |index| {
+            if index == 1 {
+                *status_slot.lock().expect("status slot") = Some(lsp_status_json(&status_scratch));
+            }
+        },
+    );
+
+    let output = run(cortex_run(
+        &scratch,
+        &provider,
+        "inspect symbols through the wrapper-hosted language server",
+    ));
+    assert_success_json(&output);
+    provider.finish();
+
+    let rows = observed_status
+        .lock()
+        .expect("status slot")
+        .take()
+        .expect("status was sampled while Cortex owned the wrapper-hosted server");
+    let wrapper_status = rows
+        .iter()
+        .find(|row| row["language"] == "wrapperfixture")
+        .expect("wrapper LSP status row");
+    assert_eq!(
+        wrapper_status["state"], "running",
+        "status must rely on Cortex-owned PID identity after wrapper exec: {wrapper_status}"
+    );
+    let pid = wrapper_status["pid"]
+        .as_u64()
+        .expect("wrapper server status PID") as u32;
+    assert_pid_gone(pid);
+}
+
 #[test]
 fn cortex_run_missing_lsp_is_clean_and_write_still_persists() {
     let scratch = Scratch::new("missing");

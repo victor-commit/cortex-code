@@ -158,6 +158,7 @@ impl NotificationOutcome {
 #[derive(Debug)]
 pub struct LspClient {
     child: Child,
+    process_identity: LspProcessIdentity,
     stdin: Option<ChildStdin>,
     incoming: Receiver<ReaderEvent>,
     reader: Option<JoinHandle<()>>,
@@ -169,6 +170,57 @@ pub struct LspClient {
     supports_workspace_diagnostics_pull: bool,
     request_timeout: Duration,
     shutdown_timeout: Duration,
+}
+
+/// Cortex-owned child identity that remains stable when a wrapper execs its server process.
+///
+/// Linux start ticks identify one process lifetime. A later process may reuse the numeric PID, but
+/// cannot have the same start ticks, and an `exec` preserves those ticks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LspProcessIdentity {
+    pid: u32,
+    start_time: u64,
+}
+
+impl LspProcessIdentity {
+    pub(crate) const fn from_parts(pid: u32, start_time: u64) -> Self {
+        Self { pid, start_time }
+    }
+
+    pub(crate) fn capture(pid: u32) -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            // `comm` (field 2) is wrapped in parens and can contain spaces or ')'. Split after
+            // the last ')' so the first remaining field is process state (field 3).
+            let after_comm = stat.rsplit_once(')')?.1;
+            let mut fields = after_comm.split_whitespace();
+            if fields.next()? == "Z" {
+                return None;
+            }
+            // Field 22 is the Linux start time in ticks since boot. Field 3 has already been
+            // consumed, so start time is the 19th remaining item (zero-based index 18).
+            let start_time = fields.nth(18)?.parse::<u64>().ok()?;
+            Some(Self { pid, start_time })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
+    pub(crate) const fn pid(self) -> u32 {
+        self.pid
+    }
+
+    pub(crate) const fn start_time(self) -> u64 {
+        self.start_time
+    }
+
+    pub(crate) fn is_live(self) -> bool {
+        Self::capture(self.pid).is_some_and(|current| current.start_time == self.start_time)
+    }
 }
 
 impl LspClient {
@@ -187,6 +239,10 @@ impl LspClient {
             .stderr(Stdio::null());
 
         let mut child = command.spawn().map_err(|_| LspError::Spawn)?;
+        let Some(process_identity) = LspProcessIdentity::capture(child.id()) else {
+            force_kill(&mut child);
+            return Err(LspError::Spawn);
+        };
         let stdin = match child.stdin.take() {
             Some(stdin) => stdin,
             None => {
@@ -208,6 +264,7 @@ impl LspClient {
 
         Ok(Self {
             child,
+            process_identity,
             stdin: Some(stdin),
             incoming: receiver,
             reader: Some(reader),
@@ -481,6 +538,12 @@ impl LspClient {
     #[must_use]
     pub fn child_id(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Stable identity of the exact child process Cortex spawned.
+    #[must_use]
+    pub(crate) const fn process_identity(&self) -> LspProcessIdentity {
+        self.process_identity
     }
 
     /// Request hover information for the symbol at `position` in `uri`.

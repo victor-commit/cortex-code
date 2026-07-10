@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use redaction::guard_outbound;
 use url::Url;
 
-use crate::client::LspClient;
+use crate::client::{LspClient, LspProcessIdentity};
 use crate::config::{InstallPlan, LspConfigSet, LspServerConfig};
 use crate::diagnostics::{DiagnosticSeverity, Position};
 use crate::navigation::{
@@ -285,7 +285,18 @@ impl DurableCrashState {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct ManagedServer {
     pid: u32,
-    program: String,
+    /// `None` is a legacy PID-only record and must fail closed: it cannot establish ownership
+    /// after a process exits or the operating system reuses its PID.
+    #[serde(default)]
+    start_time: Option<u64>,
+}
+
+impl ManagedServer {
+    fn is_live(&self) -> bool {
+        self.start_time.is_some_and(|start_time| {
+            LspProcessIdentity::from_parts(self.pid, start_time).is_live()
+        })
+    }
 }
 
 /// Per-workspace ownership records let a status-only Cortex process identify a server another
@@ -316,11 +327,11 @@ impl RuntimeServerState {
         Self { path, servers }
     }
 
-    fn status_for(&mut self, language_id: &str, program: &str) -> RegisteredServer {
+    fn status_for(&mut self, language_id: &str) -> RegisteredServer {
         let Some(server) = self.servers.get(language_id).cloned() else {
             return RegisteredServer::None;
         };
-        if server.program == program && pid_matches_program(server.pid, program) {
+        if server.is_live() {
             return RegisteredServer::Running(server.pid);
         }
         self.servers.remove(language_id);
@@ -328,12 +339,12 @@ impl RuntimeServerState {
         RegisteredServer::Stale
     }
 
-    fn register(&mut self, language_id: &str, program: &str, pid: u32) {
+    fn register(&mut self, language_id: &str, identity: LspProcessIdentity) {
         self.servers.insert(
             language_id.to_owned(),
             ManagedServer {
-                pid,
-                program: program.to_owned(),
+                pid: identity.pid(),
+                start_time: Some(identity.start_time()),
             },
         );
         self.persist();
@@ -833,50 +844,35 @@ impl FeedbackManager {
             let mut clear_crashed = false;
             let state = match self.servers.get_mut(server.language_id()) {
                 _ if !server.is_enabled() => ServerRunState::Disabled,
-                None => {
-                    match self
-                        .runtime_state
-                        .status_for(server.language_id(), server.program())
-                    {
-                        RegisteredServer::Running(pid) => {
-                            clear_crashed = true;
-                            ServerRunState::Running(pid)
-                        }
-                        RegisteredServer::Stale => {
-                            mark_crashed = true;
-                            ServerRunState::Crashed
-                        }
-                        RegisteredServer::None => {
-                            if let Some(pid) = find_running_pid(server.program()) {
-                                clear_crashed = true;
-                                ServerRunState::Running(pid)
+                None => match self.runtime_state.status_for(server.language_id()) {
+                    RegisteredServer::Running(pid) => {
+                        clear_crashed = true;
+                        ServerRunState::Running(pid)
+                    }
+                    RegisteredServer::Stale => {
+                        mark_crashed = true;
+                        ServerRunState::Crashed
+                    }
+                    RegisteredServer::None => match install_readiness(server, no_net) {
+                        InstallReadiness::Available(_) => {
+                            if self.crash_state.is_crashed(server.language_id()) {
+                                ServerRunState::Crashed
                             } else {
-                                match install_readiness(server, no_net) {
-                                    InstallReadiness::Available(_) => {
-                                        if self.crash_state.is_crashed(server.language_id()) {
-                                            ServerRunState::Crashed
-                                        } else {
-                                            ServerRunState::Available
-                                        }
-                                    }
-                                    InstallReadiness::Installable => ServerRunState::Installing,
-                                    InstallReadiness::NoPlan
-                                    | InstallReadiness::NetDisabled
-                                    | InstallReadiness::MissingPrerequisite { .. } => {
-                                        ServerRunState::Unavailable
-                                    }
-                                }
+                                ServerRunState::Available
                             }
                         }
-                    }
-                }
+                        InstallReadiness::Installable => ServerRunState::Installing,
+                        InstallReadiness::NoPlan
+                        | InstallReadiness::NetDisabled
+                        | InstallReadiness::MissingPrerequisite { .. } => {
+                            ServerRunState::Unavailable
+                        }
+                    },
+                },
                 Some(ServerSlot::Running { client, .. }) => {
                     if client.is_running() {
-                        self.runtime_state.register(
-                            server.language_id(),
-                            server.program(),
-                            client.child_id(),
-                        );
+                        self.runtime_state
+                            .register(server.language_id(), client.process_identity());
                         clear_crashed = true;
                         ServerRunState::Running(client.child_id())
                     } else {
@@ -973,11 +969,8 @@ impl FeedbackManager {
         match started {
             Some(client) => {
                 self.crash_state.clear_crashed(server.language_id());
-                self.runtime_state.register(
-                    server.language_id(),
-                    server.program(),
-                    client.child_id(),
-                );
+                self.runtime_state
+                    .register(server.language_id(), client.process_identity());
                 self.servers.insert(
                     server.language_id().to_owned(),
                     ServerSlot::Running {
@@ -1698,49 +1691,6 @@ fn executable_names(program: &str) -> Vec<String> {
     }
 }
 
-fn find_running_pid(program: &str) -> Option<u32> {
-    let output = Command::new("ps")
-        .args(["-eo", "pid=,comm="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let program_name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let pid = parts.next()?.parse::<u32>().ok()?;
-            let command = parts.next()?;
-            (command == program_name).then_some(pid)
-        })
-        .next()
-}
-
-fn pid_matches_program(pid: u32, program: &str) -> bool {
-    let Some(output) = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()
-    else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let program_name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.trim() == program_name)
-}
-
 /// Convert an absolute filesystem path to a `file://` URI.
 #[must_use]
 pub fn path_to_uri(path: &Path) -> String {
@@ -1967,6 +1917,113 @@ mod tests {
         assert_eq!(ServerRunState::Running(1).label(), "running");
         assert_eq!(ServerRunState::Unavailable.label(), "unavailable");
         assert_eq!(ServerRunState::Crashed.label(), "crashed");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_status_accepts_matching_owned_process_identity() {
+        let identity = LspProcessIdentity::capture(std::process::id())
+            .expect("the current Linux process must have start ticks");
+        let mut state = RuntimeServerState {
+            path: None,
+            servers: BTreeMap::new(),
+        };
+        state.register("fixture", identity);
+
+        assert_eq!(
+            state.status_for("fixture"),
+            RegisteredServer::Running(identity.pid())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_registration_persists_pid_and_start_ticks() {
+        let identity = LspProcessIdentity::capture(std::process::id())
+            .expect("the current Linux process must have start ticks");
+        let root = std::env::temp_dir().join(format!(
+            "cortex-lsp-runtime-registration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let path = root.join("runtime.json");
+        let mut state = RuntimeServerState {
+            path: Some(path.clone()),
+            servers: BTreeMap::new(),
+        };
+
+        state.register("fixture", identity);
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("persisted runtime record"))
+                .expect("runtime state JSON");
+        assert_eq!(persisted["fixture"]["pid"], identity.pid());
+        assert_eq!(persisted["fixture"]["start_time"], identity.start_time());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_status_removes_dead_or_reused_pid_records() {
+        let identity = LspProcessIdentity::capture(std::process::id())
+            .expect("the current Linux process must have start ticks");
+        let mut state = RuntimeServerState {
+            path: None,
+            servers: BTreeMap::from([(
+                "fixture".to_owned(),
+                ManagedServer {
+                    pid: identity.pid(),
+                    start_time: Some(identity.start_time().saturating_add(1)),
+                },
+            )]),
+        };
+
+        assert_eq!(state.status_for("fixture"), RegisteredServer::Stale);
+        assert!(!state.servers.contains_key("fixture"));
+
+        state.servers.insert(
+            "dead".to_owned(),
+            ManagedServer {
+                pid: u32::MAX,
+                start_time: Some(identity.start_time()),
+            },
+        );
+        assert_eq!(state.status_for("dead"), RegisteredServer::Stale);
+        assert!(!state.servers.contains_key("dead"));
+    }
+
+    #[test]
+    fn runtime_status_fails_closed_and_persists_removal_for_legacy_pid_records() {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-lsp-runtime-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let path = root.join("runtime.json");
+        let mut state = RuntimeServerState {
+            path: Some(path.clone()),
+            servers: BTreeMap::from([(
+                "legacy".to_owned(),
+                ManagedServer {
+                    pid: std::process::id(),
+                    start_time: None,
+                },
+            )]),
+        };
+
+        assert_eq!(state.status_for("legacy"), RegisteredServer::Stale);
+        assert!(!state.servers.contains_key("legacy"));
+        let persisted: BTreeMap<String, ManagedServer> =
+            serde_json::from_slice(&std::fs::read(&path).expect("persisted stale removal"))
+                .expect("runtime state JSON");
+        assert!(persisted.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
