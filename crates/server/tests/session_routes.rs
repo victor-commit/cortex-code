@@ -529,6 +529,64 @@ async fn message_route_injects_instruction_glob_memory_into_system_context() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn message_route_does_not_emit_escaping_instruction_glob_content_to_the_provider() {
+    let scratch = Scratch::new("server-message-instruction-source-containment");
+    let workspace = scratch.dir.join("workspace");
+    let rules_dir = workspace.join("rules");
+    let outside = scratch.dir.join("outside-instructions.md");
+    std::fs::create_dir_all(&rules_dir).expect("rules dir");
+    std::fs::write(rules_dir.join("inside.md"), "SERVER-INSIDE-INSTRUCTION\n")
+        .expect("write inside instruction");
+    std::fs::write(&outside, "SERVER-OUTSIDE-INSTRUCTION-SENTINEL\n")
+        .expect("write outside instruction");
+    std::os::unix::fs::symlink(&outside, rules_dir.join("outward.md"))
+        .expect("create outward symlink");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        format!(
+            r#"instructions = ["rules/inside.md", "../outside-instructions.md", "{}", "rules/outward.md"]"#,
+            outside.display()
+        ),
+    )
+    .expect("write project config");
+
+    let provider = Arc::new(EchoProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"reply briefly"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let systems = provider.seen_systems();
+    assert!(
+        systems
+            .iter()
+            .any(|system| system.contains("SERVER-INSIDE-INSTRUCTION")),
+        "contained instruction must reach the provider: {systems:?}"
+    );
+    assert!(
+        systems
+            .iter()
+            .all(|system| !system.contains("SERVER-OUTSIDE-INSTRUCTION-SENTINEL")),
+        "absolute, parent-escaping, and symlink-escaping content must never reach the provider: {systems:?}"
+    );
+}
+
 #[tokio::test]
 async fn message_route_fires_plugin_event_hook_with_serve_surface() {
     let scratch = Scratch::new("server-message-plugin-event");

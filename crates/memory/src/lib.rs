@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -424,20 +424,49 @@ fn append_instruction_sources(
     memory: &mut ProjectMemory,
     seen: &mut BTreeSet<String>,
 ) {
-    let base = config_base_dir(&layer.source);
-    for entry in instruction_entries(&layer.table, &layer.source, &mut memory.warnings) {
+    let entries = instruction_entries(&layer.table, &layer.source, &mut memory.warnings);
+    let canonical_root = if entries
+        .iter()
+        .any(|entry| matches!(entry, InstructionEntry::Glob(_)))
+    {
+        match canonical_instruction_root(&layer.source) {
+            Ok(root) => Some(root),
+            Err(err) => {
+                memory.warnings.push(format!(
+                    "{}: cannot establish a canonical owner root for local instruction sources: {err}",
+                    layer.source.display()
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    for entry in entries {
         match entry {
             InstructionEntry::Glob(pattern) => {
-                let mut matches = expand_instruction_glob(&base, &pattern, &mut memory.warnings);
-                matches.sort();
-                for path in matches {
-                    append_file_source(path, KIND_INSTRUCTIONS, memory, seen);
+                if let Some(root) = canonical_root.as_deref() {
+                    for path in expand_instruction_glob(root, &pattern, &mut memory.warnings) {
+                        append_file_source(path, KIND_INSTRUCTIONS, memory, seen);
+                    }
                 }
             }
             InstructionEntry::Url(url) => {
                 append_remote_instruction_source(&url, network_disabled, memory, seen)
             }
         }
+    }
+}
+
+fn canonical_instruction_root(source: &Path) -> Result<PathBuf, std::io::Error> {
+    let root = fs::canonicalize(config_base_dir(source))?;
+    if fs::metadata(&root)?.is_dir() {
+        Ok(root)
+    } else {
+        Err(std::io::Error::other(
+            "config owner root is not a directory",
+        ))
     }
 }
 
@@ -621,17 +650,24 @@ fn no_net_enabled(env: &[(String, String)]) -> bool {
     })
 }
 
-fn expand_instruction_glob(base: &Path, pattern: &str, warnings: &mut Vec<String>) -> Vec<PathBuf> {
+fn expand_instruction_glob(
+    canonical_root: &Path,
+    pattern: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
     let trimmed = pattern.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
-    let path = PathBuf::from(trimmed);
-    let resolved = if path.is_absolute() {
-        path
-    } else {
-        base.join(path)
-    };
+
+    if has_instruction_glob_escape(trimmed) {
+        warnings.push(format!(
+            "ignoring local instructions glob `{trimmed}` because it is absolute or escapes its config owner root"
+        ));
+        return Vec::new();
+    }
+
+    let resolved = canonical_root.join(trimmed);
     let pattern = resolved.to_string_lossy().replace('\\', "/");
     let entries = match glob::glob(&pattern) {
         Ok(entries) => entries,
@@ -640,15 +676,60 @@ fn expand_instruction_glob(base: &Path, pattern: &str, warnings: &mut Vec<String
             return Vec::new();
         }
     };
-    let mut paths = Vec::new();
+    let mut paths = BTreeSet::new();
     for entry in entries {
         match entry {
-            Ok(path) if path.is_file() => paths.push(path),
-            Ok(_) => {}
+            Ok(path) => match fs::canonicalize(&path) {
+                Ok(canonical_path) if !canonical_path.starts_with(canonical_root) => {
+                    warnings.push(format!(
+                        "ignoring instructions glob `{trimmed}` match `{}` because it escapes its config owner root",
+                        path.display()
+                    ));
+                }
+                Ok(canonical_path) => match fs::metadata(&canonical_path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        paths.insert(canonical_path);
+                    }
+                    Ok(_) => {}
+                    Err(err) => warnings.push(format!(
+                        "instructions glob `{trimmed}` match `{}` cannot be inspected: {err}",
+                        path.display()
+                    )),
+                },
+                Err(err) => warnings.push(format!(
+                    "instructions glob `{trimmed}` match `{}` cannot be canonicalized: {err}",
+                    path.display()
+                )),
+            },
             Err(err) => warnings.push(format!("instructions glob `{trimmed}`: {err}")),
         }
     }
-    paths
+    paths.into_iter().collect()
+}
+
+fn has_instruction_glob_escape(pattern: &str) -> bool {
+    let path = Path::new(pattern);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return true;
+    }
+
+    let is_windows_drive_path = pattern.as_bytes().get(1).is_some_and(|byte| *byte == b':')
+        && pattern
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    is_windows_drive_path
+        || pattern.starts_with('\\')
+        || pattern
+            .split(['/', '\\'])
+            .any(|component| component == "..")
 }
 
 fn append_file_source(
@@ -804,6 +885,91 @@ mod tests {
         let a_pos = rendered.find("A-RULE").expect("a");
         let b_pos = rendered.find("B-RULE").expect("b");
         assert!(agents_pos < a_pos && a_pos < b_pos, "rendered: {rendered}");
+    }
+
+    #[test]
+    fn config_instruction_globs_reject_absolute_and_parent_escaping_sources() {
+        let (root, home, proj) = scratch("instruction-glob-escapes");
+        let outside = root.join("outside.md");
+        write(&proj.join("rules/inside.md"), "INSIDE-INSTRUCTION");
+        write(&outside, "OUTSIDE-INSTRUCTION-SENTINEL");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            &format!(
+                "instructions = [\"rules/inside.md\", \"../outside.md\", \"{}\"]",
+                outside.display()
+            ),
+        );
+
+        let memory = discover(&inputs(&home, &proj));
+        let rendered = memory.render().expect("rendered");
+        assert!(rendered.contains("INSIDE-INSTRUCTION"));
+        assert!(
+            !rendered.contains("OUTSIDE-INSTRUCTION-SENTINEL"),
+            "escaping entries must never be read into memory: {rendered}"
+        );
+    }
+
+    #[test]
+    fn instruction_glob_escape_detection_rejects_windows_prefixes() {
+        assert!(has_instruction_glob_escape("/outside/*.md"));
+        assert!(has_instruction_glob_escape("../outside/*.md"));
+        assert!(has_instruction_glob_escape(r"C:\outside\*.md"));
+        assert!(has_instruction_glob_escape(r"\\host\share\*.md"));
+        assert!(!has_instruction_glob_escape("rules/*.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_instruction_globs_reject_outward_symlinks_and_deduplicate_contained_aliases() {
+        let (root, home, proj) = scratch("instruction-glob-symlinks");
+        let inside = proj.join("rules/inside.md");
+        let outside = root.join("outside.md");
+        let alias = proj.join("rules/inside-alias.md");
+        let outward = proj.join("rules/outward.md");
+        write(&inside, "INSIDE-INSTRUCTION");
+        write(&outside, "OUTSIDE-INSTRUCTION-SENTINEL");
+        std::os::unix::fs::symlink(&inside, &alias).expect("contained symlink");
+        std::os::unix::fs::symlink(&outside, &outward).expect("outward symlink");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            r#"instructions = ["rules/*.md"]"#,
+        );
+
+        let memory = discover(&inputs(&home, &proj));
+        assert_eq!(source_names(&memory), vec!["inside.md"]);
+        let rendered = memory.render().expect("rendered");
+        assert!(rendered.contains("INSIDE-INSTRUCTION"));
+        assert!(
+            !rendered.contains("OUTSIDE-INSTRUCTION-SENTINEL"),
+            "outward symlink content must never be read into memory: {rendered}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_cortex_config_is_confined_to_its_project_owner_root() {
+        let (_root, home, proj) = scratch("nested-cortex-instruction-root");
+        let nested = proj.join("nested");
+        let inside = nested.join("rules/inside.md");
+        let outside = proj.join("outside-rules/outside.md");
+        let outward = nested.join("outward");
+        write(&inside, "NESTED-INSIDE-INSTRUCTION");
+        write(&outside, "NESTED-OUTSIDE-INSTRUCTION-SENTINEL");
+        std::os::unix::fs::symlink(proj.join("outside-rules"), &outward)
+            .expect("outward directory symlink");
+        write(
+            &nested.join(PROJECT_CONFIG_DIR).join(CONFIG_FILE),
+            r#"instructions = ["rules/*.md", "outward/*.md"]"#,
+        );
+
+        let memory = discover(&inputs(&home, &nested));
+        let rendered = memory.render().expect("rendered");
+        assert!(rendered.contains("NESTED-INSIDE-INSTRUCTION"));
+        assert!(
+            !rendered.contains("NESTED-OUTSIDE-INSTRUCTION-SENTINEL"),
+            "each config layer must reject sources outside its own owner root: {rendered}"
+        );
     }
 
     #[test]
