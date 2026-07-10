@@ -7,7 +7,9 @@ use db::Database;
 use events::EventBus;
 use futures_util::future::BoxFuture;
 use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, ToolCall, Usage};
-use permissions::{Action, PermissionEngine, Rule, Ruleset};
+use permissions::{
+    Action, Decision, DecisionOverride, PermissionEngine, PermissionRequest, Rule, Ruleset,
+};
 use serde_json::json;
 use settings::ConfigInputs;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ fn config(dir: &std::path::Path, db_path: PathBuf, inputs: ConfigInputs) -> Conf
         provider: None,
         provider_audit: None,
         parent_cap: None,
+        parent_permission_override: None,
         audit_path: dir.join("audit.jsonl"),
         parent_session_id: "parent-session".to_owned(),
         db_path,
@@ -56,6 +59,7 @@ struct ConfigBuilder {
     provider: Option<Arc<dyn Provider>>,
     provider_audit: Option<ProviderAuditConfig>,
     parent_cap: Option<Ruleset>,
+    parent_permission_override: Option<Arc<dyn DecisionOverride>>,
     audit_path: PathBuf,
     parent_session_id: String,
     db_path: PathBuf,
@@ -79,6 +83,11 @@ impl ConfigBuilder {
         self
     }
 
+    fn parent_permission_override(mut self, override_hook: Arc<dyn DecisionOverride>) -> Self {
+        self.parent_permission_override = Some(override_hook);
+        self
+    }
+
     fn build(self) -> CliTaskRunnerConfig {
         CliTaskRunnerConfig {
             provider: self.provider.expect("provider set"),
@@ -92,6 +101,7 @@ impl ConfigBuilder {
             cwd: self.cwd,
             parent_session_id: self.parent_session_id,
             parent_cap: self.parent_cap,
+            parent_permission_override: self.parent_permission_override,
             parent_model_id: "google/gemini-2.5-flash".to_owned(),
             formatter_config: format::FormatterConfig::default(),
             lsp_config: lsp::LspConfigSet::defaults(),
@@ -211,6 +221,11 @@ async fn subagent_runner_creates_a_distinct_session_and_persists_answer() {
         .iter()
         .find(|session| session.id != parent.id)
         .expect("distinct child session");
+    assert_eq!(
+        child.parent_id.as_deref(),
+        Some(parent.id.as_str()),
+        "a task child must carry a structured durable parent link"
+    );
     assert!(
         child
             .title
@@ -309,6 +324,137 @@ async fn parent_cap_blocks_child_attempt_to_exceed_parent_permissions() {
             record["type"] == "shell_execution" && record["command"] == "rm victim.txt"
         }),
         "{records:#?}"
+    );
+}
+
+#[tokio::test]
+async fn parent_dynamic_deny_override_also_narrows_child_permissions() {
+    struct ParentWriteDeny;
+
+    impl DecisionOverride for ParentWriteDeny {
+        fn override_decision(
+            &self,
+            request: &PermissionRequest,
+            _proposed: Action,
+        ) -> Option<Decision> {
+            (request.tool == "write").then_some(Decision::Deny)
+        }
+    }
+
+    let (dir, inputs) = scratch("dynamic-parent-deny");
+    let db_path = dir.join("cortex.db");
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            LlmEvent::ToolCall(ToolCall {
+                id: "call_write".to_owned(),
+                name: "write".to_owned(),
+                arguments: json!({
+                    "path": "plugin-denied.txt",
+                    "content": "must stay absent"
+                })
+                .to_string(),
+            }),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "the write was denied by the parent policy".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]));
+    let run = runner(
+        &catalog,
+        config(&dir, db_path, inputs)
+            .provider(provider)
+            .parent_cap(Ruleset::new(vec![Rule::new("write", "*", Action::Allow)]))
+            .parent_permission_override(Arc::new(ParentWriteDeny))
+            .build(),
+    );
+
+    let out = run
+        .run_task(TaskRequest::new("general", "write plugin-denied.txt"))
+        .await;
+
+    assert!(!out.is_error, "got: {}", out.model_content());
+    assert!(
+        out.model_content().contains("write: permission denied"),
+        "the child tool result must preserve the parent's dynamic denial: {}",
+        out.model_content()
+    );
+    assert!(
+        !dir.join("plugin-denied.txt").exists(),
+        "a dynamically denied parent write must stay denied in the child"
+    );
+}
+
+#[tokio::test]
+async fn explore_subagent_uses_its_read_only_persona_and_cannot_write() {
+    let (dir, inputs) = scratch("explore-read-only");
+    let db_path = dir.join("cortex.db");
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            LlmEvent::ToolCall(ToolCall {
+                id: "call_write".to_owned(),
+                name: "write".to_owned(),
+                arguments: json!({
+                    "path": "forbidden.txt",
+                    "content": "this must not be written"
+                })
+                .to_string(),
+            }),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "I inspected the project without changing it.".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]));
+    let run = runner(
+        &catalog,
+        config(&dir, db_path, inputs).provider(provider).build(),
+    );
+
+    let out = run
+        .run_task(TaskRequest::new(
+            "explore",
+            "Try to write forbidden.txt, then report what happened.",
+        ))
+        .await;
+
+    assert!(!out.is_error, "got: {}", out.model_content());
+    assert!(
+        out.model_content().contains("write: permission denied"),
+        "the child tool result must show the explore restriction: {}",
+        out.model_content()
+    );
+    assert!(
+        !dir.join("forbidden.txt").exists(),
+        "the explore child must not mutate even when its prompt requests a write"
     );
 }
 
@@ -457,6 +603,149 @@ async fn task_id_resume_reuses_the_same_child_session() {
             .iter()
             .any(|message| { message.role == "user" && message.content.contains("second prompt") }),
         "{messages:#?}"
+    );
+}
+
+#[tokio::test]
+async fn task_rejoin_rejects_a_child_owned_by_a_different_parent() {
+    let (dir, inputs) = scratch("foreign-rejoin");
+    let db_path = dir.join("cortex.db");
+    let db = Database::open(&db_path).expect("db");
+    db.sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+    db.sessions()
+        .ensure("other-parent", None)
+        .expect("other parent");
+
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        LlmEvent::TextDelta {
+            text: "private child answer".to_owned(),
+        },
+        LlmEvent::Done {
+            reason: FinishReason::Stop,
+        },
+    ]]));
+    let owner = runner(
+        &catalog,
+        config(&dir, db_path.clone(), inputs.clone())
+            .provider(provider)
+            .build(),
+    );
+    let created = owner
+        .run_task(TaskRequest::new("explore", "produce a private result"))
+        .await;
+    assert!(!created.is_error, "got: {}", created.model_content());
+    let task_id = parse_task_id(&created.model_content());
+    let messages_before = Database::open(&db_path)
+        .expect("db")
+        .messages()
+        .list_for_session(&task_id)
+        .expect("messages")
+        .len();
+
+    let mut foreign_config = config(&dir, db_path.clone(), inputs)
+        .provider(Arc::new(ScriptedProvider::new(Vec::new())))
+        .build();
+    foreign_config.parent_session_id = "other-parent".to_owned();
+    let foreign = runner(&catalog, foreign_config);
+    let rejoined = foreign
+        .run_task(TaskRequest {
+            agent: None,
+            prompt: None,
+            description: None,
+            task_id: Some(task_id.clone()),
+            command: None,
+            background: false,
+        })
+        .await;
+
+    assert!(rejoined.is_error, "got: {}", rejoined.model_content());
+    assert!(
+        rejoined
+            .model_content()
+            .contains("does not belong to parent session"),
+        "a task id must not disclose another parent's child result: {}",
+        rejoined.model_content()
+    );
+    let messages_after = Database::open(&db_path)
+        .expect("db")
+        .messages()
+        .list_for_session(&task_id)
+        .expect("messages")
+        .len();
+    assert_eq!(
+        messages_after, messages_before,
+        "a rejected foreign rejoin must not alter the child transcript"
+    );
+}
+
+#[tokio::test]
+async fn task_resume_cannot_change_the_child_subagent_persona() {
+    let (dir, inputs) = scratch("persona-resume");
+    let db_path = dir.join("cortex.db");
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let provider = Arc::new(ScriptedProvider::new(vec![vec![
+        LlmEvent::TextDelta {
+            text: "explore child answer".to_owned(),
+        },
+        LlmEvent::Done {
+            reason: FinishReason::Stop,
+        },
+    ]]));
+    let run = runner(
+        &catalog,
+        config(&dir, db_path.clone(), inputs)
+            .provider(provider)
+            .build(),
+    );
+    let created = run
+        .run_task(TaskRequest::new("explore", "inspect without changes"))
+        .await;
+    assert!(!created.is_error, "got: {}", created.model_content());
+    let task_id = parse_task_id(&created.model_content());
+    let messages_before = Database::open(&db_path)
+        .expect("db")
+        .messages()
+        .list_for_session(&task_id)
+        .expect("messages")
+        .len();
+
+    let resumed = run
+        .run_task(TaskRequest {
+            agent: Some("general".to_owned()),
+            prompt: Some("now mutate the project".to_owned()),
+            description: None,
+            task_id: Some(task_id.clone()),
+            command: None,
+            background: false,
+        })
+        .await;
+
+    assert!(resumed.is_error, "got: {}", resumed.model_content());
+    assert!(
+        resumed
+            .model_content()
+            .contains("runs as subagent `explore`, not `general`"),
+        "a resume must retain the existing child persona: {}",
+        resumed.model_content()
+    );
+    let messages_after = Database::open(&db_path)
+        .expect("db")
+        .messages()
+        .list_for_session(&task_id)
+        .expect("messages")
+        .len();
+    assert_eq!(
+        messages_after, messages_before,
+        "a rejected persona change must not append to the child transcript"
     );
 }
 

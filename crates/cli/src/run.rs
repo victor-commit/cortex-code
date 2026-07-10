@@ -659,7 +659,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
 
     let parent_permission_cap = permission_engine
         .as_ref()
-        .map(|engine| engine.ruleset().clone());
+        .map(|engine| engine.parent_cap_ruleset());
     let task_catalog =
         crate::subagent::permitted_catalog(&discovered_agents, permission_engine.as_ref());
 
@@ -721,6 +721,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 cwd: cwd.clone(),
                 parent_session_id: session_id.clone(),
                 parent_cap: parent_permission_cap,
+                parent_permission_override: plugin_state.permission_override(),
                 parent_model_id: model_id.clone(),
                 formatter_config: run_config.formatter_config.clone(),
                 lsp_config: run_config.lsp_config.clone(),

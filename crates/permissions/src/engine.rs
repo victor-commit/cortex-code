@@ -8,6 +8,7 @@ use events::{EventBus, PermissionDecision};
 use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
+use crate::rule::Rule;
 use crate::ruleset::Ruleset;
 use crate::saved::{SavedDecision, SavedDecisions};
 
@@ -356,6 +357,24 @@ impl PermissionEngine {
     #[must_use]
     pub fn ruleset(&self) -> &Ruleset {
         &self.ruleset
+    }
+
+    /// Snapshot every rule-based constraint that can limit a spawned subagent.
+    ///
+    /// The snapshot preserves the parent engine's normal rules, saved decisions, and absolute hard
+    /// denies in their effective precedence order. A child installs it with
+    /// [`with_parent_cap`](Self::with_parent_cap), making the child at least as restrictive as the
+    /// parent's actual policy instead of only the parent's ordinary config rules.
+    #[must_use]
+    pub fn parent_cap_ruleset(&self) -> Ruleset {
+        let mut rules = self.ruleset.rules().to_vec();
+        if let Some(saved) = &self.saved {
+            rules.extend(saved.snapshot().into_iter().map(|decision| {
+                Rule::new(decision.tool, decision.pattern, decision.decision.action())
+            }));
+        }
+        rules.extend(self.hard_denies.rules().iter().cloned());
+        Ruleset::new(rules)
     }
 
     /// Whether a responder is attached (so asks can be answered rather than failing closed).
@@ -742,6 +761,32 @@ mod tests {
         assert_eq!(
             engine.evaluate(&PermissionRequest::new("bash", "echo hi")),
             Outcome::Denied
+        );
+    }
+
+    #[test]
+    fn parent_cap_snapshot_preserves_saved_and_hard_denies() {
+        let parent =
+            PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Allow)]))
+                .with_saved_decisions(Arc::new(SavedDecisions::from_decisions(vec![
+                    SavedDecision::new("bash", "rm *", Decision::Deny),
+                ])))
+                .with_hard_denies(Ruleset::new(vec![Rule::new("write", "*", Action::Deny)]));
+        let child = PermissionEngine::new(Ruleset::new(vec![
+            Rule::new("bash", "*", Action::Allow),
+            Rule::new("write", "*", Action::Allow),
+        ]))
+        .with_parent_cap(parent.parent_cap_ruleset());
+
+        assert_eq!(
+            child.classify("bash", "rm victim.txt"),
+            Action::Deny,
+            "a parent's saved deny must narrow its child"
+        );
+        assert_eq!(
+            child.classify("write", "new.txt"),
+            Action::Deny,
+            "a parent's hard deny must narrow its child"
         );
     }
 }

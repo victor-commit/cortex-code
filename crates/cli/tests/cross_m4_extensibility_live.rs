@@ -201,6 +201,10 @@ fn task_subagent_persists_a_listable_child_session_with_parent_link() {
         .iter()
         .find(|session| session["id"] == child)
         .expect("child listed");
+    assert_eq!(
+        child_row["parent_id"], parent,
+        "child sessions must expose their structured durable parent link"
+    );
     let title = child_row["title"].as_str().expect("child title");
     assert!(
         title.contains("subagent:explore") && title.contains(&format!("parent:{parent}")),

@@ -339,6 +339,7 @@ fn extract_task_id(task_text: &str) -> String {
 #[test]
 fn task_supports_documented_parameters_and_task_id_resume() {
     let home = scratch_home("task-resume");
+    let parent_session = "task-resume-parent";
 
     let fixture = Fixture::start(vec![
         ScriptedResponse::success(&[
@@ -362,7 +363,7 @@ fn task_supports_documented_parameters_and_task_id_resume() {
         &fixture.base_url,
         "google/gemini-2.5-flash",
         "exercise task documented params",
-        &[],
+        &["--session", parent_session],
     ));
     fixture.finish();
 
@@ -408,7 +409,7 @@ fn task_supports_documented_parameters_and_task_id_resume() {
         &fixture.base_url,
         "google/gemini-2.5-flash",
         "resume task by task_id",
-        &[],
+        &["--session", parent_session],
     ));
     fixture.finish();
 
@@ -436,6 +437,109 @@ fn task_supports_documented_parameters_and_task_id_resume() {
                     .is_some_and(|content| content.contains("SECOND-456"))
         }),
         "{child}"
+    );
+}
+
+#[test]
+fn task_advertisement_contains_exactly_the_parent_permitted_subagent_targets() {
+    let home = scratch_home("task-advertisement");
+    let fixture = Fixture::start(vec![ScriptedResponse::success(&[
+        text_delta_frame("no delegation needed"),
+        done_frame("stop"),
+    ])]);
+    let doc = assert_success_json(cortex_run_json(
+        &home,
+        &fixture.base_url,
+        "google/gemini-2.5-flash",
+        "return a short confirmation",
+        &[
+            "--permission-allow",
+            "task:plan",
+            "--permission-allow",
+            "task:explore",
+            "--permission-deny",
+            "task:general",
+        ],
+    ));
+    fixture.finish();
+
+    let task = doc["tool_definitions"]
+        .as_array()
+        .expect("tool definitions")
+        .iter()
+        .find(|definition| definition["name"] == "task")
+        .expect("task should be advertised when any target is permitted");
+    let targets = task["parameters"]["properties"]["subagent_type"]["description"]
+        .as_str()
+        .expect("task target description");
+    assert!(
+        targets.contains("Available targets in this session: plan, explore."),
+        "only the explicitly allowed targets should be advertised: {targets}"
+    );
+    assert!(
+        !targets.contains("general") && !targets.contains("build"),
+        "forbidden and primary targets must not be offered: {targets}"
+    );
+}
+
+#[test]
+fn task_subagent_inherits_a_parent_write_deny_without_side_effects() {
+    let home = scratch_home("task-parent-write-deny");
+    let fixture = Fixture::start(vec![
+        ScriptedResponse::success(&[
+            tool_call_frame(
+                "call_parent_task",
+                "task",
+                serde_json::json!({
+                    "subagent_type": "general",
+                    "prompt": "Write DENIED_CHILD_WRITE to denied-child.txt."
+                }),
+            ),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[
+            tool_call_frame(
+                "call_child_write",
+                "write",
+                serde_json::json!({
+                    "path": "denied-child.txt",
+                    "content": "DENIED_CHILD_WRITE"
+                }),
+            ),
+            done_frame("tool_calls"),
+        ]),
+        ScriptedResponse::success(&[
+            text_delta_frame("the delegated write was denied"),
+            done_frame("stop"),
+        ]),
+        ScriptedResponse::success(&[
+            text_delta_frame("parent incorporated the denied child result"),
+            done_frame("stop"),
+        ]),
+    ]);
+    let doc = assert_success_json(cortex_run_json(
+        &home,
+        &fixture.base_url,
+        "google/gemini-2.5-flash",
+        "delegate a file write to a general subagent",
+        &["--permission-deny", "write:**"],
+    ));
+    fixture.finish();
+
+    let task_result = tool_result_texts(&doc, "task").join("\n");
+    assert!(
+        task_result.contains("write: permission denied"),
+        "the child result must report the parent-derived denial: {task_result}"
+    );
+    assert!(
+        !home.join("denied-child.txt").exists(),
+        "a parent-denied write must remain absent after the child attempts it"
+    );
+    assert!(
+        doc["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("incorporated the denied child result")),
+        "the parent must receive the child result before its final answer: {doc}"
     );
 }
 

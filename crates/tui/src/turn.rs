@@ -234,8 +234,9 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             let task_runner =
                                 build_task_runner(&setup, &engine, &cwd, &session_id, &audit_sink,
                                     db_path.as_ref());
-                            if let Some((targets, runner)) = task_runner {
-                                dispatcher = dispatcher.with_task_runner(targets, runner);
+                            if let Some((targets, runner)) = &task_runner {
+                                dispatcher =
+                                    dispatcher.with_task_runner(targets.clone(), runner.clone());
                             }
                             let runner = SessionRunner::default();
                             if let Some(remote) = &remote {
@@ -271,6 +272,12 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                     "aborted",
                                     0,
                                 ));
+                            }
+                            // Complete every background child task before the parent TUI turn
+                            // releases its runtime. This persists the child transcript and lets
+                            // its own exact-PID bash cleanup run before the parent can be resumed.
+                            if let Some((_, runner)) = &task_runner {
+                                runner.drain_background().await;
                             }
                             // Reap any background `bash` jobs spawned this turn by exact PID, so no
                             // orphan process outlives the turn (even after an interrupt).
@@ -585,7 +592,7 @@ fn build_task_runner(
     session_id: &str,
     audit: &Arc<audit::AuditSink>,
     db_path: Option<&PathBuf>,
-) -> Option<(Vec<tools::TaskTarget>, Arc<dyn tools::TaskRunner>)> {
+) -> Option<(Vec<tools::TaskTarget>, Arc<subagent_runner::CliTaskRunner>)> {
     let db_path = db_path?;
     let catalog = subagent_runner::permitted_catalog(&setup.discovered_agents, Some(engine));
     if catalog.targets.is_empty() {
@@ -601,7 +608,8 @@ fn build_task_runner(
         db_path: db_path.clone(),
         cwd: cwd.to_path_buf(),
         parent_session_id: session_id.to_owned(),
-        parent_cap: Some(engine.ruleset().clone()),
+        parent_cap: Some(engine.parent_cap_ruleset()),
+        parent_permission_override: None,
         parent_model_id: setup.model_id.clone(),
         formatter_config: setup.formatter_config.clone(),
         lsp_config: lsp::LspConfigSet::defaults(),
@@ -610,7 +618,7 @@ fn build_task_runner(
         bus: Arc::new(events::EventBus::new()),
     });
     let targets = catalog.targets.clone();
-    Some((targets, runner as Arc<dyn tools::TaskRunner>))
+    Some((targets, runner))
 }
 
 fn validate_user_media_parts_for_model(
@@ -992,11 +1000,7 @@ mod tests {
                 tracing::span::Id::from_u64(1)
             }
             fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-            fn record_follows_from(
-                &self,
-                _span: &tracing::span::Id,
-                _follows: &tracing::span::Id,
-            ) {
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
             }
             fn event(&self, event: &tracing::Event<'_>) {
                 struct MessageVisitor<'a>(&'a mut Vec<String>);
@@ -1042,7 +1046,8 @@ mod tests {
             variant: "default".to_owned(),
             session: "new".to_owned(),
         });
-        app.transcript.push(Entry::User("build the thing".to_owned()));
+        app.transcript
+            .push(Entry::User("build the thing".to_owned()));
         let screen = crate::ui::transcript_lines(&app, 92)
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))

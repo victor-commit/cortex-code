@@ -16,7 +16,10 @@ use engine::{
 };
 use events::EventBus;
 use futures_util::future::BoxFuture;
-use permissions::{PermissionEngine, RuleError, Ruleset, load_agent_rulesets};
+use permissions::{
+    Action, Decision, DecisionOverride, PermissionEngine, PermissionRequest, RuleError, Ruleset,
+    load_agent_rulesets,
+};
 use settings::ConfigInputs;
 use tools::{TaskRequest, TaskRunner, ToolOutput};
 
@@ -39,6 +42,10 @@ pub struct CliTaskRunnerConfig {
     pub cwd: PathBuf,
     pub parent_session_id: String,
     pub parent_cap: Option<Ruleset>,
+    /// Parent-surface dynamic permission hook. A child consults only its denied decisions, so a
+    /// plugin denial that applies to the parent remains a cap without permitting it to weaken the
+    /// child's own persona or ruleset restrictions.
+    pub parent_permission_override: Option<Arc<dyn DecisionOverride>>,
     pub parent_model_id: String,
     pub formatter_config: format::FormatterConfig,
     pub lsp_config: lsp::LspConfigSet,
@@ -207,6 +214,10 @@ impl CliTaskRunner {
             Ok(session) => session,
             Err(err) => return ToolOutput::error(format!("task: {err}")),
         };
+        let agent = match self.require_owned_subagent_session(&session, None) {
+            Ok(agent) => agent,
+            Err(err) => return err,
+        };
         let messages = match db.messages().list_for_session(task_id) {
             Ok(messages) => messages,
             Err(err) => return ToolOutput::error(format!("task: {err}")),
@@ -217,17 +228,8 @@ impl CliTaskRunner {
             .find(|message| message.role == "assistant")
             .map(|message| message.content.clone())
         else {
-            return ToolOutput::text(render_task_running_output(
-                task_id,
-                infer_agent_from_title(session.title.as_deref())
-                    .as_deref()
-                    .unwrap_or("unknown"),
-                None,
-                None,
-            ));
+            return ToolOutput::text(render_task_running_output(task_id, &agent, None, None));
         };
-        let agent = infer_agent_from_title(session.title.as_deref())
-            .unwrap_or_else(|| "unknown".to_owned());
         ToolOutput::text(render_task_completed_output(RenderTaskCompletedOutput {
             task_id,
             agent: &agent,
@@ -456,17 +458,55 @@ impl CliTaskRunner {
         agent_name: &str,
     ) -> Result<(Session, bool), ToolOutput> {
         if let Some(task_id) = request.task_id.as_deref() {
-            if let Ok(session) = db.sessions().require(task_id) {
-                return Ok((session, true));
-            }
+            let session = db
+                .sessions()
+                .require(task_id)
+                .map_err(|err| ToolOutput::error(format!("task: {err}")))?;
+            self.require_owned_subagent_session(&session, Some(agent_name))?;
+            return Ok((session, true));
         }
         let title = self.child_session_title(agent_name, request.description.as_deref());
         db.sessions()
-            .create(Some(&title))
+            .create_child(&self.config.parent_session_id, Some(&title))
             .map(|session| (session, false))
             .map_err(|err| {
                 ToolOutput::error(format!("task: failed to create child session: {err}"))
             })
+    }
+
+    /// Confirm that a `task_id` belongs to this parent and retains the agent persona it was
+    /// created under. A task id is durable but is never a cross-session capability token.
+    fn require_owned_subagent_session(
+        &self,
+        session: &Session,
+        expected_agent: Option<&str>,
+    ) -> Result<String, ToolOutput> {
+        if session.parent_id.as_deref() != Some(self.config.parent_session_id.as_str()) {
+            return Err(ToolOutput::error(format!(
+                "task: session `{}` does not belong to parent session `{}`",
+                session.id, self.config.parent_session_id
+            )));
+        }
+        let Some(agent) = infer_agent_from_title(session.title.as_deref()) else {
+            return Err(ToolOutput::error(format!(
+                "task: session `{}` is not a valid subagent task",
+                session.id
+            )));
+        };
+        if !self.agents.contains_key(&agent) {
+            return Err(ToolOutput::error(format!(
+                "task: subagent `{agent}` is not available in this parent turn"
+            )));
+        }
+        if let Some(expected_agent) = expected_agent
+            && agent != expected_agent
+        {
+            return Err(ToolOutput::error(format!(
+                "task: session `{}` runs as subagent `{agent}`, not `{expected_agent}`",
+                session.id
+            )));
+        }
+        Ok(agent)
     }
 
     fn child_session_title(&self, agent_name: &str, description: Option<&str>) -> String {
@@ -489,6 +529,7 @@ impl CliTaskRunner {
         agent: &ActiveAgent,
     ) -> Result<Option<Arc<PermissionEngine>>, RuleError> {
         let builtin = bridges::builtin_agent_permission_rules(agent.base_agent());
+        let mut hard_deny_rules = builtin.restriction_rules.clone();
         let config_ruleset =
             load_agent_rulesets(&self.config.config_inputs)?.for_agent(agent.name());
         let mut ruleset = Ruleset::new(builtin.base_rules);
@@ -503,16 +544,31 @@ impl CliTaskRunner {
         }
         let trust_level = policy::resolve_trust(&self.config.config_inputs)?;
         for rule in policy::trust_ruleset(trust_level).rules() {
-            ruleset.push(rule.clone());
+            if rule.action == Action::Deny {
+                hard_deny_rules.push(rule.clone());
+            } else {
+                ruleset.push(rule.clone());
+            }
         }
 
         let has_parent_cap = self.config.parent_cap.is_some();
-        if ruleset.is_empty() && !has_parent_cap {
+        if ruleset.is_empty() && hard_deny_rules.is_empty() && !has_parent_cap {
             return Ok(None);
         }
-        let mut engine = PermissionEngine::new(ruleset).with_bus(self.config.bus.clone());
+        let mut engine = PermissionEngine::new(ruleset)
+            .with_hard_denies(Ruleset::new(hard_deny_rules))
+            .with_bus(self.config.bus.clone());
         if let Some(parent_cap) = &self.config.parent_cap {
             engine = engine.with_parent_cap(parent_cap.clone());
+        }
+        if let (Some(parent_cap), Some(parent_override)) = (
+            &self.config.parent_cap,
+            &self.config.parent_permission_override,
+        ) {
+            engine = engine.with_override(Arc::new(ParentDenyOverride {
+                parent_cap: parent_cap.clone(),
+                parent_override: parent_override.clone(),
+            }));
         }
         Ok(Some(Arc::new(engine)))
     }
@@ -531,6 +587,30 @@ impl CliTaskRunner {
             Some(wrapper) => wrapper.wrap(base, &child_audit),
             None => base,
         }
+    }
+}
+
+/// Applies only dynamic parent denials to a child. Dynamic approvals must not weaken the child's
+/// persona, hard-deny, or configured rules, while a denial still closes the parent-to-child
+/// permission gap.
+struct ParentDenyOverride {
+    parent_cap: Ruleset,
+    parent_override: Arc<dyn DecisionOverride>,
+}
+
+impl DecisionOverride for ParentDenyOverride {
+    fn override_decision(
+        &self,
+        request: &PermissionRequest,
+        _proposed: Action,
+    ) -> Option<Decision> {
+        let parent_action = self.parent_cap.classify(&request.tool, &request.subject);
+        matches!(
+            self.parent_override
+                .override_decision(request, parent_action),
+            Some(Decision::Deny)
+        )
+        .then_some(Decision::Deny)
     }
 }
 

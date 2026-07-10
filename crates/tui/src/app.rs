@@ -402,7 +402,10 @@ impl FileTreeRow {
     /// Whether this row is a directory (expanded or collapsed), i.e. a togglable node.
     #[must_use]
     pub fn is_dir(&self) -> bool {
-        matches!(self.kind, FileTreeKind::DirExpanded | FileTreeKind::DirCollapsed)
+        matches!(
+            self.kind,
+            FileTreeKind::DirExpanded | FileTreeKind::DirCollapsed
+        )
     }
 }
 
@@ -2519,10 +2522,17 @@ impl App {
     /// diff falls back to a standalone entry, dropping a trailing empty in-progress assistant entry
     /// first so it is not preceded by an empty assistant block.
     fn push_diff(&mut self, diff: crate::diff::FileDiff) {
-        if let Some(card) = self.transcript.iter_mut().rev().find_map(|entry| match entry {
-            Entry::Tool(card) if card.diff.is_none() && is_mutating_tool(&card.name) => Some(card),
-            _ => None,
-        }) {
+        if let Some(card) = self
+            .transcript
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Tool(card) if card.diff.is_none() && is_mutating_tool(&card.name) => {
+                    Some(card)
+                }
+                _ => None,
+            })
+        {
             card.attach_diff(diff);
             return;
         }
@@ -4521,11 +4531,7 @@ impl App {
             .enumerate()
             .skip(sel)
             .find_map(|(idx, row)| row.is_some().then_some(idx))
-            .or_else(|| {
-                self.model_rows
-                    .iter()
-                    .position(Option::is_some)
-            });
+            .or_else(|| self.model_rows.iter().position(Option::is_some));
         if let (Some(target), Some(dialog)) = (target, self.dialog.as_mut()) {
             dialog.selected = target;
         }
@@ -4830,7 +4836,7 @@ impl App {
         let Some(parent_id) = self.session_id.as_deref() else {
             return Vec::new();
         };
-        let Ok(sessions) = db.sessions().list() else {
+        let Ok(sessions) = db.sessions().children(parent_id) else {
             return Vec::new();
         };
         let now = current_epoch_secs();
@@ -4839,7 +4845,7 @@ impl App {
             let Some(title) = session.title.as_deref() else {
                 continue;
             };
-            if !title.contains("subagent:") || !title.contains(&format!("parent:{parent_id}")) {
+            if !title.contains("subagent:") {
                 continue;
             }
             let (name, parsed_task) = parse_subagent_title(title);
@@ -4868,7 +4874,9 @@ impl App {
                 "done" | "error" => parse_epoch_secs(&session.updated_at)
                     .zip(parse_epoch_secs(&session.created_at))
                     .map(|(updated, created)| (updated - created).max(0)),
-                "running" => parse_epoch_secs(&session.created_at).map(|created| (now - created).max(0)),
+                "running" => {
+                    parse_epoch_secs(&session.created_at).map(|created| (now - created).max(0))
+                }
                 _ => None,
             };
             let status = match (state, elapsed) {
@@ -4913,8 +4921,9 @@ impl App {
             .is_some_and(|meta| meta.starts_with("running"));
         if running {
             self.push_toast(ToastLevel::Info, format!("Cancelling subagent {name}"));
-            self.transcript
-                .push(Entry::Notice(format!("Requested cancel of subagent {name}")));
+            self.transcript.push(Entry::Notice(format!(
+                "Requested cancel of subagent {name}"
+            )));
         }
     }
 
@@ -5264,7 +5273,11 @@ impl App {
             self.should_quit = true;
             return;
         }
-        let Some(step) = self.connect.as_ref().map(crate::connect::ConnectState::step) else {
+        let Some(step) = self
+            .connect
+            .as_ref()
+            .map(crate::connect::ConnectState::step)
+        else {
             return;
         };
         use crate::connect::Step;
@@ -6651,9 +6664,7 @@ impl App {
         self.session_entries = entries;
         self.picker_rows = rows;
         if let Some(dialog) = self.dialog.as_mut() {
-            let clamped = dialog
-                .selected
-                .min(items.len().saturating_sub(1));
+            let clamped = dialog.selected.min(items.len().saturating_sub(1));
             dialog.items = items;
             dialog.selected = clamped;
         }
@@ -7191,7 +7202,8 @@ impl App {
     /// The focused files-tree row index (the toggle target), clamped to the current rows.
     #[must_use]
     pub fn files_cursor(&self) -> usize {
-        self.files_cursor.min(self.files_tree.len().saturating_sub(1))
+        self.files_cursor
+            .min(self.files_tree.len().saturating_sub(1))
     }
 
     /// Whether a files-tree selection bar should be drawn (only after the user starts navigating,
@@ -7310,7 +7322,10 @@ impl App {
             return;
         }
         self.files_nav_active = true;
-        self.files_cursor = self.files_cursor.min(self.files_tree.len() - 1).saturating_sub(1);
+        self.files_cursor = self
+            .files_cursor
+            .min(self.files_tree.len() - 1)
+            .saturating_sub(1);
     }
 
     /// Toggle the focused directory node between expanded and collapsed, then rebuild the tree.
@@ -7350,7 +7365,10 @@ impl App {
             } else {
                 for diagnostic in &group.diagnostics {
                     let letter = if diagnostic.is_error { "E" } else { "W" };
-                    rows.push(format!("{} {letter} {}", diagnostic.line, diagnostic.message));
+                    rows.push(format!(
+                        "{} {letter} {}",
+                        diagnostic.line, diagnostic.message
+                    ));
                 }
             }
         }
@@ -7477,13 +7495,13 @@ impl App {
         let Some(parent_id) = self.session_id.as_deref() else {
             return Vec::new();
         };
-        let Ok(sessions) = db.sessions().list() else {
+        let Ok(sessions) = db.sessions().children(parent_id) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
         for session in sessions {
             let label = session_picker_label(&session);
-            if !label.contains("subagent:") || !label.contains(&format!("parent:{parent_id}")) {
+            if !label.contains("subagent:") {
                 continue;
             }
             let messages = db
@@ -7831,8 +7849,9 @@ impl App {
     /// Surfaces a clear notice when no persisted session is active yet.
     fn open_rename_dialog(&mut self) {
         let Some(session_id) = self.session_id.clone() else {
-            self.transcript
-                .push(Entry::Notice("No persisted session to rename yet.".to_owned()));
+            self.transcript.push(Entry::Notice(
+                "No persisted session to rename yet.".to_owned(),
+            ));
             self.push_toast(ToastLevel::Info, "No session to rename");
             return;
         };
@@ -7926,7 +7945,10 @@ impl App {
     /// recent user prompts (so the preview reflects the real conversation).
     fn build_compact_data(&self) -> CompactDialog {
         let messages = self.history.len();
-        let before = self.usage.total_tokens.max(estimate_history_tokens(&self.history));
+        let before = self
+            .usage
+            .total_tokens
+            .max(estimate_history_tokens(&self.history));
         // Compaction summarizes older messages into one summary while keeping the two most recent
         // exchanges; the after size is estimated as a fraction of the pre-compaction context and
         // never exceeds it, so the preview always reflects a reduction.
@@ -7950,14 +7972,9 @@ impl App {
         };
         CompactDialog {
             before_tokens: format!("{} tokens", crate::view::format_thousands(before)),
-            before_detail: format!(
-                "{messages} message{}",
-                if messages == 1 { "" } else { "s" }
-            ),
+            before_detail: format!("{messages} message{}", if messages == 1 { "" } else { "s" }),
             after_tokens: format!("~{} tokens", crate::view::format_thousands(after)),
-            after_detail: format!(
-                "1 summary + {recent} recent",
-            ),
+            after_detail: format!("1 summary + {recent} recent",),
             keeps,
         }
     }
@@ -8462,7 +8479,10 @@ impl App {
     /// with the path. A write failure surfaces a clear error instead of crashing.
     fn perform_export(&mut self) {
         let index = self.dialog.as_ref().map_or(0, Dialog::selected);
-        let (name, _desc, ext) = EXPORT_FORMATS.get(index).copied().unwrap_or(EXPORT_FORMATS[0]);
+        let (name, _desc, ext) = EXPORT_FORMATS
+            .get(index)
+            .copied()
+            .unwrap_or(EXPORT_FORMATS[0]);
         let content = match ext {
             "json" => self.render_session_json(),
             "html" => self.render_session_html(),
@@ -9489,7 +9509,11 @@ fn parse_lsp_summary(line: &str) -> Option<(String, usize, usize)> {
         .unwrap_or(path)
         .to_owned();
     let tail = tail.to_ascii_lowercase();
-    Some((file, count_before(&tail, "error"), count_before(&tail, "warning")))
+    Some((
+        file,
+        count_before(&tail, "error"),
+        count_before(&tail, "warning"),
+    ))
 }
 
 /// The integer immediately preceding `keyword` in `text` (e.g. `2` in `2 error(s)`), or `0`.
@@ -9503,7 +9527,12 @@ fn count_before(text: &str, keyword: &str) -> usize {
         .rev()
         .take_while(char::is_ascii_digit)
         .collect();
-    digits.chars().rev().collect::<String>().parse().unwrap_or(0)
+    digits
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0)
 }
 
 /// Parse an LSP diagnostic detail line into a structured [`LspDiagnosticRow`].
@@ -9518,7 +9547,12 @@ fn count_before(text: &str, keyword: &str) -> usize {
 /// informational/hint diagnostics return `None`.
 fn parse_lsp_detail(line: &str) -> Option<LspDiagnosticRow> {
     let rest = line.strip_prefix("- ").unwrap_or(line);
-    let is_error = match rest.split_whitespace().next()?.to_ascii_lowercase().as_str() {
+    let is_error = match rest
+        .split_whitespace()
+        .next()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "error" => true,
         "warning" | "warn" => false,
         _ => return None,
@@ -9531,7 +9565,9 @@ fn parse_lsp_detail(line: &str) -> Option<LspDiagnosticRow> {
         .collect::<String>()
         .parse()
         .ok()?;
-    let message = after.find(": ").map(|idx| after[idx + 2..].trim().to_owned())?;
+    let message = after
+        .find(": ")
+        .map(|idx| after[idx + 2..].trim().to_owned())?;
     Some(LspDiagnosticRow {
         line: line_no,
         is_error,
@@ -10118,12 +10154,36 @@ fn review_findings(changed: &[String]) -> Vec<crate::view::ReviewFinding> {
         text: &'static str,
     }
     const RULES: &[Rule] = &[
-        Rule { needle: "unsafe ", severity: Severity::High, text: "unsafe block - audit the invariants" },
-        Rule { needle: ".unwrap()", severity: Severity::Medium, text: "unwrap may panic - handle the error" },
-        Rule { needle: ".expect(", severity: Severity::Medium, text: "expect may panic - handle the error" },
-        Rule { needle: ".clone()", severity: Severity::Low, text: "possible redundant clone" },
-        Rule { needle: "TODO", severity: Severity::Info, text: "unresolved TODO" },
-        Rule { needle: "FIXME", severity: Severity::Info, text: "unresolved FIXME" },
+        Rule {
+            needle: "unsafe ",
+            severity: Severity::High,
+            text: "unsafe block - audit the invariants",
+        },
+        Rule {
+            needle: ".unwrap()",
+            severity: Severity::Medium,
+            text: "unwrap may panic - handle the error",
+        },
+        Rule {
+            needle: ".expect(",
+            severity: Severity::Medium,
+            text: "expect may panic - handle the error",
+        },
+        Rule {
+            needle: ".clone()",
+            severity: Severity::Low,
+            text: "possible redundant clone",
+        },
+        Rule {
+            needle: "TODO",
+            severity: Severity::Info,
+            text: "unresolved TODO",
+        },
+        Rule {
+            needle: "FIXME",
+            severity: Severity::Info,
+            text: "unresolved FIXME",
+        },
     ];
 
     let mut findings: Vec<ReviewFinding> = Vec::new();
@@ -10852,7 +10912,10 @@ mod tests {
         a.open_connect_at(&auth_path);
         assert!(a.connect_active(), "/connect flow is open");
         a.on_key(key(KeyCode::Char('d')));
-        assert!(a.connect_active(), "the flow stays open after a no-op disconnect key");
+        assert!(
+            a.connect_active(),
+            "the flow stays open after a no-op disconnect key"
+        );
         assert_eq!(
             a.connect_state().map(crate::connect::ConnectState::step),
             Some(crate::connect::Step::Provider),
@@ -10883,7 +10946,10 @@ mod tests {
         let mut a = app();
         a.set_onboarding(true);
         a.on_key(key(KeyCode::Char('x')));
-        assert!(!a.onboarding_active(), "a printable key dismisses onboarding");
+        assert!(
+            !a.onboarding_active(),
+            "a printable key dismisses onboarding"
+        );
         assert_eq!(
             a.input_value(),
             "x",
@@ -11722,7 +11788,10 @@ mod tests {
         a.status.agent = "plan".to_owned();
         assert!(a.plan_mode(), "the plan agent is plan mode");
         a.status.agent = "explore".to_owned();
-        assert!(!a.plan_mode(), "explore is read-only but not the plan banner");
+        assert!(
+            !a.plan_mode(),
+            "explore is read-only but not the plan banner"
+        );
     }
 
     #[test]
@@ -11737,9 +11806,7 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
 
         assert!(
-            !a.transcript
-                .iter()
-                .any(|e| matches!(e, Entry::Shell(_))),
+            !a.transcript.iter().any(|e| matches!(e, Entry::Shell(_))),
             "the command must NOT run while planning (no shell output entry)"
         );
         let blocked = a
@@ -11751,7 +11818,10 @@ mod tests {
                 _ => None,
             })
             .expect("a blocked banner is surfaced");
-        assert_eq!(blocked.0, "cargo build --release", "the banner names the command");
+        assert_eq!(
+            blocked.0, "cargo build --release",
+            "the banner names the command"
+        );
         assert_eq!(
             blocked.1, SHELL_BLOCKED_WHILE_PLANNING,
             "the banner carries the dim while-planning reason"
@@ -12183,7 +12253,10 @@ mod tests {
         assert!(!a.reduced_motion());
 
         a.set_reduced_motion(true);
-        assert!(!a.animations_enabled(), "reduced motion disables animations");
+        assert!(
+            !a.animations_enabled(),
+            "reduced motion disables animations"
+        );
         assert!(a.reduced_motion());
 
         a.set_reduced_motion(false);
@@ -12207,7 +12280,11 @@ mod tests {
         );
         let anim = a.selection_anim_state().expect("resolved transition state");
         assert_eq!((anim.from, anim.to), (2, 3));
-        assert!(anim.phase >= 0.0 && anim.phase < 1.0, "phase in [0,1): {}", anim.phase);
+        assert!(
+            anim.phase >= 0.0 && anim.phase < 1.0,
+            "phase in [0,1): {}",
+            anim.phase
+        );
 
         // A wrap-around / multi-row jump snaps instantly (no transition to animate).
         a.note_selection_move(9, 0);
@@ -12217,7 +12294,10 @@ mod tests {
         // Under reduced motion (`--no-anim`), even an adjacent move is instant (VAL-CROSS-030).
         a.set_reduced_motion(true);
         a.note_selection_move(1, 2);
-        assert!(a.selection_anim_state().is_none(), "no transition under --no-anim");
+        assert!(
+            a.selection_anim_state().is_none(),
+            "no transition under --no-anim"
+        );
         assert!(!a.selection_transition_active());
     }
 
@@ -12228,7 +12308,9 @@ mod tests {
         let (_tx, rx) = std::sync::mpsc::channel();
         a.begin_turn("q".to_owned(), rx, flag());
 
-        let glyph = a.spinner_glyph().expect("a static working mark is shown while busy");
+        let glyph = a
+            .spinner_glyph()
+            .expect("a static working mark is shown while busy");
         assert_eq!(
             glyph,
             crate::glyphs::SPINNER_BREATHE[STATIC_SPINNER_FRAME],
@@ -12296,7 +12378,10 @@ mod tests {
             Duration::from_millis(ANIMATION_TICK_MS),
             "a streaming turn polls at the ~100ms animation cadence"
         );
-        assert_eq!(ANIMATION_TICK_MS, 100, "the active animation tick is ~100ms");
+        assert_eq!(
+            ANIMATION_TICK_MS, 100,
+            "the active animation tick is ~100ms"
+        );
     }
 
     #[test]
@@ -12416,10 +12501,7 @@ mod tests {
         assert!(!a.is_busy());
         assert!(matches!(a.transcript.last(), Some(Entry::TurnError(m)) if m == "no credential"));
         // The setup failure is rendered inline, never as a toast/notification (VAL-ERR-002).
-        assert!(
-            a.toasts().is_empty(),
-            "setup error must not raise a toast"
-        );
+        assert!(a.toasts().is_empty(), "setup error must not raise a toast");
     }
 
     #[test]
@@ -12468,9 +12550,8 @@ mod tests {
         .unwrap();
         a.poll_turn();
 
-        let diff =
-            crate::diff::compute_file_diff("src/main.rs", Some("a\nb\nc\n"), Some("B\nc\n"))
-                .expect("a diff");
+        let diff = crate::diff::compute_file_diff("src/main.rs", Some("a\nb\nc\n"), Some("B\nc\n"))
+            .expect("a diff");
         let (adds, dels) = (diff.additions, diff.removals);
         tx.send(TurnMessage::FileDiff(Box::new(diff))).unwrap();
         a.poll_turn();
@@ -12483,7 +12564,11 @@ mod tests {
         let card = last_tool(&a);
         let attached = card.diff.as_ref().expect("diff attached to the card");
         assert_eq!(attached.path, "src/main.rs");
-        assert_eq!(card.diff_stat, Some((adds, dels)), "meta refreshed from the real diff");
+        assert_eq!(
+            card.diff_stat,
+            Some((adds, dels)),
+            "meta refreshed from the real diff"
+        );
     }
 
     fn tool_part(text: &str) -> protocol::ToolResultPart {
@@ -12586,8 +12671,16 @@ mod tests {
         // The result did NOT complete the card: it stays running, marked (background), and tracks
         // the job's pid/log so it can be tailed.
         let card = last_tool(&a);
-        assert_eq!(card.status, ToolStatus::Running, "background card stays running");
-        assert!(card.summary.contains("(background)"), "summary: {}", card.summary);
+        assert_eq!(
+            card.status,
+            ToolStatus::Running,
+            "background card stays running"
+        );
+        assert!(
+            card.summary.contains("(background)"),
+            "summary: {}",
+            card.summary
+        );
         assert_eq!(card.bg_pid, Some(pid));
         assert_eq!(card.bg_log.as_deref(), Some(log.as_path()));
 
@@ -12596,7 +12689,11 @@ mod tests {
             .expect("append to the job log");
         a.poll_background_jobs();
         let card = last_tool(&a);
-        assert_eq!(card.status, ToolStatus::Running, "still running while the pid is alive");
+        assert_eq!(
+            card.status,
+            ToolStatus::Running,
+            "still running while the pid is alive"
+        );
         assert!(
             card.output.contains("Compiling deps"),
             "the streamed body tails the log: {}",
@@ -12604,8 +12701,11 @@ mod tests {
         );
 
         // The job produces its final output, then its process exits (reaped).
-        std::fs::write(&log, "Compiling cortex v0.1.0\n   Compiling deps\n    Finished release\n")
-            .expect("finalize the job log");
+        std::fs::write(
+            &log,
+            "Compiling cortex v0.1.0\n   Compiling deps\n    Finished release\n",
+        )
+        .expect("finalize the job log");
         child.kill().expect("kill the stand-in process");
         child.wait().expect("reap the stand-in process");
         for _ in 0..200 {
@@ -12654,7 +12754,10 @@ mod tests {
         // A command well over 88 chars, so its `<cmd> (background)` summary is truncated and the
         // trailing `(background)` marker is dropped.
         let long_cmd = format!("echo {} && sleep 30", "abcdefghij".repeat(12));
-        assert!(long_cmd.len() > 88, "command must exceed the truncation window");
+        assert!(
+            long_cmd.len() > 88,
+            "command must exceed the truncation window"
+        );
         let args = format!(
             r#"{{"command":{},"background":true}}"#,
             serde_json::Value::String(long_cmd.clone())
@@ -12692,8 +12795,15 @@ mod tests {
             "the long summary is truncated past the marker: {}",
             card.summary
         );
-        assert!(card.is_background, "the card is flagged background from its args");
-        assert_eq!(card.status, ToolStatus::Running, "long background card stays running");
+        assert!(
+            card.is_background,
+            "the card is flagged background from its args"
+        );
+        assert_eq!(
+            card.status,
+            ToolStatus::Running,
+            "long background card stays running"
+        );
         assert_eq!(card.bg_pid, Some(pid));
         assert_eq!(card.bg_log.as_deref(), Some(log.as_path()));
 
@@ -12701,8 +12811,16 @@ mod tests {
         std::fs::write(&log, "step 1\nstep 2\n").expect("append to the job log");
         a.poll_background_jobs();
         let card = last_tool(&a);
-        assert_eq!(card.status, ToolStatus::Running, "still running while the pid is alive");
-        assert!(card.output.contains("step 2"), "the body tails the log: {}", card.output);
+        assert_eq!(
+            card.status,
+            ToolStatus::Running,
+            "still running while the pid is alive"
+        );
+        assert!(
+            card.output.contains("step 2"),
+            "the body tails the log: {}",
+            card.output
+        );
 
         // And it completes once the job's process exits.
         std::fs::write(&log, "step 1\nstep 2\nstep 3 done\n").expect("finalize the job log");
@@ -12721,7 +12839,11 @@ mod tests {
             ToolStatus::Completed,
             "the long background card completes once its pid exits"
         );
-        assert!(card.output.contains("step 3 done"), "final body: {}", card.output);
+        assert!(
+            card.output.contains("step 3 done"),
+            "final body: {}",
+            card.output
+        );
 
         let _ = std::fs::remove_file(&log);
     }
@@ -12762,7 +12884,10 @@ mod tests {
             "the summary text does contain the marker (the misfire trap): {}",
             card.summary
         );
-        assert!(!card.is_background, "no background arg → not a background card");
+        assert!(
+            !card.is_background,
+            "no background arg → not a background card"
+        );
         assert_eq!(
             card.status,
             ToolStatus::Completed,
@@ -12770,8 +12895,14 @@ mod tests {
         );
         assert!(card.bg_pid.is_none(), "no background pid is tracked");
         assert!(card.bg_log.is_none(), "no background log is tracked");
-        assert!(!card.is_background_running(), "the card is not a live background job");
-        assert!(card.output.contains("pid: 4242"), "the ack text is the completed output");
+        assert!(
+            !card.is_background_running(),
+            "the card is not a live background job"
+        );
+        assert!(
+            card.output.contains("pid: 4242"),
+            "the ack text is the completed output"
+        );
     }
 
     #[test]
@@ -13047,7 +13178,10 @@ mod tests {
         type_str(&mut a, "/status");
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.active_view(), Some(crate::view::ViewKind::Status));
-        assert!(a.dialog().is_none(), "the status view is not a modal dialog");
+        assert!(
+            a.dialog().is_none(),
+            "the status view is not a modal dialog"
+        );
         a.on_key(key(KeyCode::Esc));
         assert!(a.active_view().is_none(), "Esc dismisses the status view");
 
@@ -13101,7 +13235,11 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         assert!(!a.rename_open(), "Enter closes the rename dialog");
         let db = db::Database::open(&path).expect("reopen store");
-        let session = db.sessions().get(&session_id).expect("get").expect("session");
+        let session = db
+            .sessions()
+            .get(&session_id)
+            .expect("get")
+            .expect("session");
         assert_eq!(session.title.as_deref(), Some("fresh session title"));
     }
 
@@ -13119,7 +13257,11 @@ mod tests {
         a.on_key(key(KeyCode::Esc));
         assert!(!a.rename_open(), "Esc closes the rename dialog");
         let db = db::Database::open(&path).expect("reopen store");
-        let session = db.sessions().get(&session_id).expect("get").expect("session");
+        let session = db
+            .sessions()
+            .get(&session_id)
+            .expect("get")
+            .expect("session");
         assert!(
             session.title.is_none(),
             "Esc discards the typed title without persisting a rename"
@@ -13140,10 +13282,17 @@ mod tests {
         let dialog = a.dialog().expect("fork dialog open");
         assert_eq!(dialog.kind, DialogKind::Fork);
         assert_eq!(dialog.title, "Fork from message");
-        assert_eq!(a.picker_rows().len(), 4, "one rich row per persisted message");
+        assert_eq!(
+            a.picker_rows().len(),
+            4,
+            "one rich row per persisted message"
+        );
         // Each row carries a `who` (you/assistant) in its key and an excerpt in its description.
         let first = &a.picker_rows()[0];
-        assert!(first.key.contains("you"), "first row is the user turn: {first:?}");
+        assert!(
+            first.key.contains("you"),
+            "first row is the user turn: {first:?}"
+        );
         assert_eq!(first.desc.as_deref(), Some("first question"));
     }
 
@@ -13206,7 +13355,10 @@ mod tests {
         let mut b = app();
         b.transcript.push(Entry::User("a < b && c > d".to_owned()));
         let escaped = b.render_session_html();
-        assert!(escaped.contains("a &lt; b &amp;&amp; c &gt; d"), "escaped: {escaped}");
+        assert!(
+            escaped.contains("a &lt; b &amp;&amp; c &gt; d"),
+            "escaped: {escaped}"
+        );
     }
 
     fn render_screen(a: &App, width: u16, height: u16) -> String {
@@ -13240,7 +13392,10 @@ mod tests {
             "default",
             "→ ~/cortex/exports",
         ] {
-            assert!(screen.contains(needle), "export modal shows `{needle}`:\n{screen}");
+            assert!(
+                screen.contains(needle),
+                "export modal shows `{needle}`:\n{screen}"
+            );
         }
         // Safe glyphs only: no tofu, no braille, no thin triangles.
         assert!(!screen.contains('▸') && !screen.contains('▾'));
@@ -13255,7 +13410,10 @@ mod tests {
         run_turn(&mut a, "cap the streaming buffer", "added a 64KB cap");
         dispatch(&mut a, "fork");
         let screen = render_screen(&a, 92, 30);
-        assert!(screen.contains("Fork from message"), "fork title:\n{screen}");
+        assert!(
+            screen.contains("Fork from message"),
+            "fork title:\n{screen}"
+        );
         assert!(screen.contains("new branch"), "branch note:\n{screen}");
         // The user turn's excerpt is listed.
         assert!(
@@ -13287,7 +13445,10 @@ mod tests {
             screen.contains("fix streaming buffer limit"),
             "current title quoted:\n{screen}"
         );
-        assert!(screen.contains('"'), "straight quotes around the current title");
+        assert!(
+            screen.contains('"'),
+            "straight quotes around the current title"
+        );
         assert!(screen.contains('▏'), "the input caret renders:\n{screen}");
         assert!(
             screen.contains("save") && screen.contains("cancel"),
@@ -13925,7 +14086,9 @@ mod tests {
                 .any(|e| matches!(e, Entry::Notice(t) if t.contains("/init"))),
             "an /init flow notice is shown on confirm"
         );
-        let prompt = a.take_pending_prompt().expect("an /init turn is queued on confirm");
+        let prompt = a
+            .take_pending_prompt()
+            .expect("an /init turn is queued on confirm");
         assert!(
             prompt.contains("AGENTS.md"),
             "the init instruction is sent: {prompt}"
@@ -13965,7 +14128,10 @@ mod tests {
             Some(crate::view::ViewKind::Review),
             "/review opens the review view"
         );
-        assert!(a.review_snapshot().is_some(), "the review data is snapshotted");
+        assert!(
+            a.review_snapshot().is_some(),
+            "the review data is snapshotted"
+        );
         assert!(
             a.take_pending_prompt().is_none(),
             "/review does not queue a turn (it renders as a view)"
@@ -13977,7 +14143,7 @@ mod tests {
 
     #[test]
     fn dispatching_compact_opens_the_dialog_then_confirm_queues_a_compaction_turn_that_replaces_history()
-    {
+     {
         // VAL-VIEW-032/033/034: `/compact` opens the before/after dialog (not a silent flow);
         // confirming (Enter) queues the compaction turn whose summary replaces history.
         let mut a = app();
@@ -13994,9 +14160,15 @@ mod tests {
             "no compaction turn is queued until confirmed"
         );
         let dialog = a.compact_dialog().expect("compact dialog state");
-        assert!(dialog.before_tokens.contains("tokens"), "before token count shown");
+        assert!(
+            dialog.before_tokens.contains("tokens"),
+            "before token count shown"
+        );
         assert!(dialog.after_tokens.starts_with('~'), "after is an estimate");
-        assert!(dialog.before_detail.contains("message"), "message count shown");
+        assert!(
+            dialog.before_detail.contains("message"),
+            "message count shown"
+        );
 
         // Confirming closes the dialog and queues the compaction turn.
         a.on_key(key(KeyCode::Enter));
@@ -14347,23 +14519,32 @@ mod tests {
                 .expect("parent session");
             let running = db
                 .sessions()
-                .create(Some(&format!(
-                    "find existing auth middleware (subagent:explore parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "find existing auth middleware (subagent:explore parent:{parent_id})"
+                    )),
+                )
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "go")
                 .expect("running user message");
             db.sessions()
-                .create(Some(&format!(
-                    "design token-refresh flow (subagent:plan parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "design token-refresh flow (subagent:plan parent:{parent_id})"
+                    )),
+                )
                 .expect("queued child");
             let done = db
                 .sessions()
-                .create(Some(&format!(
-                    "summarize redaction audit (subagent:general parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "summarize redaction audit (subagent:general parent:{parent_id})"
+                    )),
+                )
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "audit complete")
@@ -14414,11 +14595,19 @@ mod tests {
         let row = |name: &str| rows.iter().find(|row| row.key == name).expect("row");
         let running = row("explore");
         assert!(
-            running.meta.as_deref().unwrap_or_default().starts_with("running"),
+            running
+                .meta
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("running"),
             "running status word: {:?}",
             running.meta
         );
-        assert_eq!(running.meta_color, Some(theme.secondary), "running is AMBER");
+        assert_eq!(
+            running.meta_color,
+            Some(theme.secondary),
+            "running is AMBER"
+        );
         let queued = row("plan");
         assert_eq!(queued.meta.as_deref(), Some("queued"));
         assert_eq!(queued.meta_color, Some(theme.text_muted), "queued is FAINT");
@@ -14572,16 +14761,29 @@ mod tests {
         assert_eq!(ready.name, "context7");
         assert_eq!(ready.status_word, "ready");
         assert_eq!(ready.tone, crate::view::McpStatusTone::Ready);
-        assert_eq!(ready.tool_count, Some(2), "connected server counts its tools");
-        assert!(ready.exposes.contains("resolve-library-id"), "tool name in exposes");
-        assert!(ready.exposes.contains("notes://c7"), "resource URI in exposes");
+        assert_eq!(
+            ready.tool_count,
+            Some(2),
+            "connected server counts its tools"
+        );
+        assert!(
+            ready.exposes.contains("resolve-library-id"),
+            "tool name in exposes"
+        );
+        assert!(
+            ready.exposes.contains("notes://c7"),
+            "resource URI in exposes"
+        );
         assert!(ready.exposes.contains("greet"), "prompt name in exposes");
 
         let failed = &rows[1];
         assert_eq!(failed.status_word, "error");
         assert_eq!(failed.tone, crate::view::McpStatusTone::Error);
         assert_eq!(failed.tool_count, None, "a failed server has no tool count");
-        assert!(failed.exposes.contains("auth failed"), "error detail is the exposes text");
+        assert!(
+            failed.exposes.contains("auth failed"),
+            "error detail is the exposes text"
+        );
     }
 
     #[test]
@@ -14599,13 +14801,21 @@ mod tests {
         dispatch(&mut a, "queue");
         assert_eq!(a.active_view(), Some(crate::view::ViewKind::Queue));
         assert!(a.dialog().is_none(), "the queue view is not a modal dialog");
-        assert_eq!(a.queue_snapshot().len(), 2, "both queued prompts are snapshotted");
+        assert_eq!(
+            a.queue_snapshot().len(),
+            2,
+            "both queued prompts are snapshotted"
+        );
         assert_eq!(
             a.queue_snapshot()[0],
             "add unit tests for the buffer cap",
             "the head of the queue is the first-submitted prompt"
         );
-        assert_eq!(a.queue_selection(), 0, "the head of the queue is selected on open");
+        assert_eq!(
+            a.queue_selection(),
+            0,
+            "the head of the queue is selected on open"
+        );
     }
 
     #[test]
@@ -14622,7 +14832,11 @@ mod tests {
         assert_eq!(a.queue_selection(), 0);
 
         a.on_key(key(KeyCode::Down));
-        assert_eq!(a.queue_selection(), 1, "Down moves the selection down one row");
+        assert_eq!(
+            a.queue_selection(),
+            1,
+            "Down moves the selection down one row"
+        );
         a.on_key(key(KeyCode::Down));
         a.on_key(key(KeyCode::Down));
         assert_eq!(a.queue_selection(), 2, "selection clamps at the last row");
@@ -14655,7 +14869,11 @@ mod tests {
             "second queued",
             "the selected prompt lands back in the composer"
         );
-        assert_eq!(a.queued_count(), 2, "the edited prompt is pulled out of the queue");
+        assert_eq!(
+            a.queued_count(),
+            2,
+            "the edited prompt is pulled out of the queue"
+        );
     }
 
     #[test]
@@ -14682,7 +14900,11 @@ mod tests {
         );
 
         a.on_key(key_mod(KeyCode::Up, KeyModifiers::CONTROL));
-        assert_eq!(a.queue_selection(), 1, "Ctrl+Up follows the moved prompt back");
+        assert_eq!(
+            a.queue_selection(),
+            1,
+            "Ctrl+Up follows the moved prompt back"
+        );
         assert_eq!(
             queue_rows(&a),
             ["first queued", "second queued", "third queued"],
@@ -14734,7 +14956,11 @@ mod tests {
             ["first queued", "second queued"],
             "the last queued prompt was removed"
         );
-        assert_eq!(a.queue_selection(), 1, "selection clamps to the new last row");
+        assert_eq!(
+            a.queue_selection(),
+            1,
+            "selection clamps to the new last row"
+        );
     }
 
     #[test]
@@ -15235,7 +15461,10 @@ mod tests {
         let dialog = a.dialog().expect("session picker open");
         assert_eq!(dialog.kind, DialogKind::Sessions);
         // A real persisted row is pre-highlighted (not the synthetic floor row).
-        assert!(a.selected_session_id().is_some(), "a real session is highlighted");
+        assert!(
+            a.selected_session_id().is_some(),
+            "a real session is highlighted"
+        );
         let picks = a.build_session_picks();
         let pick = picks
             .iter()
@@ -15268,7 +15497,10 @@ mod tests {
         type_str(&mut a, "beta");
         let filtered = a.dialog().expect("open").items.clone();
         assert!(
-            !filtered.is_empty() && filtered.iter().all(|item| item.to_lowercase().contains("beta")),
+            !filtered.is_empty()
+                && filtered
+                    .iter()
+                    .all(|item| item.to_lowercase().contains("beta")),
             "filtered to matching sessions: {filtered:?}"
         );
         for _ in 0.."beta".len() {
@@ -15287,14 +15519,21 @@ mod tests {
         // and a right-aligned `ctx · price` meta derived from the real catalogue.
         let mut a = app();
         dispatch(&mut a, "models");
-        assert!(a.picker_key_width().is_some(), "fixed key column for alignment");
+        assert!(
+            a.picker_key_width().is_some(),
+            "fixed key column for alignment"
+        );
         let picks = a.build_model_picks();
         assert!(
-            picks.iter().any(|pick| pick.id == "google/gemini-2.5-flash"),
+            picks
+                .iter()
+                .any(|pick| pick.id == "google/gemini-2.5-flash"),
             "real default id present"
         );
         assert!(
-            picks.iter().any(|pick| pick.id == "anthropic/claude-opus-4.1"),
+            picks
+                .iter()
+                .any(|pick| pick.id == "anthropic/claude-opus-4.1"),
             "real anthropic id present"
         );
         let flash = picks
@@ -15324,7 +15563,10 @@ mod tests {
         type_str(&mut a, "opus");
         let filtered = a.dialog().expect("open").items.clone();
         assert!(
-            !filtered.is_empty() && filtered.iter().all(|item| item.to_lowercase().contains("opus")),
+            !filtered.is_empty()
+                && filtered
+                    .iter()
+                    .all(|item| item.to_lowercase().contains("opus")),
             "filtered to matching models: {filtered:?}"
         );
         for _ in 0.."opus".len() {
@@ -15365,7 +15607,10 @@ mod tests {
         );
         // The highlight stays on a selectable model row, never a header.
         let sel = a.dialog().expect("open").selected();
-        assert!(a.model_rows[sel].is_some(), "highlight is on a selectable row");
+        assert!(
+            a.model_rows[sel].is_some(),
+            "highlight is on a selectable row"
+        );
         a.on_key(key(KeyCode::Tab));
         assert_eq!(
             a.dialog().expect("open").items.len(),
@@ -15406,12 +15651,15 @@ mod tests {
     }
 
     fn model_pick_pos(picks: &[ModelPick], id: &str) -> usize {
-        picks.iter().position(|pick| pick.id == id).unwrap_or_else(|| {
-            panic!(
-                "pick {id} present in {:?}",
-                picks.iter().map(|pick| &pick.id).collect::<Vec<_>>()
-            )
-        })
+        picks
+            .iter()
+            .position(|pick| pick.id == id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "pick {id} present in {:?}",
+                    picks.iter().map(|pick| &pick.id).collect::<Vec<_>>()
+                )
+            })
     }
 
     #[test]
@@ -15476,7 +15724,10 @@ mod tests {
             openai.row.key
         );
         assert!(
-            !anthropic.row.key.starts_with(crate::glyphs::CONNECTED_MARKER),
+            !anthropic
+                .row
+                .key
+                .starts_with(crate::glyphs::CONNECTED_MARKER),
             "not-connected provider model is unmarked: {:?}",
             anthropic.row.key
         );
@@ -15626,7 +15877,10 @@ mod tests {
         // Simulate an in-flight refresh by injecting the channel the worker would publish on.
         let (tx, rx) = std::sync::mpsc::channel();
         a.models_refresh_rx = Some(rx);
-        assert!(a.models_refreshing(), "the indicator is active while refreshing");
+        assert!(
+            a.models_refreshing(),
+            "the indicator is active while refreshing"
+        );
         let text = buffer_text(&render_buffer(&a, 100, 30));
         assert!(
             text.contains("refreshing…"),
@@ -15745,7 +15999,10 @@ mod tests {
             );
             assert!(row.meta.is_none(), "variant picker has no meta column");
         }
-        assert!(!a.picker_is_searchable(), "variant picker has no search row");
+        assert!(
+            !a.picker_is_searchable(),
+            "variant picker has no search row"
+        );
     }
 
     #[test]
@@ -15768,7 +16025,10 @@ mod tests {
         a.on_key(key(KeyCode::Down));
         a.on_key(key(KeyCode::Esc));
         assert!(!a.dialog_open());
-        assert_eq!(a.status.variant, "default", "esc leaves the variant unchanged");
+        assert_eq!(
+            a.status.variant, "default",
+            "esc leaves the variant unchanged"
+        );
     }
 
     #[test]
@@ -15823,7 +16083,10 @@ mod tests {
         );
         // Esc discards the uncommitted toggle: the committed set stays empty.
         a.on_key(key(KeyCode::Esc));
-        assert!(a.enabled_skills.is_empty(), "esc discards uncommitted toggles");
+        assert!(
+            a.enabled_skills.is_empty(),
+            "esc discards uncommitted toggles"
+        );
         // Re-open, toggle, and commit with Enter: the committed set now holds the skill.
         a.skill_picks = vec![SkillPick {
             name: "alpha".to_owned(),
@@ -16168,7 +16431,10 @@ mod tests {
         a.on_key(key_mod(KeyCode::Char('p'), KeyModifiers::CONTROL));
         type_str(&mut a, "models");
         a.on_key(key(KeyCode::Enter));
-        assert!(!a.palette_open(), "the palette closes after running the command");
+        assert!(
+            !a.palette_open(),
+            "the palette closes after running the command"
+        );
         let dialog = a.dialog().expect("the model picker opened");
         assert_eq!(dialog.kind, DialogKind::Models);
     }
@@ -16188,10 +16454,19 @@ mod tests {
             labels[..5],
             ["/new", "/sessions", "/models", "/agents", "/themes"]
         );
-        assert!(!labels.iter().any(|l| l == "/model"), "no /model alias: {labels:?}");
-        assert!(!labels.iter().any(|l| l == "/theme"), "no /theme alias: {labels:?}");
+        assert!(
+            !labels.iter().any(|l| l == "/model"),
+            "no /model alias: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l == "/theme"),
+            "no /theme alias: {labels:?}"
+        );
         // Advanced commands stay reachable through the palette's fuzzy search.
-        assert!(labels.iter().any(|l| l == "/help"), "help still listed: {labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "/help"),
+            "help still listed: {labels:?}"
+        );
     }
 
     #[test]
@@ -16578,7 +16853,11 @@ mod tests {
         for c in "apple".chars() {
             a.on_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(a.find_status(), (0, 3), "editing highlights all three matches");
+        assert_eq!(
+            a.find_status(),
+            (0, 3),
+            "editing highlights all three matches"
+        );
         assert_eq!(
             a.find().map(|f| f.committed),
             Some(false),
@@ -16663,7 +16942,8 @@ mod tests {
         // committed defaults to false on open (EDITING mode); see the ui.rs render test for the
         // caret + hint rendering that stays identical in both modes.
         let mut a = app();
-        a.transcript.push(Entry::Notice("registry schema".to_owned()));
+        a.transcript
+            .push(Entry::Notice("registry schema".to_owned()));
         a.on_key(key_mod(KeyCode::Char('f'), KeyModifiers::CONTROL));
         assert_eq!(
             a.find().map(|f| f.committed),
@@ -16964,7 +17244,10 @@ mod tests {
         let buf = render_buffer(&a, 92, 30);
         let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
         assert!(row0.contains("Cortex Code"), "wordmark on row 0:\n{row0}");
-        assert!(row0.contains("chat"), "trailing `chat` crumb on row 0:\n{row0}");
+        assert!(
+            row0.contains("chat"),
+            "trailing `chat` crumb on row 0:\n{row0}"
+        );
         // The chrome header is flat (no rounded box corner) — distinct from the MOTD card border.
         assert!(
             !row0.contains('╭'),
@@ -16975,8 +17258,7 @@ mod tests {
         let chat_start = row0.find("chat").expect("chat crumb present");
         let chat_cell = &buf[(chat_start as u16, 0)];
         assert_eq!(
-            chat_cell.fg,
-            theme.secondary,
+            chat_cell.fg, theme.secondary,
             "the trailing `chat` crumb is AMBER"
         );
         // With no toasts the plain conversation shows the MOTD card border on row 0 (the flat
@@ -16985,7 +17267,9 @@ mod tests {
         plain_app.tick_toasts();
         assert!(!plain_app.has_toasts());
         let plain_buf = render_buffer(&plain_app, 92, 30);
-        let plain_row0 = (0..92).map(|x| plain_buf[(x, 0)].symbol()).collect::<String>();
+        let plain_row0 = (0..92)
+            .map(|x| plain_buf[(x, 0)].symbol())
+            .collect::<String>();
         assert!(
             !plain_row0.contains("chat"),
             "no `chat` breadcrumb crumb without toasts:\n{plain_row0}"
@@ -17017,9 +17301,17 @@ mod tests {
 
         // Icon `[+]` and the label `Success:` are the level color (green for success).
         let icon_x = row.find("[+]").expect("icon present") as u16;
-        assert_eq!(buf[(icon_x, header_row)].fg, theme.success, "icon is level-colored");
+        assert_eq!(
+            buf[(icon_x, header_row)].fg,
+            theme.success,
+            "icon is level-colored"
+        );
         let label_x = row.find("Success:").expect("label present") as u16;
-        assert_eq!(buf[(label_x, header_row)].fg, theme.success, "label is level-colored");
+        assert_eq!(
+            buf[(label_x, header_row)].fg,
+            theme.success,
+            "label is level-colored"
+        );
 
         // The message body is BRIGHT (distinct from the level color).
         let msg_x = row.find("registry").expect("message present") as u16;
@@ -17110,7 +17402,11 @@ mod tests {
             .collect();
         // The four bands occupy four distinct rows, each 3 rows below the previous (no overlap).
         for pair in rows.windows(2) {
-            assert_eq!(pair[1] - pair[0], 3, "bands are spaced 3 rows apart: {rows:?}");
+            assert_eq!(
+                pair[1] - pair[0],
+                3,
+                "bands are spaced 3 rows apart: {rows:?}"
+            );
         }
     }
 
@@ -17137,7 +17433,10 @@ mod tests {
         // band starts at col 46, so nothing is drawn left of the transcript region there.
         let row: String = (0..92).map(|x| buf[(x, header_row)].symbol()).collect();
         let icon_x = row.find("[i]").expect("icon present");
-        assert!(icon_x >= 40, "band rests at the right (no slide offset): icon at {icon_x}");
+        assert!(
+            icon_x >= 40,
+            "band rests at the right (no slide offset): icon at {icon_x}"
+        );
         // Countdown bar present on the next row.
         let bar_row_text: String = (0..92).map(|x| buf[(x, header_row + 1)].symbol()).collect();
         assert!(
@@ -17545,7 +17844,10 @@ mod tests {
                 .ensure(parent_id, Some("parent"))
                 .expect("parent");
             db.sessions()
-                .create(Some(&format!("subagent:explore parent:{parent_id}")))
+                .create_child(
+                    parent_id,
+                    Some(&format!("subagent:explore parent:{parent_id}")),
+                )
                 .expect("child");
         }
 
@@ -17585,14 +17887,25 @@ mod tests {
         );
         let files = a.sidebar_lsp_files();
         assert_eq!(files.len(), 2, "one group per diagnosed file");
-        assert_eq!(files[0].file, "buffer.rs", "path is reduced to the basename");
-        assert_eq!(files[0].severity(), LspFileSeverity::Error, "worst severity = error");
+        assert_eq!(
+            files[0].file, "buffer.rs",
+            "path is reduced to the basename"
+        );
+        assert_eq!(
+            files[0].severity(),
+            LspFileSeverity::Error,
+            "worst severity = error"
+        );
         assert_eq!(files[0].diagnostics.len(), 2);
         assert_eq!(files[0].diagnostics[0].line, 42);
         assert!(files[0].diagnostics[0].is_error);
         assert_eq!(files[0].diagnostics[0].message, "cap unused when 0");
         assert!(!files[0].diagnostics[1].is_error, "second row is a warning");
-        assert_eq!(files[1].severity(), LspFileSeverity::Warning, "warning-only file");
+        assert_eq!(
+            files[1].severity(),
+            LspFileSeverity::Warning,
+            "warning-only file"
+        );
         assert_eq!(a.sidebar_lsp_counts(), (1, 2), "note sums real E/W counts");
         a.sidebar_panel = SidebarPanel::Lsp;
         assert_eq!(a.sidebar_note(), format!("1E {} 2W", glyphs::SEPARATOR));
@@ -17611,7 +17924,10 @@ mod tests {
         let files = a.sidebar_lsp_files();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].file, "stream_processor.rs");
-        assert!(files[0].diagnostics.is_empty(), "clean file has no diagnostic rows");
+        assert!(
+            files[0].diagnostics.is_empty(),
+            "clean file has no diagnostic rows"
+        );
         assert_eq!(files[0].severity(), LspFileSeverity::Clean);
     }
 
@@ -17634,7 +17950,11 @@ mod tests {
         );
         let files = a.sidebar_lsp_files();
         assert_eq!(files.len(), 1, "the file is upserted, not duplicated");
-        assert_eq!(files[0].severity(), LspFileSeverity::Clean, "latest report wins (clean)");
+        assert_eq!(
+            files[0].severity(),
+            LspFileSeverity::Clean,
+            "latest report wins (clean)"
+        );
     }
 
     #[test]
@@ -17648,22 +17968,15 @@ mod tests {
         // severities and line numbers.
         let type_error = tools::Diagnostic::with_range("error", 5, 17, 5, 22, "mismatched types")
             .with_metadata(Some("rustc".to_owned()), Some("E0308".to_owned()));
-        let unused = tools::Diagnostic::with_range(
-            "warning",
-            3,
-            9,
-            3,
-            12,
-            "unused variable: `tmp`",
-        )
-        .with_metadata(Some("rustc".to_owned()), Some("unused_variables".to_owned()));
+        let unused =
+            tools::Diagnostic::with_range("warning", 3, 9, 3, 12, "unused variable: `tmp`")
+                .with_metadata(
+                    Some("rustc".to_owned()),
+                    Some("unused_variables".to_owned()),
+                );
         // The exact two-part shape `render_with_feedback` emits: a summary part, then a
         // `Diagnostics:`-headed block of bare `Diagnostic::render()` rows.
-        let feedback_block = format!(
-            "Diagnostics:\n{}\n{}",
-            type_error.render(),
-            unused.render()
-        );
+        let feedback_block = format!("Diagnostics:\n{}\n{}", type_error.render(), unused.render());
 
         let mut a = app();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -17687,17 +18000,42 @@ mod tests {
         a.poll_turn();
 
         let files = a.sidebar_lsp_files();
-        assert_eq!(files.len(), 1, "the edited file forms one diagnostics group");
-        assert_eq!(files[0].file, "broken.rs", "attributed to the edit target basename");
-        assert_eq!(files[0].severity(), LspFileSeverity::Error, "worst severity = error");
-        assert_eq!(files[0].diagnostics.len(), 2, "both render() rows are ingested");
+        assert_eq!(
+            files.len(),
+            1,
+            "the edited file forms one diagnostics group"
+        );
+        assert_eq!(
+            files[0].file, "broken.rs",
+            "attributed to the edit target basename"
+        );
+        assert_eq!(
+            files[0].severity(),
+            LspFileSeverity::Error,
+            "worst severity = error"
+        );
+        assert_eq!(
+            files[0].diagnostics.len(),
+            2,
+            "both render() rows are ingested"
+        );
         assert_eq!(files[0].diagnostics[0].line, 5);
-        assert!(files[0].diagnostics[0].is_error, "first row is the E0308 error");
+        assert!(
+            files[0].diagnostics[0].is_error,
+            "first row is the E0308 error"
+        );
         assert_eq!(files[0].diagnostics[0].message, "mismatched types");
         assert_eq!(files[0].diagnostics[1].line, 3);
-        assert!(!files[0].diagnostics[1].is_error, "second row is the unused-variable warning");
+        assert!(
+            !files[0].diagnostics[1].is_error,
+            "second row is the unused-variable warning"
+        );
         assert_eq!(files[0].diagnostics[1].message, "unused variable: `tmp`");
-        assert_eq!(a.sidebar_lsp_counts(), (1, 1), "note counts the real E/W split");
+        assert_eq!(
+            a.sidebar_lsp_counts(),
+            (1, 1),
+            "note counts the real E/W split"
+        );
         a.sidebar_panel = SidebarPanel::Lsp;
         assert_eq!(a.sidebar_note(), format!("1E {} 1W", glyphs::SEPARATOR));
     }
@@ -17716,7 +18054,10 @@ mod tests {
         a.capture_lsp_sidebar_note(
             "write",
             Some("src/warn.rs"),
-            &format!("write: overwrote src/warn.rs (40 bytes)\nDiagnostics:\n{}", warn_only.render()),
+            &format!(
+                "write: overwrote src/warn.rs (40 bytes)\nDiagnostics:\n{}",
+                warn_only.render()
+            ),
         );
         a.capture_lsp_sidebar_note(
             "apply_patch",
@@ -17729,12 +18070,26 @@ mod tests {
 
         let files = a.sidebar_lsp_files();
         assert_eq!(files.len(), 2, "one group per diagnosed file");
-        let warn = files.iter().find(|g| g.file == "warn.rs").expect("warn.rs group");
-        assert_eq!(warn.severity(), LspFileSeverity::Warning, "warning-only file → amber dot");
+        let warn = files
+            .iter()
+            .find(|g| g.file == "warn.rs")
+            .expect("warn.rs group");
+        assert_eq!(
+            warn.severity(),
+            LspFileSeverity::Warning,
+            "warning-only file → amber dot"
+        );
         assert_eq!(warn.diagnostics[0].line, 12);
         assert!(!warn.diagnostics[0].is_error);
-        let broken = files.iter().find(|g| g.file == "broken.rs").expect("broken.rs group");
-        assert_eq!(broken.severity(), LspFileSeverity::Error, "error file → red dot");
+        let broken = files
+            .iter()
+            .find(|g| g.file == "broken.rs")
+            .expect("broken.rs group");
+        assert_eq!(
+            broken.severity(),
+            LspFileSeverity::Error,
+            "error file → red dot"
+        );
         assert_eq!(broken.diagnostics[0].line, 8);
         assert!(broken.diagnostics[0].is_error);
     }
@@ -17765,13 +18120,27 @@ mod tests {
         );
 
         let files = a.sidebar_lsp_files();
-        assert_eq!(files.len(), 2, "both the diagnosed and clean files form groups");
-        let broken = files.iter().find(|g| g.file == "broken.rs").expect("broken.rs group");
+        assert_eq!(
+            files.len(),
+            2,
+            "both the diagnosed and clean files form groups"
+        );
+        let broken = files
+            .iter()
+            .find(|g| g.file == "broken.rs")
+            .expect("broken.rs group");
         assert_eq!(broken.severity(), LspFileSeverity::Error);
         assert_eq!(broken.diagnostics[0].line, 5);
         assert!(broken.diagnostics[0].is_error);
-        let clean = files.iter().find(|g| g.file == "clean.rs").expect("clean.rs group");
-        assert_eq!(clean.severity(), LspFileSeverity::Clean, "clean file → green ○ no problems");
+        let clean = files
+            .iter()
+            .find(|g| g.file == "clean.rs")
+            .expect("clean.rs group");
+        assert_eq!(
+            clean.severity(),
+            LspFileSeverity::Clean,
+            "clean file → green ○ no problems"
+        );
         assert!(clean.diagnostics.is_empty());
     }
 
@@ -17804,7 +18173,10 @@ mod tests {
         let row = parse_lsp_detail(&bare.render()).expect("bare render row parses");
         assert_eq!(row.line, 5, "anchors on the FIRST `at line <N>`");
         assert!(row.is_error);
-        assert_eq!(row.message, "expected `;`, found `}`", "colon-free message preserved");
+        assert_eq!(
+            row.message, "expected `;`, found `}`",
+            "colon-free message preserved"
+        );
 
         let legacy = parse_lsp_detail("- warning at line 90, character 2-8: redundant clone()")
             .expect("legacy `- ` row still parses");
@@ -17976,8 +18348,14 @@ mod tests {
                             "write tests for the cap",
                             protocol::TodoStatus::InProgress,
                         ),
-                        protocol::TodoItem::new("update CHANGELOG.md", protocol::TodoStatus::Pending),
-                        protocol::TodoItem::new("open a pull request", protocol::TodoStatus::Pending),
+                        protocol::TodoItem::new(
+                            "update CHANGELOG.md",
+                            protocol::TodoStatus::Pending,
+                        ),
+                        protocol::TodoItem::new(
+                            "open a pull request",
+                            protocol::TodoStatus::Pending,
+                        ),
                     ],
                 )
                 .expect("seed todos");
@@ -17993,13 +18371,22 @@ mod tests {
         assert!(row0.contains("todo"), "breadcrumb crumb is `todo`:\n{row0}");
         let screen = buffer_text(&buf);
         assert!(screen.contains("Todo"), "sidebar title `Todo`");
-        assert!(screen.contains("2/5"), "right-aligned `<done>/<total>` progress note");
+        assert!(
+            screen.contains("2/5"),
+            "right-aligned `<done>/<total>` progress note"
+        );
         assert!(screen.contains("current task list"), "faint subtitle");
-        assert!(screen.contains("write tests for the cap"), "in-progress task renders");
+        assert!(
+            screen.contains("write tests for the cap"),
+            "in-progress task renders"
+        );
         assert!(screen.contains('✓'), "completed `✓` marker renders");
         assert!(screen.contains('▶'), "in-progress `▶` marker renders");
         assert!(screen.contains('○'), "pending `○` marker renders");
-        assert!(!screen.contains('▸') && !screen.contains('▾'), "no thin triangles");
+        assert!(
+            !screen.contains('▸') && !screen.contains('▾'),
+            "no thin triangles"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -18018,9 +18405,12 @@ mod tests {
             // A running child (a user message but no assistant reply yet).
             let running = db
                 .sessions()
-                .create(Some(&format!(
-                    "find auth middleware (subagent:explore parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "find auth middleware (subagent:explore parent:{parent_id})"
+                    )),
+                )
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "find auth middleware")
@@ -18028,9 +18418,12 @@ mod tests {
             // A done child (an assistant reply present).
             let done = db
                 .sessions()
-                .create(Some(&format!(
-                    "summarize redaction audit (subagent:general parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "summarize redaction audit (subagent:general parent:{parent_id})"
+                    )),
+                )
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "summary ready")
@@ -18045,12 +18438,18 @@ mod tests {
 
         let buf = render_buffer(&a, 92, 30);
         let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
-        assert!(row0.contains("subagents"), "breadcrumb crumb is `subagents`:\n{row0}");
+        assert!(
+            row0.contains("subagents"),
+            "breadcrumb crumb is `subagents`:\n{row0}"
+        );
         let screen = buffer_text(&buf);
         assert!(screen.contains("Subagents"), "sidebar title `Subagents`");
         assert!(screen.contains("background tasks"), "faint subtitle");
         assert!(screen.contains('◆'), "the `◆` subagent marker renders");
-        assert!(screen.contains("explore"), "the running subagent name renders");
+        assert!(
+            screen.contains("explore"),
+            "the running subagent name renders"
+        );
         assert!(screen.contains("general"), "the done subagent name renders");
         assert!(
             screen.contains("find auth middleware"),
@@ -18082,17 +18481,29 @@ mod tests {
 
         let buf = render_buffer(&a, 92, 30);
         let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
-        assert!(row0.contains("queue"), "breadcrumb crumb is `queue`:\n{row0}");
+        assert!(
+            row0.contains("queue"),
+            "breadcrumb crumb is `queue`:\n{row0}"
+        );
         let screen = buffer_text(&buf);
         assert!(screen.contains("Queue"), "sidebar title `Queue`");
         assert!(screen.contains("runs after this turn"), "faint subtitle");
         assert!(screen.contains('4'), "right-aligned count note (4 queued)");
-        assert!(screen.contains("add tests for buffer cap"), "run-next prompt renders in full");
-        assert!(screen.contains("open a PR for the change"), "later prompt renders in full");
+        assert!(
+            screen.contains("add tests for buffer cap"),
+            "run-next prompt renders in full"
+        );
+        assert!(
+            screen.contains("open a PR for the change"),
+            "later prompt renders in full"
+        );
         // These specific prompts fit within the panel interior and are not clipped with `…`.
         let queued = a.sidebar_queue_entries();
         for entry in &queued {
-            assert!(!entry.contains(glyphs::ELLIPSIS), "fitting prompt is verbatim: {entry}");
+            assert!(
+                !entry.contains(glyphs::ELLIPSIS),
+                "fitting prompt is verbatim: {entry}"
+            );
         }
     }
 
@@ -18158,13 +18569,20 @@ mod tests {
         a.transcript.push(Entry::Diff(diff));
 
         let files = a.context_files();
-        assert_eq!(files.len(), 1, "the changed file is the single context file");
+        assert_eq!(
+            files.len(),
+            1,
+            "the changed file is the single context file"
+        );
         assert!(
             files[0].name.ends_with(".rs") && !files[0].name.contains('/'),
             "row shows the basename: {}",
             files[0].name
         );
-        assert_ne!(files[0].tokens, "0", "per-file token size is a real estimate");
+        assert_ne!(
+            files[0].tokens, "0",
+            "per-file token size is a real estimate"
+        );
         assert!(a.context_total_tokens() >= 1_000, "total ~ 8000 bytes / 4");
         a.sidebar_visible = true;
         a.sidebar_panel = SidebarPanel::Context;
@@ -18203,7 +18621,10 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("Context"), "sidebar titled Context");
         assert!(text.contains("1 file in context"), "faint files header");
-        assert!(text.contains("add files to context"), "add-files affordance present");
+        assert!(
+            text.contains("add files to context"),
+            "add-files affordance present"
+        );
 
         // The `›` marker on a file row is the dim-orange (ORANGE_D / border) token.
         let mut prompt_border = false;
@@ -18230,7 +18651,13 @@ mod tests {
         // carry no glyph, collapsed dirs hide their children, and names are not prematurely cut.
         let root = files_tree_fixture(
             "build",
-            &["crates/", "crates/inner.rs", "crates/sub/", "crates/sub/deep.rs", "README.md"],
+            &[
+                "crates/",
+                "crates/inner.rs",
+                "crates/sub/",
+                "crates/sub/deep.rs",
+                "README.md",
+            ],
         );
         let a = app();
         let mut modified = BTreeSet::new();
@@ -18313,7 +18740,10 @@ mod tests {
             text.contains("stream_processor.rs"),
             "a long filename renders in full (no premature truncation)"
         );
-        assert!(!text.contains('▾') && !text.contains('▸'), "no thin disclosure triangles");
+        assert!(
+            !text.contains('▾') && !text.contains('▸'),
+            "no thin disclosure triangles"
+        );
 
         let mut expanded_border = false;
         let mut collapsed_border = false;
@@ -18356,7 +18786,11 @@ mod tests {
             Some(FileTreeKind::DirExpanded),
             "top-level dir starts expanded"
         );
-        assert_eq!(kind_of(&a, "child.rs"), Some(FileTreeKind::File), "child visible");
+        assert_eq!(
+            kind_of(&a, "child.rs"),
+            Some(FileTreeKind::File),
+            "child visible"
+        );
 
         // Enter toggles the focused directory (cursor at row 0 = pkg/) closed.
         a.on_key(key(KeyCode::Enter));
@@ -18365,7 +18799,10 @@ mod tests {
             Some(FileTreeKind::DirCollapsed),
             "Enter collapses the directory (▼→▶)"
         );
-        assert!(kind_of(&a, "child.rs").is_none(), "collapsed dir hides its child");
+        assert!(
+            kind_of(&a, "child.rs").is_none(),
+            "collapsed dir hides its child"
+        );
 
         // Enter again re-expands and reveals the child.
         a.on_key(key(KeyCode::Enter));
@@ -18374,7 +18811,11 @@ mod tests {
             Some(FileTreeKind::DirExpanded),
             "Enter re-expands the directory (▶→▼)"
         );
-        assert_eq!(kind_of(&a, "child.rs"), Some(FileTreeKind::File), "child visible again");
+        assert_eq!(
+            kind_of(&a, "child.rs"),
+            Some(FileTreeKind::File),
+            "child visible again"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -18396,9 +18837,8 @@ mod tests {
 
         let theme = frame::style::ThemeColors::from_name(a.theme());
         let buf = render_buffer(&a, 92, 30);
-        let selected_bar = (0..buf.area.height).any(|y| {
-            (0..buf.area.width).any(|x| buf[(x, y)].bg == theme.surface[3])
-        });
+        let selected_bar = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[(x, y)].bg == theme.surface[3]));
         assert!(selected_bar, "the focused row paints an inverse SELBG bar");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -18414,14 +18854,20 @@ mod tests {
                 .expect("parent session");
             let running = db
                 .sessions()
-                .create(Some(&format!("subagent:explore parent:{parent_id}")))
+                .create_child(
+                    parent_id,
+                    Some(&format!("subagent:explore parent:{parent_id}")),
+                )
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "working")
                 .expect("running user message");
             let done = db
                 .sessions()
-                .create(Some(&format!("subagent:plan parent:{parent_id}")))
+                .create_child(
+                    parent_id,
+                    Some(&format!("subagent:plan parent:{parent_id}")),
+                )
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "state: done")
@@ -18456,9 +18902,12 @@ mod tests {
             // title carries subagent/parent linkage, a durable user prompt, and a completed answer.
             let child = db
                 .sessions()
-                .create(Some(&format!(
-                    "durable background work (subagent:explore parent:{parent_id})"
-                )))
+                .create_child(
+                    parent_id,
+                    Some(&format!(
+                        "durable background work (subagent:explore parent:{parent_id})"
+                    )),
+                )
                 .expect("child session");
             child_id = child.id.clone();
             db.messages()

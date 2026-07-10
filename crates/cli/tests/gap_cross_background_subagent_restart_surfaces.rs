@@ -485,6 +485,10 @@ fn background_subagent_task_survives_restart_lists_rejoins_and_feeds_parent() {
             panic!("child task {task_id} must be listable after restart: {list_doc}")
         });
     let child_title = child["title"].as_str().unwrap_or_default();
+    assert_eq!(
+        child["parent_id"], PARENT_SESSION,
+        "the durable task child must retain structured parent linkage: {child}"
+    );
     assert!(
         child_title.contains("subagent:explore")
             && child_title.contains(&format!("parent:{PARENT_SESSION}")),
