@@ -127,6 +127,14 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     if let Err(message) = ctx.ensure_not_planning("bash") {
         return ToolOutput::error(message);
     }
+    let has_explicit_workdir = [
+        "workdir",
+        "work_dir",
+        "workingDirectory",
+        "working_directory",
+    ]
+    .into_iter()
+    .any(|key| arguments.get(key).and_then(Value::as_str).is_some());
     let working_dir = match resolve_working_dir(&arguments, ctx) {
         Ok(working_dir) => working_dir,
         Err(message) => return ToolOutput::error(message),
@@ -146,11 +154,15 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    if background {
+    let output = if background {
         spawn_background(command, &working_dir, ctx)
     } else {
         run_foreground(command, &working_dir, ctx, timeout_for(&arguments)).await
+    };
+    if has_explicit_workdir && !output.is_error {
+        ctx.record_memory_scope(&working_dir);
     }
+    output
 }
 
 /// Resolve the foreground timeout: the call's `timeout` (ms), else `CORTEX_BASH_TIMEOUT_MS`, else
@@ -600,6 +612,32 @@ mod tests {
             "session cwd should remain unchanged: {}",
             default_pwd.model_content()
         );
+        assert_eq!(
+            ctx.memory_scopes(),
+            vec![ctx.resolve("nested")],
+            "only the successful explicit workdir activates a memory scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn unscoped_or_unsuccessful_bash_does_not_activate_memory() {
+        let dir = temp_dir("memory-scope-negative");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let ctx = ToolContext::new(dir.clone());
+
+        let unscoped = run(json!({ "command": "cd nested && pwd" }), &ctx).await;
+        assert!(!unscoped.is_error, "{}", unscoped.model_content());
+
+        let failed = run(json!({ "command": "exit 7", "workdir": "nested" }), &ctx).await;
+        assert!(failed.is_error, "{}", failed.model_content());
+
+        let missing = run(json!({ "command": "pwd", "workdir": "missing" }), &ctx).await;
+        assert!(missing.is_error, "{}", missing.model_content());
+        assert!(
+            ctx.memory_scopes().is_empty(),
+            "only a successful explicitly validated workdir may activate memory"
+        );
     }
 
     #[tokio::test]
@@ -635,6 +673,10 @@ mod tests {
                 .contains("permission denied for workdir"),
             "got: {}",
             out.model_content()
+        );
+        assert!(
+            ctx.memory_scopes().is_empty(),
+            "a denied workdir must not activate nested memory"
         );
         let _ = std::fs::remove_dir_all(outside);
     }

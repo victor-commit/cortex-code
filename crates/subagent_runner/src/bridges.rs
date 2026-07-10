@@ -18,6 +18,7 @@ use lsp::{
     FeedbackManager, FeedbackOutcome, FileDiagnostic, LspConfigSet, NavigationOutcome,
     NavigationRequest,
 };
+use memory::DynamicMemoryTracker;
 use permissions::{Action, Rule};
 use protocol::TodoItem;
 use tools::{
@@ -32,6 +33,7 @@ use tools::{
 pub(crate) struct ChildDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
+    dynamic_memory: Option<Arc<Mutex<DynamicMemoryTracker>>>,
 }
 
 impl ChildDispatcher {
@@ -52,7 +54,14 @@ impl ChildDispatcher {
             context: ToolContext::new(cwd)
                 .with_session(session_id)
                 .with_todo_store(todos),
+            dynamic_memory: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_dynamic_memory(mut self, tracker: DynamicMemoryTracker) -> Self {
+        self.dynamic_memory = Some(Arc::new(Mutex::new(tracker)));
+        self
     }
 
     #[must_use]
@@ -109,6 +118,25 @@ impl ToolDispatcher for ChildDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
+        let Some(tracker) = self.dynamic_memory.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(mut tracker) = tracker.lock() else {
+            return Ok(None);
+        };
+        let update = tracker.update_for_reads(&self.context.memory_scopes());
+        for warning in update.warnings {
+            eprintln!("cortex run: {warning}");
+        }
+        if update.net_blocked {
+            return Err(errors::Diagnostic::net_disabled(
+                "dynamic instruction URL fetch triggered by read-path memory discovery",
+            ));
+        }
+        Ok(update.rendered)
     }
 }
 

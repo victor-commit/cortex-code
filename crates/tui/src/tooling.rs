@@ -16,6 +16,7 @@ use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use mcp::{CapabilityRoute, McpManager};
+use memory::DynamicMemoryTracker;
 use protocol::TodoItem;
 use tools::{
     BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry,
@@ -32,6 +33,7 @@ pub struct TurnDispatcher {
     context: ToolContext,
     events: Sender<TurnMessage>,
     mcp: Option<Arc<McpManager>>,
+    dynamic_memory: Option<Arc<Mutex<DynamicMemoryTracker>>>,
 }
 
 impl TurnDispatcher {
@@ -61,6 +63,7 @@ impl TurnDispatcher {
             context,
             events,
             mcp: None,
+            dynamic_memory: None,
         }
     }
 
@@ -135,6 +138,14 @@ impl TurnDispatcher {
     #[must_use]
     pub fn with_websearch(mut self, config: WebSearchConfig) -> Self {
         self.registry.register_websearch(config);
+        self
+    }
+
+    /// Attach a dynamic memory tracker so scoped reads and validated explicit workdirs refresh
+    /// project instructions before the next same-turn provider request.
+    #[must_use]
+    pub fn with_dynamic_memory(mut self, tracker: DynamicMemoryTracker) -> Self {
+        self.dynamic_memory = Some(Arc::new(Mutex::new(tracker)));
         self
     }
 
@@ -255,6 +266,25 @@ impl ToolDispatcher for TurnDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
+        let Some(tracker) = self.dynamic_memory.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(mut tracker) = tracker.lock() else {
+            return Ok(None);
+        };
+        let update = tracker.update_for_reads(&self.context.memory_scopes());
+        for warning in update.warnings {
+            tracing::debug!("{warning}");
+        }
+        if update.net_blocked {
+            return Err(errors::Diagnostic::net_disabled(
+                "dynamic instruction URL fetch triggered by read-path memory discovery",
+            ));
+        }
+        Ok(update.rendered)
     }
 }
 
@@ -420,10 +450,15 @@ impl TodoStore for DurableTodos {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
+    use engine::{SessionRunner, Turn};
+    use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, Role};
+    use settings::ConfigInputs;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -470,6 +505,108 @@ mod tests {
         let exe = std::env::current_exe().ok()?;
         let bin = exe.parent()?.parent()?.join("cortex-mcp-echo-server");
         bin.exists().then_some(bin)
+    }
+
+    #[derive(Default)]
+    struct DynamicMemoryProvider {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<LlmRequest>>,
+    }
+
+    impl Provider for DynamicMemoryProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            self.requests.lock().expect("requests lock").push(request);
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let events = if call == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_nested_read".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "nested memory is active".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    #[test]
+    fn tui_dispatcher_refreshes_nested_memory_before_same_turn_continuation() {
+        let dir = scratch_dir("dynamic-memory");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(dir.join("AGENTS.md"), "TUI-ROOT-MEMORY").expect("root memory");
+        std::fs::write(nested.join("AGENTS.md"), "TUI-NESTED-MEMORY").expect("nested memory");
+        std::fs::write(nested.join("target.txt"), "read me").expect("target");
+        let inputs = ConfigInputs {
+            home: Some(dir.clone()),
+            xdg_config_home: None,
+            cwd: dir.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let initial_memory = memory::discover(&inputs);
+        let tracker = DynamicMemoryTracker::new(inputs, &initial_memory);
+        let (tx, _rx) = channel();
+        let dispatcher = TurnDispatcher::new(
+            dir,
+            "google/gemini-2.5-flash",
+            "tui-dynamic-memory".to_owned(),
+            tx,
+        )
+        .with_dynamic_memory(tracker);
+        let provider = DynamicMemoryProvider::default();
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(SessionRunner::default().run_with_tools(
+                &provider,
+                Turn::new(
+                    "google/gemini-2.5-flash",
+                    initial_memory.render().expect("root memory"),
+                    "read nested/target.txt",
+                ),
+                &dispatcher,
+                |_| {},
+            ));
+        assert!(outcome.error.is_none(), "{outcome:?}");
+
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2, "tool call should cause one continuation");
+        let systems: Vec<&str> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::System)
+                    .map(|message| message.content.as_str())
+                    .expect("system message")
+            })
+            .collect();
+        assert!(systems[0].contains("TUI-ROOT-MEMORY"));
+        assert!(!systems[0].contains("TUI-NESTED-MEMORY"));
+        let root = systems[1].find("TUI-ROOT-MEMORY").expect("root memory");
+        let nested = systems[1].find("TUI-NESTED-MEMORY").expect("nested memory");
+        assert!(root < nested, "memory sources must stay root-to-leaf");
     }
 
     #[test]

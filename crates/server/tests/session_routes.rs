@@ -529,6 +529,48 @@ async fn message_route_injects_instruction_glob_memory_into_system_context() {
     );
 }
 
+#[tokio::test]
+async fn message_route_refreshes_nested_memory_before_same_turn_continuation() {
+    let scratch = Scratch::new("server-dynamic-memory");
+    let workspace = scratch.dir.join("workspace");
+    let nested = workspace.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested workspace");
+    std::fs::write(workspace.join("AGENTS.md"), "SERVER-ROOT-DYNAMIC-MEMORY").expect("root memory");
+    std::fs::write(nested.join("AGENTS.md"), "SERVER-NESTED-DYNAMIC-MEMORY")
+        .expect("nested memory");
+    std::fs::write(nested.join("target.txt"), "read me").expect("target");
+    let provider = Arc::new(DynamicMemoryProvider::default());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"read nested/target.txt"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let systems = provider.seen_systems();
+    assert_eq!(systems.len(), 2, "tool call should cause one continuation");
+    assert!(systems[0].contains("SERVER-ROOT-DYNAMIC-MEMORY"));
+    assert!(!systems[0].contains("SERVER-NESTED-DYNAMIC-MEMORY"));
+    let root = systems[1]
+        .find("SERVER-ROOT-DYNAMIC-MEMORY")
+        .expect("root memory");
+    let nested = systems[1]
+        .find("SERVER-NESTED-DYNAMIC-MEMORY")
+        .expect("nested memory");
+    assert!(root < nested, "memory sources must stay root-to-leaf");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn message_route_does_not_emit_escaping_instruction_glob_content_to_the_provider() {
@@ -3120,6 +3162,12 @@ struct EchoProvider {
 }
 
 #[derive(Debug, Default)]
+struct DynamicMemoryProvider {
+    calls: AtomicUsize,
+    seen_systems: Mutex<Vec<String>>,
+}
+
+#[derive(Debug, Default)]
 struct CheckpointEditingProvider {
     calls: AtomicUsize,
 }
@@ -3222,6 +3270,52 @@ impl Provider for CheckpointEditingProvider {
                         reason: FinishReason::Stop,
                     },
                 ],
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+impl DynamicMemoryProvider {
+    fn seen_systems(&self) -> Vec<String> {
+        self.seen_systems.lock().expect("systems lock").clone()
+    }
+}
+
+impl Provider for DynamicMemoryProvider {
+    fn stream<'a>(&'a self, request: LlmRequest) -> BoxFuture<'a, Result<LlmStream, LlmError>> {
+        Box::pin(async move {
+            if let Some(system) = request
+                .messages
+                .iter()
+                .find(|message| message.role == Role::System)
+            {
+                self.seen_systems
+                    .lock()
+                    .expect("systems lock")
+                    .push(system.content.clone());
+            }
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = if call == 0 {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_nested_read".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "nested memory is active".to_owned(),
+                    },
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
             };
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })

@@ -50,7 +50,7 @@ pub struct CliTaskRunnerConfig {
     pub formatter_config: format::FormatterConfig,
     pub lsp_config: lsp::LspConfigSet,
     pub config_inputs: ConfigInputs,
-    pub project_memory: Option<String>,
+    pub project_memory: memory::ProjectMemory,
     pub bus: Arc<EventBus>,
 }
 
@@ -340,7 +340,7 @@ impl CliTaskRunner {
         let resolved_model = providers::resolve_model(Some(&model_id));
         let mut turn = Turn::new(
             &model_id,
-            render_system_context(&model_id, &agent, self.config.project_memory.clone()),
+            render_system_context(&model_id, &agent, self.config.project_memory.render()),
             prompt,
         )
         .with_history(load_history(&db, &child_session.id).unwrap_or_default())
@@ -357,7 +357,11 @@ impl CliTaskRunner {
             child_session.id.clone(),
             todo_store,
         )
-        .with_audit(child_audit);
+        .with_audit(child_audit)
+        .with_dynamic_memory(memory::DynamicMemoryTracker::new(
+            self.config.config_inputs.clone(),
+            &self.config.project_memory,
+        ));
 
         let child_permissions = match self.child_permissions(&agent) {
             Ok(engine) => engine,

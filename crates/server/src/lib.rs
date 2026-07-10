@@ -40,6 +40,7 @@ use events::{
 };
 use futures_util::{future::BoxFuture, stream};
 use llm::{Provider, ToolCall, ToolDef, Usage};
+use memory::DynamicMemoryTracker;
 use permissions::{PermissionEngine, RuleError};
 use protocol::{MessagePart as RichMessagePart, TodoItem};
 use providers::ResolvedModel;
@@ -2238,6 +2239,7 @@ async fn run_message_turn(
                 .to_owned(),
         ));
     }
+    let dynamic_memory_tracker = DynamicMemoryTracker::new(config_inputs.clone(), &project_memory);
     let selected_agent = resolve_turn_agent(&config_inputs, effective_config.agent(), "serve")
         .map_err(ApiError::bad_request)?;
     let selected_model = select_turn_model(
@@ -2371,7 +2373,8 @@ async fn run_message_turn(
         state.checkpoint_base.clone(),
         turn_permissions.engine(),
         audit_sink,
-    );
+    )
+    .with_dynamic_memory(dynamic_memory_tracker);
     let result = run_cancellable_turn(
         resolved.provider.as_ref(),
         turn,
@@ -3322,6 +3325,7 @@ struct ServerToolDispatcher {
     registry: ToolRegistry,
     context: ToolContext,
     checkpoint_recorder: Option<Arc<checkpoints::TurnRecorder>>,
+    dynamic_memory: Option<Arc<Mutex<DynamicMemoryTracker>>>,
 }
 
 impl ServerToolDispatcher {
@@ -3358,7 +3362,13 @@ impl ServerToolDispatcher {
             registry,
             context,
             checkpoint_recorder,
+            dynamic_memory: None,
         }
+    }
+
+    fn with_dynamic_memory(mut self, tracker: DynamicMemoryTracker) -> Self {
+        self.dynamic_memory = Some(Arc::new(Mutex::new(tracker)));
+        self
     }
 
     async fn shutdown(&self) {
@@ -3390,6 +3400,25 @@ impl ToolDispatcher for ServerToolDispatcher {
                 is_error: output.is_error,
             }
         })
+    }
+
+    fn dynamic_system_instructions(&self) -> Result<Option<String>, errors::Diagnostic> {
+        let Some(tracker) = self.dynamic_memory.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(mut tracker) = tracker.lock() else {
+            return Ok(None);
+        };
+        let update = tracker.update_for_reads(&self.context.memory_scopes());
+        for warning in update.warnings {
+            eprintln!("cortex serve: {warning}");
+        }
+        if update.net_blocked {
+            return Err(errors::Diagnostic::net_disabled(
+                "dynamic instruction URL fetch triggered by read-path memory discovery",
+            ));
+        }
+        Ok(update.rendered)
     }
 }
 

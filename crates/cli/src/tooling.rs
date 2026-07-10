@@ -261,7 +261,7 @@ impl ToolDispatcher for RegistryDispatcher {
         let Ok(mut tracker) = tracker.lock() else {
             return Ok(None);
         };
-        let update = tracker.update_for_reads(&self.context.read_paths());
+        let update = tracker.update_for_reads(&self.context.memory_scopes());
         for warning in update.warnings {
             eprintln!("cortex run: {warning}");
         }
@@ -341,10 +341,11 @@ async fn dispatch_mcp(
 mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use engine::{RunnerEvent, SessionRunner, Turn};
-    use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider};
+    use llm::{FinishReason, LlmEvent, LlmRequest, LlmStream, Provider, Role};
     use permissions::{Action, PermissionEngine, Rule, Ruleset};
     use protocol::TodoItem;
     use settings::ConfigInputs;
@@ -394,6 +395,110 @@ mod tests {
             .build()
             .expect("runtime")
             .block_on(future)
+    }
+
+    #[derive(Default)]
+    struct DynamicMemoryCaptureProvider {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<LlmRequest>>,
+    }
+
+    impl Provider for DynamicMemoryCaptureProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> futures_util::future::BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            self.requests.lock().expect("requests lock").push(request);
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let events = if call == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_nested_workdir".to_owned(),
+                            name: "bash".to_owned(),
+                            arguments: r#"{"command":"pwd","workdir":"nested"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "nested memory is active".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    #[test]
+    fn headless_dispatcher_refreshes_nested_memory_after_valid_bash_workdir() {
+        let dir = scratch_dir("dynamic-workdir-memory");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(dir.join("AGENTS.md"), "HEADLESS-ROOT-DYNAMIC-MEMORY").expect("root memory");
+        std::fs::write(nested.join("AGENTS.md"), "HEADLESS-NESTED-DYNAMIC-MEMORY")
+            .expect("nested memory");
+        let inputs = ConfigInputs {
+            home: Some(dir.clone()),
+            xdg_config_home: None,
+            cwd: dir.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let initial_memory = memory::discover(&inputs);
+        let dispatcher = RegistryDispatcher::for_model(
+            dir,
+            "google/gemini-2.5-flash",
+            "ses_dynamic_workdir".to_owned(),
+            Arc::new(NoopTodos),
+        )
+        .with_dynamic_memory(DynamicMemoryTracker::new(inputs, &initial_memory));
+        let provider = DynamicMemoryCaptureProvider::default();
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(SessionRunner::default().run_with_tools(
+                &provider,
+                Turn::new(
+                    "google/gemini-2.5-flash",
+                    initial_memory.render().expect("root memory"),
+                    "run pwd in nested",
+                ),
+                &dispatcher,
+                |_| {},
+            ));
+        assert!(outcome.error.is_none(), "{outcome:?}");
+
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2, "workdir tool call should continue once");
+        let systems: Vec<&str> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::System)
+                    .map(|message| message.content.as_str())
+                    .expect("system message")
+            })
+            .collect();
+        assert!(systems[0].contains("HEADLESS-ROOT-DYNAMIC-MEMORY"));
+        assert!(!systems[0].contains("HEADLESS-NESTED-DYNAMIC-MEMORY"));
+        let root = systems[1]
+            .find("HEADLESS-ROOT-DYNAMIC-MEMORY")
+            .expect("root memory");
+        let nested = systems[1]
+            .find("HEADLESS-NESTED-DYNAMIC-MEMORY")
+            .expect("nested memory");
+        assert!(root < nested, "memory sources must stay root-to-leaf");
     }
 
     #[test]

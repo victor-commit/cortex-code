@@ -183,9 +183,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         audit.record_file_mutation(&resolved, "edit", Some("replace"));
     }
 
-    // The edit succeeded, so the on-disk content is now this session's source of truth: refresh the
-    // read ledger so a later edit/overwrite in the same session is permitted.
-    ctx.record_read(&resolved);
+    // The edit succeeded, so the on-disk content is now this session's source of truth: refresh
+    // mutation freshness without treating the edit as a scoped read for dynamic memory.
+    ctx.record_freshness(&resolved);
 
     // Post-edit downstream hooks. The formatter rewrites the file in place first, then diagnostics
     // are collected against the final on-disk content. Both are no-ops when no surface attached

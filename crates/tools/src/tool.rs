@@ -486,6 +486,7 @@ pub struct ToolContext {
     cwd: PathBuf,
     external_allowlist_roots: Arc<Vec<PathBuf>>,
     reads: Arc<Mutex<HashSet<PathBuf>>>,
+    memory_scopes: Arc<Mutex<HashSet<PathBuf>>>,
     permissions: Option<Arc<PermissionEngine>>,
     audit: Option<Arc<audit::AuditSink>>,
     hooks: Option<Arc<dyn MutationHooks>>,
@@ -511,6 +512,7 @@ impl ToolContext {
             cwd,
             external_allowlist_roots,
             reads: Arc::new(Mutex::new(HashSet::new())),
+            memory_scopes: Arc::new(Mutex::new(HashSet::new())),
             permissions: None,
             audit: None,
             hooks: None,
@@ -791,11 +793,34 @@ impl ToolContext {
         }
     }
 
-    /// Record that `path` (a resolved absolute path) has been read this session.
+    /// Record that `path` (a resolved absolute path) was successfully read this session.
+    ///
+    /// Successful reads are the only file-tool operations that activate nested project memory.
+    /// Mutations use [`Self::record_freshness`] instead so a write cannot make unseen nested
+    /// instructions active for a later provider request.
     pub fn record_read(&self, path: impl Into<PathBuf>) {
         let key = self.identity_key(&path.into());
         if let Ok(mut reads) = self.reads.lock() {
+            reads.insert(key.clone());
+        }
+        if let Ok(mut scopes) = self.memory_scopes.lock() {
+            scopes.insert(key);
+        }
+    }
+
+    /// Record that `path` is fresh for mutation preconditions without activating project memory.
+    pub fn record_freshness(&self, path: impl Into<PathBuf>) {
+        let key = self.identity_key(&path.into());
+        if let Ok(mut reads) = self.reads.lock() {
             reads.insert(key);
+        }
+    }
+
+    /// Record an explicitly validated working-directory scope that may activate nested memory.
+    pub fn record_memory_scope(&self, path: impl Into<PathBuf>) {
+        let key = self.identity_key(&path.into());
+        if let Ok(mut scopes) = self.memory_scopes.lock() {
+            scopes.insert(key);
         }
     }
 
@@ -815,6 +840,16 @@ impl ToolContext {
         self.reads
             .lock()
             .map(|reads| reads.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// The successful read paths and explicitly validated working directories that may activate
+    /// newly applicable nested project memory for a continuation request.
+    #[must_use]
+    pub fn memory_scopes(&self) -> Vec<PathBuf> {
+        self.memory_scopes
+            .lock()
+            .map(|scopes| scopes.iter().cloned().collect())
             .unwrap_or_default()
     }
 

@@ -209,6 +209,10 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             .with_permissions(engine.clone())
                             .with_hooks(mutation_hooks)
                             .with_lsp_service(lsp_hooks.clone())
+                            .with_dynamic_memory(memory::DynamicMemoryTracker::new(
+                                setup.config_inputs.clone(),
+                                &setup.project_memory,
+                            ))
                             .with_skills(setup.skills.clone());
                             if let Some(db_path) = db_path.clone() {
                                 dispatcher = dispatcher.with_todo_store(Arc::new(
@@ -434,8 +438,8 @@ struct TurnSetup {
     /// Custom agents discovered this turn, used to build the permitted subagent catalogue so the
     /// `task` tool advertises exactly the subagent types this parent may spawn.
     discovered_agents: custom_agents::Discovery,
-    /// Rendered project-memory block, forwarded to a subagent child turn's system context.
-    project_memory: Option<String>,
+    /// Project-memory sources used by this turn and forwarded to durable child turns.
+    project_memory: memory::ProjectMemory,
     /// Config inputs resolved this turn, reused when narrowing a subagent child's permissions.
     config_inputs: settings::ConfigInputs,
 }
@@ -578,7 +582,7 @@ fn build_turn(
         plugin_hooks,
         websearch,
         discovered_agents,
-        project_memory: project_memory_block,
+        project_memory,
         config_inputs: inputs,
     })
 }

@@ -24,6 +24,7 @@ policy = { workspace = true }
 checkpoints = { workspace = true }
 format = { workspace = true }
 lsp = { workspace = true }
+memory = { workspace = true }
 audit = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }

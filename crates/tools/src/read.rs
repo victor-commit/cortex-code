@@ -127,7 +127,11 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
     };
 
     if metadata.is_dir() {
-        return read_directory(&resolved, path);
+        let output = read_directory(&resolved, path);
+        if !output.is_error {
+            ctx.record_read(&resolved);
+        }
+        return output;
     }
 
     let prefix = read_prefix(&resolved, SNIFF_BYTES);
@@ -748,6 +752,20 @@ mod tests {
         let ctx = ctx_for(&dir);
         run(&read_args("f.txt"), &ctx);
         assert!(ctx.was_read(&dir.join("f.txt")));
+        assert_eq!(ctx.memory_scopes(), vec![ctx.resolve("f.txt")]);
+    }
+
+    #[test]
+    fn successful_directory_listing_records_a_memory_scope() {
+        let dir = temp_dir("directory-memory-scope");
+        fs::create_dir(dir.join("nested")).unwrap();
+        fs::write(dir.join("nested").join("child.txt"), "x\n").unwrap();
+        let ctx = ctx_for(&dir);
+
+        let output = run(&read_args("nested"), &ctx);
+
+        assert!(!output.is_error, "{}", output.model_content());
+        assert_eq!(ctx.memory_scopes(), vec![ctx.resolve("nested")]);
     }
 
     #[test]
@@ -777,6 +795,10 @@ mod tests {
         assert!(output.is_error);
         let text = text_of(&output);
         assert!(text.contains("permission denied"));
+        assert!(
+            ctx.memory_scopes().is_empty(),
+            "a denied read must not activate nested memory"
+        );
         assert!(
             !text.contains("top secret"),
             "protected bytes must not leak"

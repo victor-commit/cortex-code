@@ -133,9 +133,9 @@ fn run(arguments: &Value, ctx: &ToolContext) -> ToolOutput {
         audit.record_file_mutation(&resolved, "write", Some(detail));
     }
 
-    // The write succeeded, so the on-disk content is now this session's source of truth: record the
-    // path as read so a later overwrite in the same session is permitted.
-    ctx.record_read(&resolved);
+    // The write succeeded, so the on-disk content is now this session's source of truth: refresh
+    // mutation freshness without treating the write as a scoped read for dynamic memory.
+    ctx.record_freshness(&resolved);
 
     // Post-write downstream hooks. The formatter rewrites the file in place first, then diagnostics
     // are collected against the final on-disk content. Both are no-ops when no surface attached

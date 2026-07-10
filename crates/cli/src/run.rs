@@ -735,7 +735,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
                 formatter_config: run_config.formatter_config.clone(),
                 lsp_config: run_config.lsp_config.clone(),
                 config_inputs: subagent_config_inputs,
-                project_memory: project_memory_block.clone(),
+                project_memory: project_memory.clone(),
                 bus: bus.clone(),
             }))
         };

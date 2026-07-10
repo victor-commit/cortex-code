@@ -378,13 +378,13 @@ fn plan_update(
     }
 }
 
-/// Commit one validated action to disk, recording any newly-written file as read so a later
-/// edit/write in the same session is permitted.
+/// Commit one validated action to disk, marking any newly-written file fresh so a later edit/write
+/// in the same session is permitted without treating the mutation as a memory-activating read.
 fn commit(ctx: &ToolContext, action: &Action) -> Result<(), String> {
     match action {
         Action::Create { path, contents } | Action::Overwrite { path, contents } => {
             write_file(path, contents)?;
-            ctx.record_read(path.clone());
+            ctx.record_freshness(path.clone());
         }
         Action::Delete { path } => {
             fs::remove_file(path).map_err(|err| {
@@ -393,7 +393,7 @@ fn commit(ctx: &ToolContext, action: &Action) -> Result<(), String> {
         }
         Action::Rename { from, to, contents } => {
             write_file(to, contents)?;
-            ctx.record_read(to.clone());
+            ctx.record_freshness(to.clone());
             if from != to {
                 fs::remove_file(from).map_err(|err| {
                     format!("apply_patch: could not remove {}: {err}", from.display())

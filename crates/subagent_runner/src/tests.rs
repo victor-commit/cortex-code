@@ -106,7 +106,7 @@ impl ConfigBuilder {
             formatter_config: format::FormatterConfig::default(),
             lsp_config: lsp::LspConfigSet::defaults(),
             config_inputs: self.inputs,
-            project_memory: None,
+            project_memory: memory::ProjectMemory::default(),
             bus: Arc::new(EventBus::new()),
         }
     }
@@ -119,6 +119,7 @@ fn runner(catalog: &SubagentCatalog, config: CliTaskRunnerConfig) -> Arc<crate::
 struct ScriptedProvider {
     rounds: Mutex<std::collections::VecDeque<Vec<LlmEvent>>>,
     calls: AtomicUsize,
+    requests: Mutex<Vec<LlmRequest>>,
 }
 
 impl ScriptedProvider {
@@ -126,19 +127,25 @@ impl ScriptedProvider {
         Self {
             rounds: Mutex::new(rounds.into()),
             calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
         }
     }
 
     fn calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
     }
+
+    fn requests(&self) -> Vec<LlmRequest> {
+        self.requests.lock().expect("requests lock").clone()
+    }
 }
 
 impl Provider for ScriptedProvider {
     fn stream<'a>(
         &'a self,
-        _request: LlmRequest,
+        request: LlmRequest,
     ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        self.requests.lock().expect("requests lock").push(request);
         self.calls.fetch_add(1, Ordering::Relaxed);
         let batch = self
             .rounds
@@ -252,6 +259,78 @@ async fn subagent_runner_creates_a_distinct_session_and_persists_answer() {
     assert_eq!(messages[0].content, "read the project");
     assert_eq!(messages[1].role, "assistant");
     assert_eq!(messages[1].content, "child answer");
+}
+
+#[tokio::test]
+async fn subagent_refreshes_nested_memory_before_same_turn_continuation() {
+    let (dir, inputs) = scratch("dynamic-memory");
+    let nested = dir.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested");
+    std::fs::write(dir.join("AGENTS.md"), "SUBAGENT-ROOT-DYNAMIC-MEMORY").expect("root memory");
+    std::fs::write(nested.join("AGENTS.md"), "SUBAGENT-NESTED-DYNAMIC-MEMORY")
+        .expect("nested memory");
+    std::fs::write(nested.join("target.txt"), "read me").expect("target");
+    let db_path = dir.join("cortex.db");
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+    let initial_memory = memory::discover(&inputs);
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            LlmEvent::ToolCall(ToolCall {
+                id: "call_nested_read".to_owned(),
+                name: "read".to_owned(),
+                arguments: json!({ "path": "nested/target.txt" }).to_string(),
+            }),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "nested memory is active".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]));
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let mut run_config = config(&dir, db_path, inputs)
+        .provider(provider.clone())
+        .build();
+    run_config.project_memory = initial_memory;
+    let run = runner(&catalog, run_config);
+
+    let output = run
+        .run_task(TaskRequest::new("general", "read nested/target.txt"))
+        .await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2, "tool call should cause one continuation");
+    let systems: Vec<&str> = requests
+        .iter()
+        .map(|request| {
+            request
+                .messages
+                .iter()
+                .find(|message| message.role == llm::Role::System)
+                .map(|message| message.content.as_str())
+                .expect("system message")
+        })
+        .collect();
+    assert!(systems[0].contains("SUBAGENT-ROOT-DYNAMIC-MEMORY"));
+    assert!(!systems[0].contains("SUBAGENT-NESTED-DYNAMIC-MEMORY"));
+    let root = systems[1]
+        .find("SUBAGENT-ROOT-DYNAMIC-MEMORY")
+        .expect("root memory");
+    let nested = systems[1]
+        .find("SUBAGENT-NESTED-DYNAMIC-MEMORY")
+        .expect("nested memory");
+    assert!(root < nested, "memory sources must stay root-to-leaf");
 }
 
 #[tokio::test]
