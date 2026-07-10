@@ -34,8 +34,8 @@ mod result;
 mod transport_sse;
 
 pub use catalogue::{
-    LiveCatalogue, McpPrompt, McpPromptArgument, McpResource, McpServerCatalogue, McpTool,
-    qualify_prompts, qualify_resources, qualify_tools,
+    CapabilityRoute, LiveCatalogue, McpCapability, McpPrompt, McpPromptArgument, McpResource,
+    McpServerCatalogue, McpTool, qualify_prompts, qualify_resources, qualify_tools,
 };
 pub use client::{DEFAULT_TIMEOUT, McpClient};
 pub use config::{

@@ -373,8 +373,7 @@ impl McpClient {
             resources,
             prompts,
         };
-        catalogue.set_initial(&self.server_name, server_catalogue.clone());
-        Ok(server_catalogue)
+        Ok(catalogue.set_initial(&self.server_name, server_catalogue))
     }
 
     /// The configured per-operation timeout, or the built-in default.

@@ -203,6 +203,18 @@ impl PluginState {
             .collect()
     }
 
+    /// Model-visible names contributed by plugin `tool` hooks.
+    ///
+    /// The MCP manager reserves these before it allocates server capability ids, so a plugin tool
+    /// and an MCP capability cannot be advertised under the same model-visible name.
+    #[must_use]
+    pub(crate) fn tool_names(&self) -> Vec<String> {
+        self.loaded
+            .iter()
+            .flat_map(|loaded| loaded.report.tools.iter().map(|tool| tool.name.clone()))
+            .collect()
+    }
+
     /// Providers/models contributed by plugin `provider` hooks.
     #[must_use]
     pub(crate) fn providers(&self) -> Vec<ProviderDoc> {

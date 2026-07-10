@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mcp::{McpConnectOptions, McpManager, McpServerConfig, servers_from_value};
+use mcp::{CapabilityRoute, McpConnectOptions, McpManager, McpServerConfig, servers_from_value};
 use serde_json::json;
 
 /// The path to the compiled echo-server fixture binary (Cargo sets this for the package's tests).
@@ -528,6 +528,7 @@ async fn roots_capability_is_advertised_and_used_for_real_file_resolution() {
             bus: None,
             credentials: None,
             roots: vec![root.clone()],
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -850,6 +851,257 @@ async fn killed_stdio_server_next_call_returns_clear_error_without_panic() {
         "got: {message}"
     );
     manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_global_namespace_routes_builtin_tools_resources_prompts_and_sanitized_servers() {
+    let bin = echo_server_bin();
+    let log = temp_path("global-capability-routing-log");
+    let servers = config(json!({
+        "apply": {
+            "type": "local",
+            "command": [bin.clone()],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_LABEL": "apply",
+                "CORTEX_MCP_ECHO_EXTRA_TOOL": "patch"
+            }
+        },
+        "plugin": {
+            "type": "local",
+            "command": [bin.clone()],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_LABEL": "plugin",
+                "CORTEX_MCP_ECHO_EXTRA_TOOL": "tool"
+            }
+        },
+        "demo": {
+            "type": "local",
+            "command": [bin.clone()],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_LABEL": "demo",
+                "CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS": "1",
+                "CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS": "1"
+            }
+        },
+        "a_b": {
+            "type": "local",
+            "command": [bin.clone()],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_LABEL": "a_b",
+                "CORTEX_MCP_ECHO_EXTRA_TOOL": "c"
+            }
+        },
+        "a": {
+            "type": "local",
+            "command": [bin],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_LABEL": "a",
+                "CORTEX_MCP_ECHO_EXTRA_TOOL": "b_c"
+            }
+        }
+    }));
+    let manager = McpManager::connect_with(
+        servers,
+        McpConnectOptions {
+            bus: None,
+            credentials: None,
+            roots: Vec::new(),
+            reserved_tool_ids: vec!["apply_patch".to_owned(), "plugin_tool".to_owned()],
+        },
+    )
+    .await;
+
+    let mut advertised = manager
+        .capabilities()
+        .into_iter()
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    let total = advertised.len();
+    advertised.sort();
+    advertised.dedup();
+    assert_eq!(
+        advertised.len(),
+        total,
+        "MCP model definitions must not contain duplicate ids"
+    );
+    assert_eq!(
+        manager.route_for_id("apply_patch"),
+        Some(CapabilityRoute::Builtin),
+        "a reserved built-in id remains a built-in route"
+    );
+    assert_eq!(
+        manager.route_for_id("plugin_tool"),
+        Some(CapabilityRoute::Builtin),
+        "an arbitrary surface-provided tool id remains reserved"
+    );
+
+    let patch = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "apply" && tool.tool == "patch")
+        .expect("collision fixture exposes apply/patch");
+    assert_ne!(
+        patch.id, "apply_patch",
+        "the MCP tool cannot claim the reserved built-in id"
+    );
+    assert_eq!(
+        manager.route_for_id(&patch.id),
+        Some(CapabilityRoute::McpTool {
+            server: "apply".to_owned(),
+            tool: "patch".to_owned(),
+        })
+    );
+    assert!(
+        manager
+            .call(&patch.id, json!({}))
+            .await
+            .expect("namespaced patch call")
+            .content
+            .contains("apply: collision tool patch")
+    );
+
+    let plugin_tool = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "plugin" && tool.tool == "tool")
+        .expect("collision fixture exposes plugin/tool");
+    assert_ne!(
+        plugin_tool.id, "plugin_tool",
+        "an MCP tool cannot claim a plugin-reserved id"
+    );
+    assert!(
+        manager
+            .call(&plugin_tool.id, json!({}))
+            .await
+            .expect("namespaced plugin tool call")
+            .content
+            .contains("plugin: collision tool tool")
+    );
+
+    let resource_tool = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "demo" && tool.tool == "resource_notes://demo")
+        .expect("collision fixture tool");
+    let resource = manager
+        .resources()
+        .into_iter()
+        .find(|resource| resource.server == "demo" && resource.uri == "notes://demo")
+        .expect("collision fixture resource");
+    assert_ne!(
+        resource_tool.id, resource.id,
+        "a tool and a resource must never share a model-visible id"
+    );
+    assert!(
+        manager
+            .call(&resource_tool.id, json!({}))
+            .await
+            .expect("tool call")
+            .content
+            .contains("demo: collision tool resource_notes://demo")
+    );
+    assert!(
+        manager
+            .read_resource(&resource.id)
+            .await
+            .expect("resource read")
+            .content
+            .contains("RESOURCE-CONTENT-default")
+    );
+
+    let prompt_tool = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "demo" && tool.tool == "prompt_greet")
+        .expect("collision fixture prompt tool");
+    let prompt = manager
+        .prompts()
+        .into_iter()
+        .find(|prompt| prompt.server == "demo" && prompt.name == "greet")
+        .expect("collision fixture prompt");
+    assert_ne!(
+        prompt_tool.id, prompt.id,
+        "a tool and prompt must never share a model-visible id"
+    );
+    assert!(
+        manager
+            .call(&prompt_tool.id, json!({}))
+            .await
+            .expect("tool call")
+            .content
+            .contains("demo: collision tool prompt_greet")
+    );
+    assert!(
+        manager
+            .get_prompt(&prompt.id, json!({ "name": "route" }))
+            .await
+            .expect("prompt fetch")
+            .content
+            .contains("Hello route from MCP")
+    );
+    assert!(
+        manager.read_resource("notes://demo").await.is_err(),
+        "a raw resource URI is not a model-visible route and must not select a server by precedence"
+    );
+    assert!(
+        manager.get_prompt("greet", json!({})).await.is_err(),
+        "a raw prompt name is not a model-visible route and must not select a server by precedence"
+    );
+
+    let a_b = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "a_b" && tool.tool == "c")
+        .expect("a_b/c capability");
+    let a = manager
+        .tools()
+        .into_iter()
+        .find(|tool| tool.server == "a" && tool.tool == "b_c")
+        .expect("a/b_c capability");
+    assert_ne!(
+        a_b.id, a.id,
+        "sanitized cross-server identities must be disambiguated"
+    );
+    assert!(
+        manager
+            .call(&a_b.id, json!({}))
+            .await
+            .expect("a_b/c call")
+            .content
+            .contains("a_b: collision tool c")
+    );
+    assert!(
+        manager
+            .call(&a.id, json!({}))
+            .await
+            .expect("a/b_c call")
+            .content
+            .contains("a: collision tool b_c")
+    );
+
+    manager.shutdown().await;
+    let log_contents = std::fs::read_to_string(&log).expect("fixture log");
+    for expected in [
+        "tools/call name=patch",
+        "tools/call name=tool",
+        "tools/call name=resource_notes://demo",
+        "resources/read uri=notes://demo",
+        "tools/call name=prompt_greet",
+        "prompts/get name=greet",
+        "tools/call name=c",
+        "tools/call name=b_c",
+    ] {
+        assert!(
+            log_contents.contains(expected),
+            "fixture log is missing `{expected}`:\n{log_contents}"
+        );
+    }
+    let _ = std::fs::remove_file(log);
 }
 
 fn tool_ids(manager: &McpManager) -> Vec<String> {

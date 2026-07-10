@@ -599,6 +599,14 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
         signal_watcher.watch().await;
     });
 
+    // Reserve every built-in and plugin model-visible id before connecting MCP. The manager's
+    // global allocator then prevents an MCP capability from shadowing any already-materialized
+    // surface tool.
+    let mut reserved_mcp_tool_ids = tools::ToolRegistry::reserved_builtin_ids();
+    reserved_mcp_tool_ids.extend(plugin_state.tool_names());
+    reserved_mcp_tool_ids.sort();
+    reserved_mcp_tool_ids.dedup();
+
     // Connect every configured MCP server (spawn the stdio child, handshake, list tools) before the
     // turn so its server-qualified tools materialize into the per-turn catalogue. A failed/disabled
     // server is recorded and skipped — it never blocks the turn. Connection happens on the runtime
@@ -610,6 +618,7 @@ pub fn run(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
             bus: Some(bus.clone()),
             credentials: crate::mcp_store::store_from_process(),
             roots: vec![cwd.clone()],
+            reserved_tool_ids: reserved_mcp_tool_ids,
         };
         runtime
             .block_on(async {

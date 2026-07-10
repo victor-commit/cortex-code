@@ -41,6 +41,7 @@ pub(crate) fn connect_from_config() -> Option<McpRuntime> {
             bus: Some(bus),
             credentials: credential_store_from_process(),
             roots: std::env::current_dir().ok().into_iter().collect(),
+            reserved_tool_ids: tools::ToolRegistry::reserved_builtin_ids(),
         },
     ));
 

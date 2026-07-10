@@ -496,6 +496,7 @@ fn list_servers(args: McpListArgs) -> Exit {
             bus: None,
             credentials: crate::mcp_store::store_from_process(),
             roots: std::env::current_dir().ok().into_iter().collect(),
+            reserved_tool_ids: tools::ToolRegistry::reserved_builtin_ids(),
         };
         let manager = mcp::McpManager::connect_with(servers, options).await;
         let documents = manager

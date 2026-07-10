@@ -26,6 +26,7 @@ enum Scenario {
     AddOnly,
     AddThenRemove,
     ResourcesPromptsAndError,
+    FinalOnly,
 }
 
 struct Scratch {
@@ -100,6 +101,7 @@ impl ProviderFixture {
                 Scenario::AddOnly => 2,
                 Scenario::AddThenRemove => 3,
                 Scenario::ResourcesPromptsAndError => 4,
+                Scenario::FinalOnly => 1,
             };
             for round in 0..requests {
                 let (mut stream, _) = listener.accept().expect("accept provider request");
@@ -284,10 +286,7 @@ fn jsonl_emits_refreshed_mcp_tool_definitions_for_add_and_remove() {
 
 #[test]
 fn cortex_run_reads_mcp_resources_gets_prompts_and_relays_tool_errors() {
-    let Some(echo) = echo_server_bin() else {
-        eprintln!("skipping: cortex-mcp-echo-server fixture not built");
-        return;
-    };
+    let echo = echo_server_bin();
     let scratch = Scratch::new("resources-prompts-error");
     let log = scratch.project.join("mcp.log");
     let process_tag = format!("cortex-mcp-resources-{}", std::process::id());
@@ -391,6 +390,82 @@ CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL = "1"
     assert_process_tag_reaped(&process_tag);
 }
 
+#[test]
+fn cortex_run_materializes_one_collision_free_builtin_and_mcp_namespace() {
+    let echo = echo_server_bin();
+    let scratch = Scratch::new("global-routing");
+    let log = scratch.project.join("mcp.log");
+    let apply_tag = format!("cortex-mcp-apply-{}", std::process::id());
+    let demo_tag = format!("cortex-mcp-demo-{}", std::process::id());
+    std::fs::write(
+        scratch.project.join("cortex.toml"),
+        format!(
+            r#"[mcp.apply]
+type = "local"
+command = ["{}", "{apply_tag}"]
+[mcp.apply.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+CORTEX_MCP_ECHO_LABEL = "apply"
+CORTEX_MCP_ECHO_EXTRA_TOOL = "patch"
+
+[mcp.demo]
+type = "local"
+command = ["{}", "{demo_tag}"]
+[mcp.demo.environment]
+CORTEX_MCP_ECHO_LOG = "{}"
+CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS = "1"
+CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS = "1"
+"#,
+            toml_string(&echo),
+            toml_string(&log),
+            toml_string(&echo),
+            toml_string(&log),
+        ),
+    )
+    .expect("write MCP fixture config");
+
+    let provider = ProviderFixture::spawn(0, Scenario::FinalOnly);
+    let out = run(cortex_in(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--model",
+            "openai/gpt-4o",
+            "--format",
+            "json",
+            "inspect MCP routing definitions",
+        ],
+    ));
+    assert_success(&out);
+
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("strict JSON document");
+    let names = doc_tool_names(&doc);
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        names.len(),
+        "every model-visible tool definition must have a unique name: {names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.as_str() == "apply_patch")
+            .count(),
+        1,
+        "the built-in apply_patch id remains unique"
+    );
+    assert!(
+        names.iter().any(|name| name == "apply_patch_2"),
+        "the colliding MCP apply/patch capability must receive a distinct id: {names:?}"
+    );
+
+    assert_process_tag_reaped(&apply_tag);
+    assert_process_tag_reaped(&demo_tag);
+}
+
 fn cortex_in(scratch: &Scratch, provider: &ProviderFixture, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
     command.current_dir(&scratch.project);
@@ -475,10 +550,37 @@ fn remote_server_bin() -> PathBuf {
     BIN.get_or_init(resolve_remote_server_bin).clone()
 }
 
-fn echo_server_bin() -> Option<PathBuf> {
-    let current = std::env::current_exe().ok()?;
-    let bin = current.parent()?.parent()?.join("cortex-mcp-echo-server");
-    bin.exists().then_some(bin)
+fn echo_server_bin() -> PathBuf {
+    let current = std::env::current_exe().expect("current test executable");
+    let debug_dir = current
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target debug dir");
+    let bin = debug_dir.join("cortex-mcp-echo-server");
+    if bin.exists() {
+        return bin;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("workspace root");
+    let status = Command::new(env!("CARGO"))
+        .current_dir(workspace)
+        .args(["build", "-p", "mcp", "--bin", "cortex-mcp-echo-server"])
+        .status()
+        .expect("build echo MCP fixture binary");
+    assert!(
+        status.success(),
+        "failed to build cortex-mcp-echo-server fixture"
+    );
+    assert!(
+        bin.exists(),
+        "echo MCP fixture binary was not produced at {}",
+        bin.display()
+    );
+    bin
 }
 
 fn toml_string(path: &Path) -> String {

@@ -6,6 +6,8 @@
 //! a JSON arguments string) to the matching tool. An unknown tool or unparseable arguments resolve
 //! to an error [`ToolOutput`] rather than aborting the turn.
 
+use std::collections::BTreeSet;
+
 use llm::ToolDef;
 
 use crate::apply_patch::ApplyPatchTool;
@@ -72,6 +74,23 @@ impl ToolRegistry {
         registry.register(Box::new(ApplyPatchTool));
         registry.register_utility_tools();
         registry
+    }
+
+    /// The stable union of every model-family built-in id.
+    ///
+    /// MCP managers reserve this complete set before connecting so their model-visible ids are
+    /// surface-independent and no MCP capability can shadow either the default or GPT-family
+    /// built-in materialization.
+    #[must_use]
+    pub fn reserved_builtin_ids() -> Vec<String> {
+        Self::builtin()
+            .definitions()
+            .into_iter()
+            .chain(Self::gpt().definitions())
+            .map(|definition| definition.name)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Register the utility tools shared by every model family (`bash`, `glob`, `grep`, `lsp`,

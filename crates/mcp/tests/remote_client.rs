@@ -249,6 +249,7 @@ async fn runtime_tool_change_is_reflected_and_emits_event() {
             bus: Some(bus.clone()),
             credentials: None,
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -351,6 +352,7 @@ async fn resource_and_prompt_changes_are_reflected_and_emit_events() {
             bus: Some(bus),
             credentials: None,
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -413,6 +415,167 @@ async fn resource_and_prompt_changes_are_reflected_and_emit_events() {
 }
 
 #[tokio::test]
+async fn live_capability_changes_keep_routes_unique_and_never_retarget_ids() {
+    let log = temp_path("live-collision-log");
+    let _fixture = Fixture::spawn("streamable", 3222, Some(&log), &[]);
+    wait_for_port(3222).await;
+    let servers = config(json!({
+        "api": { "type": "remote", "url": "http://127.0.0.1:3222/mcp" }
+    }));
+    let manager = McpManager::connect_with(
+        servers,
+        McpConnectOptions {
+            bus: None,
+            credentials: None,
+            roots: Vec::new(),
+            reserved_tool_ids: vec!["apply_patch".to_owned()],
+        },
+    )
+    .await;
+    assert_eq!(manager.statuses()[0].state, ConnectionState::Connected);
+
+    for endpoint in [
+        "/control/add-collision-tools",
+        "/control/add-resource",
+        "/control/add-prompt",
+    ] {
+        reqwest::Client::new()
+            .post(format!("http://127.0.0.1:3222{endpoint}"))
+            .send()
+            .await
+            .expect("control update");
+    }
+
+    let mut assigned = None;
+    for _ in 0..200 {
+        let tool = manager
+            .tools()
+            .into_iter()
+            .find(|tool| tool.tool == "resource_notes://demo");
+        let resource = manager
+            .resources()
+            .into_iter()
+            .find(|resource| resource.uri == "notes://demo");
+        let prompt = manager
+            .prompts()
+            .into_iter()
+            .find(|prompt| prompt.name == "greet");
+        if let (Some(tool), Some(resource), Some(prompt)) = (tool, resource, prompt) {
+            assigned = Some((tool.id, resource.id, prompt.id));
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let (tool_id, resource_id, prompt_id) =
+        assigned.expect("all live collision capabilities should be reflected");
+    assert_ne!(tool_id, resource_id);
+    assert_ne!(
+        prompt_id,
+        manager
+            .tools()
+            .into_iter()
+            .find(|tool| tool.tool == "prompt_greet")
+            .expect("prompt collision tool")
+            .id
+    );
+
+    let mut ids = manager
+        .capabilities()
+        .into_iter()
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    let total = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), total, "live catalogue contains no duplicate ids");
+
+    assert!(
+        manager
+            .call(&tool_id, json!({}))
+            .await
+            .expect("typed tool route")
+            .content
+            .contains("live collision tool resource_notes://demo")
+    );
+    assert!(
+        manager
+            .read_resource(&resource_id)
+            .await
+            .expect("typed resource route")
+            .content
+            .contains("REMOTE-RESOURCE-CONTENT")
+    );
+    assert!(
+        manager
+            .get_prompt(&prompt_id, json!({ "name": "live" }))
+            .await
+            .expect("typed prompt route")
+            .content
+            .contains("Hello live from remote MCP")
+    );
+
+    reqwest::Client::new()
+        .post("http://127.0.0.1:3222/control/remove-collision-tools")
+        .send()
+        .await
+        .expect("remove collision tools");
+    for _ in 0..200 {
+        if !manager
+            .tools()
+            .iter()
+            .any(|tool| tool.tool == "resource_notes://demo")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        !manager
+            .tools()
+            .iter()
+            .any(|tool| tool.tool == "resource_notes://demo"),
+        "removed capability leaves the live catalogue"
+    );
+
+    reqwest::Client::new()
+        .post("http://127.0.0.1:3222/control/add-collision-tools")
+        .send()
+        .await
+        .expect("re-add collision tools");
+    let mut readded = None;
+    for _ in 0..200 {
+        if let Some(tool) = manager
+            .tools()
+            .into_iter()
+            .find(|tool| tool.tool == "resource_notes://demo")
+        {
+            readded = Some(tool.id);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let readded = readded.expect("re-added capability should be reflected");
+    assert_eq!(
+        readded, tool_id,
+        "a live remove/re-add cannot silently retarget an existing model-visible id"
+    );
+
+    manager.shutdown().await;
+    let log_contents = std::fs::read_to_string(&log).expect("fixture log");
+    for expected in [
+        "tools/call name=resource_notes://demo",
+        "resources/read uri=notes://demo",
+        "prompts/get name=greet",
+    ] {
+        assert!(
+            log_contents.contains(expected),
+            "fixture log missing `{expected}`:\n{log_contents}"
+        );
+    }
+    let _ = std::fs::remove_file(log);
+}
+
+#[tokio::test]
 async fn logging_notifications_are_bridged_redacted_and_non_disruptive() {
     let bus = Arc::new(EventBus::new());
     let logs: LogEvents = Arc::new(Mutex::new(Vec::new()));
@@ -436,6 +599,7 @@ async fn logging_notifications_are_bridged_redacted_and_non_disruptive() {
             bus: Some(bus),
             credentials: None,
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -501,6 +665,7 @@ async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
             bus: None,
             credentials: Some(credentials.clone()),
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -549,6 +714,7 @@ async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
             bus: None,
             credentials: Some(credentials.clone()),
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;
@@ -698,6 +864,7 @@ async fn oauth_token_is_refreshed_on_expiry() {
             bus: None,
             credentials: Some(credentials.clone()),
             roots: Vec::new(),
+            reserved_tool_ids: Vec::new(),
         },
     )
     .await;

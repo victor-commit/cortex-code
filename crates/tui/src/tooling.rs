@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
-use mcp::McpManager;
+use mcp::{CapabilityRoute, McpManager};
 use protocol::TodoItem;
 use tools::{
     BackgroundJobs, LspService, MutationHooks, TodoStore, ToolContext, ToolRegistry,
@@ -158,77 +158,21 @@ impl TurnDispatcher {
         self
     }
 
-    /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
-    /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
+    /// The MCP definitions advertised this turn, materialized by the manager's one global
+    /// allocator alongside their typed dispatch routes.
     fn mcp_definitions(&self) -> Vec<ToolDef> {
         self.mcp
             .as_ref()
             .map(|manager| {
-                let mut definitions = manager
-                    .tools()
-                    .iter()
-                    .map(|tool| ToolDef {
-                        name: tool.id.clone(),
-                        description: tool.description.clone().unwrap_or_default(),
-                        parameters: tool.input_schema.clone(),
+                manager
+                    .capabilities()
+                    .into_iter()
+                    .map(|capability| ToolDef {
+                        name: capability.id,
+                        description: capability.description,
+                        parameters: capability.parameters,
                     })
-                    .collect::<Vec<_>>();
-                definitions.extend(manager.resources().iter().map(|resource| ToolDef {
-                    name: resource.id.clone(),
-                    description: resource.description.clone().unwrap_or_else(|| {
-                        format!(
-                            "Read MCP resource `{}` from server `{}`.",
-                            resource.uri, resource.server
-                        )
-                    }),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": false
-                    }),
-                }));
-                definitions.extend(manager.prompts().iter().map(|prompt| {
-                    let properties = prompt
-                        .arguments
-                        .iter()
-                        .map(|argument| {
-                            let mut schema = serde_json::Map::new();
-                            schema.insert(
-                                "type".to_owned(),
-                                serde_json::Value::String("string".to_owned()),
-                            );
-                            if let Some(description) = &argument.description {
-                                schema.insert(
-                                    "description".to_owned(),
-                                    serde_json::Value::String(description.clone()),
-                                );
-                            }
-                            (argument.name.clone(), serde_json::Value::Object(schema))
-                        })
-                        .collect::<serde_json::Map<_, _>>();
-                    let required = prompt
-                        .arguments
-                        .iter()
-                        .filter(|argument| argument.required)
-                        .map(|argument| serde_json::Value::String(argument.name.clone()))
-                        .collect::<Vec<_>>();
-                    ToolDef {
-                        name: prompt.id.clone(),
-                        description: prompt.description.clone().unwrap_or_else(|| {
-                            format!(
-                                "Fetch MCP prompt `{}` from server `{}`.",
-                                prompt.name, prompt.server
-                            )
-                        }),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                            "additionalProperties": false
-                        }),
-                    }
-                }));
-                definitions
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -266,9 +210,9 @@ impl ToolDispatcher for TurnDispatcher {
     fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
         Box::pin(async move {
             if let Some(manager) = &self.mcp {
-                if manager.has_tool(&call.name)
-                    || manager.has_resource(&call.name)
-                    || manager.has_prompt(&call.name)
+                if let Some(route) = manager
+                    .route_for_id(&call.name)
+                    .filter(CapabilityRoute::is_mcp)
                 {
                     if let Err(message) = self.context.ensure_permitted(&call.name, &call.name) {
                         return ToolDispatchResult {
@@ -277,7 +221,7 @@ impl ToolDispatcher for TurnDispatcher {
                             is_error: true,
                         };
                     }
-                    return dispatch_mcp(manager, call, &self.context).await;
+                    return dispatch_mcp(manager, &route, call, &self.context).await;
                 }
             }
 
@@ -315,6 +259,7 @@ impl ToolDispatcher for TurnDispatcher {
 /// to an error result so the turn continues and the model can recover.
 async fn dispatch_mcp(
     manager: &McpManager,
+    route: &CapabilityRoute,
     call: &ToolCall,
     ctx: &ToolContext,
 ) -> ToolDispatchResult {
@@ -337,13 +282,7 @@ async fn dispatch_mcp(
         }
     };
 
-    let result = if manager.has_resource(&call.name) {
-        manager.read_resource(&call.name).await
-    } else if manager.has_prompt(&call.name) {
-        manager.get_prompt(&call.name, arguments).await
-    } else {
-        manager.call(&call.name, arguments).await
-    };
+    let result = manager.invoke(route, arguments).await;
 
     if let Some(tool) = audit_tool
         && let Some(audit) = ctx.audit_sink()
@@ -515,6 +454,12 @@ mod tests {
             }
         }
         diffs
+    }
+
+    fn echo_server_bin() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let bin = exe.parent()?.parent()?.join("cortex-mcp-echo-server");
+        bin.exists().then_some(bin)
     }
 
     #[test]
@@ -701,9 +646,13 @@ mod tests {
     fn with_websearch_advertises_the_tool_and_default_omits_it() {
         let dir = scratch_dir("websearch");
         let (tx, _rx) = channel();
-        let plain = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
+        let plain =
+            TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
         assert!(
-            !plain.definitions().iter().any(|def| def.name == "websearch"),
+            !plain
+                .definitions()
+                .iter()
+                .any(|def| def.name == "websearch"),
             "websearch must be omitted from a default TUI turn (default-off policy)"
         );
 
@@ -711,15 +660,153 @@ mod tests {
         let wired = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx)
             .with_websearch(tools::WebSearchConfig::duckduckgo());
         assert!(
-            wired.definitions().iter().any(|def| def.name == "websearch"),
+            wired
+                .definitions()
+                .iter()
+                .any(|def| def.name == "websearch"),
             "with_websearch must advertise the websearch tool so the model can search this turn"
         );
+    }
+
+    #[test]
+    fn tui_dispatcher_uses_the_same_unique_mcp_routes_as_headless() {
+        let Some(bin) = echo_server_bin() else {
+            panic!("the cortex-mcp-echo-server fixture must be built for global routing coverage");
+        };
+        let dir = scratch_dir("mcp-global-routes");
+        let log = dir.join("mcp.log");
+        let servers = mcp::servers_from_value(&serde_json::json!({
+            "apply": {
+                "type": "local",
+                "command": [bin.to_string_lossy()],
+                "environment": {
+                    "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                    "CORTEX_MCP_ECHO_LABEL": "apply",
+                    "CORTEX_MCP_ECHO_EXTRA_TOOL": "patch"
+                }
+            },
+            "demo": {
+                "type": "local",
+                "command": [bin.to_string_lossy()],
+                "environment": {
+                    "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                    "CORTEX_MCP_ECHO_ENABLE_RESOURCES_PROMPTS": "1",
+                    "CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS": "1"
+                }
+            }
+        }))
+        .expect("valid fixture config");
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let manager = Arc::new(
+                    mcp::McpManager::connect_with(
+                        servers,
+                        mcp::McpConnectOptions {
+                            bus: None,
+                            credentials: None,
+                            roots: Vec::new(),
+                            reserved_tool_ids: ToolRegistry::reserved_builtin_ids(),
+                        },
+                    )
+                    .await,
+                );
+                let (tx, _rx) = channel();
+                let dispatcher = TurnDispatcher::new(
+                    dir.clone(),
+                    "google/gemini-2.5-flash",
+                    "ses_mcp_tui".to_owned(),
+                    tx,
+                )
+                .with_mcp(manager.clone());
+                let names = dispatcher
+                    .definitions()
+                    .into_iter()
+                    .map(|definition| definition.name)
+                    .collect::<Vec<_>>();
+                let mut unique = names.clone();
+                unique.sort();
+                unique.dedup();
+                assert_eq!(
+                    unique.len(),
+                    names.len(),
+                    "the TUI must advertise one collision-free model namespace: {names:?}"
+                );
+
+                let resource_tool = manager
+                    .tools()
+                    .into_iter()
+                    .find(|tool| tool.tool == "resource_notes://demo")
+                    .expect("collision tool");
+                let resource = manager
+                    .resources()
+                    .into_iter()
+                    .find(|resource| resource.uri == "notes://demo")
+                    .expect("resource");
+                let prompt_tool = manager
+                    .tools()
+                    .into_iter()
+                    .find(|tool| tool.tool == "prompt_greet")
+                    .expect("prompt collision tool");
+                let prompt = manager
+                    .prompts()
+                    .into_iter()
+                    .find(|prompt| prompt.name == "greet")
+                    .expect("prompt");
+
+                for (name, arguments, expected) in [
+                    (
+                        resource_tool.id,
+                        "{}".to_owned(),
+                        "collision tool resource_notes://demo",
+                    ),
+                    (resource.id, "{}".to_owned(), "RESOURCE-CONTENT-default"),
+                    (
+                        prompt_tool.id,
+                        "{}".to_owned(),
+                        "collision tool prompt_greet",
+                    ),
+                    (
+                        prompt.id,
+                        r#"{"name":"tui"}"#.to_owned(),
+                        "Hello tui from MCP",
+                    ),
+                ] {
+                    let result = dispatcher.dispatch(&call(&name, &arguments)).await;
+                    assert!(
+                        !result.is_error && result.content.contains(expected),
+                        "TUI route `{name}` must reach its exact capability: {}",
+                        result.content
+                    );
+                }
+
+                manager.shutdown().await;
+            });
+
+        let log_contents = std::fs::read_to_string(&log).expect("fixture log");
+        for expected in [
+            "tools/call name=resource_notes://demo",
+            "resources/read uri=notes://demo",
+            "tools/call name=prompt_greet",
+            "prompts/get name=greet",
+        ] {
+            assert!(
+                log_contents.contains(expected),
+                "fixture log is missing `{expected}`:\n{log_contents}"
+            );
+        }
     }
 
     struct StubTaskRunner;
 
     impl tools::TaskRunner for StubTaskRunner {
-        fn run_task<'a>(&'a self, _request: tools::TaskRequest) -> BoxFuture<'a, tools::ToolOutput> {
+        fn run_task<'a>(
+            &'a self,
+            _request: tools::TaskRequest,
+        ) -> BoxFuture<'a, tools::ToolOutput> {
             Box::pin(async { tools::ToolOutput::text("stub subagent result") })
         }
     }
@@ -728,25 +815,31 @@ mod tests {
     fn with_task_runner_advertises_the_tool_only_when_targets_are_non_empty() {
         let dir = scratch_dir("task-runner");
         let (tx, _rx) = channel();
-        let plain = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
+        let plain =
+            TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx);
         assert!(
             !plain.definitions().iter().any(|def| def.name == "task"),
             "task must be omitted from a default TUI turn (no runner attached)"
         );
 
         let (tx, _rx) = channel();
-        let empty_targets = TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx)
-            .with_task_runner(Vec::new(), Arc::new(StubTaskRunner));
+        let empty_targets =
+            TurnDispatcher::new(dir.clone(), "google/gemini-2.5-flash", "ses".to_owned(), tx)
+                .with_task_runner(Vec::new(), Arc::new(StubTaskRunner));
         assert!(
-            !empty_targets.definitions().iter().any(|def| def.name == "task"),
+            !empty_targets
+                .definitions()
+                .iter()
+                .any(|def| def.name == "task"),
             "task must stay omitted when the permission-filtered target list is empty"
         );
 
         let (tx, _rx) = channel();
-        let wired = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx).with_task_runner(
-            vec![tools::TaskTarget::new("explore", "read-only investigation")],
-            Arc::new(StubTaskRunner),
-        );
+        let wired = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx)
+            .with_task_runner(
+                vec![tools::TaskTarget::new("explore", "read-only investigation")],
+                Arc::new(StubTaskRunner),
+            );
         assert!(
             wired.definitions().iter().any(|def| def.name == "task"),
             "with_task_runner must advertise the task tool once a permitted target is attached"

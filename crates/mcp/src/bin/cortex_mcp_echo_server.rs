@@ -44,6 +44,8 @@ struct EchoServer {
     reject_list_tools: bool,
     stall_list_tools: bool,
     resource_content: String,
+    collision_tools: bool,
+    extra_tool: Option<String>,
 }
 
 impl EchoServer {
@@ -60,6 +62,10 @@ impl EchoServer {
             stall_list_tools: std::env::var("CORTEX_MCP_ECHO_STALL_LIST_TOOLS").is_ok(),
             resource_content: std::env::var("CORTEX_MCP_ECHO_RESOURCE_CONTENT")
                 .unwrap_or_else(|_| "RESOURCE-CONTENT-default".to_owned()),
+            collision_tools: std::env::var("CORTEX_MCP_ECHO_ENABLE_COLLISION_TOOLS").is_ok(),
+            extra_tool: std::env::var("CORTEX_MCP_ECHO_EXTRA_TOOL")
+                .ok()
+                .filter(|name| !name.trim().is_empty()),
         }
     }
 
@@ -166,7 +172,34 @@ impl EchoServer {
                 })),
             ));
         }
+        for name in self.optional_tool_names() {
+            tools.push(Tool::new(
+                Cow::Owned(name),
+                Cow::Borrowed(
+                    "Fixture capability used to prove collision-free model-visible MCP routing.",
+                ),
+                Self::schema(json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                })),
+            ));
+        }
         tools
+    }
+
+    fn optional_tool_names(&self) -> Vec<String> {
+        let mut names = self.extra_tool.clone().into_iter().collect::<Vec<_>>();
+        if self.collision_tools {
+            names.extend([
+                "apply_patch".to_owned(),
+                "resource_notes://demo".to_owned(),
+                "prompt_greet".to_owned(),
+            ]);
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 
     fn resources(&self) -> Vec<rmcp::model::Resource> {
@@ -493,6 +526,13 @@ impl ServerHandler for EchoServer {
                     "path": relative,
                     "content": contents,
                 }));
+                Ok(result)
+            }
+            other if self.optional_tool_names().iter().any(|name| name == other) => {
+                let label = self.label.clone().unwrap_or_else(|| "default".to_owned());
+                let text = format!("{label}: collision tool {other}");
+                let mut result = CallToolResult::success(vec![Content::text(text)]);
+                result.structured_content = Some(json!({ "label": label, "tool": other }));
                 Ok(result)
             }
             other => Err(McpError::invalid_params(

@@ -16,7 +16,9 @@ use std::sync::Arc;
 use events::EventBus;
 use rmcp::model::CallToolResult;
 
-use crate::catalogue::{LiveCatalogue, McpPrompt, McpResource, McpTool};
+use crate::catalogue::{
+    CapabilityRoute, LiveCatalogue, McpCapability, McpPrompt, McpResource, McpTool,
+};
 use crate::client::McpClient;
 use crate::config::{McpServerConfig, McpTransport};
 use crate::credentials::CredentialStore;
@@ -101,6 +103,12 @@ pub struct McpConnectOptions {
     /// Paths are normalized to absolute file URIs before connecting each server. When empty, the
     /// current working directory is used.
     pub roots: Vec<PathBuf>,
+    /// Model-visible built-in ids reserved before MCP capabilities are allocated.
+    ///
+    /// This must be the same stable built-in namespace for every surface that shares an MCP
+    /// configuration, so an MCP capability can never shadow a built-in in one surface but not
+    /// another.
+    pub reserved_tool_ids: Vec<String>,
 }
 
 /// The connected MCP servers for a session and their live qualified tool catalogue.
@@ -159,7 +167,8 @@ impl McpManager {
         servers: BTreeMap<String, McpServerConfig>,
         options: McpConnectOptions,
     ) -> Self {
-        let catalogue = LiveCatalogue::new(options.bus.clone());
+        let catalogue =
+            LiveCatalogue::with_reserved_ids(options.bus.clone(), options.reserved_tool_ids);
         let roots = roots_from_options(&options.roots);
         let mut connecting_clients = ConnectingClientsGuard::default();
         let mut statuses = Vec::new();
@@ -252,6 +261,18 @@ impl McpManager {
         self.catalogue.flatten_prompts()
     }
 
+    /// The current shared model materialization records for every MCP capability.
+    #[must_use]
+    pub fn capabilities(&self) -> Vec<McpCapability> {
+        self.catalogue.capabilities()
+    }
+
+    /// Resolve one model-visible id through the single typed route index.
+    #[must_use]
+    pub fn route_for_id(&self, id: &str) -> Option<CapabilityRoute> {
+        self.catalogue.route_for_id(id)
+    }
+
     /// The per-server connection statuses (connected/disabled/needs_auth/failed), in configured
     /// order.
     #[must_use]
@@ -271,10 +292,16 @@ impl McpManager {
     /// Return the live catalogue entry for a qualified tool id.
     #[must_use]
     pub fn tool_info(&self, id: &str) -> Option<crate::catalogue::McpTool> {
-        self.catalogue
-            .flatten_tools()
-            .into_iter()
-            .find(|tool| tool.id == id)
+        let CapabilityRoute::McpTool { server, tool } = self.route_for_id(id)? else {
+            return None;
+        };
+        Some(crate::catalogue::McpTool {
+            id: id.to_owned(),
+            server,
+            tool,
+            description: None,
+            input_schema: serde_json::Value::Null,
+        })
     }
 
     /// Whether `id` resolves to a currently-advertised MCP resource.
@@ -305,17 +332,10 @@ impl McpManager {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<RelayedResult, McpError> {
-        let tools = self.catalogue.flatten_tools();
-        let tool = tools
-            .iter()
-            .find(|tool| tool.id == id)
-            .ok_or_else(|| McpError::unknown_tool(id))?;
-        let client = self
-            .clients
-            .get(&tool.server)
-            .ok_or_else(|| McpError::closed(&tool.server))?;
-        let result: CallToolResult = client.call_tool(&tool.tool, arguments).await?;
-        Ok(relay(&result))
+        let Some(route @ CapabilityRoute::McpTool { .. }) = self.route_for_id(id) else {
+            return Err(McpError::unknown_tool(id));
+        };
+        self.invoke(&route, arguments).await
     }
 
     /// Perform a real `resources/read` for the qualified resource `id` and relay the content.
@@ -324,17 +344,10 @@ impl McpManager {
     /// Returns [`McpError`] when `id` does not resolve, its server is not connected, or the read
     /// fails/times out.
     pub async fn read_resource(&self, id: &str) -> Result<RelayedResult, McpError> {
-        let resources = self.catalogue.flatten_resources();
-        let resource = resources
-            .iter()
-            .find(|resource| resource.id == id || resource.uri == id)
-            .ok_or_else(|| McpError::unknown_resource(id))?;
-        let client = self
-            .clients
-            .get(&resource.server)
-            .ok_or_else(|| McpError::closed(&resource.server))?;
-        let result = client.read_resource(&resource.uri).await?;
-        Ok(relay_read_resource(&result))
+        let Some(route @ CapabilityRoute::McpResource { .. }) = self.route_for_id(id) else {
+            return Err(McpError::unknown_resource(id));
+        };
+        self.invoke(&route, serde_json::Value::Null).await
     }
 
     /// Perform a real `prompts/get` for the qualified prompt `id` with `arguments` and relay the
@@ -348,17 +361,50 @@ impl McpManager {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<RelayedResult, McpError> {
-        let prompts = self.catalogue.flatten_prompts();
-        let prompt = prompts
-            .iter()
-            .find(|prompt| prompt.id == id || prompt.name == id)
-            .ok_or_else(|| McpError::unknown_prompt(id))?;
-        let client = self
-            .clients
-            .get(&prompt.server)
-            .ok_or_else(|| McpError::closed(&prompt.server))?;
-        let result = client.get_prompt(&prompt.name, arguments).await?;
-        Ok(relay_get_prompt(&result))
+        let Some(route @ CapabilityRoute::McpPrompt { .. }) = self.route_for_id(id) else {
+            return Err(McpError::unknown_prompt(id));
+        };
+        self.invoke(&route, arguments).await
+    }
+
+    /// Invoke a previously-resolved MCP route. The model-facing dispatchers call this directly so
+    /// no capability-kind precedence lookup can silently choose another server capability.
+    ///
+    /// # Errors
+    /// Returns an error when the route is not an MCP route, its server is disconnected, or the MCP
+    /// operation fails.
+    pub async fn invoke(
+        &self,
+        route: &CapabilityRoute,
+        arguments: serde_json::Value,
+    ) -> Result<RelayedResult, McpError> {
+        match route {
+            CapabilityRoute::Builtin => Err(McpError::unknown_tool("built-in capability")),
+            CapabilityRoute::McpTool { server, tool } => {
+                let client = self
+                    .clients
+                    .get(server)
+                    .ok_or_else(|| McpError::closed(server))?;
+                let result: CallToolResult = client.call_tool(tool, arguments).await?;
+                Ok(relay(&result))
+            }
+            CapabilityRoute::McpResource { server, uri } => {
+                let client = self
+                    .clients
+                    .get(server)
+                    .ok_or_else(|| McpError::closed(server))?;
+                let result = client.read_resource(uri).await?;
+                Ok(relay_read_resource(&result))
+            }
+            CapabilityRoute::McpPrompt { server, name } => {
+                let client = self
+                    .clients
+                    .get(server)
+                    .ok_or_else(|| McpError::closed(server))?;
+                let result = client.get_prompt(name, arguments).await?;
+                Ok(relay_get_prompt(&result))
+            }
+        }
     }
 
     /// Terminate every connected server (cancelling its session and killing stdio descendants by

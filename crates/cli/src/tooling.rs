@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use engine::{ModelFamily, ToolDispatchResult, ToolDispatcher};
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
-use mcp::McpManager;
+use mcp::{CapabilityRoute, McpManager};
 use memory::DynamicMemoryTracker;
 use permissions::PermissionEngine;
 use tools::{
@@ -183,77 +183,21 @@ impl RegistryDispatcher {
         self.definitions().into_iter().map(|def| def.name).collect()
     }
 
-    /// The MCP definitions advertised this turn: server-qualified tools plus synthetic
-    /// resources/read and prompts/get wrappers for advertised MCP resources/prompts.
+    /// The MCP definitions advertised this turn, materialized by the manager's one global
+    /// allocator alongside their typed dispatch routes.
     fn mcp_definitions(&self) -> Vec<ToolDef> {
         self.mcp
             .as_ref()
             .map(|manager| {
-                let mut definitions = manager
-                    .tools()
-                    .iter()
-                    .map(|tool| ToolDef {
-                        name: tool.id.clone(),
-                        description: tool.description.clone().unwrap_or_default(),
-                        parameters: tool.input_schema.clone(),
+                manager
+                    .capabilities()
+                    .into_iter()
+                    .map(|capability| ToolDef {
+                        name: capability.id,
+                        description: capability.description,
+                        parameters: capability.parameters,
                     })
-                    .collect::<Vec<_>>();
-                definitions.extend(manager.resources().iter().map(|resource| ToolDef {
-                    name: resource.id.clone(),
-                    description: resource.description.clone().unwrap_or_else(|| {
-                        format!(
-                            "Read MCP resource `{}` from server `{}`.",
-                            resource.uri, resource.server
-                        )
-                    }),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": false
-                    }),
-                }));
-                definitions.extend(manager.prompts().iter().map(|prompt| {
-                    let properties = prompt
-                        .arguments
-                        .iter()
-                        .map(|argument| {
-                            let mut schema = serde_json::Map::new();
-                            schema.insert(
-                                "type".to_owned(),
-                                serde_json::Value::String("string".to_owned()),
-                            );
-                            if let Some(description) = &argument.description {
-                                schema.insert(
-                                    "description".to_owned(),
-                                    serde_json::Value::String(description.clone()),
-                                );
-                            }
-                            (argument.name.clone(), serde_json::Value::Object(schema))
-                        })
-                        .collect::<serde_json::Map<_, _>>();
-                    let required = prompt
-                        .arguments
-                        .iter()
-                        .filter(|argument| argument.required)
-                        .map(|argument| serde_json::Value::String(argument.name.clone()))
-                        .collect::<Vec<_>>();
-                    ToolDef {
-                        name: prompt.id.clone(),
-                        description: prompt.description.clone().unwrap_or_else(|| {
-                            format!(
-                                "Fetch MCP prompt `{}` from server `{}`.",
-                                prompt.name, prompt.server
-                            )
-                        }),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                            "additionalProperties": false
-                        }),
-                    }
-                }));
-                definitions
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -280,9 +224,9 @@ impl ToolDispatcher for RegistryDispatcher {
             // MCP call is permission-gated by its namespaced qualified id BEFORE the manager is
             // consulted, so a denied tool is refused here and the server receives zero `tools/call`.
             if let Some(manager) = &self.mcp {
-                if manager.has_tool(&call.name)
-                    || manager.has_resource(&call.name)
-                    || manager.has_prompt(&call.name)
+                if let Some(route) = manager
+                    .route_for_id(&call.name)
+                    .filter(CapabilityRoute::is_mcp)
                 {
                     if let Err(message) = self.context.ensure_permitted(&call.name, &call.name) {
                         return ToolDispatchResult {
@@ -291,7 +235,7 @@ impl ToolDispatcher for RegistryDispatcher {
                             is_error: true,
                         };
                     }
-                    return dispatch_mcp(manager, call, &self.context).await;
+                    return dispatch_mcp(manager, &route, call, &self.context).await;
                 }
             }
             let output = self
@@ -331,6 +275,7 @@ impl ToolDispatcher for RegistryDispatcher {
 /// to an error result so the turn continues and the model can recover.
 async fn dispatch_mcp(
     manager: &McpManager,
+    route: &CapabilityRoute,
     call: &ToolCall,
     ctx: &ToolContext,
 ) -> ToolDispatchResult {
@@ -353,13 +298,7 @@ async fn dispatch_mcp(
         }
     };
 
-    let result = if manager.has_resource(&call.name) {
-        manager.read_resource(&call.name).await
-    } else if manager.has_prompt(&call.name) {
-        manager.get_prompt(&call.name, arguments).await
-    } else {
-        manager.call(&call.name, arguments).await
-    };
+    let result = manager.invoke(route, arguments).await;
 
     if let Some(tool) = audit_tool
         && let Some(audit) = ctx.audit_sink()

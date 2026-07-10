@@ -102,6 +102,7 @@ pub(super) async fn list_mcp(
             bus: Some(state.event_bus.clone()),
             credentials: credential_store_from_state(&state),
             roots: vec![state.cwd.clone()],
+            reserved_tool_ids: tools::ToolRegistry::reserved_builtin_ids(),
         },
     )
     .await;

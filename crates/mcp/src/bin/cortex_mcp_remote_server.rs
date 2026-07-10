@@ -44,6 +44,7 @@ struct State {
     label: String,
     log: Option<String>,
     extra_enabled: AtomicBool,
+    collision_tools_enabled: AtomicBool,
     resource_enabled: AtomicBool,
     prompt_enabled: AtomicBool,
     streams: Mutex<Vec<mpsc::UnboundedSender<String>>>,
@@ -107,6 +108,19 @@ impl State {
                 "description": "A tool added at runtime to prove live tool-list updates.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             }));
+        }
+        if self.collision_tools_enabled.load(Ordering::SeqCst) {
+            for name in ["apply_patch", "resource_notes://demo", "prompt_greet"] {
+                tools.push(json!({
+                    "name": name,
+                    "description": "A live collision fixture tool.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }
+                }));
+            }
         }
         tools
     }
@@ -205,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         label: std::env::var("CORTEX_MCP_LABEL").unwrap_or_else(|_| "remote".to_owned()),
         log: std::env::var("CORTEX_MCP_LOG").ok(),
         extra_enabled: AtomicBool::new(false),
+        collision_tools_enabled: AtomicBool::new(false),
         resource_enabled: AtomicBool::new(false),
         prompt_enabled: AtomicBool::new(false),
         streams: Mutex::new(Vec::new()),
@@ -294,6 +309,18 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
             state.extra_enabled.store(false, Ordering::SeqCst);
             state.notify_tools_changed().await;
             state.log("control: removed tool `extra` and notified tools/list_changed");
+            write_text(&mut stream, 200, "removed").await
+        }
+        (_, "POST", "/control/add-collision-tools") => {
+            state.collision_tools_enabled.store(true, Ordering::SeqCst);
+            state.notify_tools_changed().await;
+            state.log("control: added collision tools and notified tools/list_changed");
+            write_text(&mut stream, 200, "added").await
+        }
+        (_, "POST", "/control/remove-collision-tools") => {
+            state.collision_tools_enabled.store(false, Ordering::SeqCst);
+            state.notify_tools_changed().await;
+            state.log("control: removed collision tools and notified tools/list_changed");
             write_text(&mut stream, 200, "removed").await
         }
         (_, "POST", "/control/add-resource") => {
@@ -482,6 +509,56 @@ async fn dispatch(state: &State, request: &Value, authorization: Option<&str>) -
             "id": id,
             "result": { "prompts": state.prompts() }
         })),
+        "resources/read" => {
+            let params = request.get("params").cloned().unwrap_or(Value::Null);
+            let uri = params
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            state.log(&format!("resources/read uri={uri}"));
+            let result = if state.resource_enabled.load(Ordering::SeqCst) && uri == "notes://demo" {
+                json!({
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": "text/plain",
+                        "text": "REMOTE-RESOURCE-CONTENT"
+                    }]
+                })
+            } else {
+                json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("unknown resource: {uri}") }]
+                })
+            };
+            Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+        }
+        "prompts/get" => {
+            let params = request.get("params").cloned().unwrap_or(Value::Null);
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let caller = params
+                .get("arguments")
+                .and_then(|arguments| arguments.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("friend");
+            state.log(&format!("prompts/get name={name}"));
+            let result = if state.prompt_enabled.load(Ordering::SeqCst) && name == "greet" {
+                json!({
+                    "messages": [{
+                        "role": "user",
+                        "content": { "type": "text", "text": format!("Hello {caller} from remote MCP") }
+                    }]
+                })
+            } else {
+                json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("unknown prompt: {name}") }]
+                })
+            };
+            Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+        }
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or(Value::Null);
             let name = params
@@ -536,6 +613,10 @@ fn tool_result(state: &State, name: &str, arguments: &Value) -> Value {
         }
         "extra" => json!({
             "content": [{ "type": "text", "text": "extra tool result" }],
+            "isError": false
+        }),
+        "apply_patch" | "resource_notes://demo" | "prompt_greet" => json!({
+            "content": [{ "type": "text", "text": format!("live collision tool {name}") }],
             "isError": false
         }),
         other => json!({
