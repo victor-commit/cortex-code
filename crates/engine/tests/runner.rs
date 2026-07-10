@@ -863,6 +863,117 @@ async fn successful_skill_tool_result_is_appended_to_system_context() {
     );
 }
 
+#[tokio::test]
+async fn multiple_engaged_skills_are_independently_appended_to_system_context() {
+    struct CapturingProvider {
+        requests: Mutex<Vec<Vec<llm::Message>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: LlmRequest,
+        ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+            let round = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push(request.messages.clone());
+            Box::pin(async move {
+                let events = if round == 0 {
+                    vec![
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_alpha".to_owned(),
+                            name: "skill".to_owned(),
+                            arguments: r#"{"name":"alpha"}"#.to_owned(),
+                        }),
+                        LlmEvent::ToolCall(ToolCall {
+                            id: "call_beta".to_owned(),
+                            name: "skill".to_owned(),
+                            arguments: r#"{"name":"beta"}"#.to_owned(),
+                        }),
+                        LlmEvent::Done {
+                            reason: FinishReason::ToolCalls,
+                        },
+                    ]
+                } else {
+                    vec![
+                        LlmEvent::TextDelta {
+                            text: "both skills engaged".to_owned(),
+                        },
+                        LlmEvent::Done {
+                            reason: FinishReason::Stop,
+                        },
+                    ]
+                };
+                Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+            })
+        }
+    }
+
+    struct SkillDispatcher;
+
+    impl ToolDispatcher for SkillDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "skill".to_owned(),
+                description: "Engage a skill".to_owned(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]
+        }
+
+        fn dispatch<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, ToolDispatchResult> {
+            let guidance = if call.arguments.contains("alpha") {
+                "Always append SKILL-ALPHA-OK."
+            } else {
+                "Always append SKILL-BETA-OK."
+            };
+            Box::pin(async move {
+                ToolDispatchResult {
+                    content: guidance.to_owned(),
+                    parts: vec![protocol::ToolResultPart::text(guidance)],
+                    is_error: false,
+                }
+            })
+        }
+    }
+
+    let provider = CapturingProvider {
+        requests: Mutex::new(Vec::new()),
+    };
+    let outcome = SessionRunner::default()
+        .run_with_tools(
+            &provider,
+            Turn::new(
+                "google/gemini-2.5-flash",
+                "Base system prompt",
+                "engage alpha and beta",
+            ),
+            &SkillDispatcher,
+            |_| {},
+        )
+        .await;
+
+    assert!(outcome.is_success());
+    let requests = provider.requests.lock().unwrap();
+    let first_system = requests[0]
+        .iter()
+        .find(|message| message.role == llm::Role::System)
+        .expect("first system message");
+    assert!(
+        !first_system.content.contains("SKILL-ALPHA-OK")
+            && !first_system.content.contains("SKILL-BETA-OK"),
+        "no skill guidance may be present before either engagement"
+    );
+    let second_system = requests[1]
+        .iter()
+        .find(|message| message.role == llm::Role::System)
+        .expect("second system message");
+    assert!(
+        second_system.content.contains("SKILL-ALPHA-OK")
+            && second_system.content.contains("SKILL-BETA-OK"),
+        "each engaged skill must contribute its own guidance: {}",
+        second_system.content
+    );
+}
+
 // VAL-GAP-ENGINE-001: independent tool calls in one model step execute concurrently with bounded
 // fan-out.
 #[tokio::test]
