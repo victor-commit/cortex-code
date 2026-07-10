@@ -22,6 +22,7 @@ use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
 mod chrome;
 mod screens;
+mod audit;
 
 /// Fixed, deterministic capture size.
 const WIDTH: u16 = 120;
@@ -376,6 +377,15 @@ fn main() {
 
     if args.iter().any(|a| a == "--list") {
         print_list();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--audit-json") {
+        if args.len() != 1 {
+            eprintln!("error: --audit-json cannot be combined with render selectors");
+            std::process::exit(2);
+        }
+        audit::print_json();
         return;
     }
 

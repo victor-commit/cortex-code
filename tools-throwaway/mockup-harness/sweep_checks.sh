@@ -161,6 +161,24 @@ then
     fail "glyph, duration, or status-pairing scan failed"
 fi
 
+# Text alone cannot prove Ratatui foreground/background ownership or whether a
+# key line belongs to the dock rather than a footer. The harness emits a
+# deterministic buffer projection, and sweep_audit.py cross-checks that
+# projection against the registry and source-level selection-consumer inventory.
+audit_json="$(mktemp)"
+trap 'rm -f "$expected_artifacts" "$actual_artifacts" "$audit_json"' EXIT
+if ! (
+    cd "$HARNESS_DIR"
+    cargo run --quiet --features png -- --audit-json >"$audit_json"
+    python3 ./sweep_audit.py --report "$audit_json" --source-root ./src/screens
+); then
+    fail "semantic key/status/duration/dot/selection audit failed"
+fi
+
+if ! bash "$HARNESS_DIR/tests/sweep_negative.sh"; then
+    fail "semantic negative fixtures failed"
+fi
+
 if [[ ! -f "$README" ]]; then
     fail "gallery README is missing"
 else

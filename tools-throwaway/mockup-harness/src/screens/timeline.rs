@@ -78,7 +78,7 @@ fn header_keys() -> Vec<Span<'static>> {
     spans.push(c(" · ", FAINT));
     spans.extend(chrome::key_span("f", "fork"));
     spans.push(c(" → ", FAINT));
-    spans.push(m("new session from this turn"));
+    spans.push(c("new session from this turn", FAINT));
     spans
 }
 

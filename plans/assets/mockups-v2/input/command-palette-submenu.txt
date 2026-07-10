@@ -31,7 +31,7 @@
 │   Trace the retry backoff       drop this queued prompt                                                     queued 2 │
 │   Document the rate-limit path  run after the current turn                                                  queued 3 │
 │  actions ────────────────────────────────────────────────────────────────────────────────────────────────────────────│
-│   Clear queued prompts          c clear · drop every queued prompt                                                   │
+│   Clear queued prompts          c clear queued prompts                                                               │
 │                                                                                                                      │
 │                                                                                                              3 queued│
 │                                                                                                                      │

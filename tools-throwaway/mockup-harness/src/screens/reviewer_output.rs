@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::chrome::{self, c, m, t, StatusLine, ACCENT, BAD, BRIGHT, FAINT, OK};
+use crate::chrome::{self, c, m, t, StatusLine, BAD, BRIGHT, FAINT, OK};
 
 const NAME_W: usize = 24;
 const FINDING_W: usize = 48;
@@ -181,11 +181,9 @@ fn check_row(check: &Check) -> Line<'static> {
 }
 
 fn gate_keys() -> Line<'static> {
-    Line::from(vec![
-        Span::raw("   "),
-        c("r ", ACCENT),
-        c("re-post findings", BRIGHT),
-        c("  ·  ", FAINT),
-        c("a accept", FAINT),
-    ])
+    let mut spans = vec![Span::raw("   ")];
+    spans.extend(chrome::key_span("r", "re-post findings"));
+    spans.push(c("  ·  ", FAINT));
+    spans.push(c("a accept", FAINT));
+    Line::from(spans)
 }

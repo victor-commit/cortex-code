@@ -1247,6 +1247,7 @@ pub enum ListRow {
     /// from the arrow-key selection cycle.
     Action {
         name: &'static str,
+        key: &'static str,
         detail: &'static str,
         meta: &'static str,
     },
@@ -1350,15 +1351,25 @@ pub fn sectioned_select_list(
                     Span::styled(" ".to_string(), sty(meta_hue)),
                 ]));
             }
-            ListRow::Action { name, detail, meta } => {
+            ListRow::Action {
+                name,
+                key,
+                detail,
+                meta,
+            } => {
                 let name_cell = format!("{name:<w$}  ", w = name_w);
-                let used = 3 + name_cell.chars().count() + detail.chars().count();
+                let key_cell = format!("{key} ");
+                let used = 3
+                    + name_cell.chars().count()
+                    + key_cell.chars().count()
+                    + detail.chars().count();
                 let pad = width
                     .saturating_sub(used + meta.chars().count() + 1)
                     .max(1);
                 out.push(Line::from(vec![
                     Span::raw("   "),
                     Span::styled(name_cell, Style::default().fg(MUTED)),
+                    Span::styled(key_cell, Style::default().fg(MUTED)),
                     Span::styled(detail.to_string(), Style::default().fg(FAINT)),
                     Span::styled(" ".repeat(pad), Style::default().fg(FAINT)),
                     Span::styled(meta.to_string(), Style::default().fg(MUTED)),

@@ -23,7 +23,8 @@ const QUEUED_PROMPTS: &[ListRow] = &[
     ListRow::Section("actions"),
     ListRow::Action {
         name: "Clear queued prompts",
-        detail: "c clear · drop every queued prompt",
+        key: "c",
+        detail: "clear queued prompts",
         meta: "",
     },
 ];

@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::chrome::{self, c, m, t, StatusLine, BRIGHT, WARN};
+use crate::chrome::{self, c, m, t, StatusLine, BRIGHT, FAINT, WARN};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
@@ -54,6 +54,6 @@ fn para(mut spans: Vec<Span<'static>>) -> Line<'static> {
 fn recovery(key: &str, label: &str, detail: &str) -> Line<'static> {
     let mut spans = vec![Span::raw("     ")];
     spans.extend(chrome::key_span(key, label));
-    spans.push(m(&format!(" · {detail}")));
+    spans.push(c(&format!(" · {detail}"), FAINT));
     Line::from(spans)
 }
