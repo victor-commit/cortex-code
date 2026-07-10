@@ -17,19 +17,75 @@
       "status": "??"
     },
     {
-      "path": "crates/cli/install-marker.txt",
-      "status": "??"
+      "fingerprints": {
+        "index_sha256": "2f4346c11fc3703e056041464d637c15d2d2ebad7f2526664d865c09c3dde71f",
+        "worktree_sha256": "45243b38b1cce6b614c1214319deeab84b94fc0cc5d7d69380162582c7d0558e"
+      },
+      "path": "crates/acp/src/lib.rs",
+      "status": " M"
     },
     {
-      "path": "crates/cli/src/generate_cmd.rs",
-      "status": " M"
+      "path": "crates/cli/install-marker.txt",
+      "status": "??"
     },
     {
       "path": "crates/cli/src/lib.rs",
       "status": "??"
     },
     {
-      "path": "crates/cli/tests/custom_agents.rs",
+      "fingerprints": {
+        "index_sha256": "752799381877ff812437962657126d813eef3527b1ffcd8eb539bde10c41e57d",
+        "worktree_sha256": "1b3f0bf1b0d491ab26a35158e8692a0795751d7f31f47a92117e84ee8c66af83"
+      },
+      "path": "crates/cli/src/plugin_bridge.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "1d0b2849f2e796665512553bfc390049e831e04218b65a6311e6f8e330f92f64",
+        "worktree_sha256": "0e9c9d45fbf48e56c6eaceb7819601ff2a5a8ce2bb082b09ddc7640c44de0620"
+      },
+      "path": "crates/cli/src/tooling.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "c27ac67310fa5ebc15042312d3dc75591f756974d4238a192bc32211b9a470d2",
+        "worktree_sha256": "6f0fb3a557f4753b2ba6e4c862afa673eee3ef282580aef245ea606b35470e0e"
+      },
+      "path": "crates/engine/src/runner.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "e14244148b8510a8be1ae7c01535d9bec7256de8d33678d67eabc9d49d43a738",
+        "worktree_sha256": "ab611b576aede03abefe92081f4d0ea3b271ddc12fe3feda98114d6fb8247f19"
+      },
+      "path": "crates/engine/src/tools.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "f709de49110481031f523edb88c0a26506ecea3917a949aa28981447a7b20139",
+        "worktree_sha256": "cfa104939b2624b18e72e325a7a8b15c318c68d568881568e40e9a46a135bb7c"
+      },
+      "path": "crates/engine/tests/runner.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "1ceb29182147b98f9799191f628ac8f297d7a2368097ff1dce03f5deffefe883",
+        "worktree_sha256": "f4c85c105e3b5e06bc5f40b41725e62e54fcaf9d45783fed8892da2a245a9e0d"
+      },
+      "path": "crates/protocol/src/lib.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "1847835b0ded64d0b77a7f4aff91647b9d47e6a34287f8a837bc22fe42fc4b24",
+        "worktree_sha256": "72d3b3e29de8052cdb517243ef33685ed80c023986c3332f89f81b67e3c7dd89"
+      },
+      "path": "crates/protocol/src/tool.rs",
       "status": " M"
     },
     {
@@ -37,7 +93,123 @@
       "status": "??"
     },
     {
-      "path": "crates/subagent_runner/src/custom_agents.rs",
+      "fingerprints": {
+        "index_sha256": "d6aebe41b5e479f7cfb0b86ad88d57b6993e636aa4b939418f9c5b2df9244135",
+        "worktree_sha256": "9f98e13f950852dee8c530d91cc442293012e5de1d6dbfd0c83ac0a0b4da10cf"
+      },
+      "path": "crates/server/src/lib.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "7fc3347166d2fc73fa139bfe2cc858236eb8f3e28fec2027a1c6326ebeb380e8",
+        "worktree_sha256": "fc54e3bd45b71576af9b7f189db29d16aad834c241716a2814d0c9b3d6b808b6"
+      },
+      "path": "crates/skills/src/lib.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "dc3f5b372649bd98efc1538726945d012727947f4b68a37c7fe49aed23b0e64a",
+        "worktree_sha256": "25de34457ec9454b8e0ce4e038e30420e914b6d8f58719b6556d0aa548d94023"
+      },
+      "path": "crates/subagent_runner/src/bridges.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "da1a5857692c468e1c24701dbfc22372cd2ad7ae6d76c77748c12ef8db3c17ad",
+        "worktree_sha256": "cd1e2b2f359f26349c37fde9840776f8ed9ae783b390b308680d85544d18fd1f"
+      },
+      "path": "crates/tools/src/registry.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "259e94afa22eb49378b2f5fb472d4a858c38c46cfd81b575ea21ad089713dfe9",
+        "worktree_sha256": "be65dc5a524c08db981edfcedf59ef0e59157c7ac85081ead766610713339a80"
+      },
+      "path": "crates/tools/src/skill.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "1cfac24846f13e7d515ae34829ceceb4fc24db02d9a6a04ee075f0879b3fcfac",
+        "worktree_sha256": "0a662bd272ebb64cc44d5e2909e15072631ffdb6de32f0f9fff762aab0187dd5"
+      },
+      "path": "crates/tools/src/tool.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "810df4b7f9d96f771b11631bc5d9411bad57ab2b51b05bde43ff4ad14276b0d2",
+        "worktree_sha256": "8f71165845268f0da4dbd8f08fe0e7bab8300b92eae00a71b549b277ac3c3aab"
+      },
+      "path": "crates/tools/tests/apply_patch_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "5e0f0fd1689c9b019706ecf97ebaeaffa05a218717284b0ab2890a520f3e7296",
+        "worktree_sha256": "9972b78c3f7edeca252db093e5136646c76db51934d734d0b5453f1aa9d5d5bb"
+      },
+      "path": "crates/tools/tests/bash_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "f716329db09d129085ecc8211986907f83677f82e6b36354105f3f85b4235927",
+        "worktree_sha256": "a16c630fa5147f8a8a2c9122c6319b3a3749e028fa4f96be8f8e05e14f986306"
+      },
+      "path": "crates/tools/tests/edit_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "eec07c85e3392f60ec6828e48bd2d4389d2d59f743a64f217a0abc8fc66f8272",
+        "worktree_sha256": "d846afc2f1a841bc92420bae970c38de7e95335fc2424b679e4d5afc3173ab6d"
+      },
+      "path": "crates/tools/tests/file_tool_semantics_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "e18df7c29a43bf6539b0fbffaa1ca02648fc322dd11e96e5480e4abe433ffdbc",
+        "worktree_sha256": "6be5068fd6b28af06952f7c3cde1f787208339bfb39d3da8ea2e484671052a9a"
+      },
+      "path": "crates/tools/tests/runner_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "17aeea5c7ed9a7b26aafa60c9da1bce68e215a847f54dfb4512c5b1bebcd381a",
+        "worktree_sha256": "f21ef4acc7ee1a18569fce8b57d5f8969aa3d5004bb4bb1c12c1107b243cab51"
+      },
+      "path": "crates/tools/tests/search_todo_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "1ac79972b6021edc671e6e2e13281bcbb9093609d2f3be8624cfaf17085962b6",
+        "worktree_sha256": "afe5539491e28e03a1771d145d2f68880674d974f429ad405486800ab53e55b9"
+      },
+      "path": "crates/tools/tests/write_integration.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "55fcc3024a88279bf167c9f1f0b753a79d00326f4322f73457eb336a9c3ef1aa",
+        "worktree_sha256": "8ce0b716e7edf64f11df80ea4fc479ae905b197741fb9fa6113fbdcd78a02f11"
+      },
+      "path": "crates/tui/src/tooling.rs",
+      "status": " M"
+    },
+    {
+      "fingerprints": {
+        "index_sha256": "d3a747f760707e2db8233559fd7de8af7d93e393be87a2405fcd584c78696aaf",
+        "worktree_sha256": "5909120adb6552087fc802ef080ac3e182f13f823eeeb7d0ea11de393d74aba1"
+      },
+      "path": "crates/tui/src/turn.rs",
       "status": " M"
     },
     {
@@ -78,7 +250,8 @@
     "plans/assets/mockups-v3/",
     "plans/assets/mockups-v3-gates/"
   ],
-  "head_commit": "5b481be0e5021eb4d68bcd01a5a412b71e72159f",
-  "schema_version": 1,
+  "fingerprint_algorithm": "sha256",
+  "head_commit": "f209ecd7de5245724ac38c4e239f1f5efd998b15",
+  "schema_version": 2,
   "status_format": "git status --porcelain=v1 -z"
 }

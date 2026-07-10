@@ -72,65 +72,8 @@ json.dump(
 sys.stdout.write("\n")
 PY
 
-REPO_ROOT="$REPO_ROOT" HEAD_COMMIT="$head_commit" python3 - >"$status_tmp" <<'PY'
-import json
-import os
-import subprocess
-import sys
-
-repository = os.environ["REPO_ROOT"]
-allowed_prefixes = (
-    "tools-throwaway/mockup-harness-v3/",
-    "plans/assets/mockups-v3/",
-    "plans/assets/mockups-v3-gates/",
-)
-raw = subprocess.check_output(
-    ["git", "-C", repository, "status", "--porcelain=v1", "-z"]
-)
-fields = raw.split(b"\0")
-entries = []
-index = 0
-while index < len(fields):
-    field = fields[index]
-    index += 1
-    if not field:
-        continue
-    if len(field) < 4:
-        raise SystemExit(f"invalid porcelain-v1 record: {field!r}")
-    status = field[:2].decode("ascii")
-    path = field[3:].decode("utf-8", "surrogateescape")
-    original_path = None
-    if "R" in status or "C" in status:
-        if index >= len(fields):
-            raise SystemExit(f"missing original path for {path!r}")
-        original_path = fields[index].decode("utf-8", "surrogateescape")
-        index += 1
-    if path.startswith(allowed_prefixes):
-        continue
-    entry = {"path": path, "status": status}
-    if original_path is not None:
-        entry["original_path"] = original_path
-    entries.append(entry)
-
-entries.sort(key=lambda entry: (
-    entry["path"],
-    entry["status"],
-    entry.get("original_path", ""),
-))
-json.dump(
-    {
-        "schema_version": 1,
-        "head_commit": os.environ["HEAD_COMMIT"],
-        "status_format": "git status --porcelain=v1 -z",
-        "excluded_v3_prefixes": list(allowed_prefixes),
-        "entries": entries,
-    },
-    sys.stdout,
-    indent=2,
-    sort_keys=True,
-)
-sys.stdout.write("\n")
-PY
+python3 "$HARNESS_DIR/forbidden_path_baseline.py" \
+    record "$REPO_ROOT" "$head_commit" >"$status_tmp"
 
 mv "$manifest_tmp" "$MANIFEST"
 mv "$metadata_tmp" "$METADATA"
