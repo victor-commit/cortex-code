@@ -1,10 +1,10 @@
 use ratatui::{
+    Frame,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
-use crate::chrome::{self, c, m, SidebarTab, StatusLine, BRIGHT, FAINT, MUTED, OK};
+use crate::chrome::{self, BRIGHT, FAINT, MUTED, OK, SidebarTab, StatusLine, c, m};
 
 const ROW_W: usize = 50;
 
@@ -22,16 +22,12 @@ pub fn render(f: &mut Frame) {
         chrome::rule_line(sidebar.panel.width as usize - 1),
         agent_row(
             "explore",
-            &format!("● running {}", chrome::timefmt(12.0)),
+            &chrome::inline_live_state("running", 12.0),
             MUTED,
         ),
         task_row("find existing auth middleware"),
         Line::from(""),
-        agent_row(
-            "general",
-            &format!("✓ done {}", chrome::timefmt(64.0)),
-            OK,
-        ),
+        agent_row("general", &format!("✓ done {}", chrome::timefmt(64.0)), OK),
         task_row("summarize redaction audit"),
         Line::from(""),
         agent_row("plan", "○ queued", FAINT),

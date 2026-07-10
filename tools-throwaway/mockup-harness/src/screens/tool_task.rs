@@ -2,11 +2,11 @@
 //! is still running, so elapsed time belongs on the running task line only.
 
 use ratatui::{
-    text::{Line, Span},
     Frame,
+    text::{Line, Span},
 };
 
-use crate::chrome::{self, c, m, t, StatusLine, ToolStatus, FAINT};
+use crate::chrome::{self, FAINT, LiveActivityInterrupt, StatusLine, ToolStatus, c, m, t};
 
 /// The delegated turn shared by the collapsed and expanded task states.
 pub(crate) fn turn_open() -> Vec<Line<'static>> {
@@ -28,22 +28,14 @@ pub(crate) fn turn_open() -> Vec<Line<'static>> {
 /// The completed task remains a standard tool line with the delegated goal in
 /// its argument string.
 pub(crate) fn completed_task() -> Line<'static> {
-    chrome::tool_line(
-        ToolStatus::Done,
-        "Task",
-        "explore: audit the auth module",
-    )
+    chrome::tool_line(ToolStatus::Done, "Task", "explore: audit the auth module")
 }
 
 /// The completed task's summary row. Its duration comes from `timefmt`, so a
 /// future value cannot drift into the invalid bare-seconds form.
 pub(crate) fn completed_summary(expanded: bool) -> Vec<Span<'static>> {
     let mut row = chrome::verdict(true, "6 findings");
-    row.push(m(&format!(
-        " {} {}",
-        chrome::SEP,
-        chrome::timefmt(192.0)
-    )));
+    row.push(m(&format!(" {} {}", chrome::SEP, chrome::timefmt(192.0))));
     row.push(c(&format!(" {} ", chrome::SEP), FAINT));
     row.extend(chrome::key_span(
         "ctrl+o",
@@ -72,7 +64,7 @@ pub fn render(f: &mut Frame) {
     lines.extend(chrome::elbow(vec![completed_summary(false)]));
     lines.push(Line::from(""));
     lines.push(chrome::tool_line(
-        ToolStatus::Running(Some(48.0)),
+        ToolStatus::Running(Some(48.0), LiveActivityInterrupt::Inline),
         "Task",
         "build: add rate-limit tests",
     ));

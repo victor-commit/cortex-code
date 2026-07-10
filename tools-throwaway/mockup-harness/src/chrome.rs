@@ -20,6 +20,8 @@ use ratatui::{
     Frame,
 };
 
+pub(crate) use crate::audit::LiveActivityInterrupt;
+
 // ============================================================================
 // PALETTE (architecture 3.1) - 13 semantic tokens, nothing else.
 // State is always glyph + color, never color alone. One emphasis channel at a
@@ -199,6 +201,20 @@ pub fn timefmt(secs: f64) -> String {
     }
 }
 
+/// Canonical inline live state for compact rows that do not own a working
+/// band. The returned text preserves the gallery's current `● verb duration`
+/// anatomy while emitting semantic audit evidence at render time.
+pub fn inline_live_state(verb: &str, elapsed: f64) -> String {
+    let elapsed = timefmt(elapsed);
+    crate::audit::record_live_activity(crate::audit::LiveActivityEvent::new(
+        crate::audit::LiveActivitySource::InlineLiveState,
+        verb,
+        Some(elapsed.clone()),
+        crate::audit::LiveActivityInterrupt::None,
+    ));
+    format!("{DOT} {verb} {elapsed}")
+}
+
 // ============================================================================
 // BARS - progress / usage bars `███░░░` (glyph set `█ ░`).
 // ============================================================================
@@ -255,8 +271,9 @@ pub fn bar_ramped(
 pub enum ToolStatus {
     /// In flight. `Some(secs)` appends the elapsed time; pass `None` when a
     /// working band already announces the activity - elapsed renders exactly
-    /// once per activity (pattern 5).
-    Running(Option<f64>),
+    /// once per activity (pattern 5). The explicit interrupt owner prevents
+    /// inline and band affordances from drifting apart during audit capture.
+    Running(Option<f64>, LiveActivityInterrupt),
     /// Prepared work that cannot start until a decision or input arrives.
     /// Waiting has no elapsed counter because it is not live work.
     Waiting,
@@ -269,7 +286,15 @@ pub enum ToolStatus {
 /// whose path belongs in the label rather than function-style parentheses.
 pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
     let (hue, elapsed) = match status {
-        ToolStatus::Running(e) => (MUTED, e),
+        ToolStatus::Running(elapsed, interrupt) => {
+            crate::audit::record_live_activity(crate::audit::LiveActivityEvent::new(
+                crate::audit::LiveActivitySource::ToolStatusRunning,
+                name,
+                elapsed.map(timefmt),
+                interrupt,
+            ));
+            (MUTED, elapsed)
+        }
         ToolStatus::Waiting => (MUTED, None),
         ToolStatus::Done => (OK, None),
         ToolStatus::Failed => (BAD, None),
@@ -308,7 +333,15 @@ pub fn shell_line(status: ShellStatus, command: &str) -> Line<'static> {
 
     let (dot_hue, done, elapsed) = match status {
         ShellStatus::Done(secs) => (OK, true, secs),
-        ShellStatus::Running(secs) => (MUTED, false, secs),
+        ShellStatus::Running(secs) => {
+            crate::audit::record_live_activity(crate::audit::LiveActivityEvent::new(
+                crate::audit::LiveActivitySource::ShellStatusRunning,
+                command,
+                Some(timefmt(secs)),
+                crate::audit::LiveActivityInterrupt::Inline,
+            ));
+            (MUTED, false, secs)
+        }
     };
     let used = 4 + command.chars().count();
     let pad = " ".repeat(STATUS_COL.saturating_sub(used).max(2));
@@ -1456,6 +1489,12 @@ pub fn step_row(
 /// ` ● Distilling… 12s · 3.1k tokens · esc to interrupt` - single ACCENT
 /// spinner glyph, one working verb, dim counters.
 pub fn working_band(verb: &str, elapsed: f64, tokens: Option<&str>) -> Line<'static> {
+    crate::audit::record_live_activity(crate::audit::LiveActivityEvent::new(
+        crate::audit::LiveActivitySource::WorkingBand,
+        verb,
+        Some(timefmt(elapsed)),
+        crate::audit::LiveActivityInterrupt::Band,
+    ));
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(format!("{DOT} "), Style::default().fg(ACCENT)),

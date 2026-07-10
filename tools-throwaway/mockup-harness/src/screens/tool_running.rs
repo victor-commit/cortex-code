@@ -5,11 +5,11 @@
 //! interrupt hint. One activity, one time source, zero repeated metrics.
 
 use ratatui::{
-    text::{Line, Span},
     Frame,
+    text::{Line, Span},
 };
 
-use crate::chrome::{self, m, t, StatusLine, ToolStatus};
+use crate::chrome::{self, LiveActivityInterrupt, StatusLine, ToolStatus, m, t};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(""),
         chrome::tool_line(
-            ToolStatus::Running(None),
+            ToolStatus::Running(None, LiveActivityInterrupt::Band),
             "Search",
             "pattern: \"rate_limit\", path: crates/server/src",
         ),

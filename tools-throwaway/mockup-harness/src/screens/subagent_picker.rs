@@ -1,6 +1,6 @@
 //! Live child-subagent picker dock for `/subagents`.
 
-use ratatui::{text::Line, widgets::Paragraph, Frame};
+use ratatui::{Frame, text::Line, widgets::Paragraph};
 
 use crate::chrome::{self, AnnotatedListRow, StatusLine};
 
@@ -11,7 +11,10 @@ pub fn render(f: &mut Frame) {
         f,
         body,
         vec![
-            chrome::user_cmd("check the authentication boundary before changing it", Some("2m ago")),
+            chrome::user_cmd(
+                "check the authentication boundary before changing it",
+                Some("2m ago"),
+            ),
             Line::from(""),
             chrome::agent_head("Cortex"),
             Line::from("   Three child agents are helping with this investigation."),
@@ -24,7 +27,7 @@ pub fn render(f: &mut Frame) {
         AnnotatedListRow {
             name: "explore",
             detail: "find existing auth middleware",
-            meta: format!("● running {}", chrome::timefmt(12.0)),
+            meta: chrome::inline_live_state("running", 12.0),
             meta_color: chrome::MUTED,
             disabled: false,
         },

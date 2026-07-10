@@ -137,18 +137,18 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "input/subagent-picker": {
         "source_paths": ("screens/subagent_picker.rs",),
-        "sources": ("inline_live_row",),
+        "sources": ("inline_live_state",),
         "owner": "inline",
-        "verb": "explore",
-        "activity": "explore",
+        "verb": "running",
+        "activity": "running",
         "interrupt": "none",
     },
     "views/sidebar-subagents": {
         "source_paths": ("screens/sidebar_subagents.rs",),
-        "sources": ("inline_live_row",),
+        "sources": ("inline_live_state",),
         "owner": "inline",
-        "verb": "explore",
-        "activity": "explore",
+        "verb": "running",
+        "activity": "running",
         "interrupt": "none",
     },
     "orchestration/workflow-monitor": {
@@ -298,9 +298,7 @@ LIVE_SOURCE_PATTERNS = {
     "working_band": re.compile(r"\bchrome::working_band\s*\("),
     "tool_running": re.compile(r"\bToolStatus::Running\s*\("),
     "shell_running": re.compile(r"\bShellStatus::Running\s*\("),
-    "inline_live_row": re.compile(
-        r'format!\(\s*"●\s+running\b[^"]*"\s*,\s*chrome::timefmt\s*\('
-    ),
+    "inline_live_state": re.compile(r"\bchrome::inline_live_state\s*\("),
 }
 
 
@@ -778,6 +776,69 @@ def active_elapsed(row: dict[str, Any]) -> str | None:
     )
 
 
+def live_events(screen: dict[str, Any]) -> list[dict[str, Any]]:
+    events = screen.get("events", [])
+    if not isinstance(events, list):
+        return []
+    return [event for event in events if isinstance(event, dict)]
+
+
+def is_live_shaped_row(row: dict[str, Any]) -> bool:
+    dot_index = row["text"].find("●")
+    if dot_index < 0 or active_elapsed(row) is None:
+        return False
+    dot_span = style_at(row, dot_index)
+    return dot_span is not None and dot_span["fg"] in {ACCENT, MUTED}
+
+
+def event_signature(event: dict[str, Any]) -> tuple[str, str, str | None, str]:
+    return (
+        str(event.get("source")),
+        str(event.get("verb")),
+        event.get("elapsed") if isinstance(event.get("elapsed"), str) else None,
+        str(event.get("interrupt")),
+    )
+
+
+def matching_event(
+    row: dict[str, Any],
+    event: dict[str, Any],
+) -> bool:
+    verb = event.get("verb")
+    elapsed = event.get("elapsed")
+    return (
+        isinstance(verb, str)
+        and isinstance(elapsed, str)
+        and verb in row["text"]
+        and elapsed in row["text"]
+    )
+
+
+def scan_unregistered_inline_helper(
+    audit: Audit,
+    source_root: Path,
+    inventory: dict[str, dict[str, Any]],
+) -> None:
+    for source in sorted(source_root.glob("*.rs")):
+        if not LIVE_SOURCE_PATTERNS["inline_live_state"].search(source.read_text()):
+            continue
+        screen_id = next(
+            (
+                candidate
+                for candidate, spec in inventory.items()
+                if source.relative_to(source_root.parent).as_posix() in spec["source_paths"]
+            ),
+            source.stem.replace("_", "-"),
+        )
+        if screen_id not in inventory:
+            audit.fail(
+                screen_id,
+                0,
+                "live_activity",
+                f"inline_live_state source {source.name} is absent from inventory",
+            )
+
+
 def validate_live_activity(
     audit: Audit,
     screens: list[dict[str, Any]],
@@ -792,14 +853,43 @@ def validate_live_activity(
         if source_root is not None
         else (source_actual or {})
     )
+    if source_root is not None:
+        scan_unregistered_inline_helper(audit, source_root, inventory)
 
     for screen_id in sorted(set(actual) - set(inventory)):
+        screen = registry.get(screen_id)
+        event_rows = (
+            [
+                row
+                for event in live_events(screen or {})
+                for row in (screen or {}).get("rows", [])
+                if is_live_shaped_row(row) and matching_event(row, event)
+            ]
+            if screen is not None
+            else []
+        )
         audit.fail(
             screen_id,
-            0,
+            event_rows[0]["line"] if event_rows else 0,
             "live_activity",
             f"source live activity {sorted(actual[screen_id])} is absent from inventory",
         )
+    for screen_id in sorted(set(registry) - set(inventory)):
+        screen = registry[screen_id]
+        events = live_events(screen)
+        if events:
+            event_rows = [
+                row
+                for event in events
+                for row in screen["rows"]
+                if is_live_shaped_row(row) and matching_event(row, event)
+            ]
+            audit.fail(
+                screen_id,
+                event_rows[0]["line"] if event_rows else 0,
+                "live_activity",
+                f"rendered live events {sorted(event_signature(event) for event in events)} are absent from inventory",
+            )
     for screen_id, spec in inventory.items():
         screen = registry.get(screen_id)
         if screen is None:
@@ -838,11 +928,59 @@ def validate_live_activity(
                     f"declared source has unowned live activity {sorted(extra_sources)}",
                 )
 
-        bands = working_bands(screen)
+        events = live_events(screen)
+        expected_event_sources = sorted(expected_sources)
+        observed_event_sources = sorted(
+            str(event.get("source")) for event in events
+        )
+        if observed_event_sources != expected_event_sources:
+            audit.fail(
+                screen_id,
+                0,
+                "live_activity",
+                f"inventory sources {expected_event_sources} differ from render events {observed_event_sources}",
+            )
+
+        event_pairs = [
+            (event, row)
+            for event in events
+            for row in screen["rows"]
+            if is_live_shaped_row(row) and matching_event(row, event)
+        ]
+        for event in events:
+            matches = [row for candidate, row in event_pairs if candidate is event]
+            if event.get("elapsed") is not None and len(matches) != 1:
+                audit.fail(
+                    screen_id,
+                    matches[0]["line"] if matches else 0,
+                    "live_activity",
+                    f"rendered event {event_signature(event)} maps to {len(matches)} live-shaped rows",
+                )
+        for row in screen["rows"]:
+            if not is_live_shaped_row(row):
+                continue
+            matches = [event for event, candidate in event_pairs if candidate is row]
+            if len(matches) != 1:
+                audit.fail(
+                    screen_id,
+                    row["line"],
+                    "live_activity",
+                    f"live-shaped row maps to {len(matches)} render events",
+                )
+
+        bands = [
+            row
+            for event, row in event_pairs
+            if event.get("source") == "working_band"
+        ]
         owner = spec["owner"]
         verb = spec["verb"]
         activity = spec["activity"]
-        activity_rows = [row for row in screen["rows"] if activity in row["text"]]
+        activity_rows = [
+            row
+            for event, row in event_pairs
+            if event.get("verb") == verb and activity in row["text"]
+        ]
         interrupt_rows = [
             row for row in screen["rows"] if "esc to interrupt" in row["text"]
         ]
@@ -855,6 +993,18 @@ def validate_live_activity(
             )
             continue
         activity_row = activity_rows[0]
+        activity_event = next(
+            event for event, row in event_pairs if row is activity_row and event.get("verb") == verb
+        )
+
+        expected_interrupt = spec["interrupt"]
+        if activity_event.get("interrupt") != expected_interrupt:
+            audit.fail(
+                screen_id,
+                activity_row["line"],
+                "live_activity",
+                f"inventory interrupt '{expected_interrupt}' differs from render event '{activity_event.get('interrupt')}'",
+            )
 
         if owner == "band":
             if len(bands) != 1:
@@ -888,6 +1038,13 @@ def validate_live_activity(
                     band["line"],
                     "live_activity",
                     f"band does not own verb '{verb}'",
+                )
+            if activity_event.get("source") != "working_band":
+                audit.fail(
+                    screen_id,
+                    band["line"],
+                    "live_activity",
+                    "band owner is not recorded by working_band",
                 )
             elapsed_rows = [row for row in screen["rows"] if elapsed in row["text"]]
             if len(elapsed_rows) != 1:
@@ -930,9 +1087,16 @@ def validate_live_activity(
                     "live_activity",
                     f"inline elapsed is not owned by verb '{verb}'",
                 )
+            if activity_event.get("source") == "working_band":
+                audit.fail(
+                    screen_id,
+                    activity_row["line"],
+                    "live_activity",
+                    "inline owner is recorded by working_band",
+                )
             audit.counts["inline_live_activity"] += 1
 
-        interrupt_owner = spec["interrupt"]
+        interrupt_owner = expected_interrupt
         if interrupt_owner == "band":
             if len(interrupt_rows) != 1 or (bands and interrupt_rows[0] not in bands):
                 audit.fail(
@@ -997,8 +1161,20 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
             {},
             {
                 "fixtures/source-live.txt": live_source_types(
-                    "chrome::tool_line(ToolStatus::Running(elapsed), \"Task\", \"audit\"); "
+                    "chrome::tool_line(ToolStatus::Running(elapsed, LiveActivityInterrupt::None), \"Task\", \"audit\"); "
                     "chrome::shell_line(ShellStatus::Running(elapsed), \"cargo test\");"
+                )
+            },
+        )
+    elif fixture_name == "cross-003-inline-helper-unlisted":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {},
+            {
+                "fixtures/helper-live.txt": live_source_types(
+                    'chrome::inline_live_state("cataloguing", elapsed);'
                 )
             },
         )
@@ -1074,6 +1250,30 @@ def fixture(name: str) -> dict[str, Any]:
                 {
                     "id": "fixtures/source-live.txt",
                     "rows": [status],
+                }
+            ]
+        }
+    if name == "cross-003-inline-helper-unlisted":
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/helper-live.txt",
+                    "events": [
+                        {
+                            "source": "inline_live_state",
+                            "verb": "cataloguing",
+                            "elapsed": "12s",
+                            "interrupt": "none",
+                        }
+                    ],
+                    "rows": [
+                        row(
+                            1,
+                            " ● cataloguing 12s",
+                            [span(0, 2, MUTED), span(2, 18)],
+                        ),
+                        status,
+                    ],
                 }
             ]
         }
@@ -1177,6 +1377,7 @@ def main() -> int:
             "cross-003-duplicate",
             "cross-003-unlisted",
             "cross-003-source-unlisted",
+            "cross-003-inline-helper-unlisted",
             "cross-004-valid",
             "cross-004-fractional",
             "cross-004-malformed",

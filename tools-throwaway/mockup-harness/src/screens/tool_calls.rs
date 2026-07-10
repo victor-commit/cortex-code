@@ -5,19 +5,15 @@
 //! line - elapsed renders exactly once per activity.
 
 use ratatui::{
-    text::{Line, Span},
     Frame,
+    text::{Line, Span},
 };
 
-use crate::chrome::{self, m, t, StatusLine, ToolStatus};
+use crate::chrome::{self, LiveActivityInterrupt, StatusLine, ToolStatus, m, t};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
-    let body = chrome::cli_page(
-        f,
-        "reply to Cortex, or ask a follow-up\u{2026}",
-        &status,
-    );
+    let body = chrome::cli_page(f, "reply to Cortex, or ask a follow-up\u{2026}", &status);
 
     let mut done = chrome::verdict(true, "214 lines");
     done.push(m(&format!(" {} {}", chrome::SEP, chrome::timefmt(0.3))));
@@ -62,7 +58,7 @@ pub fn render(f: &mut Frame) {
     lines.push(Line::from(""));
 
     lines.push(chrome::tool_line(
-        ToolStatus::Running(Some(12.0)),
+        ToolStatus::Running(Some(12.0), LiveActivityInterrupt::None),
         "Search",
         "pattern: \"poll_cadence\"",
     ));
