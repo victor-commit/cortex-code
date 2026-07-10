@@ -2,25 +2,25 @@
 
    Workflow wf-42
    goal  deliver the auth, API, and web milestones in dependency order
-   levers  parallelism [N=3] n edit  ·  budget [$2.00] b edit
+   levers  execution serial  ·  budget [$2.00] b edit
 
    Preflight · Step 0
    │ ✗ MISSING acceptance-contract.md
    │ Create acceptance-contract.md from the approved mission contract.
    │ r re-run preflight · esc close
-   ✓ architecture.md
-   ✓ acceptance-state.json
-   ✓ features.json
-   ✓ boundaries.md
-   ✓ services.yaml
-   ✓ init.sh
-   ✓ skills/
-   ✓ workflow/wf-42/integration
-   ✓ progress-log.jsonl
-   ✓ intents/
-
-   ✗ preflight FAILED · 10/11 artifacts present
-   ✗ MISSING acceptance-contract.md; exit 1
+   ✓ architecture.md  ·  present and valid
+   ✓ acceptance-state.json  ·  present and valid
+   ✓ features.json  ·  present and valid
+   ✓ boundaries.md  ·  present and valid
+   ✓ services.yaml  ·  present and valid
+   ✓ init.sh  ·  present and valid
+   ✓ skills/  ·  present and valid
+   Runner outputs
+   ○ workflow/wf-42/integration  ·  not seeded
+   ○ progress-log.jsonl  ·  not seeded
+   ○ intents/  ·  not seeded
+   ● Step 0 blocked · 7/8 author-time inputs present and valid
+   ○ 0/3 runner outputs seeded · Step 0 stopped before seeding
 
    Feature dependency graph · features.json
    [wave 1]  feat-db-schema  →  ACC-AUTH-002
@@ -32,7 +32,7 @@
 │  Launch disabled until preflight passes. No worker was started.                                                      │
 │                                                                                                                      │
 │  Fix the pinned missing artifact, then return to preflight.                                                          │
-│  No integration branch, progress log, or intents directory was created.                                              │
+│  All three runner outputs remain neutral and not seeded.                                                             │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

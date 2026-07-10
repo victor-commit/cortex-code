@@ -6,7 +6,7 @@ use ratatui::{
 
 use crate::chrome::{self, c, m, t, StatusLine, ACCENT, BRIGHT, OK};
 
-const ARTIFACTS: &[&str] = &[
+const AUTHOR_TIME_INPUTS: &[&str] = &[
     "architecture.md",
     "acceptance-contract.md",
     "acceptance-state.json",
@@ -32,10 +32,9 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::raw("   "),
-            m("levers  parallelism "),
-            c("[N=3]", BRIGHT),
-            c(" n", ACCENT),
-            m(" edit  ·  budget "),
+            m("levers  execution "),
+            c("serial", BRIGHT),
+            m("  ·  budget "),
             c("[$2.00]", BRIGHT),
             c(" b", ACCENT),
             m(" edit"),
@@ -43,36 +42,39 @@ pub fn render(f: &mut Frame) {
         Line::from(""),
         chrome::agent_head("Preflight · Step 0"),
     ];
-    lines.extend(ARTIFACTS.iter().map(|artifact| {
+    lines.extend(AUTHOR_TIME_INPUTS.iter().map(|artifact| {
         Line::from(vec![
             Span::raw("   "),
             c("✓ ", OK),
             t(artifact),
+            m("  ·  present and valid"),
         ])
     }));
     lines.extend([
+        Line::from(""),
+        chrome::agent_head("Runner outputs · seeded by Step 0"),
         Line::from(vec![
             Span::raw("   "),
             c("✓ ", OK),
             t("workflow/wf-42/integration"),
-            m("  ·  runner-seeded"),
+            m("  ·  seeded by Step 0"),
         ]),
         Line::from(vec![
             Span::raw("   "),
             c("✓ ", OK),
             t("progress-log.jsonl"),
-            m("  ·  runner-seeded"),
+            m("  ·  seeded by Step 0"),
         ]),
         Line::from(vec![
             Span::raw("   "),
             c("✓ ", OK),
             t("intents/"),
-            m("  ·  runner-seeded"),
+            m("  ·  seeded by Step 0"),
         ]),
         Line::from(vec![
             Span::raw("   "),
             c("● ", OK),
-            t("preflight OK · 11/11 artifacts present"),
+            t("Step 0 complete · 8/8 author-time inputs present and valid · 3/3 runner outputs seeded by Step 0"),
         ]),
         Line::from(""),
         chrome::agent_head("Feature dependency graph · features.json"),
@@ -113,19 +115,19 @@ pub fn render(f: &mut Frame) {
         f,
         dock,
         "Launch workflow",
-        &[("enter", "launch"), ("esc", "cancel")],
+        &[("enter", "start workers"), ("esc", "cancel")],
     );
     let dock_lines = vec![
-        Line::from("  wf-42  ·  4 features  ·  wave 1 starts with feat-db-schema"),
+        Line::from("  wf-42  ·  4 features  ·  Step 0 seeded all runner outputs"),
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
             c("› ", BRIGHT),
-            t("Launch after this preflight"),
+            t("Start workers after Step 0"),
         ]),
         Line::from(vec![
             Span::raw("  "),
-            m("The runner will seed integration, progress log, and intents after launch."),
+            m("Integration, progress log, and intents are seeded before worker 1 starts."),
         ]),
     ];
     f.render_widget(Paragraph::new(dock_lines), inner);

@@ -4,9 +4,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::chrome::{self, c, m, t, StatusLine, ACCENT, BAD, BRIGHT, FAINT, OK};
+use crate::chrome::{self, c, m, t, StatusLine, ACCENT, BAD, BRIGHT, FAINT, MUTED, OK};
 
-const PRESENT_ARTIFACTS: &[&str] = &[
+const PRESENT_AUTHOR_TIME_INPUTS: &[&str] = &[
     "architecture.md",
     "acceptance-state.json",
     "features.json",
@@ -14,9 +14,6 @@ const PRESENT_ARTIFACTS: &[&str] = &[
     "services.yaml",
     "init.sh",
     "skills/",
-    "workflow/wf-42/integration",
-    "progress-log.jsonl",
-    "intents/",
 ];
 
 pub fn render(f: &mut Frame) {
@@ -38,10 +35,9 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::raw("   "),
-            m("levers  parallelism "),
-            c("[N=3]", BRIGHT),
-            c(" n", ACCENT),
-            m(" edit  ·  budget "),
+            m("levers  execution "),
+            c("serial", BRIGHT),
+            m("  ·  budget "),
             c("[$2.00]", BRIGHT),
             c(" b", ACCENT),
             m(" edit"),
@@ -54,24 +50,43 @@ pub fn render(f: &mut Frame) {
         vec![t("Create acceptance-contract.md from the approved mission contract.")],
         recovery,
     ]));
-    lines.extend(PRESENT_ARTIFACTS.iter().map(|artifact| {
+    lines.extend(PRESENT_AUTHOR_TIME_INPUTS.iter().map(|artifact| {
         Line::from(vec![
             Span::raw("   "),
             c("✓ ", OK),
             t(artifact),
+            m("  ·  present and valid"),
         ])
     }));
     lines.extend([
-        Line::from(""),
+        chrome::agent_head("Runner outputs"),
         Line::from(vec![
             Span::raw("   "),
-            c("✗ ", BAD),
-            t("preflight FAILED · 10/11 artifacts present"),
+            c("○ ", MUTED),
+            t("workflow/wf-42/integration"),
+            m("  ·  not seeded"),
         ]),
         Line::from(vec![
             Span::raw("   "),
-            c("✗ ", BAD),
-            t("MISSING acceptance-contract.md; exit 1"),
+            c("○ ", MUTED),
+            t("progress-log.jsonl"),
+            m("  ·  not seeded"),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            c("○ ", MUTED),
+            t("intents/"),
+            m("  ·  not seeded"),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            c("● ", BAD),
+            t("Step 0 blocked · 7/8 author-time inputs present and valid"),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            c("○ ", MUTED),
+            t("0/3 runner outputs seeded · Step 0 stopped before seeding"),
         ]),
         Line::from(""),
         chrome::agent_head("Feature dependency graph · features.json"),
@@ -120,7 +135,7 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(""),
         Line::from("  Fix the pinned missing artifact, then return to preflight."),
-        Line::from("  No integration branch, progress log, or intents directory was created."),
+        Line::from("  All three runner outputs remain neutral and not seeded."),
     ];
     f.render_widget(Paragraph::new(dock_lines), inner);
 }

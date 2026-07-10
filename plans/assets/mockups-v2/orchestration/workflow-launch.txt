@@ -1,25 +1,25 @@
 
-
-
  › run_workflow wf-42  · now
 
    Workflow wf-42
    goal  deliver the auth, API, and web milestones in dependency order
-   levers  parallelism [N=3] n edit  ·  budget [$2.00] b edit
+   levers  execution serial  ·  budget [$2.00] b edit
 
    Preflight · Step 0
-   ✓ architecture.md
-   ✓ acceptance-contract.md
-   ✓ acceptance-state.json
-   ✓ features.json
-   ✓ boundaries.md
-   ✓ services.yaml
-   ✓ init.sh
-   ✓ skills/
-   ✓ workflow/wf-42/integration  ·  runner-seeded
-   ✓ progress-log.jsonl  ·  runner-seeded
-   ✓ intents/  ·  runner-seeded
-   ● preflight OK · 11/11 artifacts present
+   ✓ architecture.md  ·  present and valid
+   ✓ acceptance-contract.md  ·  present and valid
+   ✓ acceptance-state.json  ·  present and valid
+   ✓ features.json  ·  present and valid
+   ✓ boundaries.md  ·  present and valid
+   ✓ services.yaml  ·  present and valid
+   ✓ init.sh  ·  present and valid
+   ✓ skills/  ·  present and valid
+
+   Runner outputs · seeded by Step 0
+   ✓ workflow/wf-42/integration  ·  seeded by Step 0
+   ✓ progress-log.jsonl  ·  seeded by Step 0
+   ✓ intents/  ·  seeded by Step 0
+   ● Step 0 complete · 8/8 author-time inputs present and valid · 3/3 runner outputs seeded by Step 0
 
    Feature dependency graph · features.json
    [wave 1]  feat-db-schema  →  ACC-AUTH-002
@@ -29,12 +29,12 @@
    schedule  wave 1: feat-db-schema  ·  wave 2: 2 features  ·  wave 3: feat-web-ui
 
 ╭ Launch workflow ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│  wf-42  ·  4 features  ·  wave 1 starts with feat-db-schema                                                          │
+│  wf-42  ·  4 features  ·  Step 0 seeded all runner outputs                                                           │
 │                                                                                                                      │
-│  › Launch after this preflight                                                                                       │
-│  The runner will seed integration, progress log, and intents after launch.                                           │
+│  › Start workers after Step 0                                                                                        │
+│  Integration, progress log, and intents are seeded before worker 1 starts.                                           │
 │                                                                                                                      │
 │                                                                                                                      │
-│ enter launch · esc cancel                                                                                            │
+│ enter start workers · esc cancel                                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  ~/projects/cortex-code · master · Claude Opus 4.8
