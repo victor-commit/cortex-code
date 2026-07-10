@@ -1,0 +1,84 @@
+{
+  "entries": [
+    {
+      "path": ".firecrawl/",
+      "status": "??"
+    },
+    {
+      "path": "000-attachment.svg",
+      "status": "??"
+    },
+    {
+      "path": "001-invalid.txt",
+      "status": "??"
+    },
+    {
+      "path": "cortex.toml",
+      "status": "??"
+    },
+    {
+      "path": "crates/cli/install-marker.txt",
+      "status": "??"
+    },
+    {
+      "path": "crates/cli/src/generate_cmd.rs",
+      "status": " M"
+    },
+    {
+      "path": "crates/cli/src/lib.rs",
+      "status": "??"
+    },
+    {
+      "path": "crates/cli/tests/custom_agents.rs",
+      "status": " M"
+    },
+    {
+      "path": "crates/server/install-marker.txt",
+      "status": "??"
+    },
+    {
+      "path": "crates/subagent_runner/src/custom_agents.rs",
+      "status": " M"
+    },
+    {
+      "path": "data/",
+      "status": "??"
+    },
+    {
+      "path": "install-marker.txt",
+      "status": "??"
+    },
+    {
+      "path": "p6a.txt",
+      "status": "??"
+    },
+    {
+      "path": "p6b.txt",
+      "status": "??"
+    },
+    {
+      "path": "research/05-gap-analysis.md",
+      "status": "??"
+    },
+    {
+      "path": "server_edit.txt",
+      "status": "??"
+    },
+    {
+      "path": "src/",
+      "status": "??"
+    },
+    {
+      "path": "tools-throwaway/mockup-harness/__pycache__/",
+      "status": "??"
+    }
+  ],
+  "excluded_v3_prefixes": [
+    "tools-throwaway/mockup-harness-v3/",
+    "plans/assets/mockups-v3/",
+    "plans/assets/mockups-v3-gates/"
+  ],
+  "head_commit": "5b481be0e5021eb4d68bcd01a5a412b71e72159f",
+  "schema_version": 1,
+  "status_format": "git status --porcelain=v1 -z"
+}

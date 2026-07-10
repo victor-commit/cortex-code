@@ -1,0 +1,13 @@
+{
+  "frozen_roots": [
+    "tools-throwaway/mockup-harness",
+    "plans/assets/mockups-v2",
+    "plans/assets/mockups"
+  ],
+  "hash_algorithm": "sha256",
+  "head_commit": "5b481be0e5021eb4d68bcd01a5a412b71e72159f",
+  "manifest_format": "sha256sum, repository-relative path",
+  "manifest_sha256": "e9acf871e0d6b6a5a0d3c27826a5e2b40ca56682dff9170fcdd69cf991f13064",
+  "schema_version": 1,
+  "tracked_file_count": 410
+}
