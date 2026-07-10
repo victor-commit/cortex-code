@@ -45,8 +45,8 @@ pub struct McpServerConfig {
     /// The working directory the local server child is spawned in (defaults to the cortex cwd).
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Extra environment variables to set on the spawned child, layered on top of the inherited
-    /// environment.
+    /// Extra environment variables to set on the spawned child, layered on top of the documented
+    /// safe execution baseline (`PATH` on Unix, plus required Windows loader variables).
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     /// The per-operation timeout (handshake and each request) in seconds. Falls back to the

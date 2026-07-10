@@ -54,6 +54,7 @@ struct State {
     expires_in: u64,
     required_authorization: Option<String>,
     echo_authorization_in_errors: bool,
+    www_authenticate: String,
 }
 
 impl State {
@@ -196,6 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|value| !value.trim().is_empty());
     let echo_authorization_in_errors =
         std::env::var_os("CORTEX_MCP_ECHO_AUTHORIZATION_IN_ERROR").is_some();
+    let www_authenticate = std::env::var("CORTEX_MCP_WWW_AUTHENTICATE")
+        .unwrap_or_else(|_| "Bearer realm=\"cortex-mcp\"".to_owned());
 
     let state = Arc::new(State {
         mode,
@@ -212,6 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_in,
         required_authorization,
         echo_authorization_in_errors,
+        www_authenticate,
     });
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
@@ -345,7 +349,7 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
         // --- Streamable HTTP transport (and OAuth-gated streamable) ---
         (Mode::Streamable, "POST", _) | (Mode::Oauth, "POST", _) => {
             if !authorized(&state, &request).await {
-                return write_unauthorized(&mut stream).await;
+                return write_unauthorized(&mut stream, &state.www_authenticate).await;
             }
             handle_streamable_post(
                 &mut stream,
@@ -357,7 +361,7 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
         }
         (Mode::Streamable, "GET", _) | (Mode::Oauth, "GET", _) => {
             if !authorized(&state, &request).await {
-                return write_unauthorized(&mut stream).await;
+                return write_unauthorized(&mut stream, &state.www_authenticate).await;
             }
             state.log("GET SSE notification stream opened");
             handle_notification_stream(stream, &state).await
@@ -390,11 +394,11 @@ async fn authorized(state: &State, request: &Request) -> bool {
     state.issued_access.lock().await.contains(token.trim())
 }
 
-async fn write_unauthorized(stream: &mut TcpStream) -> std::io::Result<()> {
+async fn write_unauthorized(stream: &mut TcpStream, www_authenticate: &str) -> std::io::Result<()> {
     let body = "{\"error\":\"unauthorized\"}";
     let response = format!(
-        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nWWW-Authenticate: Bearer realm=\"cortex-mcp\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nWWW-Authenticate: {www_authenticate}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
     );
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await

@@ -72,6 +72,23 @@ pub struct ServerStatus {
     pub prompts: Vec<McpPrompt>,
 }
 
+impl ServerStatus {
+    /// Return the error detail safe to serialize or render on a user-facing surface.
+    ///
+    /// OAuth challenges are untrusted transport metadata. The connection state retains the typed
+    /// `needs_auth` signal, while every public surface receives only this stable action text.
+    #[must_use]
+    pub fn public_error(&self) -> Option<String> {
+        if self.state == ConnectionState::NeedsAuth {
+            return Some(format!(
+                "authorization required (run `cortex mcp auth {}`)",
+                self.name
+            ));
+        }
+        self.error.clone()
+    }
+}
+
 /// Options controlling how the manager connects (event bus + credential store).
 #[derive(Clone, Default)]
 pub struct McpConnectOptions {
@@ -93,6 +110,39 @@ pub struct McpManager {
     statuses: Vec<ServerStatus>,
 }
 
+/// Own connected clients until [`McpManager`] can take responsibility for normal shutdown.
+///
+/// Connecting a later server awaits while earlier stdio clients are already live. If setup is
+/// cancelled at that point, dropping a plain `HashMap` would only drop the client handles and could
+/// orphan their descendants. This guard snapshots and kills each owned stdio tree by exact PID
+/// unless ownership is explicitly transferred into the returned manager.
+#[derive(Default)]
+struct ConnectingClientsGuard {
+    clients: HashMap<String, Arc<McpClient>>,
+    transferred: bool,
+}
+
+impl ConnectingClientsGuard {
+    fn insert(&mut self, name: String, client: Arc<McpClient>) {
+        self.clients.insert(name, client);
+    }
+
+    fn transfer(mut self) -> HashMap<String, Arc<McpClient>> {
+        self.transferred = true;
+        std::mem::take(&mut self.clients)
+    }
+}
+
+impl Drop for ConnectingClientsGuard {
+    fn drop(&mut self) {
+        if !self.transferred {
+            for client in self.clients.values() {
+                client.reap_tree_now();
+            }
+        }
+    }
+}
+
 impl McpManager {
     /// Connect every enabled server in `servers` with default options (no event bus or credential
     /// store).
@@ -111,7 +161,7 @@ impl McpManager {
     ) -> Self {
         let catalogue = LiveCatalogue::new(options.bus.clone());
         let roots = roots_from_options(&options.roots);
-        let mut clients = HashMap::new();
+        let mut connecting_clients = ConnectingClientsGuard::default();
         let mut statuses = Vec::new();
 
         for (name, config) in servers {
@@ -141,7 +191,7 @@ impl McpManager {
             match outcome {
                 Ok((client, server_catalogue)) => {
                     let pid = client.pid();
-                    clients.insert(name.clone(), Arc::new(client));
+                    connecting_clients.insert(name.clone(), Arc::new(client));
                     statuses.push(ServerStatus {
                         name,
                         state: ConnectionState::Connected,
@@ -178,7 +228,7 @@ impl McpManager {
         }
 
         Self {
-            clients,
+            clients: connecting_clients.transfer(),
             catalogue,
             statuses,
         }

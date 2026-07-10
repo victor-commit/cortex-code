@@ -41,6 +41,16 @@ fn pid_alive(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
+async fn wait_until_gone(pid: u32) -> bool {
+    for _ in 0..50 {
+        if !pid_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 fn temp_path(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "cortex-mcp-remote-{tag}-{}-{}",
@@ -575,6 +585,39 @@ async fn oauth_flow_connects_persists_reuses_and_never_leaks() {
 }
 
 #[tokio::test]
+async fn oauth_401_is_typed_needs_auth_without_exposing_the_challenge() {
+    let challenge = "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-leak\"";
+    let _fixture = Fixture::spawn(
+        "oauth",
+        3240,
+        None,
+        &[("CORTEX_MCP_WWW_AUTHENTICATE", challenge)],
+    );
+    wait_for_port(3240).await;
+    let servers = config(json!({
+        "api": { "type": "remote", "url": "http://127.0.0.1:3240/mcp" }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    let status = &manager.statuses()[0];
+    assert_eq!(status.state, ConnectionState::NeedsAuth);
+    let rendered = format!("{status:?}");
+    assert!(
+        !rendered.contains(challenge) && !rendered.contains("challenge-must-not-leak"),
+        "a server OAuth challenge must not escape the typed status projection: {rendered}"
+    );
+    assert!(
+        status
+            .public_error()
+            .as_deref()
+            .is_some_and(|error| error.contains("authorization required")),
+        "needs_auth must retain an actionable safe message: {:?}",
+        status.public_error()
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
 async fn oauth_rejects_a_forged_callback_state() {
     let _fixture = Fixture::spawn("oauth", 3215, None, &[]);
     wait_for_port(3215).await;
@@ -819,4 +862,82 @@ async fn cancelled_stdio_setup_reaps_spawned_server_and_descendant() {
         "cancelling setup must reap the spawned descendant ({grandchild_pid})"
     );
     let _ = std::fs::remove_file(&pid_file);
+}
+
+#[tokio::test]
+async fn cancelled_manager_setup_reaps_previously_connected_and_inflight_trees() {
+    let bin = echo_server_bin();
+    let first_log = temp_path("cancelled-manager-first-log");
+    let first_descendant_file = temp_path("cancelled-manager-first-descendant");
+    let inflight_log = temp_path("cancelled-manager-inflight-log");
+    let inflight_descendant_file = temp_path("cancelled-manager-inflight-descendant");
+    let servers = config(json!({
+        "a-connected": {
+            "type": "local",
+            "command": [bin.clone()],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": first_log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": first_descendant_file.to_string_lossy()
+            }
+        },
+        "b-inflight": {
+            "type": "local",
+            "command": [bin],
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": inflight_log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": inflight_descendant_file.to_string_lossy(),
+                "CORTEX_MCP_ECHO_STALL_BEFORE_SERVE": "1"
+            }
+        }
+    }));
+
+    // The first server has completed setup and is only owned by the manager-local collection when
+    // the second server stalls. Aborting here must reap both exact trees, not just the in-flight
+    // connection protected by McpClient's own spawn guard.
+    let task = tokio::spawn(async move { McpManager::connect(servers).await });
+    let inflight_descendant = wait_for_pid_file(&inflight_descendant_file).await;
+    let first_descendant = wait_for_pid_file(&first_descendant_file).await;
+    let first_pid = started_pid_from_log(&first_log).expect("first server wrote its PID");
+    let inflight_pid = started_pid_from_log(&inflight_log).expect("in-flight server wrote its PID");
+    task.abort();
+    let _ = task.await;
+
+    for pid in [
+        first_pid,
+        first_descendant,
+        inflight_pid,
+        inflight_descendant,
+    ] {
+        assert!(
+            wait_until_gone(pid).await,
+            "cancelling manager setup must reap exact PID {pid}"
+        );
+    }
+    let _ = std::fs::remove_file(first_log);
+    let _ = std::fs::remove_file(first_descendant_file);
+    let _ = std::fs::remove_file(inflight_log);
+    let _ = std::fs::remove_file(inflight_descendant_file);
+}
+
+async fn wait_for_pid_file(path: &std::path::Path) -> u32 {
+    for _ in 0..100 {
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("fixture did not report a PID in {}", path.display());
+}
+
+fn started_pid_from_log(path: &std::path::Path) -> Option<u32> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    contents.lines().find_map(|line| {
+        line.split_once("pid=")
+            .and_then(|(_, tail)| tail.split_whitespace().next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+    })
 }

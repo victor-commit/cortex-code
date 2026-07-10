@@ -58,8 +58,6 @@ pub enum McpError {
     NeedsAuth {
         /// The server name.
         server: String,
-        /// The server's `WWW-Authenticate` challenge, when provided.
-        www_authenticate: Option<String>,
     },
     /// An operation timed out.
     #[error("MCP server `{server}`: {operation} timed out after {timeout:?}")]
@@ -122,10 +120,9 @@ impl McpError {
         }
     }
 
-    pub(crate) fn needs_auth(server: &str, www_authenticate: Option<String>) -> Self {
+    pub(crate) fn needs_auth(server: &str) -> Self {
         Self::NeedsAuth {
             server: server.to_owned(),
-            www_authenticate,
         }
     }
 

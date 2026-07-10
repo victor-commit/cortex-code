@@ -44,6 +44,30 @@ async fn wait_until_gone(pid: u32) -> bool {
     false
 }
 
+async fn descendant_pid_from_file(path: &Path) -> u32 {
+    for _ in 0..100 {
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "the fixture did not write its descendant PID to {}",
+        path.display()
+    );
+}
+
+async fn assert_tree_reaped(label: &str, pids: &[u32]) {
+    for &pid in pids {
+        assert!(
+            wait_until_gone(pid).await,
+            "{label} must reap PID {pid} by exact PID"
+        );
+    }
+}
+
 fn started_pid_from_log(path: &Path) -> Option<u32> {
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|line| {
@@ -286,6 +310,79 @@ async fn stdio_server_observes_configured_cwd_and_env_without_host_secret_leak()
 }
 
 #[tokio::test]
+async fn stdio_child_receives_only_safe_baseline_and_explicit_environment() {
+    // A subprocess gives this test a truly parent-inherited innocuously named secret without
+    // mutating the shared integration-test process environment.
+    const PROBE: &str = "CORTEX_MCP_CHILD_ENV_ALLOWLIST_PROBE";
+    if std::env::var_os(PROBE).is_none() {
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("resolve test binary"))
+                .arg("stdio_child_receives_only_safe_baseline_and_explicit_environment")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(PROBE, "1")
+                .env(
+                    "CORTEX_MCP_INNOCUOUS_PARENT_SECRET",
+                    "parent-value-must-not-cross-the-mcp-boundary",
+                )
+                .env("XDG_CONFIG_HOME", "/tmp/cortex-parent-xdg-config")
+                .status()
+                .expect("run environment-isolation probe");
+        assert!(status.success(), "environment-isolation child test failed");
+        return;
+    }
+
+    let bin = echo_server_bin();
+    let servers = config(json!({
+        "demo": {
+            "type": "local",
+            "command": [bin],
+            "environment": { "CORTEX_MCP_EXPLICIT_VALUE": "configured-value" }
+        }
+    }));
+    let manager = McpManager::connect(servers).await;
+    assert_eq!(manager.statuses()[0].state, mcp::ConnectionState::Connected);
+
+    for forbidden in [
+        "CORTEX_MCP_INNOCUOUS_PARENT_SECRET",
+        "HOME",
+        "XDG_CONFIG_HOME",
+    ] {
+        let report = manager
+            .call("demo_env", json!({ "name": forbidden }))
+            .await
+            .expect("query child environment");
+        assert!(
+            report.content.contains(&format!("{forbidden}=(unset)")),
+            "{forbidden} must not cross the stdio environment boundary: {}",
+            report.content
+        );
+    }
+    let configured = manager
+        .call("demo_env", json!({ "name": "CORTEX_MCP_EXPLICIT_VALUE" }))
+        .await
+        .expect("query configured child environment");
+    assert!(
+        configured
+            .content
+            .contains("CORTEX_MCP_EXPLICIT_VALUE=configured-value"),
+        "explicit per-server environment values must be forwarded: {}",
+        configured.content
+    );
+    let path = manager
+        .call("demo_env", json!({ "name": "PATH" }))
+        .await
+        .expect("query safe baseline PATH");
+    assert!(
+        !path.content.contains("PATH=(unset)"),
+        "the documented execution baseline must preserve PATH: {}",
+        path.content
+    );
+
+    manager.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_disabled_server_is_not_spawned() {
     let bin = echo_server_bin();
     let servers = config(json!({
@@ -501,6 +598,7 @@ async fn mcp_tool_is_error_result_is_relayed_as_error() {
 async fn stdio_initialize_timeout_is_bounded_and_kills_child() {
     let bin = echo_server_bin();
     let log = temp_path("stall-init-log");
+    let pid_file = temp_path("stall-init-grandchild-pid");
     let servers = config(json!({
         "stall": {
             "type": "local",
@@ -508,7 +606,9 @@ async fn stdio_initialize_timeout_is_bounded_and_kills_child() {
             "timeout": 1,
             "environment": {
                 "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
-                "CORTEX_MCP_ECHO_STALL_BEFORE_SERVE": "1"
+                "CORTEX_MCP_ECHO_STALL_BEFORE_SERVE": "1",
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": pid_file.to_string_lossy()
             }
         }
     }));
@@ -528,12 +628,128 @@ async fn stdio_initialize_timeout_is_bounded_and_kills_child() {
     );
 
     let pid = started_pid_from_log(&log).expect("server wrote its PID before stalling");
-    assert!(
-        wait_until_gone(pid).await,
-        "the stalled server child (pid {pid}) must be killed after initialize timeout"
-    );
+    let descendant = descendant_pid_from_file(&pid_file).await;
+    assert_tree_reaped("initialize timeout", &[pid, descendant]).await;
     manager.shutdown().await;
     let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&pid_file);
+}
+
+#[tokio::test]
+async fn stdio_initialize_rejection_reaps_child_and_descendant() {
+    let bin = echo_server_bin();
+    let log = temp_path("reject-init-log");
+    let pid_file = temp_path("reject-init-grandchild-pid");
+    let servers = config(json!({
+        "reject": {
+            "type": "local",
+            "command": [bin],
+            "timeout": 1,
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_REJECT_INITIALIZE": "1",
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": pid_file.to_string_lossy()
+            }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    let status = &manager.statuses()[0];
+    assert_eq!(status.state, mcp::ConnectionState::Failed);
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("initialize")),
+        "expected a named initialize rejection: {:?}",
+        status.error
+    );
+
+    let pid = started_pid_from_log(&log).expect("rejected server wrote its PID");
+    let descendant = descendant_pid_from_file(&pid_file).await;
+    assert_tree_reaped("initialize rejection", &[pid, descendant]).await;
+    manager.shutdown().await;
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&pid_file);
+}
+
+#[tokio::test]
+async fn stdio_listing_rejection_reaps_child_and_descendant() {
+    let bin = echo_server_bin();
+    let log = temp_path("reject-list-log");
+    let pid_file = temp_path("reject-list-grandchild-pid");
+    let servers = config(json!({
+        "reject": {
+            "type": "local",
+            "command": [bin],
+            "timeout": 1,
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_REJECT_LIST_TOOLS": "1",
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": pid_file.to_string_lossy()
+            }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    let status = &manager.statuses()[0];
+    assert_eq!(status.state, mcp::ConnectionState::Failed);
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("tools/list")),
+        "expected a named listing rejection: {:?}",
+        status.error
+    );
+
+    let pid = started_pid_from_log(&log).expect("listing-rejected server wrote its PID");
+    let descendant = descendant_pid_from_file(&pid_file).await;
+    assert_tree_reaped("tools/list rejection", &[pid, descendant]).await;
+    manager.shutdown().await;
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&pid_file);
+}
+
+#[tokio::test]
+async fn stdio_listing_timeout_reaps_child_and_descendant() {
+    let bin = echo_server_bin();
+    let log = temp_path("stall-list-log");
+    let pid_file = temp_path("stall-list-grandchild-pid");
+    let servers = config(json!({
+        "stall": {
+            "type": "local",
+            "command": [bin],
+            "timeout": 1,
+            "environment": {
+                "CORTEX_MCP_ECHO_LOG": log.to_string_lossy(),
+                "CORTEX_MCP_ECHO_STALL_LIST_TOOLS": "1",
+                "CORTEX_MCP_ECHO_SPAWN_CHILD": "1",
+                "CORTEX_MCP_ECHO_CHILD_PID_FILE": pid_file.to_string_lossy()
+            }
+        }
+    }));
+
+    let manager = McpManager::connect(servers).await;
+    let status = &manager.statuses()[0];
+    assert_eq!(status.state, mcp::ConnectionState::Failed);
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("tools/list") && error.contains("timed out")),
+        "expected a bounded listing timeout: {:?}",
+        status.error
+    );
+
+    let pid = started_pid_from_log(&log).expect("listing-stalled server wrote its PID");
+    let descendant = descendant_pid_from_file(&pid_file).await;
+    assert_tree_reaped("tools/list timeout", &[pid, descendant]).await;
+    manager.shutdown().await;
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&pid_file);
 }
 
 #[tokio::test]

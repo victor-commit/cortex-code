@@ -505,7 +505,7 @@ fn list_servers(args: McpListArgs) -> Exit {
                 name: status.name.clone(),
                 status: status.state.as_str(),
                 pid: status.pid,
-                error: status.error.clone(),
+                error: status.public_error(),
                 tools: status
                     .tools
                     .iter()

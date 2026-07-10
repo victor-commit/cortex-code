@@ -23,10 +23,10 @@ use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams,
-    GetPromptResult, JsonObject, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, PromptMessageRole, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo, Tool,
+    GetPromptResult, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
+    PromptMessage, PromptMessageRole, RawResource, ReadResourceRequestParams, ReadResourceResult,
+    ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Value, json};
@@ -40,6 +40,9 @@ struct EchoServer {
     roots_tool: bool,
     error_tool: bool,
     stall_tool: bool,
+    reject_initialize: bool,
+    reject_list_tools: bool,
+    stall_list_tools: bool,
     resource_content: String,
 }
 
@@ -52,6 +55,9 @@ impl EchoServer {
             roots_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ROOTS_TOOL").is_ok(),
             error_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_ERROR_TOOL").is_ok(),
             stall_tool: std::env::var("CORTEX_MCP_ECHO_ENABLE_STALL_TOOL").is_ok(),
+            reject_initialize: std::env::var("CORTEX_MCP_ECHO_REJECT_INITIALIZE").is_ok(),
+            reject_list_tools: std::env::var("CORTEX_MCP_ECHO_REJECT_LIST_TOOLS").is_ok(),
+            stall_list_tools: std::env::var("CORTEX_MCP_ECHO_STALL_LIST_TOOLS").is_ok(),
             resource_content: std::env::var("CORTEX_MCP_ECHO_RESOURCE_CONTENT")
                 .unwrap_or_else(|_| "RESOURCE-CONTENT-default".to_owned()),
         }
@@ -249,11 +255,41 @@ impl ServerHandler for EchoServer {
         info
     }
 
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        if self.reject_initialize {
+            // Give the client setup guard an observation interval after this fixture has
+            // spawned its descendant. This only makes the intentional failure deterministic.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            return Err(McpError::internal_error(
+                "fixture intentionally rejected initialize",
+                None,
+            ));
+        }
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(self.get_info())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        if self.reject_list_tools {
+            return Err(McpError::internal_error(
+                "fixture intentionally rejected tools/list",
+                None,
+            ));
+        }
+        if self.stall_list_tools {
+            std::future::pending::<()>().await;
+            unreachable!("pending future never resolves");
+        }
         Ok(ListToolsResult {
             tools: self.tools(),
             next_cursor: None,

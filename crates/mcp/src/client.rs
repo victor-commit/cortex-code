@@ -54,27 +54,81 @@ pub struct McpClient {
 /// can cancel that future before it returns a client whose normal shutdown owns cleanup, so this
 /// guard snapshots and kills the exact process tree during unwinding.
 struct SpawnedTreeGuard {
-    pid: Option<u32>,
     armed: bool,
+    tree: Option<ProcessTreeTracker>,
 }
 
 impl SpawnedTreeGuard {
     fn new(pid: Option<u32>) -> Self {
-        Self { pid, armed: true }
+        Self {
+            armed: true,
+            tree: pid.map(ProcessTreeTracker::new),
+        }
     }
 
     fn disarm(&mut self) {
         self.armed = false;
+        let _ = self.tree.take().map(ProcessTreeTracker::finish);
     }
 }
 
 impl Drop for SpawnedTreeGuard {
     fn drop(&mut self) {
         if self.armed
-            && let Some(pid) = self.pid
+            && let Some(tree) = self.tree.take()
         {
-            let tree = crate::process_tree::process_tree(pid);
+            let tree = tree.finish();
             crate::process_tree::kill_all_now(&tree);
+        }
+    }
+}
+
+/// Keep an exact-PID snapshot fresh while a stdio connection is being established.
+///
+/// Descendants may appear after initialize succeeds. If the direct server exits before shutdown,
+/// the final `/proc` traversal alone can no longer discover those reparented PIDs, so the tracker
+/// retains every PID observed under the owned root until setup cleanup completes.
+struct ProcessTreeTracker {
+    pid: u32,
+    known_pids: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+    monitor: tokio::task::JoinHandle<()>,
+}
+
+impl ProcessTreeTracker {
+    fn new(pid: u32) -> Self {
+        let known_pids = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        record_process_tree(pid, &known_pids);
+        let monitor_pids = std::sync::Arc::clone(&known_pids);
+        let monitor = tokio::spawn(async move {
+            loop {
+                record_process_tree(pid, &monitor_pids);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+        Self {
+            pid,
+            known_pids,
+            monitor,
+        }
+    }
+
+    fn finish(self) -> Vec<u32> {
+        self.monitor.abort();
+        record_process_tree(self.pid, &self.known_pids);
+        self.known_pids
+            .lock()
+            .map(|known| known.clone())
+            .unwrap_or_else(|_| crate::process_tree::process_tree(self.pid))
+    }
+}
+
+/// Add the currently visible exact child tree to a cancellation guard's durable PID snapshot.
+fn record_process_tree(pid: u32, known_pids: &std::sync::Mutex<Vec<u32>>) {
+    if let Ok(mut known) = known_pids.lock() {
+        for candidate in crate::process_tree::process_tree(pid) {
+            if !known.contains(&candidate) {
+                known.push(candidate);
+            }
         }
     }
 }
@@ -82,8 +136,8 @@ impl Drop for SpawnedTreeGuard {
 impl McpClient {
     /// Spawn the configured local server and complete the MCP initialize handshake.
     ///
-    /// The child inherits the cortex environment minus known host secrets, with the configured
-    /// `environment` overrides applied and the optional `cwd` honored. After the handshake the
+    /// The child receives only the documented safe execution baseline, plus explicit
+    /// `mcp.<name>.environment` values, and the optional `cwd` is honored. After the handshake the
     /// server's tools are listed, qualified, and recorded in `catalogue`.
     ///
     /// # Errors
@@ -179,7 +233,7 @@ impl McpClient {
         let sensitive_values = sensitive_values(&header_map, auth_header.as_deref());
 
         match probe(url, &header_map, timeout, &sensitive_values).await {
-            Probe::NeedsAuth(www) => Err(McpError::needs_auth(server_name, www)),
+            Probe::NeedsAuth => Err(McpError::needs_auth(server_name)),
             Probe::Streamable => {
                 Self::connect_streamable(
                     server_name,
@@ -238,12 +292,7 @@ impl McpClient {
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
-            .map_err(|err| {
-                McpError::handshake(
-                    server_name,
-                    crate::error::redact_message(err.to_string(), &sensitive_values),
-                )
-            })?;
+            .map_err(|err| remote_setup_error(server_name, err, &sensitive_values))?;
 
         let client = Self {
             server_name: server_name.to_owned(),
@@ -268,12 +317,7 @@ impl McpClient {
         let sensitive_values = sensitive_values(&header_map, None);
         let transport = SseClientTransport::connect(url, header_map, timeout)
             .await
-            .map_err(|err| {
-                McpError::handshake(
-                    server_name,
-                    crate::error::redact_message(err.to_string(), &sensitive_values),
-                )
-            })?;
+            .map_err(|err| remote_setup_error(server_name, err, &sensitive_values))?;
 
         let handler = NotifyHandler::new(
             server_name.to_owned(),
@@ -285,12 +329,7 @@ impl McpClient {
         let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
             .map_err(|_| McpError::timeout(server_name, "initialize", timeout))?
-            .map_err(|err| {
-                McpError::handshake(
-                    server_name,
-                    crate::error::redact_message(err.to_string(), &sensitive_values),
-                )
-            })?;
+            .map_err(|err| remote_setup_error(server_name, err, &sensitive_values))?;
 
         let client = Self {
             server_name: server_name.to_owned(),
@@ -350,6 +389,18 @@ impl McpClient {
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
         self.pid
+    }
+
+    /// Synchronously reap the exact stdio child tree while manager setup is unwinding.
+    ///
+    /// A manager can own already-connected clients before its `connect_with` future returns. Its
+    /// cancellation guard cannot await normal session shutdown, but it must still terminate these
+    /// exact PIDs before the child handles are dropped.
+    pub(crate) fn reap_tree_now(&self) {
+        if let Some(pid) = self.pid {
+            let tree = crate::process_tree::process_tree(pid);
+            crate::process_tree::kill_all_now(&tree);
+        }
     }
 
     fn redact_error(&self, error: impl Display) -> String {
@@ -528,23 +579,43 @@ impl McpClient {
     }
 }
 
-/// The inherited environment passed to a stdio MCP child: ordinary host variables (notably PATH)
-/// are preserved for command resolution, while credential-bearing variables are removed before the
-/// configured per-server environment is layered on top.
+/// The documented execution baseline inherited by a stdio MCP child.
+///
+/// This intentionally does not inherit a general-purpose parent environment. On Unix, `PATH` is
+/// sufficient to resolve an explicitly configured program. Windows needs its loader and command
+/// interpreter variables in addition to `PATH`. Any server-specific values, including `HOME` or
+/// credentials, must be opted into explicitly through `mcp.<name>.environment`.
+#[cfg(unix)]
+const SAFE_STDIO_ENV: &[&str] = &["PATH"];
+
+/// See [`SAFE_STDIO_ENV`] for why each entry is deliberately allowed.
+#[cfg(windows)]
+const SAFE_STDIO_ENV: &[&str] = &["PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec"];
+
+/// See [`SAFE_STDIO_ENV`] for why each entry is deliberately allowed.
+#[cfg(not(any(unix, windows)))]
+const SAFE_STDIO_ENV: &[&str] = &["PATH"];
+
+/// Return only the documented safe execution baseline for a stdio MCP child.
 fn child_env() -> Vec<(OsString, OsString)> {
-    filter_secret_env(std::env::vars_os())
+    safe_child_env(std::env::vars_os())
 }
 
-/// Strip host secrets from an environment by name and by API-key-shaped value. This only filters
-/// inherited parent variables; entries explicitly configured under `mcp.<name>.environment` are
-/// applied after this filter so users can intentionally pass server-specific configuration.
-fn filter_secret_env<I>(vars: I) -> Vec<(OsString, OsString)>
+/// Select the safe allowlist from a host environment.
+///
+/// Entries explicitly configured under `mcp.<name>.environment` are layered after this filter, so
+/// users can intentionally pass a server-specific configuration value without ambient host state
+/// crossing the process boundary.
+fn safe_child_env<I>(vars: I) -> Vec<(OsString, OsString)>
 where
     I: IntoIterator<Item = (OsString, OsString)>,
 {
     vars.into_iter()
         .filter(|(name, value)| {
-            if redaction::is_secret_env_var(&name.to_string_lossy()) {
+            if !SAFE_STDIO_ENV
+                .iter()
+                .any(|allowed| name == std::ffi::OsStr::new(allowed))
+            {
                 return false;
             }
             !redaction::value_is_secret(&value.to_string_lossy())
@@ -554,8 +625,8 @@ where
 
 /// The classification of a remote server from a lightweight probe.
 enum Probe {
-    /// The server answered `401`/needs-auth; the contained challenge is its `WWW-Authenticate`.
-    NeedsAuth(Option<String>),
+    /// The server answered `401`/needs-auth.
+    NeedsAuth,
     /// The server accepts Streamable HTTP.
     Streamable,
     /// The server rejected Streamable HTTP; try the legacy SSE transport.
@@ -611,12 +682,7 @@ async fn probe(
 
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        let www = response
-            .headers()
-            .get(http::header::WWW_AUTHENTICATE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        return Probe::NeedsAuth(www);
+        return Probe::NeedsAuth;
     }
     if status.is_success() {
         return Probe::Streamable;
@@ -647,6 +713,23 @@ fn sensitive_values(headers: &HeaderMap, auth_header: Option<&str>) -> Vec<Strin
     values.sort();
     values.dedup();
     values
+}
+
+/// Normalize an authenticated remote transport failure without preserving untrusted challenges.
+fn remote_setup_error(
+    server_name: &str,
+    error: impl Display,
+    sensitive_values: &[String],
+) -> McpError {
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("401") || lower.contains("unauthorized") {
+        return McpError::needs_auth(server_name);
+    }
+    McpError::handshake(
+        server_name,
+        crate::error::redact_message(message, sensitive_values),
+    )
 }
 
 /// Build the HTTP header map sent with every remote request: the configured headers plus an optional
@@ -682,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_inherited_parent_secrets_but_keeps_ordinary_env() {
+    fn stdio_child_environment_is_an_allowlist_not_a_secret_denylist() {
         let key = fake_openrouter_key();
         let vars = vec![
             ("OPENROUTER_API_KEY".into(), key.clone().into()),
@@ -697,7 +780,7 @@ mod tests {
             ("CORTEX_MCP_ECHO_LOG".into(), "/tmp/echo.log".into()),
         ];
 
-        let filtered = filter_secret_env(vars);
+        let filtered = safe_child_env(vars);
         let names = filtered
             .iter()
             .map(|(name, _)| name.to_string_lossy().into_owned())
@@ -708,13 +791,15 @@ mod tests {
             "ANTHROPIC_API_KEY",
             "CORTEX_MCP_PARENT_SECRET",
             "LEAKED_COPY",
+            "HOME",
+            "CORTEX_MCP_ECHO_LOG",
         ] {
             assert!(
                 !names.contains(&stripped.to_owned()),
                 "{stripped} must not be inherited by an MCP child"
             );
         }
-        for kept in ["PATH", "HOME", "CORTEX_MCP_ECHO_LOG"] {
+        for kept in ["PATH"] {
             assert!(
                 names.contains(&kept.to_owned()),
                 "{kept} should survive inherited env filtering"

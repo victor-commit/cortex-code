@@ -113,7 +113,7 @@ pub(super) async fn list_mcp(
             name: redaction::redact(&status.name),
             status: status.state.as_str().to_owned(),
             pid: status.pid,
-            error: status.error.as_ref().map(|err| redaction::redact(err)),
+            error: status.public_error().map(|err| redaction::redact(&err)),
         })
         .collect();
 

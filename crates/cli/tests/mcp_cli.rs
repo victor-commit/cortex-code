@@ -755,6 +755,63 @@ url = "http://127.0.0.1:3226/mcp"
 }
 
 #[test]
+fn mcp_list_surfaces_needs_auth_without_exposing_a_real_oauth_challenge() {
+    let Some(bin) = remote_server_bin() else {
+        eprintln!("skipping: cortex-mcp-remote-server fixture not built");
+        return;
+    };
+    let scratch = Scratch::new("needs-auth-safe-status");
+    let log = scratch.root.join("needs-auth-safe-status.log");
+    let challenge = "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-leak\"";
+    let mut fixture = Command::new(bin);
+    fixture
+        .env("CORTEX_MCP_MODE", "oauth")
+        .env("CORTEX_MCP_PORT", "3241")
+        .env("CORTEX_MCP_LOG", &log)
+        .env("CORTEX_MCP_WWW_AUTHENTICATE", challenge)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut fixture = fixture.spawn().expect("spawn remote MCP fixture");
+    wait_for_port(3241);
+
+    scratch.write_project_config(
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3241/mcp"
+"#,
+    );
+
+    let json = run_command(cortex_command(
+        &scratch,
+        &["mcp", "list", "--format", "json"],
+    ));
+    let text = run_command(cortex_command(&scratch, &["mcp", "list"]));
+    let _ = fixture.kill();
+    let _ = fixture.wait();
+
+    assert_eq!(json.status.code(), Some(0));
+    assert_eq!(text.status.code(), Some(0));
+    let document: Value = serde_json::from_slice(&json.stdout).expect("mcp list JSON");
+    assert_eq!(document["servers"][0]["status"], "needs_auth");
+    let observed = format!(
+        "{}\n{}\n{}\n{}",
+        String::from_utf8_lossy(&json.stdout),
+        String::from_utf8_lossy(&json.stderr),
+        String::from_utf8_lossy(&text.stdout),
+        String::from_utf8_lossy(&text.stderr),
+    );
+    assert!(
+        observed.contains("authorization required"),
+        "both surfaces retain the safe actionable state: {observed}"
+    );
+    assert!(
+        !observed.contains(challenge) && !observed.contains("challenge-must-not-leak"),
+        "OAuth challenges must not appear in CLI JSON or text: {observed}"
+    );
+}
+
+#[test]
 fn mcp_list_redacts_an_opaque_oauth_token_reflected_by_a_server_error() {
     let Some(bin) = remote_server_bin() else {
         eprintln!("skipping: cortex-mcp-remote-server fixture not built");

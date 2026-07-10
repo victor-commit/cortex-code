@@ -9685,27 +9685,31 @@ fn mcp_server_rows(
                 .collect::<Vec<_>>();
             let tool_count = connected.then_some(server_tools.len());
 
-            let exposes = match status
-                .error
-                .as_deref()
-                .filter(|error| !error.trim().is_empty())
-            {
-                Some(error) => error.trim().to_owned(),
-                None => {
-                    let mut caps = server_tools;
-                    caps.extend(
-                        resources
-                            .iter()
-                            .filter(|resource| resource.server == status.name)
-                            .map(|resource| resource.uri.clone()),
-                    );
-                    caps.extend(
-                        prompts
-                            .iter()
-                            .filter(|prompt| prompt.server == status.name)
-                            .map(|prompt| prompt.name.clone()),
-                    );
-                    caps.join(", ")
+            let exposes = if status.state == mcp::ConnectionState::NeedsAuth {
+                status.public_error().unwrap_or_default()
+            } else {
+                match status
+                    .error
+                    .as_deref()
+                    .filter(|error| !error.trim().is_empty())
+                {
+                    Some(error) => error.trim().to_owned(),
+                    None => {
+                        let mut caps = server_tools;
+                        caps.extend(
+                            resources
+                                .iter()
+                                .filter(|resource| resource.server == status.name)
+                                .map(|resource| resource.uri.clone()),
+                        );
+                        caps.extend(
+                            prompts
+                                .iter()
+                                .filter(|prompt| prompt.server == status.name)
+                                .map(|prompt| prompt.name.clone()),
+                        );
+                        caps.join(", ")
+                    }
                 }
             };
 
@@ -9786,12 +9790,19 @@ fn mcp_status_rows(
             } else {
                 format!("  —  prompts: {}", prompt_names.join(", "))
             };
-            let detail = status
-                .error
-                .as_deref()
-                .filter(|error| !error.trim().is_empty())
-                .map(|error| format!("  —  {error}"))
-                .unwrap_or_default();
+            let detail = if status.state == mcp::ConnectionState::NeedsAuth {
+                status
+                    .public_error()
+                    .map(|error| format!("  —  {error}"))
+                    .unwrap_or_default()
+            } else {
+                status
+                    .error
+                    .as_deref()
+                    .filter(|error| !error.trim().is_empty())
+                    .map(|error| format!("  —  {error}"))
+                    .unwrap_or_default()
+            };
             format!(
                 "{}  —  {}  —  {suffix}{resources_suffix}{prompts_suffix}{detail}",
                 status.name,
@@ -14719,6 +14730,17 @@ mod tests {
                 resources: Vec::new(),
                 prompts: Vec::new(),
             },
+            mcp::ServerStatus {
+                name: "oauth".to_owned(),
+                state: mcp::ConnectionState::NeedsAuth,
+                pid: None,
+                error: Some(
+                    "Bearer opaque_challenge=\"challenge-must-not-reach-the-tui\"".to_owned(),
+                ),
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
         ];
         let tools = vec![
             mcp::McpTool {
@@ -14755,7 +14777,7 @@ mod tests {
         }];
 
         let rows = mcp_server_rows(&statuses, tools, resources, prompts);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
 
         let ready = &rows[0];
         assert_eq!(ready.name, "context7");
@@ -14783,6 +14805,20 @@ mod tests {
         assert!(
             failed.exposes.contains("auth failed"),
             "error detail is the exposes text"
+        );
+
+        let needs_auth = &rows[2];
+        assert_eq!(needs_auth.status_word, "needs auth");
+        assert_eq!(needs_auth.tone, crate::view::McpStatusTone::Degraded);
+        assert!(
+            needs_auth.exposes.contains("authorization required"),
+            "needs_auth keeps a safe actionable detail"
+        );
+        assert!(
+            !needs_auth
+                .exposes
+                .contains("challenge-must-not-reach-the-tui"),
+            "the TUI must never render an OAuth challenge"
         );
     }
 

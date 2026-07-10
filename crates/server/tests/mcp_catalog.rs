@@ -176,6 +176,12 @@ fn echo_server_bin() -> Option<PathBuf> {
     bin.exists().then_some(bin)
 }
 
+fn remote_server_bin() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bin = exe.parent()?.parent()?.join("cortex-mcp-remote-server");
+    bin.exists().then_some(bin)
+}
+
 fn toml_escape(path: &std::path::Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
@@ -188,6 +194,80 @@ where
 {
     let bytes = to_bytes(response.into_body(), 262_144).await.expect("body");
     serde_json::from_slice(&bytes).expect("JSON body")
+}
+
+#[tokio::test]
+async fn mcp_route_surfaces_needs_auth_without_an_oauth_challenge() {
+    let Some(remote) = remote_server_bin() else {
+        eprintln!("skipping /mcp auth-state test: cortex-mcp-remote-server is unavailable");
+        return;
+    };
+    let scratch = Scratch::new("server-mcp-needs-auth");
+    let workspace = scratch.workspace();
+    let challenge =
+        "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-reach-server\"";
+    let mut fixture = std::process::Command::new(remote)
+        .env("CORTEX_MCP_MODE", "oauth")
+        .env("CORTEX_MCP_PORT", "3242")
+        .env("CORTEX_MCP_WWW_AUTHENTICATE", challenge)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn real OAuth MCP fixture");
+
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", 3242))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[mcp.api]
+type = "remote"
+url = "http://127.0.0.1:3242/mcp"
+"#,
+    )
+    .expect("write cortex.toml");
+
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(workspace)
+            .with_config_env(Vec::new()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mcp")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let _ = fixture.kill();
+    let _ = fixture.wait();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    let api = body["servers"]
+        .as_array()
+        .and_then(|servers| servers.iter().find(|server| server["name"] == "api"))
+        .expect("api MCP server status");
+    assert_eq!(api["status"], "needs_auth");
+    let rendered = api.to_string();
+    assert!(
+        rendered.contains("authorization required"),
+        "server status remains actionable: {rendered}"
+    );
+    assert!(
+        !rendered.contains(challenge) && !rendered.contains("challenge-must-not-reach-server"),
+        "server surface must never serialize OAuth challenges: {rendered}"
+    );
 }
 
 struct Scratch {
