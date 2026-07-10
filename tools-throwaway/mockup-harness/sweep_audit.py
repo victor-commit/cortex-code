@@ -179,7 +179,6 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
 # to a concrete rendered line and allowed placement. New rows therefore fail
 # closed with a file, line, and role diagnostic.
 KEY_LINE_ROLES: dict[str, dict[int, str]] = {
-    "auth/connect-oauth": {16: "card", 25: "card"},
     "orchestration/concurrency-metrics": {3: "view_header", 24: "activity_attached"},
     "orchestration/intent-scorer-fail": {3: "view_header"},
     "orchestration/intent-scorer-pass": {3: "view_header"},

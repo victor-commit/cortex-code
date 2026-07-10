@@ -31,7 +31,7 @@ const SIGN_IN_OPTIONS: &[ListRow] = &[
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
-    let body = chrome::cli_view(f, "sign in", &status);
+    let (body, dock) = chrome::cli_action_view(f, "sign in", 11, &status);
 
     f.render_widget(
         Paragraph::new(chrome::wordmark("v0.3.0")),
@@ -45,10 +45,9 @@ pub fn render(f: &mut Frame) {
         Rect::new(body.x, body.y + 4, body.width, 1),
     );
 
-    let card_area = Rect::new(body.x, body.y + 10, body.width, 11);
     let inner = chrome::card(
         f,
-        card_area,
+        dock,
         "Sign in",
         &[("enter", "continue"), ("↑↓", "move"), ("esc", "quit")],
     );

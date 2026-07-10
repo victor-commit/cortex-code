@@ -11,7 +11,7 @@ use crate::chrome::{self, BRIGHT, FAINT, MUTED, StatusLine, c, cb, dot, m, t};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
-    let body = chrome::cli_view(f, "/connect · GitHub Copilot", &status);
+    let (body, dock) = chrome::cli_action_view(f, "/connect · GitHub Copilot", 16, &status);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -21,10 +21,9 @@ pub fn render(f: &mut Frame) {
         Rect::new(body.x, body.y + 3, body.width, 1),
     );
 
-    let card_area = Rect::new(body.x, body.y + 8, body.width, 16);
     let inner = chrome::card(
         f,
-        card_area,
+        dock,
         "Authorize device",
         &[("o", "open"), ("y", "copy code"), ("esc", "cancel")],
     );

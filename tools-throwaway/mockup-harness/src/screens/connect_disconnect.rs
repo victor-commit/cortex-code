@@ -11,7 +11,7 @@ use crate::chrome::{self, StatusLine, m, t};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
-    let body = chrome::cli_view(f, "/connect · Anthropic", &status);
+    let (body, dock) = chrome::cli_action_view(f, "/connect · Anthropic", 13, &status);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -21,10 +21,9 @@ pub fn render(f: &mut Frame) {
         Rect::new(body.x, body.y + 4, body.width, 1),
     );
 
-    let card_area = Rect::new(body.x, body.y + 12, body.width, 13);
     let inner = chrome::card(
         f,
-        card_area,
+        dock,
         "Disconnect provider",
         &[("esc", "cancel, keep connected"), ("enter", "disconnect")],
     );

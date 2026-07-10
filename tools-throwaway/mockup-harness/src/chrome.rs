@@ -1820,6 +1820,34 @@ pub fn cli_view(f: &mut Frame, title: &str, status: &StatusLine) -> Rect {
     rows[2]
 }
 
+/// Header-aware action frame for full-screen decision flows. It retains the
+/// standard top header and returns the remaining body plus a bottom-anchored
+/// dock. The dock ends immediately above the final statusline, so callers
+/// render their sole `card()` directly into it rather than positioning a
+/// floating panel inside the body.
+pub fn cli_action_view(
+    f: &mut Frame,
+    title: &str,
+    dock_h: u16,
+    status: &StatusLine,
+) -> (Rect, Rect) {
+    let area = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(CANVAS)), area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),      // header rule
+            Constraint::Length(1),      // spacer
+            Constraint::Min(0),         // top-aligned identity or breadcrumb body
+            Constraint::Length(dock_h), // bottom action dock
+            Constraint::Length(1),      // statusline
+        ])
+        .split(area);
+    rule_head(f, rows[0], title);
+    statusbar(f, rows[4], status);
+    (rows[2], rows[3])
+}
+
 /// Dock frame: the composer slot is REPLACED by an action dock `dock_h` rows
 /// tall (rule F-5 / N-7: decisions and pickers anchor where the user would
 /// type, never a floating centered modal). Returns `(transcript, dock)`;

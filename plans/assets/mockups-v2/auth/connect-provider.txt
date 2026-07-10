@@ -8,6 +8,25 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ╭ Connect a provider ──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ › OpenRouter      unified gateway · many models                                                 ✓ connected · active │
 │   Anthropic       Claude Opus · Sonnet · Haiku                                                           ✓ connected │
@@ -18,23 +37,4 @@
 │                                                                                                                      │
 │ ↑↓ select · enter connect · d disconnect selected OpenRouter · esc close                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
  ~/projects/cortex-code · master · Claude Opus 4.8

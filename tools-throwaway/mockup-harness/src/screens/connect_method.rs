@@ -16,7 +16,7 @@ const METHODS: &[(&str, &str, &str)] = &[
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
-    let body = chrome::cli_view(f, "/connect · GitHub Copilot", &status);
+    let (body, dock) = chrome::cli_action_view(f, "/connect · GitHub Copilot", 6, &status);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -26,10 +26,9 @@ pub fn render(f: &mut Frame) {
         Rect::new(body.x, body.y + 2, body.width, 1),
     );
 
-    let card_area = Rect::new(body.x, body.y + 15, body.width, 6);
     let inner = chrome::card(
         f,
-        card_area,
+        dock,
         "Choose a sign-in method",
         &[("↑↓", "select"), ("enter", "choose"), ("esc", "back")],
     );
