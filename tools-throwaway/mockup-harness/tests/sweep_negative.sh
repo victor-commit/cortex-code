@@ -37,6 +37,8 @@ expect_success() {
 
 expect_failure cross-002 key
 expect_failure cross-003-unlisted live_activity
+expect_failure cross-003-eventless-row live_activity
+expect_failure cross-003-verb-mismatch live_activity
 expect_failure cross-003-source-unlisted live_activity
 expect_failure cross-003-inline-helper-unlisted live_activity
 expect_failure cross-003-duplicate live_activity

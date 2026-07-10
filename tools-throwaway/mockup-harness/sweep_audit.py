@@ -774,11 +774,17 @@ def working_bands(screen: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def canonical_elapsed_tokens(row: dict[str, Any]) -> list[str]:
+    return [
+        token
+        for token in duration_candidates(row["text"])
+        if VALID_DURATION.fullmatch(token)
+    ]
+
+
 def active_elapsed(row: dict[str, Any]) -> str | None:
-    return next(
-        (token for token in duration_candidates(row["text"]) if VALID_DURATION.fullmatch(token)),
-        None,
-    )
+    tokens = canonical_elapsed_tokens(row)
+    return tokens[0] if len(tokens) == 1 else None
 
 
 def live_events(screen: dict[str, Any]) -> list[dict[str, Any]]:
@@ -789,11 +795,14 @@ def live_events(screen: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def is_live_shaped_row(row: dict[str, Any]) -> bool:
-    dot_index = row["text"].find("●")
-    if dot_index < 0 or active_elapsed(row) is None:
+    if active_elapsed(row) is None:
         return False
-    dot_span = style_at(row, dot_index)
-    return dot_span is not None and dot_span["fg"] in {ACCENT, MUTED}
+    return any(
+        (dot_span := style_at(row, dot_index)) is not None
+        and dot_span["fg"] in {ACCENT, MUTED}
+        for dot_index, character in enumerate(row["text"])
+        if character == "●"
+    )
 
 
 def event_signature(event: dict[str, Any]) -> tuple[str, str, str | None, str]:
@@ -809,6 +818,13 @@ def inventory_event_sources(spec: dict[str, Any]) -> set[str]:
     return {source for source, _, _, _ in spec["events"]}
 
 
+def has_exact_verb(row: dict[str, Any], verb: str) -> bool:
+    return re.search(
+        rf"(?<![A-Za-z0-9_]){re.escape(verb)}(?![A-Za-z0-9_])",
+        row["text"],
+    ) is not None
+
+
 def matching_event(
     row: dict[str, Any],
     event: dict[str, Any],
@@ -818,9 +834,50 @@ def matching_event(
     return (
         isinstance(verb, str)
         and isinstance(elapsed, str)
-        and verb in row["text"]
-        and elapsed in row["text"]
+        and has_exact_verb(row, verb)
+        and elapsed in canonical_elapsed_tokens(row)
     )
+
+
+def validate_global_live_row_bijection(
+    audit: Audit,
+    screens: list[dict[str, Any]],
+) -> None:
+    """Require every rendered live row and elapsed event to match exactly once."""
+    for screen in screens:
+        screen_id = screen["id"]
+        candidates = [row for row in screen["rows"] if is_live_shaped_row(row)]
+        elapsed_events = [
+            event
+            for event in live_events(screen)
+            if isinstance(event.get("elapsed"), str)
+        ]
+        pairs = [
+            (event, row)
+            for event in elapsed_events
+            for row in candidates
+            if matching_event(row, event)
+        ]
+
+        for event in elapsed_events:
+            matches = [row for candidate, row in pairs if candidate is event]
+            if len(matches) != 1:
+                audit.fail(
+                    screen_id,
+                    matches[0]["line"] if matches else 0,
+                    "live_activity",
+                    f"elapsed event {event_signature(event)} maps to {len(matches)} live-shaped rows",
+                )
+
+        for row in candidates:
+            matches = [event for event, candidate in pairs if candidate is row]
+            if len(matches) != 1:
+                audit.fail(
+                    screen_id,
+                    row["line"],
+                    "live_activity",
+                    f"live-shaped row maps to {len(matches)} elapsed render events",
+                )
 
 
 def scan_unregistered_inline_helper(
@@ -857,6 +914,7 @@ def validate_live_activity(
 ) -> None:
     inventory = LIVE_ACTIVITY_CONSUMERS if inventory is None else inventory
     registry = {screen["id"]: screen for screen in screens}
+    validate_global_live_row_bijection(audit, screens)
     actual = (
         live_source_consumers(source_root, registry)
         if source_root is not None
@@ -1163,6 +1221,10 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
             {},
             {"fixtures/unlisted-live.txt": {"working_band"}},
         )
+    elif fixture_name == "cross-003-eventless-row":
+        validate_live_activity(audit, screens, None, {})
+    elif fixture_name == "cross-003-verb-mismatch":
+        validate_global_live_row_bijection(audit, screens)
     elif fixture_name == "cross-003-source-unlisted":
         validate_live_activity(
             audit,
@@ -1265,6 +1327,40 @@ def fixture(name: str) -> dict[str, Any]:
                 {
                     "id": "fixtures/unlisted-live.txt",
                     "rows": [row(1, band, [span(0, len(band), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-003-eventless-row":
+        text = " ● cataloguing in background 12s"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/eventless-live.txt",
+                    "rows": [
+                        row(1, text, [span(0, 2, MUTED), span(2, len(text))]),
+                        status,
+                    ],
+                }
+            ]
+        }
+    if name == "cross-003-verb-mismatch":
+        text = " ● Tasking 12s"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/verb-mismatch-live.txt",
+                    "events": [
+                        {
+                            "source": "tool_running",
+                            "verb": "Task",
+                            "elapsed": "12s",
+                            "interrupt": "none",
+                        }
+                    ],
+                    "rows": [
+                        row(1, text, [span(0, 2, MUTED), span(2, len(text))]),
+                        status,
+                    ],
                 }
             ]
         }
@@ -1400,6 +1496,8 @@ def main() -> int:
             "cross-002",
             "cross-003-duplicate",
             "cross-003-unlisted",
+            "cross-003-eventless-row",
+            "cross-003-verb-mismatch",
             "cross-003-source-unlisted",
             "cross-003-inline-helper-unlisted",
             "cross-004-valid",
