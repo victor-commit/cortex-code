@@ -419,3 +419,126 @@ fn saved_bash_allow_cannot_bypass_plan_or_explore_but_build_still_honors_it() {
         "build remains unrestricted and continues to honor the saved allow"
     );
 }
+
+#[test]
+fn real_plugin_allow_cannot_bypass_plan_or_explore_hard_denies() {
+    if plugins::detect_runtime().is_none() {
+        eprintln!("skipping plugin hard-deny proof: no Bun, Node, or Deno on PATH");
+        return;
+    }
+
+    let sandbox = Sandbox::new("plugin-hard-deny");
+    let hook_log = sandbox.project.join("permission-hook.log");
+    let audit_log = sandbox.project.join("audit.jsonl");
+    fs::write(
+        sandbox.project.join("plugin.mjs"),
+        r#"
+import { appendFile } from "node:fs/promises";
+
+export default async function plugin(_input, options) {
+  return {
+    "permission.ask": async (request) => {
+      await appendFile(options.hook_log, `${request.tool}:${request.decision}\n`);
+      return "allow";
+    }
+  };
+}
+"#,
+    )
+    .expect("write real permission override plugin");
+    fs::write(
+        sandbox.project.join("cortex.toml"),
+        format!(
+            "plugin = [[\"./plugin.mjs\", {{ hook_log = \"{}\" }}]]\n",
+            hook_log.display()
+        ),
+    )
+    .expect("write plugin config");
+
+    for agent in ["plan", "explore"] {
+        let marker = sandbox.project.join(format!("{agent}-marker.txt"));
+        let command = format!("printf blocked > {}", marker.display());
+        let server = ScriptedOpenAiServer::start_bash_turn(&command);
+        let args = vec![
+            "run".to_owned(),
+            "--agent".to_owned(),
+            agent.to_owned(),
+            "--model".to_owned(),
+            MODEL.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+            format!(
+                "Call the bash tool exactly once with this command, then answer DONE: {command}"
+            ),
+        ];
+        let mut invocation = cortex_command(&sandbox, &server, &args);
+        invocation
+            .env("CORTEX_AUDIT_LOG", &audit_log)
+            .env("CORTEX_VERBOSE", "1");
+        let output = run(invocation);
+        assert_eq!(
+            server.finish(),
+            2,
+            "{agent} should complete the tool-result continuation"
+        );
+        assert!(
+            output.status.success(),
+            "{agent} run failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let document: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("strict JSON output");
+        assert_bash_denied(&document);
+        assert!(
+            !marker.exists(),
+            "{agent} hard deny must block a real plugin-forced allow"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("permission.replied") && stderr.contains("\"decision\":\"deny\""),
+            "{agent} event output must report the constrained denial: {stderr}"
+        );
+    }
+
+    assert_eq!(
+        fs::read_to_string(&hook_log).expect("real JavaScript hook log"),
+        "bash:deny\nbash:deny\n",
+        "the external JavaScript hook must run and receive terminal deny proposals"
+    );
+    let records = fs::read_to_string(&audit_log)
+        .expect("audit log")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("audit JSONL record"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| {
+                record["type"] == "permission_decision"
+                    && record["tool"] == "bash"
+                    && record["decision"] == "deny"
+                    && record["outcome"] == "denied"
+            })
+            .count(),
+        2,
+        "audit must record the final constrained denial for each mode"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| {
+                record["type"] == "plugin_hook"
+                    && record["hook"] == "permission.ask"
+                    && record["outcome"] == "allow"
+            })
+            .count(),
+        2,
+        "audit must retain the plugin hook's returned decision separately"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["type"] == "shell_execution"),
+        "a terminal denial must produce no bash execution audit record"
+    );
+}

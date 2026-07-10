@@ -145,7 +145,7 @@ impl Outcome {
 /// The configured permission action, matched pattern, and final resolved outcome for one request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionEvaluation {
-    /// The configured action that classified the request before final responder or override output.
+    /// The final constrained action before any responder answer, preserving terminal provenance.
     pub action: Action,
     /// The matched rule/saved/default pattern that classified the request.
     pub pattern: String,
@@ -179,12 +179,27 @@ pub trait Responder: Send + Sync {
 ///
 /// The core permission engine first resolves the action that the configured rules, saved
 /// decisions, hard-deny layer, and parent cap would take. A registered override receives that
-/// proposed action and may force a final allow or deny. Returning `None` preserves the engine's
-/// proposal. This stays subject-agnostic so the plugin host can live outside the permissions
-/// crate.
+/// proposed action and may narrow ordinary decisions or widen an ordinary deny. Hard denies and
+/// parent caps remain terminal ceilings, so an override may never make the final result more
+/// permissive than either constraint. Returning `None` preserves the engine's proposal. This stays
+/// subject-agnostic so the plugin host can live outside the permissions crate.
 pub trait DecisionOverride: Send + Sync {
     /// Return a final decision for `request`, or `None` to keep `proposed`.
     fn override_decision(&self, request: &PermissionRequest, proposed: Action) -> Option<Decision>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalConstraint {
+    None,
+    HardDeny { pattern: String },
+    ParentCap { action: Action, pattern: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EffectiveDecision {
+    action: Action,
+    pattern: String,
+    constraint: TerminalConstraint,
 }
 
 /// Resolves every gated tool action to [`Outcome::Allowed`] or [`Outcome::Denied`].
@@ -318,9 +333,9 @@ impl PermissionEngine {
 
     /// Attach a final decision override hook (builder style).
     ///
-    /// The hook receives the engine's proposed action and may force allow or deny. It is evaluated
-    /// before an `ask` is surfaced, so a hook-forced allow proceeds without prompting and a
-    /// hook-forced deny blocks an otherwise-allowed action.
+    /// The hook receives the engine's proposed action before an `ask` is surfaced. It may force
+    /// an ordinary allow or deny, but hard denies and parent caps are terminal ceilings: an
+    /// override is constrained before the final outcome, event, and audit evaluation are emitted.
     #[must_use]
     pub fn with_override(mut self, override_hook: Arc<dyn DecisionOverride>) -> Self {
         self.override_hook = Some(override_hook);
@@ -389,7 +404,7 @@ impl PermissionEngine {
     /// decision `evaluate` would reach (minus surfacing/answering the ask).
     #[must_use]
     pub fn classify(&self, tool: &str, subject: &str) -> Action {
-        self.effective(tool, subject).0
+        self.effective(tool, subject).action
     }
 
     /// Resolve a gated action to a final [`Outcome`], surfacing and answering an `ask` as needed.
@@ -399,26 +414,61 @@ impl PermissionEngine {
 
     /// Resolve a gated action and return its full audit-relevant decision details.
     pub fn evaluate_detail(&self, request: &PermissionRequest) -> PermissionEvaluation {
-        let (action, pattern) = self.effective(&request.tool, &request.subject);
+        let effective = self.effective(&request.tool, &request.subject);
+        let mut action = effective.action;
+        let mut pattern = effective.pattern.clone();
+        let mut final_action = action;
+        let mut override_applied = false;
         if let Some(override_hook) = &self.override_hook
             && let Some(decision) = override_hook.override_decision(request, action)
         {
-            let event_decision = match decision {
-                Decision::Allow => PermissionDecision::Allow,
-                Decision::Deny => PermissionDecision::Deny,
-            };
-            self.publish_permission_replied(request, &pattern, event_decision, None);
-            return PermissionEvaluation {
-                action,
-                pattern,
-                outcome: decision.outcome(),
-                feedback: None,
-            };
+            override_applied = true;
+            let overridden_action = decision.action();
+            match &effective.constraint {
+                TerminalConstraint::HardDeny {
+                    pattern: constraint_pattern,
+                } if overridden_action != Action::Deny => {
+                    action = Action::Deny;
+                    pattern = constraint_pattern.clone();
+                    final_action = Action::Deny;
+                }
+                TerminalConstraint::ParentCap {
+                    action: cap_action,
+                    pattern: cap_pattern,
+                } if cap_action.is_more_restrictive_than(overridden_action) => {
+                    action = *cap_action;
+                    pattern = cap_pattern.clone();
+                    final_action = *cap_action;
+                }
+                _ => {
+                    final_action = overridden_action;
+                }
+            }
         }
         let mut feedback = None;
-        let outcome = match action {
-            Action::Allow => Outcome::Allowed,
-            Action::Deny => Outcome::Denied,
+        let outcome = match final_action {
+            Action::Allow => {
+                if override_applied {
+                    self.publish_permission_replied(
+                        request,
+                        &pattern,
+                        PermissionDecision::Allow,
+                        None,
+                    );
+                }
+                Outcome::Allowed
+            }
+            Action::Deny => {
+                if override_applied {
+                    self.publish_permission_replied(
+                        request,
+                        &pattern,
+                        PermissionDecision::Deny,
+                        None,
+                    );
+                }
+                Outcome::Denied
+            }
             Action::Ask => {
                 self.publish_permission_asked(request, &pattern);
                 let reply = self.resolve_ask(request);
@@ -490,11 +540,15 @@ impl PermissionEngine {
 
     /// The effective action and the pattern that classified it, combining hard-deny constraints,
     /// saved decisions, and the configured ruleset, then narrowing by the parent cap.
-    fn effective(&self, tool: &str, subject: &str) -> (Action, String) {
+    fn effective(&self, tool: &str, subject: &str) -> EffectiveDecision {
         // Hard denies are absolute safety/mode constraints. They are checked before saved
         // decisions so a saved "always allow" cannot widen a read-only mode or similar hard block.
         if let Some(pattern) = self.hard_deny_pattern(tool, subject) {
-            return (Action::Deny, pattern);
+            return EffectiveDecision {
+                action: Action::Deny,
+                pattern: pattern.clone(),
+                constraint: TerminalConstraint::HardDeny { pattern },
+            };
         }
 
         // A saved "always" decision takes precedence over the ordinary configured ruleset;
@@ -516,12 +570,32 @@ impl PermissionEngine {
         // Narrow by the parent cap (subagent): the most restrictive of own and parent governs.
         if let Some(cap) = &self.parent_cap {
             let (cap_action, cap_rule) = cap.resolve(tool, subject);
-            if cap_action.is_more_restrictive_than(own_action) {
-                let cap_pattern = cap_rule.map_or_else(|| "*".to_owned(), |r| r.pattern.clone());
-                return (cap_action, cap_pattern);
-            }
+            let cap_pattern = cap_rule.map_or_else(|| "*".to_owned(), |r| r.pattern.clone());
+            return if cap_action.is_more_restrictive_than(own_action) {
+                EffectiveDecision {
+                    action: cap_action,
+                    pattern: cap_pattern.clone(),
+                    constraint: TerminalConstraint::ParentCap {
+                        action: cap_action,
+                        pattern: cap_pattern,
+                    },
+                }
+            } else {
+                EffectiveDecision {
+                    action: own_action,
+                    pattern: own_pattern,
+                    constraint: TerminalConstraint::ParentCap {
+                        action: cap_action,
+                        pattern: cap_pattern,
+                    },
+                }
+            };
         }
-        (own_action, own_pattern)
+        EffectiveDecision {
+            action: own_action,
+            pattern: own_pattern,
+            constraint: TerminalConstraint::None,
+        }
     }
 
     fn hard_deny_pattern(&self, tool: &str, subject: &str) -> Option<String> {
@@ -590,6 +664,8 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
+    use events::Event;
+
     use super::*;
     use crate::rule::Rule;
 
@@ -626,6 +702,20 @@ mod tests {
         fn respond_scoped(&self, _request: &PermissionRequest) -> ScopedDecision {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.reply.clone()
+        }
+    }
+
+    struct FixedOverride {
+        decision: Decision,
+    }
+
+    impl DecisionOverride for FixedOverride {
+        fn override_decision(
+            &self,
+            _request: &PermissionRequest,
+            _proposed: Action,
+        ) -> Option<Decision> {
+            Some(self.decision)
         }
     }
 
@@ -787,6 +877,125 @@ mod tests {
             child.classify("write", "new.txt"),
             Action::Deny,
             "a parent's hard deny must narrow its child"
+        );
+    }
+
+    #[test]
+    fn override_allow_cannot_lift_a_hard_deny_and_keeps_its_provenance() {
+        let bus = Arc::new(EventBus::new());
+        let replies = Arc::new(Mutex::new(Vec::new()));
+        let observed_replies = replies.clone();
+        bus.subscribe(Arc::new(move |event: &Event| {
+            if let Event::PermissionReplied(reply) = event {
+                observed_replies
+                    .lock()
+                    .expect("replies lock")
+                    .push(reply.decision);
+            }
+        }));
+        let engine =
+            PermissionEngine::new(Ruleset::new(vec![Rule::new("bash", "*", Action::Allow)]))
+                .with_hard_denies(Ruleset::new(vec![Rule::new(
+                    "bash",
+                    "printf blocked",
+                    Action::Deny,
+                )]))
+                .with_override(Arc::new(FixedOverride {
+                    decision: Decision::Allow,
+                }))
+                .with_bus(bus);
+
+        let evaluation = engine.evaluate_detail(&PermissionRequest::new("bash", "printf blocked"));
+        assert_eq!(evaluation.action, Action::Deny);
+        assert_eq!(evaluation.pattern, "printf blocked");
+        assert_eq!(evaluation.outcome, Outcome::Denied);
+        assert_eq!(
+            *replies.lock().expect("replies lock"),
+            vec![PermissionDecision::Deny],
+            "the event must report the constrained denial, not the plugin's allow"
+        );
+    }
+
+    #[test]
+    fn override_allow_cannot_widen_a_parent_deny() {
+        let parent = Ruleset::new(vec![Rule::new("write", "restricted.txt", Action::Deny)]);
+        let child = Ruleset::new(vec![Rule::new("write", "*", Action::Allow)]);
+        let engine = PermissionEngine::new(child)
+            .with_parent_cap(parent)
+            .with_override(Arc::new(FixedOverride {
+                decision: Decision::Allow,
+            }));
+
+        let evaluation = engine.evaluate_detail(&PermissionRequest::new("write", "restricted.txt"));
+        assert_eq!(evaluation.action, Action::Deny);
+        assert_eq!(evaluation.pattern, "restricted.txt");
+        assert_eq!(evaluation.outcome, Outcome::Denied);
+    }
+
+    #[test]
+    fn override_allow_cannot_widen_a_parent_ask() {
+        let parent = Ruleset::new(vec![Rule::new("write", "review.txt", Action::Ask)]);
+        let child = Ruleset::new(vec![Rule::new("write", "*", Action::Allow)]);
+        let engine = PermissionEngine::new(child)
+            .with_parent_cap(parent)
+            .with_override(Arc::new(FixedOverride {
+                decision: Decision::Allow,
+            }));
+
+        let evaluation = engine.evaluate_detail(&PermissionRequest::new("write", "review.txt"));
+        assert_eq!(evaluation.action, Action::Ask);
+        assert_eq!(evaluation.pattern, "review.txt");
+        assert_eq!(
+            evaluation.outcome,
+            Outcome::Denied,
+            "the headless parent ask must still fail closed"
+        );
+    }
+
+    #[test]
+    fn override_still_widens_ordinary_denies_and_narrows_ordinary_allows() {
+        let allow_override = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "write",
+            "ordinary.txt",
+            Action::Deny,
+        )]))
+        .with_override(Arc::new(FixedOverride {
+            decision: Decision::Allow,
+        }));
+        let deny_override = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "write",
+            "ordinary.txt",
+            Action::Allow,
+        )]))
+        .with_override(Arc::new(FixedOverride {
+            decision: Decision::Deny,
+        }));
+        let ask_deny_override = PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "write",
+            "ordinary-ask.txt",
+            Action::Ask,
+        )]))
+        .with_responder(Arc::new(FixedResponder {
+            decision: Decision::Allow,
+        }))
+        .with_override(Arc::new(FixedOverride {
+            decision: Decision::Deny,
+        }));
+
+        assert_eq!(
+            allow_override.evaluate(&PermissionRequest::new("write", "ordinary.txt")),
+            Outcome::Allowed,
+            "plugins may still widen ordinary non-terminal decisions"
+        );
+        assert_eq!(
+            deny_override.evaluate(&PermissionRequest::new("write", "ordinary.txt")),
+            Outcome::Denied,
+            "plugins may narrow ordinary decisions"
+        );
+        assert_eq!(
+            ask_deny_override.evaluate(&PermissionRequest::new("write", "ordinary-ask.txt")),
+            Outcome::Denied,
+            "plugins may narrow ordinary asks without consulting a responder"
         );
     }
 }
