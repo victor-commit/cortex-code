@@ -574,10 +574,9 @@ fn task_subagent_persists_a_listable_child_session_with_parent_link() {
         child_row["parent_id"], parent,
         "child sessions must expose their structured durable parent link"
     );
-    let title = child_row["title"].as_str().expect("child title");
-    assert!(
-        title.contains("subagent:explore") && title.contains(&format!("parent:{parent}")),
-        "child title is the durable parent linkage consumed by the TUI picker: {title}"
+    assert_eq!(
+        child_row["subagent_type"], "explore",
+        "child session persona is immutable structured metadata consumed by the TUI picker"
     );
 
     let shown = json_doc(run(cortex_in(

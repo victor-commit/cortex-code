@@ -4842,13 +4842,14 @@ impl App {
         let now = current_epoch_secs();
         let mut picks = Vec::new();
         for session in sessions {
-            let Some(title) = session.title.as_deref() else {
+            let Some(name) = session
+                .subagent_type
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(ToOwned::to_owned)
+            else {
                 continue;
             };
-            if !title.contains("subagent:") {
-                continue;
-            }
-            let (name, parsed_task) = parse_subagent_title(title);
             let messages = db
                 .messages()
                 .list_for_session(&session.id)
@@ -4884,7 +4885,11 @@ impl App {
                 (word, Some(secs)) => format!("{word} {}", format_duration_secs(secs)),
                 (word, None) => word.to_owned(),
             };
-            let task = parsed_task
+            let task = session
+                .title
+                .as_deref()
+                .filter(|title| !title.trim().is_empty())
+                .map(ToOwned::to_owned)
                 .or_else(|| last.as_deref().map(first_line))
                 .unwrap_or_else(|| "awaiting result".to_owned());
             picks.push(SubagentPick {
@@ -7500,10 +7505,14 @@ impl App {
         };
         let mut rows = Vec::new();
         for session in sessions {
-            let label = session_picker_label(&session);
-            if !label.contains("subagent:") {
+            let Some(label) = session
+                .subagent_type
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(ToOwned::to_owned)
+            else {
                 continue;
-            }
+            };
             let messages = db
                 .messages()
                 .list_for_session(&session.id)
@@ -9850,28 +9859,6 @@ fn canonical_theme_key(name: &str) -> String {
         "ocean" | "ocean_dark" => "ocean".to_owned(),
         other => other.to_owned(),
     }
-}
-
-/// Split a child-session title into `(agent_name, task)`. Subagent titles are either
-/// `"<task> (subagent:<agent> parent:<id>)"` or the bare `"subagent:<agent> parent:<id>"` form.
-fn parse_subagent_title(title: &str) -> (String, Option<String>) {
-    let Some(idx) = title.find("subagent:") else {
-        return (title.trim().to_owned(), None);
-    };
-    let after = &title[idx + "subagent:".len()..];
-    let name = after
-        .split_whitespace()
-        .next()
-        .unwrap_or("subagent")
-        .to_owned();
-    let task = if idx > 0 {
-        let prefix = title[..idx].trim_end();
-        let prefix = prefix.strip_suffix('(').unwrap_or(prefix).trim_end();
-        (!prefix.is_empty()).then(|| prefix.to_owned())
-    } else {
-        None
-    };
-    (name, task)
 }
 
 /// A compact whole-seconds elapsed duration for a subagent status meta: `8s`, `2m`, `1h`.
@@ -14537,32 +14524,17 @@ mod tests {
                 .expect("parent session");
             let running = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "find existing auth middleware (subagent:explore parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "explore", Some("find existing auth middleware"))
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "go")
                 .expect("running user message");
             db.sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "design token-refresh flow (subagent:plan parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "plan", Some("design token-refresh flow"))
                 .expect("queued child");
             let done = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "summarize redaction audit (subagent:general parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "general", Some("summarize redaction audit"))
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "audit complete")
@@ -17881,21 +17853,21 @@ mod tests {
     fn session_picker_lists_subagent_sessions_with_parent_linkage() {
         let path = session_store_path("subagent-picker");
         let parent_id = "parent-session";
+        let child_id;
         {
             let db = db::Database::open(&path).expect("open seed");
             db.sessions()
                 .ensure(parent_id, Some("parent"))
                 .expect("parent");
-            db.sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!("subagent:explore parent:{parent_id}")),
-                )
-                .expect("child");
+            child_id = db
+                .sessions()
+                .create_subagent_child(parent_id, "explore", Some("inspect current project"))
+                .expect("child")
+                .id;
         }
 
         let mut a = app();
-        a.set_session_store(Some(path));
+        a.set_session_store(Some(path.clone()));
         dispatch(&mut a, "sessions");
         let items = a.dialog().expect("session picker").items.clone();
 
@@ -17906,9 +17878,22 @@ mod tests {
             "parent session is listed: {items:?}"
         );
         assert!(
-            items.iter().any(|item| item.contains("subagent:explore")
-                && item.contains(&format!("parent:{parent_id}"))),
-            "child subagent row includes the parent linkage: {items:?}"
+            items
+                .iter()
+                .any(|item| item.contains("inspect current project")),
+            "child session keeps its independent display title: {items:?}"
+        );
+        let db = db::Database::open(&path).expect("reopen");
+        let child = db.sessions().require(&child_id).expect("child session");
+        assert_eq!(
+            child.parent_id.as_deref(),
+            Some(parent_id),
+            "child retains structured parent linkage"
+        );
+        assert_eq!(
+            child.subagent_type.as_deref(),
+            Some("explore"),
+            "child retains structured task persona"
         );
     }
 
@@ -18449,12 +18434,7 @@ mod tests {
             // A running child (a user message but no assistant reply yet).
             let running = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "find auth middleware (subagent:explore parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "explore", Some("find auth middleware"))
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "find auth middleware")
@@ -18462,12 +18442,7 @@ mod tests {
             // A done child (an assistant reply present).
             let done = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "summarize redaction audit (subagent:general parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "general", Some("summarize redaction audit"))
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "summary ready")
@@ -18898,20 +18873,14 @@ mod tests {
                 .expect("parent session");
             let running = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!("subagent:explore parent:{parent_id}")),
-                )
+                .create_subagent_child(parent_id, "explore", Some("inspect current project"))
                 .expect("running child");
             db.messages()
                 .create(&running.id, "user", "working")
                 .expect("running user message");
             let done = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!("subagent:plan parent:{parent_id}")),
-                )
+                .create_subagent_child(parent_id, "plan", Some("draft implementation"))
                 .expect("done child");
             db.messages()
                 .create(&done.id, "assistant", "state: done")
@@ -18928,10 +18897,10 @@ mod tests {
     }
 
     // VAL-GAP-CROSS-008 (TUI leg): a durable background subagent task persisted by the headless flow
-    // (child session titled `subagent:<agent> parent:<parent>` with a completed transcript) is shown
-    // in the TUI subagent UI after a restart — it surfaces purely from the on-disk session store the
-    // TUI shares with `cortex run`, so loading the parent session reveals the child as `done` with
-    // its result and parent linkage, no live in-process handle required.
+    // (child session with structured `parent_id` and `subagent_type`, plus a completed transcript)
+    // is shown in the TUI subagent UI after a restart. It surfaces purely from the on-disk session
+    // store the TUI shares with `cortex run`, so loading the parent session reveals the child as
+    // `done` with its result and persona, no live in-process handle required.
     #[test]
     fn tui_subagent_ui_shows_persisted_background_task_after_restart() {
         let path = session_store_path("subagent-restart");
@@ -18942,16 +18911,11 @@ mod tests {
             db.sessions()
                 .ensure(parent_id, Some("parent"))
                 .expect("parent session");
-            // Mirror exactly what the headless background `task` flow persists: a child session whose
-            // title carries subagent/parent linkage, a durable user prompt, and a completed answer.
+            // Mirror the headless background `task` flow: structured ownership/persona, a mutable
+            // display title, a durable user prompt, and a completed answer.
             let child = db
                 .sessions()
-                .create_child(
-                    parent_id,
-                    Some(&format!(
-                        "durable background work (subagent:explore parent:{parent_id})"
-                    )),
-                )
+                .create_subagent_child(parent_id, "explore", Some("durable background work"))
                 .expect("child session");
             child_id = child.id.clone();
             db.messages()
@@ -18973,10 +18937,9 @@ mod tests {
             .find(|(id, ..)| id == &child_id)
             .unwrap_or_else(|| panic!("subagent UI must list the persisted child: {statuses:?}"));
         assert_eq!(row.2, "done", "the completed background task shows as done");
-        assert!(
-            row.1.contains("subagent:explore") && row.1.contains(&format!("parent:{parent_id}")),
-            "the subagent row shows the parent linkage: {}",
-            row.1
+        assert_eq!(
+            row.1, "explore",
+            "the subagent row derives its persona from structured session metadata"
         );
         assert!(
             row.3.contains("CHILD_ANSWER n123"),
@@ -18992,6 +18955,47 @@ mod tests {
 
         let (total, running, done) = a.subagent_footer_summary();
         assert_eq!((total, running, done), (1, 0, 1));
+    }
+
+    #[test]
+    fn subagent_ui_uses_structured_persona_not_child_title_text() {
+        let path = session_store_path("structured-subagent-persona");
+        let parent_id = "ses_parent_structured_persona";
+        {
+            let db = db::Database::open(&path).expect("open seed");
+            db.sessions()
+                .ensure(parent_id, Some("parent"))
+                .expect("parent session");
+            db.sessions()
+                .create_subagent_child(
+                    parent_id,
+                    "explore",
+                    Some("subagent:general parent:untrusted-display-text"),
+                )
+                .expect("structured child");
+            db.sessions()
+                .create_child(parent_id, Some("subagent:build parent:legacy-title-only"))
+                .expect("legacy title-only child");
+        }
+
+        let mut a = app();
+        a.set_session_store(Some(path));
+        a.load_session(parent_id);
+
+        let entries = a.sidebar_subagent_entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "legacy title-only children must not be classified as subagent tasks"
+        );
+        assert_eq!(
+            entries[0].name, "explore",
+            "persona remains the persisted type despite a spoofed display title"
+        );
+        assert_eq!(
+            entries[0].task, "subagent:general parent:untrusted-display-text",
+            "the title is presentation only and never reinterpreted as identity"
+        );
     }
 
     // VAL-CROSS-006 (TUI half): selecting a model for the session via `/models` persists it with the

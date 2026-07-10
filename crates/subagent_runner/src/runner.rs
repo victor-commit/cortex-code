@@ -140,9 +140,10 @@ impl CliTaskRunner {
                 "task: the 'subagent_type' argument is required when background=true",
             );
         };
-        let Some(_agent) = self.agents.get(&agent_name) else {
+        let Some(agent) = self.agents.get(&agent_name) else {
             return ToolOutput::error(format!("task: subagent `{agent_name}` is not available"));
         };
+        let agent_name = agent.name().to_owned();
         let Some(_prompt) = request.prompt.clone() else {
             return ToolOutput::error(
                 "task: the 'prompt' argument is required when background=true",
@@ -304,6 +305,7 @@ impl CliTaskRunner {
         let Some(agent) = self.agents.get(&agent_name).cloned() else {
             return ToolOutput::error(format!("task: subagent `{agent_name}` is not available"));
         };
+        let agent_name = agent.name().to_owned();
         let Some(prompt) = request.prompt.clone() else {
             return ToolOutput::error("task: the 'prompt' argument is required");
         };
@@ -465,9 +467,13 @@ impl CliTaskRunner {
             self.require_owned_subagent_session(&session, Some(agent_name))?;
             return Ok((session, true));
         }
-        let title = self.child_session_title(agent_name, request.description.as_deref());
+        let title = request
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|description| !description.is_empty());
         db.sessions()
-            .create_child(&self.config.parent_session_id, Some(&title))
+            .create_subagent_child(&self.config.parent_session_id, agent_name, title)
             .map(|session| (session, false))
             .map_err(|err| {
                 ToolOutput::error(format!("task: failed to create child session: {err}"))
@@ -487,7 +493,12 @@ impl CliTaskRunner {
                 session.id, self.config.parent_session_id
             )));
         }
-        let Some(agent) = infer_agent_from_title(session.title.as_deref()) else {
+        let Some(agent) = session
+            .subagent_type
+            .as_deref()
+            .filter(|agent| !agent.is_empty())
+            .map(ToOwned::to_owned)
+        else {
             return Err(ToolOutput::error(format!(
                 "task: session `{}` is not a valid subagent task",
                 session.id
@@ -507,21 +518,6 @@ impl CliTaskRunner {
             )));
         }
         Ok(agent)
-    }
-
-    fn child_session_title(&self, agent_name: &str, description: Option<&str>) -> String {
-        match description {
-            Some(description) if !description.trim().is_empty() => format!(
-                "{} (subagent:{} parent:{})",
-                description.trim(),
-                agent_name,
-                self.config.parent_session_id
-            ),
-            _ => format!(
-                "subagent:{agent_name} parent:{}",
-                self.config.parent_session_id
-            ),
-        }
     }
 
     fn child_permissions(
@@ -698,19 +694,6 @@ fn render_task_completed_output(input: RenderTaskCompletedOutput<'_>) -> String 
         lines.push(input.tool_detail_section.to_owned());
     }
     lines.join("\n")
-}
-
-fn infer_agent_from_title(title: Option<&str>) -> Option<String> {
-    let title = title?;
-    let marker = "subagent:";
-    let start = title.find(marker)? + marker.len();
-    let suffix = &title[start..];
-    let agent = suffix
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim_matches(|ch: char| ch == ')' || ch == ',' || ch == ';');
-    (!agent.is_empty()).then(|| agent.to_owned())
 }
 
 fn render_system_context(

@@ -24,6 +24,12 @@ pub struct Session {
     /// The session this one was forked from, or `None` for a top-level session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    /// The normalized persona declared when this row was created as a `task` subagent child.
+    ///
+    /// This is immutable structured metadata. `None` means the session is not a task child,
+    /// including legacy title-only children, which must not be authorized as subagent tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
     /// The message id this session is currently reverted to (its file changes undone via the
     /// shadow checkpoint store), or `None` when the session is not in a reverted state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +45,7 @@ impl Session {
             updated_at: row.get("updated_at")?,
             model: row.get("model")?,
             parent_id: row.get("parent_id")?,
+            subagent_type: row.get("subagent_type")?,
             reverted_message_id: row.get("reverted_message_id")?,
         })
     }
@@ -65,7 +72,7 @@ impl<'a> SessionRepo<'a> {
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, created_at, updated_at)
              VALUES (?1, ?2, datetime('now'), datetime('now'))
-             RETURNING id, title, created_at, updated_at, model, parent_id, reverted_message_id",
+             RETURNING id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id",
             params![id, title],
             Session::from_row,
         )?;
@@ -103,7 +110,7 @@ impl<'a> SessionRepo<'a> {
     /// order (their own `rowid`), and sort behind any session that has activity.
     pub fn most_recent(&self) -> DbResult<Option<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at, model, parent_id, reverted_message_id \
+            "SELECT id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id \
              FROM sessions AS s \
              ORDER BY (SELECT MAX(rowid) FROM messages WHERE session_id = s.id) DESC, \
              s.rowid DESC LIMIT 1",
@@ -118,7 +125,7 @@ impl<'a> SessionRepo<'a> {
     /// Fetch a session by id, or `None` if it does not exist.
     pub fn get(&self, id: &str) -> DbResult<Option<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at, model, parent_id, reverted_message_id \
+            "SELECT id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id \
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = statement.query_map(params![id], Session::from_row)?;
@@ -194,7 +201,7 @@ impl<'a> SessionRepo<'a> {
     /// List sessions newest-first (by creation time, then id for a stable tiebreak).
     pub fn list(&self) -> DbResult<Vec<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at, model, parent_id, reverted_message_id \
+            "SELECT id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id \
              FROM sessions \
              ORDER BY created_at DESC, id DESC",
         )?;
@@ -218,8 +225,39 @@ impl<'a> SessionRepo<'a> {
         let session = self.conn.query_row(
             "INSERT INTO sessions (id, title, parent_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
-             RETURNING id, title, created_at, updated_at, model, parent_id, reverted_message_id",
+             RETURNING id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id",
             params![id, title, parent_id],
+            Session::from_row,
+        )?;
+        Ok(session)
+    }
+
+    /// Create a task subagent child with its normalized persona stored independently from the
+    /// mutable display title.
+    ///
+    /// This is the only repository operation that writes `subagent_type`. Generic forks must use
+    /// [`create_child`](Self::create_child), which leaves task persona metadata `NULL`. The
+    /// database rejects later persona changes, including attempts to add a persona to a generic
+    /// or legacy title-only child.
+    pub fn create_subagent_child(
+        &self,
+        parent_id: &str,
+        subagent_type: &str,
+        title: Option<&str>,
+    ) -> DbResult<Session> {
+        let subagent_type = subagent_type.trim().to_ascii_lowercase();
+        if subagent_type.is_empty() {
+            return Err(DbError::Operation {
+                message: "subagent type must not be empty".to_owned(),
+            });
+        }
+        let title = title.map(redaction::redact);
+        let id = random_id(self.conn, prefix::SESSION)?;
+        let session = self.conn.query_row(
+            "INSERT INTO sessions (id, title, parent_id, subagent_type, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+             RETURNING id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id",
+            params![id, title, parent_id, subagent_type],
             Session::from_row,
         )?;
         Ok(session)
@@ -228,7 +266,7 @@ impl<'a> SessionRepo<'a> {
     /// List the child sessions forked from `parent_id`, newest-first.
     pub fn children(&self, parent_id: &str) -> DbResult<Vec<Session>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at, model, parent_id, reverted_message_id \
+            "SELECT id, title, created_at, updated_at, model, parent_id, subagent_type, reverted_message_id \
              FROM sessions WHERE parent_id = ?1 \
              ORDER BY created_at DESC, id DESC",
         )?;

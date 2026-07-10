@@ -118,13 +118,19 @@ fn runner(catalog: &SubagentCatalog, config: CliTaskRunnerConfig) -> Arc<crate::
 
 struct ScriptedProvider {
     rounds: Mutex<std::collections::VecDeque<Vec<LlmEvent>>>,
+    calls: AtomicUsize,
 }
 
 impl ScriptedProvider {
     fn new(rounds: Vec<Vec<LlmEvent>>) -> Self {
         Self {
             rounds: Mutex::new(rounds.into()),
+            calls: AtomicUsize::new(0),
         }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
     }
 }
 
@@ -133,6 +139,7 @@ impl Provider for ScriptedProvider {
         &'a self,
         _request: LlmRequest,
     ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
         let batch = self
             .rounds
             .lock()
@@ -227,18 +234,13 @@ async fn subagent_runner_creates_a_distinct_session_and_persists_answer() {
         "a task child must carry a structured durable parent link"
     );
     assert!(
-        child
-            .title
-            .as_deref()
-            .is_some_and(|title| title.contains("subagent:explore"))
+        child.title.is_none(),
+        "task children without a description have no synthetic title marker"
     );
-    assert!(
-        child
-            .title
-            .as_deref()
-            .is_some_and(|title| title.contains("parent:parent-session")),
-        "child title should expose durable parent linkage: {:?}",
-        child.title
+    assert_eq!(
+        child.subagent_type.as_deref(),
+        Some("explore"),
+        "a task child persists its normalized persona separately from title"
     );
     let messages = Database::open(&db_path)
         .expect("db reopen")
@@ -630,7 +632,7 @@ async fn task_rejoin_rejects_a_child_owned_by_a_different_parent() {
     let owner = runner(
         &catalog,
         config(&dir, db_path.clone(), inputs.clone())
-            .provider(provider)
+            .provider(provider.clone())
             .build(),
     );
     let created = owner
@@ -679,6 +681,11 @@ async fn task_rejoin_rejects_a_child_owned_by_a_different_parent() {
         messages_after, messages_before,
         "a rejected foreign rejoin must not alter the child transcript"
     );
+    assert_eq!(
+        provider.calls(),
+        1,
+        "foreign ownership rejection must happen before another provider request"
+    );
 }
 
 #[tokio::test]
@@ -703,7 +710,7 @@ async fn task_resume_cannot_change_the_child_subagent_persona() {
     let run = runner(
         &catalog,
         config(&dir, db_path.clone(), inputs)
-            .provider(provider)
+            .provider(provider.clone())
             .build(),
     );
     let created = run
@@ -711,6 +718,14 @@ async fn task_resume_cannot_change_the_child_subagent_persona() {
         .await;
     assert!(!created.is_error, "got: {}", created.model_content());
     let task_id = parse_task_id(&created.model_content());
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .set_title(
+            &task_id,
+            Some("subagent:general parent:attacker-controlled-display-text"),
+        )
+        .expect("rename child to a spoofed display title");
     let messages_before = Database::open(&db_path)
         .expect("db")
         .messages()
@@ -746,6 +761,89 @@ async fn task_resume_cannot_change_the_child_subagent_persona() {
     assert_eq!(
         messages_after, messages_before,
         "a rejected persona change must not append to the child transcript"
+    );
+    assert_eq!(
+        provider.calls(),
+        1,
+        "persona rejection must happen before the child provider executes"
+    );
+}
+
+#[tokio::test]
+async fn title_only_legacy_children_fail_closed_for_rejoin_and_resume() {
+    let (dir, inputs) = scratch("legacy-title-only");
+    let db_path = dir.join("cortex.db");
+    let db = Database::open(&db_path).expect("db");
+    db.sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+    let legacy = db
+        .sessions()
+        .create_child(
+            "parent-session",
+            Some("subagent:explore parent:parent-session"),
+        )
+        .expect("legacy title-only child");
+    db.messages()
+        .create(&legacy.id, "assistant", "must not be disclosed")
+        .expect("legacy answer");
+
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+    let run = runner(
+        &catalog,
+        config(&dir, db_path.clone(), inputs)
+            .provider(provider.clone())
+            .build(),
+    );
+
+    let rejoin = run
+        .run_task(TaskRequest {
+            agent: None,
+            prompt: None,
+            description: None,
+            task_id: Some(legacy.id.clone()),
+            command: None,
+            background: false,
+        })
+        .await;
+    assert!(rejoin.is_error, "got: {}", rejoin.model_content());
+    assert!(
+        rejoin.model_content().contains("not a valid subagent task"),
+        "title-only legacy rows must fail closed: {}",
+        rejoin.model_content()
+    );
+
+    let resume = run
+        .run_task(TaskRequest {
+            agent: Some("explore".to_owned()),
+            prompt: Some("try a resumed turn".to_owned()),
+            description: None,
+            task_id: Some(legacy.id.clone()),
+            command: None,
+            background: false,
+        })
+        .await;
+    assert!(resume.is_error, "got: {}", resume.model_content());
+    assert!(
+        resume.model_content().contains("not a valid subagent task"),
+        "resume also rejects legacy title-only rows: {}",
+        resume.model_content()
+    );
+    assert_eq!(
+        provider.calls(),
+        0,
+        "legacy authorization fails before provider execution"
+    );
+    assert_eq!(
+        Database::open(&db_path)
+            .expect("db")
+            .messages()
+            .list_for_session(&legacy.id)
+            .expect("legacy messages")
+            .len(),
+        1,
+        "rejected legacy rows do not receive a prompt or assistant message"
     );
 }
 

@@ -360,6 +360,164 @@ fn set_title_on_unknown_session_is_not_found() {
     ));
 }
 
+#[test]
+fn subagent_type_is_persisted_separately_from_mutable_child_titles() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("cortex.db");
+
+    let (parent_id, task_id, generic_id) = {
+        let db = Database::open(&db_path).expect("open db");
+        let parent = db.sessions().create(Some("parent")).expect("parent");
+        let generic = db
+            .sessions()
+            .create_child(&parent.id, Some("ordinary fork"))
+            .expect("generic child");
+        let task = db
+            .sessions()
+            .create_subagent_child(
+                &parent.id,
+                "  ExPlOrE  ",
+                Some("subagent:general is only a display title"),
+            )
+            .expect("task child");
+
+        assert_eq!(
+            generic.subagent_type, None,
+            "generic children must not acquire a task persona"
+        );
+        assert_eq!(
+            task.subagent_type.as_deref(),
+            Some("explore"),
+            "task persona is normalized before durable persistence"
+        );
+        assert_eq!(
+            task.title.as_deref(),
+            Some("subagent:general is only a display title"),
+            "the presentation title is stored independently from the persona"
+        );
+
+        db.sessions()
+            .set_title(&task.id, None)
+            .expect("clear mutable title");
+        (parent.id, task.id, generic.id)
+    };
+
+    let db = Database::open(&db_path).expect("reopen db");
+    let task = db.sessions().require(&task_id).expect("task after restart");
+    assert_eq!(
+        task.parent_id.as_deref(),
+        Some(parent_id.as_str()),
+        "task ownership remains structured"
+    );
+    assert_eq!(
+        task.subagent_type.as_deref(),
+        Some("explore"),
+        "clearing a title cannot alter the durable task persona"
+    );
+    assert_eq!(
+        task.title, None,
+        "the display title remains independently mutable"
+    );
+    let conn = rusqlite::Connection::open(db.path()).expect("direct mutation probe");
+    let err = conn
+        .execute(
+            "UPDATE sessions SET subagent_type = 'general' WHERE id = ?1",
+            [&task_id],
+        )
+        .expect_err("the durable task persona must be immutable");
+    assert!(
+        err.to_string().contains("immutable"),
+        "immutable metadata rejection should be explicit: {err}"
+    );
+    assert_eq!(
+        db.sessions()
+            .require(&task_id)
+            .expect("task after rejected mutation")
+            .subagent_type
+            .as_deref(),
+        Some("explore"),
+        "rejected direct mutation leaves the declared persona intact"
+    );
+    assert_eq!(
+        db.sessions()
+            .require(&generic_id)
+            .expect("generic after restart")
+            .subagent_type,
+        None,
+        "generic children remain non-task sessions after reopen"
+    );
+}
+
+#[test]
+fn subagent_child_rejects_an_empty_persona() {
+    let db = Database::open_in_memory().expect("memory db");
+    let parent = db.sessions().create(None).expect("parent");
+    let err = db
+        .sessions()
+        .create_subagent_child(&parent.id, "   ", None)
+        .expect_err("empty persona must never create an ambiguous task child");
+    assert!(
+        err.to_string().contains("subagent type must not be empty"),
+        "clear failure: {err}"
+    );
+}
+
+#[test]
+fn forward_migration_leaves_legacy_title_only_children_without_a_persona() {
+    let scratch = Scratch::new();
+    let db_path = scratch.path("legacy-v8.db");
+    let legacy_id = "ses_legacy_title_only";
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("create v8 fixture");
+        conn.execute_batch(
+            "
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                model TEXT,
+                parent_id TEXT,
+                reverted_message_id TEXT,
+                project_id TEXT
+            );
+            ",
+        )
+        .expect("create pre-v9 schema");
+        for version in 1..=8 {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, '2026-01-01')",
+                [version],
+            )
+            .expect("mark old migration applied");
+        }
+        conn.execute(
+            "INSERT INTO sessions (
+                id, title, created_at, updated_at, parent_id
+            ) VALUES (?1, 'subagent:explore parent:ses_parent', '2026-01-01', '2026-01-01', 'ses_parent')",
+            [legacy_id],
+        )
+        .expect("insert legacy title-only child");
+    }
+
+    let db = Database::open(&db_path).expect("apply forward migration");
+    assert_eq!(db.schema_version().expect("version"), latest_version());
+    let legacy = db.sessions().require(legacy_id).expect("legacy child");
+    assert_eq!(
+        legacy.subagent_type, None,
+        "migration must not infer a trusted persona from mutable legacy title text"
+    );
+    assert_eq!(
+        legacy.title.as_deref(),
+        Some("subagent:explore parent:ses_parent"),
+        "migration preserves legacy display data without treating it as identity"
+    );
+}
+
 // VAL-CROSS-006 (persistence half): a session's chosen model is stored and survives a reopen, so a
 // later headless resume can read it back. A fresh session has no model; passing None clears it.
 #[test]

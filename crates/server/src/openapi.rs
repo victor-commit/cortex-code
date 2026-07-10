@@ -1922,6 +1922,7 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                         "updated_at": { "type": "string" },
                         "model": { "type": ["string", "null"] },
                         "parent_id": { "type": ["string", "null"] },
+                        "subagent_type": { "type": ["string", "null"] },
                         "reverted_message_id": { "type": ["string", "null"] }
                     }
                 },

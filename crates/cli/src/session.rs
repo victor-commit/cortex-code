@@ -254,6 +254,7 @@ mod tests {
             updated_at: "2026-01-01 00:00:00".to_owned(),
             model: None,
             parent_id: None,
+            subagent_type: None,
             reverted_message_id: None,
         }
     }

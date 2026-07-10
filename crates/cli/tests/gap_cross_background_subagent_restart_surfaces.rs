@@ -12,8 +12,8 @@
 //!      The CLI then drains the in-flight child to completion at shutdown, so its transcript is
 //!      durably persisted before the process exits. Process A exiting IS the host restart boundary.
 //!   2. The child session is listable (`cortex session list`) and its transcript persisted
-//!      (`cortex session show <task_id>`) under the same stable id, with `subagent:`/`parent:`
-//!      linkage in the title.
+//!      (`cortex session show <task_id>`) under the same stable id, with structured
+//!      `subagent_type` and `parent_id` metadata.
 //!   3. Process B (a brand-new process): the model rejoins the task BY ID (`task` with `task_id`,
 //!      no prompt). The rejoin reads the persisted transcript from disk and feeds the child's result
 //!      back into the parent session's final answer.
@@ -484,15 +484,13 @@ fn background_subagent_task_survives_restart_lists_rejoins_and_feeds_parent() {
         .unwrap_or_else(|| {
             panic!("child task {task_id} must be listable after restart: {list_doc}")
         });
-    let child_title = child["title"].as_str().unwrap_or_default();
     assert_eq!(
         child["parent_id"], PARENT_SESSION,
         "the durable task child must retain structured parent linkage: {child}"
     );
-    assert!(
-        child_title.contains("subagent:explore")
-            && child_title.contains(&format!("parent:{PARENT_SESSION}")),
-        "child session title must carry subagent/parent linkage: {child_title}"
+    assert_eq!(
+        child["subagent_type"], "explore",
+        "the durable task child must retain its structured persona: {child}"
     );
 
     let show_out = run(cortex_command(

@@ -60,7 +60,7 @@ export interface PendingPermissionItem { id: string; sessionId: string; messageI
 export interface PendingPermissionResponse { pending: PendingPermissionItem[]; }
 export interface PermissionReplyRequest { id: string; decision: "allow" | "deny"; always?: boolean; cascade?: boolean; feedback?: string | null; }
 export interface PermissionReplyResponse { status: "resolved"; id: string; resolved: number; }
-export interface Session { id: string; title?: string | null; created_at: string; updated_at: string; model?: string | null; parent_id?: string | null; reverted_message_id?: string | null; }
+export interface Session { id: string; title?: string | null; created_at: string; updated_at: string; model?: string | null; parent_id?: string | null; subagent_type?: string | null; reverted_message_id?: string | null; }
 export interface ShareResponse { status: "shared"; share_id: string; url: string; }
 export interface UnshareResponse { status: "unshared"; revoked: boolean; }
 export interface TodoItem { content: string; status: "pending" | "in_progress" | "completed" | "cancelled"; priority: "high" | "medium" | "low"; }

@@ -52,6 +52,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         sql: include_str!("migrations/0008_projects_accounts.sql"),
     },
+    Migration {
+        version: 9,
+        sql: include_str!("migrations/0009_session_subagent_type.sql"),
+    },
 ];
 
 /// The highest migration version known to this build.
