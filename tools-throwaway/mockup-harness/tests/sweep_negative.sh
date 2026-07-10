@@ -41,6 +41,7 @@ expect_failure cross-003-eventless-row live_activity
 expect_failure cross-003-verb-mismatch live_activity
 expect_failure cross-003-source-unlisted live_activity
 expect_failure cross-003-inline-helper-unlisted live_activity
+expect_failure cross-003-inline-interrupt live_activity
 expect_failure cross-003-duplicate live_activity
 expect_success cross-004-valid
 expect_success cross-004-fractional

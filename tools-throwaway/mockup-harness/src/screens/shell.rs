@@ -4,7 +4,7 @@
 
 use ratatui::{text::Line, Frame};
 
-use crate::chrome::{self, m, t, ShellStatus, StatusLine};
+use crate::chrome::{self, LiveActivityInterrupt, ShellStatus, StatusLine, m, t};
 
 pub fn render(f: &mut Frame) {
     let status = StatusLine::default();
@@ -29,7 +29,7 @@ pub fn render(f: &mut Frame) {
     ]));
     lines.push(Line::from(""));
     lines.push(chrome::shell_line(
-        ShellStatus::Running(4.0),
+        ShellStatus::Running(None, LiveActivityInterrupt::Band),
         "cargo test --workspace",
     ));
     lines.extend(chrome::elbow(vec![
@@ -40,8 +40,9 @@ pub fn render(f: &mut Frame) {
             t("test routes::api::quota_enforced ... "),
             t("█"),
         ],
-        chrome::key_span("esc", "to interrupt"),
     ]));
+    lines.push(Line::from(""));
+    lines.push(chrome::working_band("Testing", 4.0, None));
 
     chrome::transcript(f, body, lines);
 }

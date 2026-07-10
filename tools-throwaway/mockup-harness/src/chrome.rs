@@ -317,11 +317,11 @@ pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
 }
 
 /// Shell command line with a shared status column. Finished commands pair
-/// their OK dot with `✓ exit 0`; running commands expose their elapsed time
-/// in the same column so the outcome remains readable without color.
+/// their OK dot with `✓ exit 0`; running commands may delegate elapsed time
+/// and interrupt ownership to the canonical working band.
 pub enum ShellStatus {
     Done(f64),
-    Running(f64),
+    Running(Option<f64>, LiveActivityInterrupt),
 }
 
 /// ` ● ! command                                  ✓ exit 0 · 0.2s`
@@ -332,15 +332,15 @@ pub fn shell_line(status: ShellStatus, command: &str) -> Line<'static> {
     const STATUS_COL: usize = 82;
 
     let (dot_hue, done, elapsed) = match status {
-        ShellStatus::Done(secs) => (OK, true, secs),
-        ShellStatus::Running(secs) => {
+        ShellStatus::Done(secs) => (OK, true, Some(secs)),
+        ShellStatus::Running(elapsed, interrupt) => {
             crate::audit::record_live_activity(crate::audit::LiveActivityEvent::new(
                 crate::audit::LiveActivitySource::ShellStatusRunning,
                 command,
-                Some(timefmt(secs)),
-                crate::audit::LiveActivityInterrupt::Inline,
+                elapsed.map(timefmt),
+                interrupt,
             ));
-            (MUTED, false, secs)
+            (MUTED, false, elapsed)
         }
     };
     let used = 4 + command.chars().count();
@@ -361,10 +361,12 @@ pub fn shell_line(status: ShellStatus, command: &str) -> Line<'static> {
             Style::default().fg(BRIGHT),
         ));
     }
-    spans.push(Span::styled(
-        format!("{SEP} {}", timefmt(elapsed)),
-        Style::default().fg(MUTED),
-    ));
+    if let Some(secs) = elapsed {
+        spans.push(Span::styled(
+            format!("{SEP} {}", timefmt(secs)),
+            Style::default().fg(MUTED),
+        ));
+    }
     Line::from(spans)
 }
 

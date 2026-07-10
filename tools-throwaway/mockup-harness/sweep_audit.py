@@ -76,8 +76,9 @@ SELECTION_CONSUMERS: dict[str, dict[str, Any]] = {
 # Live activity ownership is deliberately closed. Each entry records the exact
 # render-time `(source, verb, elapsed, interrupt)` event multiset expected for
 # a registered screen, then says whether the canonical band or inline row owns
-# its activity. The event inventory is deliberately independent of the
-# rendered wording, so helper-generated plain-English rows stay fail-closed.
+# its elapsed value. An interrupt affordance, when present, belongs only to a
+# canonical working band. The event inventory is deliberately independent of
+# the rendered wording, so helper-generated plain-English rows stay fail-closed.
 # Shared renderers may service more than one registered screen, but each
 # rendered screen still has its own explicit event inventory.
 LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
@@ -110,19 +111,25 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/tool-task": {
         "source_paths": ("screens/tool_task.rs",),
-        "events": (("tool_running", "Task", "48s", "inline"),),
-        "owner": "inline",
-        "verb": "Task",
-        "activity": "Task(build: add rate-limit tests)",
-        "interrupt": "inline",
+        "events": (
+            ("tool_running", "Task", None, "band"),
+            ("working_band", "Building tests", "48s", "band"),
+        ),
+        "owner": "band",
+        "verb": "Building tests",
+        "activity": "Building tests",
+        "interrupt": "band",
     },
     "session/shell": {
         "source_paths": ("screens/shell.rs",),
-        "events": (("shell_running", "cargo test --workspace", "4s", "inline"),),
-        "owner": "inline",
-        "verb": "cargo test --workspace",
-        "activity": "cargo test --workspace",
-        "interrupt": "inline",
+        "events": (
+            ("shell_running", "cargo test --workspace", None, "band"),
+            ("working_band", "Testing", "4s", "band"),
+        ),
+        "owner": "band",
+        "verb": "Testing",
+        "activity": "Testing",
+        "interrupt": "band",
     },
     "session/todo-list": {
         "source_paths": ("screens/todo_list.rs",),
@@ -197,12 +204,11 @@ KEY_LINE_ROLES: dict[str, dict[int, str]] = {
     "session/reasoning": {18: "interactive_attached"},
     "session/reasoning-collapsed": {24: "interactive_attached"},
     "session/rich-response": {28: "interactive_attached"},
-    "session/shell": {36: "activity_attached"},
     "session/tool-calls": {32: "failure_adjacent"},
     "session/tool-failed": {32: "failure_adjacent"},
     "session/tool-success": {29: "interactive_attached"},
     "session/tool-success-expanded": {19: "interactive_attached"},
-    "session/tool-task": {33: "interactive_attached", 36: "activity_attached"},
+    "session/tool-task": {31: "interactive_attached"},
     "session/tool-task-expanded": {30: "interactive_attached"},
     "session/turn-error": {36: "failure_adjacent"},
     "states/error-context": {36: "interactive_attached"},
@@ -603,6 +609,7 @@ def validate_dots(audit: Audit, screens: list[dict[str, Any]]) -> None:
                     re.match(r"(?:[a-f]\s+\w+|d[1-8]\s+\w+)", context)
                     or re.match(r"(?:read|search|bash|task|edit)\(", context)
                     or re.match(r"(?:composing|scouring|writing|orchestrating|retry)\b", context)
+                    or "…" in context
                     or "in progress" in row["text"].lower()
                     or re.search(
                         r"\b(?:valid|waiting|reached|interrupted|clean|modified|warning|warnings|error|diagnostics|needs auth|info|high|med|low|complete|blocked|widen|current|build)\b",
@@ -1163,29 +1170,31 @@ def validate_live_activity(
                 )
             audit.counts["inline_live_activity"] += 1
 
-        interrupt_owner = expected_interrupt
-        if interrupt_owner == "band":
-            if len(interrupt_rows) != 1 or (bands and interrupt_rows[0] not in bands):
-                audit.fail(
-                    screen_id,
-                    interrupt_rows[0]["line"] if interrupt_rows else 0,
-                    "live_activity",
-                    "working band does not exclusively own the interrupt affordance",
-                )
-        elif interrupt_owner == "inline":
-            if len(interrupt_rows) != 1:
-                audit.fail(
-                    screen_id,
-                    interrupt_rows[1]["line"] if len(interrupt_rows) > 1 else 0,
-                    "live_activity",
-                    "inline activity does not exclusively own the interrupt affordance",
-                )
-        elif interrupt_rows:
+        if expected_interrupt == "inline":
+            audit.fail(
+                screen_id,
+                activity_row["line"],
+                "live_activity",
+                "inline interrupt ownership is forbidden",
+            )
+        if interrupt_rows and (
+            expected_interrupt != "band"
+            or len(bands) != 1
+            or len(interrupt_rows) != 1
+            or interrupt_rows[0] is not bands[0]
+        ):
             audit.fail(
                 screen_id,
                 interrupt_rows[0]["line"],
                 "live_activity",
-                "activity without interrupt ownership renders an interrupt affordance",
+                "only a working band may own the interrupt affordance",
+            )
+        elif expected_interrupt == "band" and not interrupt_rows:
+            audit.fail(
+                screen_id,
+                0,
+                "live_activity",
+                "working band does not exclusively own the interrupt affordance",
             )
 
 
@@ -1247,6 +1256,21 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
                 "fixtures/helper-live.txt": live_source_types(
                     'render_catalogue_state() { chrome::inline_live_state("cataloguing in background", elapsed); }'
                 )
+            },
+        )
+    elif fixture_name == "cross-003-inline-interrupt":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {
+                "fixtures/inline-interrupt.txt": {
+                    "events": (("tool_running", "Task", "12s", "inline"),),
+                    "owner": "inline",
+                    "verb": "Task",
+                    "activity": "Task(audit)",
+                    "interrupt": "inline",
+                }
             },
         )
     elif fixture_name in {"cross-004-malformed", "cross-004-mixed"}:
@@ -1396,6 +1420,27 @@ def fixture(name: str) -> dict[str, Any]:
                 }
             ]
         }
+    if name == "cross-003-inline-interrupt":
+        text = " ● Task(audit) · 12s · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/inline-interrupt.txt",
+                    "events": [
+                        {
+                            "source": "tool_running",
+                            "verb": "Task",
+                            "elapsed": "12s",
+                            "interrupt": "inline",
+                        }
+                    ],
+                    "rows": [
+                        row(1, text, [span(0, 2, MUTED), span(2, len(text))]),
+                        status,
+                    ],
+                }
+            ]
+        }
     if name == "cross-004-valid":
         text = " ● Retrying… 2h10m · esc to interrupt"
         return {
@@ -1499,6 +1544,7 @@ def main() -> int:
             "cross-003-verb-mismatch",
             "cross-003-source-unlisted",
             "cross-003-inline-helper-unlisted",
+            "cross-003-inline-interrupt",
             "cross-004-valid",
             "cross-004-fractional",
             "cross-004-malformed",

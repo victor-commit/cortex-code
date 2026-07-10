@@ -64,13 +64,15 @@ pub fn render(f: &mut Frame) {
     lines.extend(chrome::elbow(vec![completed_summary(false)]));
     lines.push(Line::from(""));
     lines.push(chrome::tool_line(
-        ToolStatus::Running(Some(48.0), LiveActivityInterrupt::Inline),
+        ToolStatus::Running(None, LiveActivityInterrupt::Band),
         "Task",
         "build: add rate-limit tests",
     ));
     lines.extend(chrome::elbow(vec![vec![m(
-        "2 of 3 files \u{00b7} tests/login_ratelimit.rs \u{00b7} esc to interrupt",
+        "2 of 3 files \u{00b7} tests/login_ratelimit.rs",
     )]]));
+    lines.push(Line::from(""));
+    lines.push(chrome::working_band("Building tests", 48.0, None));
 
     chrome::transcript(f, body, lines);
 }

@@ -38,7 +38,6 @@ impl LiveActivitySource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LiveActivityInterrupt {
     Band,
-    Inline,
     None,
 }
 
@@ -46,7 +45,6 @@ impl LiveActivityInterrupt {
     fn as_str(self) -> &'static str {
         match self {
             Self::Band => "band",
-            Self::Inline => "inline",
             Self::None => "none",
         }
     }
