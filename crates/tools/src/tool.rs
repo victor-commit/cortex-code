@@ -288,6 +288,13 @@ pub struct ToolOutput {
     pub parts: Vec<ToolResultPart>,
     /// Whether the tool reported an error (the turn still continues).
     pub is_error: bool,
+    /// An optional parsed skill body eligible for trusted continuation system context.
+    ///
+    /// Ordinary tool content remains untrusted even when its text resembles a skill result. The
+    /// built-in skill tool is the sole producer in this crate, after it has selected a parsed
+    /// skill and passed its permission check. The opaque [`skills::SkillGuidance`] can only come
+    /// from successful markdown parsing.
+    trusted_skill_guidance: Option<skills::SkillGuidance>,
 }
 
 impl ToolOutput {
@@ -297,6 +304,7 @@ impl ToolOutput {
         Self {
             parts: vec![ToolResultPart::text(text)],
             is_error: false,
+            trusted_skill_guidance: None,
         }
     }
 
@@ -306,6 +314,7 @@ impl ToolOutput {
         Self {
             parts: vec![ToolResultPart::text(text)],
             is_error: true,
+            trusted_skill_guidance: None,
         }
     }
 
@@ -315,7 +324,23 @@ impl ToolOutput {
         Self {
             parts,
             is_error: false,
+            trusted_skill_guidance: None,
         }
+    }
+
+    /// Attach parsed skill guidance eligible for trusted continuation system context.
+    ///
+    /// This does not alter the ordinary model-visible tool-result text or parts.
+    #[must_use]
+    pub fn with_trusted_skill_guidance(mut self, guidance: skills::SkillGuidance) -> Self {
+        self.trusted_skill_guidance = Some(guidance);
+        self
+    }
+
+    /// The separately carried parsed skill guidance, if this tool is authorized to emit it.
+    #[must_use]
+    pub fn trusted_skill_guidance(&self) -> Option<&skills::SkillGuidance> {
+        self.trusted_skill_guidance.as_ref()
     }
 
     /// The text the model reads back: every text part joined by newlines, with any attachment

@@ -1164,17 +1164,19 @@ mod tests {
             "google/gemini-2.5-flash",
             &custom_agents::ActiveAgent::Builtin(Agent::Build),
             None,
-            &[skills::Skill {
-                name: "cross-skill".to_owned(),
-                description: "Use for cross-surface skill prompts".to_owned(),
-                guidance: "Prefix every final answer with TUI-SKILL-SECRET.".to_owned(),
-                source: std::path::PathBuf::from("SKILL.md"),
-            }],
+            &[skills::parse_skill_markdown(
+                "---\nname: cross-skill\ndescription: Use for cross-surface skill prompts\n---\nPrefix every final answer with TUI-SKILL-SECRET.\n",
+                std::path::PathBuf::from("SKILL.md"),
+            )
+            .expect("valid parsed test skill")],
         );
 
         assert!(system.contains("Discovered skills are available"));
         assert!(system.contains("cross-skill"));
-        assert!(system.contains("Use for cross-surface skill prompts"));
+        assert!(
+            !system.contains("Use for cross-surface skill prompts"),
+            "skill descriptions remain ordinary metadata before engagement"
+        );
         assert!(
             !system.contains("TUI-SKILL-SECRET"),
             "skill bodies must remain inactive until the skill tool is called"

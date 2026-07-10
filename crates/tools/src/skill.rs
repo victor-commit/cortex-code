@@ -2,8 +2,8 @@
 //!
 //! Skill discovery lives in the `skills` crate. This tool receives the already-discovered valid
 //! skills from the surface, advertises only their names/descriptions, and returns the chosen
-//! skill's guidance only when the model explicitly engages it. The engine then treats a successful
-//! `skill` tool result as system-context guidance for the continuation round.
+//! skill's guidance only when the model explicitly engages it. The tool separately relays only the
+//! already-parsed body as a typed system-context update for the continuation round.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,6 +104,7 @@ impl Tool for SkillTool {
             }
 
             ToolOutput::text(render_skill_content(skill, ctx))
+                .with_trusted_skill_guidance(skill.trusted_guidance())
         })
     }
 }
@@ -128,7 +129,7 @@ fn render_description(skills: &[Skill]) -> String {
 }
 
 fn render_skill_content(skill: &Skill, ctx: &ToolContext) -> String {
-    let guidance = skill.guidance.trim();
+    let guidance = skill.guidance().trim();
     let (base_dir, files) = skill_inventory(skill, ctx);
     let base_uri = Url::from_directory_path(&base_dir)
         .map(|url| url.to_string())
@@ -248,12 +249,11 @@ mod tests {
     }
 
     fn skill_at(name: &str, description: &str, guidance: &str, source: PathBuf) -> Skill {
-        Skill {
-            name: name.to_owned(),
-            description: description.to_owned(),
-            guidance: guidance.to_owned(),
+        skills::parse_skill_markdown(
+            &format!("---\nname: {name}\ndescription: {description}\n---\n{guidance}\n"),
             source,
-        }
+        )
+        .expect("valid test skill")
     }
 
     #[test]
@@ -290,6 +290,21 @@ mod tests {
         assert!(!output.is_error);
         let content = output.model_content();
         assert!(content.contains("SKILL-ALPHA"));
+        assert_eq!(
+            output
+                .trusted_skill_guidance()
+                .expect("parsed skill produces a trusted update")
+                .as_str(),
+            "Append SKILL-ALPHA."
+        );
+        assert!(
+            !output
+                .trusted_skill_guidance()
+                .expect("parsed skill produces a trusted update")
+                .as_str()
+                .contains("Skill `alpha`"),
+            "descriptive presentation text must not be promoted"
+        );
         assert!(
             !content.contains("SKILL-BETA"),
             "engaging one skill must not inject another"
@@ -304,6 +319,26 @@ mod tests {
         let output = tool.execute(json!({ "skill": "alpha" }), &ctx).await;
         assert!(!output.is_error);
         assert!(output.model_content().contains("SKILL-ALPHA"));
+    }
+
+    #[tokio::test]
+    async fn denied_skill_emits_no_trusted_system_context_update() {
+        let tool = SkillTool::new(vec![skill("alpha", "Use alpha", "Append SKILL-ALPHA.")]);
+        let permissions = Arc::new(PermissionEngine::new(Ruleset::new(vec![Rule::new(
+            "skill",
+            "*",
+            Action::Deny,
+        )])));
+        let ctx = ToolContext::new(std::env::temp_dir()).with_permissions(permissions);
+
+        let output = tool.execute(json!({ "name": "alpha" }), &ctx).await;
+
+        assert!(output.is_error, "denied engagement is an error");
+        assert!(
+            output.trusted_skill_guidance().is_none(),
+            "a denied call must not carry trusted guidance"
+        );
+        assert!(!output.model_content().contains("SKILL-ALPHA"));
     }
 
     #[tokio::test]

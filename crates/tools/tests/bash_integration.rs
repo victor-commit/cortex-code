@@ -81,6 +81,7 @@ impl ToolDispatcher for RegistryDispatcher {
                 .await;
             ToolDispatchResult {
                 content: output.model_content(),
+                trusted_skill_guidance: None,
                 parts: output.parts,
                 mcp_result: None,
                 is_error: output.is_error,

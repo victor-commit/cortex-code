@@ -917,6 +917,7 @@ dependencies = [
  "redaction",
  "serde",
  "serde_json",
+ "skills",
  "tokio",
 ]
 

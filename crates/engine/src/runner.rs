@@ -28,6 +28,7 @@ use llm::{
     ToolDef,
 };
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
+use skills::SkillGuidance;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -633,8 +634,9 @@ impl SessionRunner {
                         } else {
                             content
                         };
-                        if call.name == "skill" && !is_error {
-                            append_skill_guidance_to_system(&mut messages, &tool_content);
+                        if !is_error && let Some(guidance) = result.trusted_skill_guidance.as_ref()
+                        {
+                            append_trusted_skill_guidance(&mut messages, guidance);
                         }
                         let media_parts = message_media_parts_from_tool_result(&result.parts);
                         messages.push(
@@ -940,8 +942,16 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-/// Inject the guidance returned by a successful `skill` tool call into the active system context
-/// for the continuation round, without changing the pre-engagement system prompt.
+/// Apply opaque parsed skill guidance to the next continuation request.
+///
+/// The runner never interprets a tool name, generic result string, attachment, metadata, or plugin
+/// transformation as trusted. Those remain model-visible tool-result content only.
+fn append_trusted_skill_guidance(messages: &mut Vec<Message>, guidance: &SkillGuidance) {
+    append_skill_guidance_to_system(messages, guidance.as_str());
+}
+
+/// Inject one already-validated parsed skill body into the active system context for the
+/// continuation round, without changing the pre-engagement system prompt.
 fn append_skill_guidance_to_system(messages: &mut Vec<Message>, guidance: &str) {
     let guidance = guidance.trim();
     if guidance.is_empty() {
@@ -1029,6 +1039,7 @@ fn timed_out_tool_result(call: &ToolCall, timeout: Duration) -> ToolDispatchResu
     ToolDispatchResult {
         parts: vec![protocol::ToolResultPart::text(content.clone())],
         mcp_result: None,
+        trusted_skill_guidance: None,
         content,
         is_error: true,
     }
@@ -1043,6 +1054,7 @@ fn missing_tool_result(call: &ToolCall) -> ToolDispatchResult {
     ToolDispatchResult {
         parts: vec![protocol::ToolResultPart::text(content.clone())],
         mcp_result: None,
+        trusted_skill_guidance: None,
         content,
         is_error: true,
     }

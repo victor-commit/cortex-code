@@ -10,6 +10,7 @@ use errors::Diagnostic;
 use futures_util::future::BoxFuture;
 use llm::{ToolCall, ToolDef};
 use protocol::{McpToolResult, ToolResultPart};
+use skills::SkillGuidance;
 
 /// The structured result of executing one tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +23,10 @@ pub struct ToolDispatchResult {
     ///
     /// Ordinary tools leave this absent and continue to use `parts` alone.
     pub mcp_result: Option<McpToolResult>,
+    /// Opaque guidance from a successfully parsed and explicitly engaged skill, eligible for the
+    /// next continuation's system message. This is intentionally distinct from ordinary
+    /// `content`, `parts`, and MCP payloads, and cannot be constructed from an arbitrary string.
+    pub trusted_skill_guidance: Option<SkillGuidance>,
     /// Whether the tool reported an error. The turn still continues so the model can recover; this
     /// only marks the result so a consumer can distinguish a tool failure from a success.
     pub is_error: bool,
@@ -35,6 +40,7 @@ impl ToolDispatchResult {
         Self {
             parts: vec![ToolResultPart::text(content.clone())],
             mcp_result: None,
+            trusted_skill_guidance: None,
             content,
             is_error: false,
         }

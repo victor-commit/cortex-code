@@ -233,6 +233,7 @@ impl ToolDispatcher for RegistryDispatcher {
                             content: message.clone(),
                             parts: vec![protocol::ToolResultPart::text(message)],
                             mcp_result: None,
+                            trusted_skill_guidance: None,
                             is_error: true,
                         };
                     }
@@ -245,6 +246,7 @@ impl ToolDispatcher for RegistryDispatcher {
                 .await;
             ToolDispatchResult {
                 content: output.model_content(),
+                trusted_skill_guidance: output.trusted_skill_guidance().cloned(),
                 parts: output.parts,
                 mcp_result: None,
                 is_error: output.is_error,
@@ -295,6 +297,7 @@ async fn dispatch_mcp(
                         call.name
                     ))],
                     mcp_result: None,
+                    trusted_skill_guidance: None,
                     is_error: true,
                 };
             }
@@ -318,6 +321,7 @@ async fn dispatch_mcp(
             content: relayed.content,
             parts: relayed.parts,
             mcp_result: Some(relayed.mcp_result),
+            trusted_skill_guidance: None,
             is_error: relayed.is_error,
         },
         Err(err) => {
@@ -326,6 +330,7 @@ async fn dispatch_mcp(
                 content: message.clone(),
                 parts: vec![protocol::ToolResultPart::text(message)],
                 mcp_result: None,
+                trusted_skill_guidance: None,
                 is_error: true,
             }
         }

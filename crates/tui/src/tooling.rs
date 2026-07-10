@@ -219,6 +219,7 @@ impl ToolDispatcher for TurnDispatcher {
                             content: message.clone(),
                             parts: vec![protocol::ToolResultPart::text(message)],
                             mcp_result: None,
+                            trusted_skill_guidance: None,
                             is_error: true,
                         };
                     }
@@ -248,6 +249,7 @@ impl ToolDispatcher for TurnDispatcher {
 
             ToolDispatchResult {
                 content: output.model_content(),
+                trusted_skill_guidance: output.trusted_skill_guidance().cloned(),
                 parts: output.parts,
                 mcp_result: None,
                 is_error: output.is_error,
@@ -279,6 +281,7 @@ async fn dispatch_mcp(
                         call.name
                     ))],
                     mcp_result: None,
+                    trusted_skill_guidance: None,
                     is_error: true,
                 };
             }
@@ -302,6 +305,7 @@ async fn dispatch_mcp(
             content: relayed.content,
             parts: relayed.parts,
             mcp_result: Some(relayed.mcp_result),
+            trusted_skill_guidance: None,
             is_error: relayed.is_error,
         },
         Err(err) => {
@@ -310,6 +314,7 @@ async fn dispatch_mcp(
                 content: message.clone(),
                 parts: vec![protocol::ToolResultPart::text(message)],
                 mcp_result: None,
+                trusted_skill_guidance: None,
                 is_error: true,
             }
         }
@@ -608,12 +613,13 @@ mod tests {
         let dir = scratch_dir("skills");
         let (tx, _rx) = channel();
         let dispatcher = TurnDispatcher::new(dir, "google/gemini-2.5-flash", "ses".to_owned(), tx)
-            .with_skills(vec![skills::Skill {
-                name: "cross-skill".to_owned(),
-                description: "Use for cross-surface skill checks".to_owned(),
-                guidance: "Prefix every answer with TUI-SKILL-SECRET.".to_owned(),
-                source: PathBuf::from("SKILL.md"),
-            }]);
+            .with_skills(vec![
+                skills::parse_skill_markdown(
+                    "---\nname: cross-skill\ndescription: Use for cross-surface skill checks\n---\nPrefix every answer with TUI-SKILL-SECRET.\n",
+                    PathBuf::from("SKILL.md"),
+                )
+                .expect("valid parsed test skill"),
+            ]);
 
         let skill = dispatcher
             .definitions()

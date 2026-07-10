@@ -312,12 +312,13 @@ mod tests {
         registry.register_skills(Vec::new());
         assert!(registry.get("skill").is_none());
 
-        registry.register_skills(vec![skills::Skill {
-            name: "date-helper".to_owned(),
-            description: "Use when formatting dates".to_owned(),
-            guidance: "Append SKILL-DATE-OK.".to_owned(),
-            source: std::path::PathBuf::from("SKILL.md"),
-        }]);
+        registry.register_skills(vec![
+            skills::parse_skill_markdown(
+                "---\nname: date-helper\ndescription: Use when formatting dates\n---\nAppend SKILL-DATE-OK.\n",
+                std::path::PathBuf::from("SKILL.md"),
+            )
+            .expect("valid parsed test skill"),
+        ]);
         assert!(registry.get("skill").is_some());
         let skill = registry
             .definitions()

@@ -32,10 +32,40 @@ pub struct Skill {
     pub name: String,
     /// Short description used for discovery and autonomous tool selection.
     pub description: String,
-    /// Guidance injected only after the model engages this skill through the `skill` tool.
-    pub guidance: String,
+    /// Guidance parsed from the markdown body. It is deliberately opaque outside this crate, so
+    /// the trusted system-context relay can originate only from successfully parsed skills.
+    guidance: SkillGuidance,
     /// Source file path for diagnostics and listings.
     pub source: PathBuf,
+}
+
+/// Opaque guidance emitted only by [`parse_skill_markdown`].
+///
+/// Tool output, plugin transforms, source paths, and descriptions use ordinary strings. This type
+/// represents the one parsed value permitted to cross into trusted continuation system context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillGuidance(String);
+
+impl SkillGuidance {
+    /// The parsed markdown body for rendering into trusted continuation context.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Skill {
+    /// The parsed guidance body for ordinary tool-result rendering.
+    #[must_use]
+    pub fn guidance(&self) -> &str {
+        self.guidance.as_str()
+    }
+
+    /// Clone the opaque parsed body for the typed trusted system-context relay.
+    #[must_use]
+    pub fn trusted_guidance(&self) -> SkillGuidance {
+        self.guidance.clone()
+    }
 }
 
 /// Result of discovering skills.
@@ -136,7 +166,7 @@ pub fn parse_skill_markdown(contents: &str, source: PathBuf) -> Result<Skill, St
     Ok(Skill {
         name,
         description,
-        guidance: guidance.to_owned(),
+        guidance: SkillGuidance(guidance.to_owned()),
         source,
     })
 }
@@ -144,8 +174,8 @@ pub fn parse_skill_markdown(contents: &str, source: PathBuf) -> Result<Skill, St
 /// Render the system-context hint that advertises discovered skills without injecting their
 /// guidance.
 ///
-/// The returned text lists only names and descriptions. The skill bodies remain isolated until the
-/// `skill` tool is invoked.
+/// The returned text lists only validated names. Descriptions and bodies remain ordinary tool
+/// metadata until the `skill` tool is invoked.
 #[must_use]
 pub fn render_system_hint(skills: &[Skill]) -> Option<String> {
     if skills.is_empty() {
@@ -153,15 +183,14 @@ pub fn render_system_hint(skills: &[Skill]) -> Option<String> {
     }
     let mut out = String::from(
         "Discovered skills are available through the `skill` tool. Their guidance is NOT active \
-         yet. If the user's request matches a skill description, call the `skill` tool with that \
-         skill name before answering. Do not follow a skill's guidance until the tool returns it.\n\
+         yet. Call the `skill` tool with a listed skill name before relying on its content. Do not \
+         follow a skill's guidance until the tool returns it.\n\
          Available skills:",
     );
     for skill in skills {
         out.push_str("\n- `");
         out.push_str(&skill.name);
-        out.push_str("`: ");
-        out.push_str(skill.description.trim());
+        out.push('`');
     }
     Some(out)
 }
@@ -1016,7 +1045,7 @@ mod tests {
 
         assert_eq!(skill.name, "date-helper");
         assert_eq!(skill.description, "Use for formatting dates");
-        assert_eq!(skill.guidance, "Append SKILL-DATE-OK.");
+        assert_eq!(skill.guidance(), "Append SKILL-DATE-OK.");
     }
 
     #[test]
@@ -1068,11 +1097,11 @@ mod tests {
     }
 
     #[test]
-    fn system_hint_lists_descriptions_but_not_guidance() {
+    fn system_hint_lists_only_validated_names() {
         let skill = parse_skill_markdown(
             &skill_doc(
                 "private-token",
-                "Use for private token tasks",
+                "DESCRIPTION-MUST-REMAIN-UNTRUSTED",
                 "Append SECRET-SKILL-TOKEN.",
             ),
             PathBuf::from("SKILL.md"),
@@ -1081,10 +1110,13 @@ mod tests {
 
         let hint = render_system_hint(&[skill]).expect("hint");
         assert!(hint.contains("private-token"));
-        assert!(hint.contains("Use for private token tasks"));
         assert!(
             !hint.contains("SECRET-SKILL-TOKEN"),
             "guidance must remain isolated until engagement"
+        );
+        assert!(
+            !hint.contains("DESCRIPTION-MUST-REMAIN-UNTRUSTED"),
+            "free-form descriptions must remain outside system context"
         );
     }
 

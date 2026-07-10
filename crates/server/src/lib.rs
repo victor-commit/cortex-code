@@ -3384,6 +3384,7 @@ impl ToolDispatcher for ServerToolDispatcher {
                 .await;
             ToolDispatchResult {
                 content: output.model_content(),
+                trusted_skill_guidance: output.trusted_skill_guidance().cloned(),
                 parts: output.parts,
                 mcp_result: None,
                 is_error: output.is_error,
