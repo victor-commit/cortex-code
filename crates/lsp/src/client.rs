@@ -436,22 +436,35 @@ impl LspClient {
     /// # Errors
     /// Returns a typed LSP error if the request cannot complete.
     pub fn document_diagnostics(&mut self, uri: &str) -> Result<Vec<Diagnostic>, LspError> {
+        self.document_diagnostics_until(uri, Instant::now() + self.request_timeout)
+    }
+
+    /// Request pull diagnostics for one document before `deadline`.
+    ///
+    /// # Errors
+    /// Returns a typed LSP error if the request cannot complete before the deadline.
+    pub(crate) fn document_diagnostics_until(
+        &mut self,
+        uri: &str,
+        deadline: Instant,
+    ) -> Result<Vec<Diagnostic>, LspError> {
         let id = self.send_request(
             DOCUMENT_DIAGNOSTIC_METHOD,
             json!({
                 "textDocument": {"uri": uri}
             }),
         )?;
-        let result = self.await_response(id)?;
+        let result = self.await_response_until(id, deadline)?;
         Ok(document_diagnostics_from_value(&result))
     }
 
-    /// Request workspace-level diagnostics across files.
+    /// Request workspace-level diagnostics before `deadline`.
     ///
     /// # Errors
-    /// Returns a typed LSP error if the request cannot complete.
-    pub(crate) fn workspace_diagnostics(
+    /// Returns a typed LSP error if the request cannot complete before the deadline.
+    pub(crate) fn workspace_diagnostics_until(
         &mut self,
+        deadline: Instant,
     ) -> Result<Vec<WorkspaceDiagnosticEntry>, LspError> {
         let id = self.send_request(
             WORKSPACE_DIAGNOSTIC_METHOD,
@@ -460,7 +473,7 @@ impl LspClient {
                 "previousResultIds": []
             }),
         )?;
-        let result = self.await_response(id)?;
+        let result = self.await_response_until(id, deadline)?;
         Ok(workspace_diagnostics_from_value(&result))
     }
 
@@ -687,7 +700,10 @@ impl LspClient {
     }
 
     fn await_response(&mut self, id: i64) -> Result<Value, LspError> {
-        let deadline = Instant::now() + self.request_timeout;
+        self.await_response_until(id, Instant::now() + self.request_timeout)
+    }
+
+    fn await_response_until(&mut self, id: i64, deadline: Instant) -> Result<Value, LspError> {
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -804,7 +820,7 @@ impl LspClient {
         }
     }
 
-    fn force_reap(&mut self) {
+    pub(crate) fn force_reap(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.stdin.take();

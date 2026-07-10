@@ -441,3 +441,183 @@ extensions = ["typ", "typc"]
     assert_eq!(state_for("crashedfixture"), "available");
     assert_eq!(state_for("tinymist"), "installing");
 }
+
+#[cfg(unix)]
+#[test]
+fn sleeping_auto_installer_is_reaped_at_feedback_deadline_and_preserves_fixture() {
+    let dir = temp_dir("sleeping-installer");
+    let file = dir.join("bad.typ");
+    let original = "#let x =\n";
+    std::fs::write(&file, original).expect("write typ fixture");
+
+    let fake_bin = dir.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    let installer_pid = dir.join("installer.pid");
+    let fake_cargo = fake_bin.join("cargo");
+    std::fs::write(
+        &fake_cargo,
+        r#"#!/bin/sh
+printf '%s\n' "$$" > "$INSTALLER_PID"
+exec /bin/sleep 30
+"#,
+    )
+    .expect("write sleeping cargo");
+    make_executable(&fake_cargo);
+
+    let mut command = cortex_in(&dir);
+    command.args(["lsp", "diagnostics", "bad.typ", "--format", "json"]);
+    command
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", fake_bin.to_string_lossy()),
+        )
+        .env("INSTALLER_PID", &installer_pid)
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+
+    let started = Instant::now();
+    let output = run(command, Duration::from_secs(12));
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_millis(5300),
+        "stalled auto-install exceeded the 4.5s feedback budget: {elapsed:?}"
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("diagnostics json");
+    assert_eq!(doc["status"], "no_server", "output={doc}");
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("read original fixture"),
+        original,
+        "timed-out feedback must not alter the completed mutation"
+    );
+
+    let pid = std::fs::read_to_string(&installer_pid)
+        .expect("installer recorded exact PID")
+        .trim()
+        .parse::<u32>()
+        .expect("installer PID");
+    assert!(
+        !Path::new("/proc").join(pid.to_string()).exists(),
+        "timed-out installer PID {pid} must be reaped"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_launch_and_stalled_pull_diagnostics_share_one_feedback_deadline() {
+    if !has_command("python3") {
+        eprintln!("skipping shared feedback deadline proof: python3 is not on PATH");
+        return;
+    }
+
+    let dir = temp_dir("shared-feedback-deadline");
+    std::fs::write(dir.join("bad.typ"), "#let x =\n").expect("write typ fixture");
+
+    let fake_bin = dir.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    let lsp_script = dir.join("stalled_pull_lsp.py");
+    std::fs::write(
+        &lsp_script,
+        r#"#!/usr/bin/env python3
+import json
+import sys
+import time
+
+def read_message():
+    headers = {}
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+    while line not in (b"\r\n", b"\n", b""):
+        name, value = line.decode("ascii").split(":", 1)
+        headers[name.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+    length = int(headers.get("content-length", "0"))
+    return json.loads(sys.stdin.buffer.read(length))
+
+def send(payload):
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    if message.get("method") == "initialize" and "id" in message:
+        send({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "capabilities": {
+                    "textDocumentSync": 1,
+                    "diagnosticProvider": {
+                        "interFileDependencies": False,
+                        "workspaceDiagnostics": False,
+                    },
+                },
+            },
+        })
+    elif message.get("method") == "textDocument/diagnostic" and "id" in message:
+        time.sleep(30)
+"#,
+    )
+    .expect("write stalled pull LSP");
+    make_executable(&lsp_script);
+
+    let fake_cargo = fake_bin.join("cargo");
+    std::fs::write(
+        &fake_cargo,
+        r#"#!/bin/sh
+if [ "${1:-}" = "install" ] && [ "${2:-}" = "--locked" ] && [ "${3:-}" = "tinymist" ]; then
+  /bin/sleep 1
+  printf '%s\n' '#!/bin/sh' 'exec python3 "$FAKE_LSP_SCRIPT"' > "$FAKE_BIN/tinymist"
+  /bin/chmod +x "$FAKE_BIN/tinymist"
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("write delayed cargo");
+    make_executable(&fake_cargo);
+
+    let mut command = cortex_in(&dir);
+    command.args(["lsp", "diagnostics", "bad.typ", "--format", "json"]);
+    command
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", fake_bin.to_string_lossy()),
+        )
+        .env("FAKE_BIN", &fake_bin)
+        .env("FAKE_LSP_SCRIPT", &lsp_script)
+        .env_remove("CORTEX_NO_NET")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("RUST_LOG")
+        .env_remove("CORTEX_VERBOSE");
+
+    let started = Instant::now();
+    let output = run(command, Duration::from_secs(12));
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_millis(5300),
+        "install, launch, and diagnostics exceeded one feedback deadline: {elapsed:?}"
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("diagnostics json");
+    assert_eq!(doc["status"], "unavailable", "output={doc}");
+}

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use redaction::guard_outbound;
@@ -399,7 +399,10 @@ impl FeedbackManager {
 
     /// Best-effort diagnostics for `path`. Never fails the mutation.
     pub fn collect(&mut self, path: &Path) -> FeedbackOutcome {
-        let deadline = Instant::now() + self.budget;
+        self.collect_until(path, Instant::now() + self.budget)
+    }
+
+    fn collect_until(&mut self, path: &Path, deadline: Instant) -> FeedbackOutcome {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -473,7 +476,7 @@ impl FeedbackManager {
                 .as_ref()
                 .is_none_or(|diagnostics| diagnostics.is_empty());
         let pulled = if should_pull {
-            match client.document_diagnostics(&uri) {
+            match client.document_diagnostics_until(&uri, deadline) {
                 Ok(diagnostics) => Some(diagnostics),
                 Err(crate::LspError::ServerError {
                     code: LSP_METHOD_NOT_FOUND,
@@ -556,13 +559,13 @@ impl FeedbackManager {
             Some(ServerSlot::Running { client, .. }) if client.supports_workspace_diagnostics_pull()
         );
         if !supports_workspace_pull {
-            return self.collect_workspace_via_document_pull(&language_id, &absolute);
+            return self.collect_workspace_via_document_pull(&language_id, &absolute, deadline);
         }
 
         let Some(ServerSlot::Running { client, .. }) = self.servers.get_mut(&language_id) else {
             return WorkspaceDiagnosticsOutcome::Unavailable;
         };
-        let entries = match client.workspace_diagnostics() {
+        let entries = match client.workspace_diagnostics_until(deadline) {
             Ok(entries) => entries,
             Err(crate::LspError::ServerError {
                 code: LSP_METHOD_NOT_FOUND,
@@ -608,6 +611,7 @@ impl FeedbackManager {
         &mut self,
         language_id: &str,
         requested_path: &Path,
+        deadline: Instant,
     ) -> WorkspaceDiagnosticsOutcome {
         let mut files = self.workspace_language_files(language_id);
         if requested_path.is_file()
@@ -624,7 +628,13 @@ impl FeedbackManager {
 
         let mut workspace = Vec::new();
         for file in files {
-            match self.collect(&file) {
+            if deadline
+                .checked_duration_since(Instant::now())
+                .is_none_or(|remaining| remaining.is_zero())
+            {
+                return WorkspaceDiagnosticsOutcome::Unavailable;
+            }
+            match self.collect_until(&file, deadline) {
                 FeedbackOutcome::Diagnostics(diagnostics) => {
                     if diagnostics.is_empty() {
                         continue;
@@ -924,7 +934,7 @@ impl FeedbackManager {
     }
 
     fn start_server(&mut self, server: &LspServerConfig, deadline: Instant) -> bool {
-        match ensure_installed(server) {
+        match ensure_installed(server, deadline) {
             InstallOutcome::Available => {}
             InstallOutcome::Unavailable
             | InstallOutcome::NetDisabled
@@ -934,7 +944,7 @@ impl FeedbackManager {
                 return false;
             }
         }
-        let Some(program_path) = resolve_server_program(server) else {
+        let Some(program_path) = resolve_server_program_until(server, deadline) else {
             self.servers
                 .insert(server.language_id().to_owned(), ServerSlot::Missing);
             return false;
@@ -943,9 +953,15 @@ impl FeedbackManager {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .unwrap_or_default();
+        if remaining.is_zero() {
+            self.servers
+                .insert(server.language_id().to_owned(), ServerSlot::Failed);
+            self.crash_state.mark_crashed(server.language_id());
+            return false;
+        }
         let command = server
             .to_command_with_program(program_path.to_string_lossy().into_owned())
-            .with_request_timeout(remaining.max(Duration::from_millis(1)));
+            .with_request_timeout(remaining);
         let root_uri = path_to_uri(&self.root);
         let started = LspClient::spawn(&command).ok().and_then(|mut client| {
             client
@@ -1011,6 +1027,9 @@ impl FeedbackManager {
 
     fn mark_broken(&mut self, language_id: &str) {
         self.runtime_state.unregister(language_id);
+        if let Some(ServerSlot::Running { mut client, .. }) = self.servers.remove(language_id) {
+            client.force_reap();
+        }
         self.servers
             .insert(language_id.to_owned(), ServerSlot::Broken);
         self.crash_state.mark_crashed(language_id);
@@ -1282,8 +1301,8 @@ enum InstallReadiness {
     },
 }
 
-fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
-    match install_readiness(server, redaction::network_disabled()) {
+fn ensure_installed(server: &LspServerConfig, deadline: Instant) -> InstallOutcome {
+    match install_readiness_until(server, redaction::network_disabled(), deadline) {
         InstallReadiness::Available(_) => return InstallOutcome::Available,
         InstallReadiness::NoPlan => return InstallOutcome::Unavailable,
         InstallReadiness::NetDisabled => return InstallOutcome::NetDisabled,
@@ -1305,41 +1324,39 @@ fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
         plan.target()
     );
     let installed = match plan {
-        InstallPlan::Npm { package } => Command::new("npm")
-            .args(["install", "-g", package.as_str()])
-            .status()
-            .is_ok_and(|status| status.success()),
-        InstallPlan::UvTool { package } => Command::new("uv")
-            .args(["tool", "install", package.as_str()])
-            .status()
-            .is_ok_and(|status| status.success()),
-        InstallPlan::Cargo { package } => Command::new("cargo")
-            .args(["install", "--locked", package.as_str()])
-            .status()
-            .is_ok_and(|status| status.success()),
-        InstallPlan::Go { module } => Command::new("go")
-            .args(["install", &format!("{module}@latest")])
-            .status()
-            .is_ok_and(|status| status.success()),
+        InstallPlan::Npm { package } => run_installer_until(
+            Command::new("npm").args(["install", "-g", package.as_str()]),
+            deadline,
+        ),
+        InstallPlan::UvTool { package } => run_installer_until(
+            Command::new("uv").args(["tool", "install", package.as_str()]),
+            deadline,
+        ),
+        InstallPlan::Cargo { package } => run_installer_until(
+            Command::new("cargo").args(["install", "--locked", package.as_str()]),
+            deadline,
+        ),
+        InstallPlan::Go { module } => run_installer_until(
+            Command::new("go").args(["install", &format!("{module}@latest")]),
+            deadline,
+        ),
         InstallPlan::DotnetTool { package } => {
-            let installed = Command::new("dotnet")
-                .args(["tool", "install", "--global", package.as_str()])
-                .status()
-                .is_ok_and(|status| status.success());
-            installed
-                || Command::new("dotnet")
-                    .args(["tool", "update", "--global", package.as_str()])
-                    .status()
-                    .is_ok_and(|status| status.success())
+            run_installer_until(
+                Command::new("dotnet").args(["tool", "install", "--global", package.as_str()]),
+                deadline,
+            ) || run_installer_until(
+                Command::new("dotnet").args(["tool", "update", "--global", package.as_str()]),
+                deadline,
+            )
         }
-        InstallPlan::Gem { package } => Command::new("gem")
-            .args(["install", package.as_str()])
-            .status()
-            .is_ok_and(|status| status.success()),
+        InstallPlan::Gem { package } => run_installer_until(
+            Command::new("gem").args(["install", package.as_str()]),
+            deadline,
+        ),
     };
     if installed
         && matches!(
-            install_readiness(server, redaction::network_disabled()),
+            install_readiness_until(server, redaction::network_disabled(), deadline),
             InstallReadiness::Available(_)
         )
     {
@@ -1349,8 +1366,71 @@ fn ensure_installed(server: &LspServerConfig) -> InstallOutcome {
     }
 }
 
+fn run_installer_until(command: &mut Command, deadline: Instant) -> bool {
+    if deadline
+        .checked_duration_since(Instant::now())
+        .is_none_or(|remaining| remaining.is_zero())
+    {
+        return false;
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    wait_for_child_until(&mut child, deadline).is_some_and(|status| status.success())
+}
+
+fn wait_for_child_until(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or_default();
+                if remaining.is_zero() {
+                    reap_exact_child(child);
+                    return None;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
+            Err(_) => {
+                reap_exact_child(child);
+                return None;
+            }
+        }
+    }
+}
+
+fn reap_exact_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn install_readiness(server: &LspServerConfig, no_net: bool) -> InstallReadiness {
     if let Some(program) = resolve_server_program(server) {
+        return InstallReadiness::Available(program);
+    }
+    let Some(plan) = server.install() else {
+        return InstallReadiness::NoPlan;
+    };
+    if no_net {
+        return InstallReadiness::NetDisabled;
+    }
+    if let Some(installer) = install_prerequisite(plan).filter(|program| !command_exists(program)) {
+        return InstallReadiness::MissingPrerequisite {
+            installer,
+            command: plan.description(),
+        };
+    }
+    InstallReadiness::Installable
+}
+
+fn install_readiness_until(
+    server: &LspServerConfig,
+    no_net: bool,
+    deadline: Instant,
+) -> InstallReadiness {
+    if let Some(program) = resolve_server_program_until(server, deadline) {
         return InstallReadiness::Available(program);
     }
     let Some(plan) = server.install() else {
@@ -1447,6 +1527,13 @@ fn resolve_server_program(server: &LspServerConfig) -> Option<PathBuf> {
     })
 }
 
+fn resolve_server_program_until(server: &LspServerConfig, deadline: Instant) -> Option<PathBuf> {
+    find_program(server.program()).or_else(|| match server.install() {
+        Some(InstallPlan::Go { .. }) => resolve_go_program_until(server.program(), deadline),
+        _ => None,
+    })
+}
+
 fn command_exists(program: &str) -> bool {
     find_program(program).is_some()
 }
@@ -1486,6 +1573,17 @@ fn resolve_go_program(program: &str) -> Option<PathBuf> {
     })
 }
 
+fn resolve_go_program_until(program: &str, deadline: Instant) -> Option<PathBuf> {
+    go_install_bin_dirs_until(deadline)
+        .into_iter()
+        .find_map(|dir| {
+            executable_names(program)
+                .into_iter()
+                .map(|name| dir.join(name))
+                .find(|candidate| candidate.is_file())
+        })
+}
+
 fn go_install_bin_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     push_unique_dir(&mut dirs, std::env::var_os("GOBIN").map(PathBuf::from));
@@ -1511,6 +1609,31 @@ fn go_install_bin_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn go_install_bin_dirs_until(deadline: Instant) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_dir(&mut dirs, std::env::var_os("GOBIN").map(PathBuf::from));
+    push_unique_dir(
+        &mut dirs,
+        go_env_value_until("GOBIN", deadline).map(|value| PathBuf::from(value.trim())),
+    );
+    if let Some(gopath) = std::env::var_os("GOPATH") {
+        for entry in std::env::split_paths(&gopath) {
+            push_unique_dir(&mut dirs, Some(entry.join("bin")));
+        }
+    }
+    if let Some(gopath) = go_env_value_until("GOPATH", deadline) {
+        let gopath = std::ffi::OsString::from(gopath.trim());
+        for entry in std::env::split_paths(&gopath) {
+            push_unique_dir(&mut dirs, Some(entry.join("bin")));
+        }
+    }
+    push_unique_dir(
+        &mut dirs,
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("go").join("bin")),
+    );
+    dirs
+}
+
 fn go_env_value(variable: &str) -> Option<String> {
     if !command_exists("go") {
         return None;
@@ -1521,6 +1644,34 @@ fn go_env_value(variable: &str) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!value.is_empty()).then_some(value)
+}
+
+fn go_env_value_until(variable: &str, deadline: Instant) -> Option<String> {
+    if !command_exists("go") {
+        return None;
+    }
+    if deadline
+        .checked_duration_since(Instant::now())
+        .is_none_or(|remaining| remaining.is_zero())
+    {
+        return None;
+    }
+    let mut command = Command::new("go");
+    command.args(["env", variable]);
+    let Ok(mut child) = command.stdout(std::process::Stdio::piped()).spawn() else {
+        return None;
+    };
+    let status = wait_for_child_until(&mut child, deadline)?;
+    if !status.success() {
+        return None;
+    }
+    let mut output = String::new();
+    child
+        .stdout
+        .take()
+        .and_then(|mut stdout| std::io::Read::read_to_string(&mut stdout, &mut output).ok())
+        .filter(|_| !output.trim().is_empty())?;
+    Some(output.trim().to_owned())
 }
 
 fn push_unique_dir(dirs: &mut Vec<PathBuf>, candidate: Option<PathBuf>) {
