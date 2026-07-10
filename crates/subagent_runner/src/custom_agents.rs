@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use engine::Agent;
@@ -266,11 +267,114 @@ pub fn available_names(discovery: &Discovery) -> String {
 
 /// Default project-local directory used by `cortex generate`.
 #[must_use]
-pub fn default_project_agents_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".cortex")
-        .join("agents")
+pub fn default_project_agents_dir(cwd: &Path) -> PathBuf {
+    cwd.join(".cortex").join("agents")
+}
+
+/// Check that a generated custom-agent identity and directory are safe to use.
+///
+/// A generation target must be one of the directories that the normal registry discovers, and its
+/// name must not collide with a built-in or already discovered custom agent after normalization.
+/// This check deliberately happens before creating the output directory or file.
+pub fn preflight_generation(
+    inputs: &ConfigInputs,
+    target_dir: &Path,
+    name: &str,
+) -> Result<(), String> {
+    let mut warnings = Vec::new();
+    let discoverable_dirs = agent_dirs(inputs, &mut warnings);
+    if !discoverable_dirs.iter().any(|dir| dir == target_dir) {
+        return Err(format!(
+            "generation target {} is not a discovered custom-agent directory",
+            target_dir.display()
+        ));
+    }
+
+    let normalized = normalize_name(name);
+    if let Ok(builtin) = Agent::from_name(&normalized) {
+        return Err(format!(
+            "agent name '{}' collides with built-in agent '{}'",
+            name.trim(),
+            builtin.name()
+        ));
+    }
+
+    let discovery = discover(inputs);
+    if let Some(existing) = discovery.agents.get(&normalized) {
+        return Err(format!(
+            "agent name '{}' collides with custom agent '{}' at {}",
+            name.trim(),
+            existing.name,
+            existing.source.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// The project-wide directory used for generation leases.
+///
+/// All agents discoverable from nested project paths include the outermost conventional directory,
+/// so it gives one shared lock location even when two generators target different configured agent
+/// directories.
+#[must_use]
+pub fn generation_lock_dir(inputs: &ConfigInputs) -> PathBuf {
+    conventional_project_dirs(inputs.home.as_deref(), &inputs.cwd)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| default_project_agents_dir(&inputs.cwd))
+}
+
+/// An exclusive, per-name generation lease held while a new agent is persisted and re-discovered.
+///
+/// The lock is project-wide rather than target-directory-local. It prevents concurrent generators
+/// using distinct configured agent directories from both passing preflight and reporting success
+/// for the same identity. The lock file is never a markdown agent and is removed when the lease is
+/// dropped.
+pub struct GenerationLease {
+    path: PathBuf,
+}
+
+impl GenerationLease {
+    /// Acquire an exclusive lease for `name` in `lock_dir`.
+    pub fn acquire(lock_dir: &Path, name: &str) -> Result<Self, String> {
+        let normalized = normalize_name(name);
+        let path = lock_dir.join(format!(".cortex-generate-{normalized}.lock"));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "generation for agent '{}' is already in progress; try again after it finishes",
+                        name.trim()
+                    )
+                } else {
+                    format!(
+                        "failed to reserve generated agent '{}' at {}: {err}",
+                        name.trim(),
+                        path.display()
+                    )
+                }
+            })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Return whether a freshly written path is the selected custom agent in a discovery result.
+#[must_use]
+pub fn generated_agent_is_discoverable(discovery: &Discovery, name: &str, path: &Path) -> bool {
+    discovery
+        .agents
+        .get(&normalize_name(name))
+        .is_some_and(|agent| agent.source == path && agent.availability.selectable())
 }
 
 /// Render a custom agent markdown file with quoted YAML scalars.
@@ -376,26 +480,43 @@ pub fn parse_custom_agent(contents: &str, source: PathBuf) -> Result<CustomAgent
 }
 
 fn split_frontmatter(contents: &str) -> Result<(&str, &str), String> {
-    let Some(rest) = contents.strip_prefix("---") else {
+    let Some(rest) = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))
+    else {
         return Err("missing YAML frontmatter".to_owned());
     };
-    let rest = rest
-        .strip_prefix('\n')
-        .or_else(|| rest.strip_prefix("\r\n"));
-    let Some(rest) = rest else {
-        return Err("missing YAML frontmatter body".to_owned());
-    };
-    let marker = "\n---";
-    let Some(end) = rest.find(marker) else {
-        return Err("unterminated YAML frontmatter".to_owned());
-    };
-    let frontmatter = &rest[..end];
-    let after_marker = &rest[end + marker.len()..];
-    let body = after_marker
-        .strip_prefix('\n')
-        .or_else(|| after_marker.strip_prefix("\r\n"))
-        .unwrap_or(after_marker);
-    Ok((frontmatter, body))
+
+    let mut start = 0;
+    for line_with_ending in rest.split_inclusive('\n') {
+        let line = line_with_ending
+            .strip_suffix('\n')
+            .unwrap_or(line_with_ending)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| {
+                line_with_ending
+                    .strip_suffix('\n')
+                    .unwrap_or(line_with_ending)
+            });
+        if is_frontmatter_end_marker(line) {
+            let body_start = start + line_with_ending.len();
+            return Ok((&rest[..start], &rest[body_start..]));
+        }
+        start += line_with_ending.len();
+    }
+
+    if let Some(line) = rest.get(start..) {
+        if is_frontmatter_end_marker(line) {
+            return Ok((&rest[..start], ""));
+        }
+    }
+
+    Err("unterminated YAML frontmatter".to_owned())
+}
+
+fn is_frontmatter_end_marker(line: &str) -> bool {
+    line.strip_prefix("---")
+        .is_some_and(|rest| rest.is_empty() || rest.trim_start().starts_with('#'))
 }
 
 #[derive(Debug, Default)]
@@ -536,22 +657,160 @@ fn finish_permission(
 }
 
 fn parse_scalar(value: &str, line_no: usize) -> Result<String, String> {
-    let value = strip_comment(value).trim();
+    let value = value.trim();
     if value.is_empty() {
         return Err(format!("line {line_no}: expected a scalar value"));
     }
     let bytes = value.as_bytes();
-    if (bytes[0] == b'"' || bytes[0] == b'\'') && bytes.last() == Some(&bytes[0]) {
-        return Ok(value[1..value.len() - 1].to_owned());
+    if bytes[0] == b'"' {
+        return parse_double_quoted_scalar(quoted_scalar(value, '"', line_no)?, line_no);
     }
-    if bytes[0] == b'"' || bytes[0] == b'\'' || bytes[0] == b'[' || bytes[0] == b'{' {
+    if bytes[0] == b'\'' {
+        return parse_single_quoted_scalar(quoted_scalar(value, '\'', line_no)?, line_no);
+    }
+    let value = strip_comment(value).trim();
+    if bytes[0] == b'[' || bytes[0] == b'{' {
         return Err(format!("line {line_no}: unsupported or malformed scalar"));
     }
+    reject_raw_controls(value, line_no)?;
     Ok(value.to_owned())
 }
 
 fn strip_comment(value: &str) -> &str {
     value.split_once(" #").map_or(value, |(before, _)| before)
+}
+
+fn quoted_scalar(value: &str, quote: char, line_no: usize) -> Result<&str, String> {
+    let mut chars = value.char_indices().peekable();
+    let _ = chars.next();
+    while let Some((index, ch)) = chars.next() {
+        if quote == '"' && ch == '\\' {
+            let _ = chars.next();
+            continue;
+        }
+        if ch == '\'' && quote == '\'' && chars.next_if(|(_, next)| *next == '\'').is_some() {
+            continue;
+        }
+        if ch == quote {
+            let end = index + ch.len_utf8();
+            let trailing = &value[end..];
+            if trailing.trim().is_empty() || trailing.trim_start().starts_with('#') {
+                return Ok(&value[..end]);
+            }
+            return Err(format!("line {line_no}: unsupported or malformed scalar"));
+        }
+    }
+    Err(format!("line {line_no}: unsupported or malformed scalar"))
+}
+
+fn parse_double_quoted_scalar(value: &str, line_no: usize) -> Result<String, String> {
+    if value.len() < 2 || !value.ends_with('"') {
+        return Err(format!("line {line_no}: unsupported or malformed scalar"));
+    }
+
+    let mut out = String::new();
+    let mut chars = value[1..value.len() - 1].chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let escaped = chars
+                .next()
+                .ok_or_else(|| format!("line {line_no}: incomplete quoted scalar escape"))?;
+            let decoded = match escaped {
+                '0' => '\0',
+                'a' => '\u{7}',
+                'b' => '\u{8}',
+                't' | '\t' => '\t',
+                'n' => '\n',
+                'v' => '\u{b}',
+                'f' => '\u{c}',
+                'r' => '\r',
+                'e' => '\u{1b}',
+                ' ' => ' ',
+                '"' => '"',
+                '/' => '/',
+                '\\' => '\\',
+                'N' => '\u{85}',
+                '_' => '\u{a0}',
+                'L' => '\u{2028}',
+                'P' => '\u{2029}',
+                'x' => parse_unicode_escape(&mut chars, 2, line_no)?,
+                'u' => parse_unicode_escape(&mut chars, 4, line_no)?,
+                'U' => parse_unicode_escape(&mut chars, 8, line_no)?,
+                other => {
+                    return Err(format!(
+                        "line {line_no}: unsupported quoted scalar escape `\\{other}`"
+                    ));
+                }
+            };
+            out.push(decoded);
+        } else {
+            reject_control(ch, line_no)?;
+            out.push(ch);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_single_quoted_scalar(value: &str, line_no: usize) -> Result<String, String> {
+    if value.len() < 2 || !value.ends_with('\'') {
+        return Err(format!("line {line_no}: unsupported or malformed scalar"));
+    }
+
+    let content = &value[1..value.len() - 1];
+    let mut out = String::new();
+    let mut chars = content.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' && chars.next_if_eq(&'\'').is_some() {
+            out.push('\'');
+        } else {
+            reject_control(ch, line_no)?;
+            out.push(ch);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_unicode_escape(
+    chars: &mut std::str::Chars<'_>,
+    digits: usize,
+    line_no: usize,
+) -> Result<char, String> {
+    let mut hex = String::with_capacity(digits);
+    for _ in 0..digits {
+        let Some(ch) = chars.next() else {
+            return Err(format!(
+                "line {line_no}: incomplete quoted scalar unicode escape"
+            ));
+        };
+        if !ch.is_ascii_hexdigit() {
+            return Err(format!(
+                "line {line_no}: invalid quoted scalar unicode escape `\\{hex}{ch}`"
+            ));
+        }
+        hex.push(ch);
+    }
+    let codepoint = u32::from_str_radix(&hex, 16).expect("validated hexadecimal escape");
+    char::from_u32(codepoint).ok_or_else(|| {
+        format!("line {line_no}: invalid quoted scalar Unicode code point U+{codepoint:04X}")
+    })
+}
+
+fn reject_raw_controls(value: &str, line_no: usize) -> Result<(), String> {
+    for ch in value.chars() {
+        reject_control(ch, line_no)?;
+    }
+    Ok(())
+}
+
+fn reject_control(ch: char, line_no: usize) -> Result<(), String> {
+    if ch.is_control() {
+        Err(format!(
+            "line {line_no}: raw control character U+{:04X} is not allowed in a scalar",
+            ch as u32
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn required_field<'a>(fields: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, String> {
@@ -744,8 +1003,31 @@ fn normalize_name(name: &str) -> String {
 }
 
 fn yaml_quote(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\0' => out.push_str("\\0"),
+            '\u{7}' => out.push_str("\\a"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{b}' => out.push_str("\\v"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '\u{1b}' => out.push_str("\\e"),
+            '"' => out.push_str("\\\""),
+            '/' => out.push_str("\\/"),
+            '\\' => out.push_str("\\\\"),
+            control if control.is_control() => {
+                use std::fmt::Write as _;
+                write!(out, "\\u{:04X}", control as u32).expect("writing into String cannot fail");
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -811,6 +1093,145 @@ Answer like a pirate.
     }
 
     #[test]
+    fn quoted_scalars_round_trip_quotes_slashes_and_controls() {
+        let description = "quotes: \" / slash \\\\ line\ncrlf\r\n tab\t nul\0 bell\u{7} \
+backspace\u{8} vertical\u{b} form\u{c} escape\u{1b} unit\u{1f}";
+        let markdown = render_agent_markdown(
+            "scalar-tester",
+            description,
+            "primary",
+            Some("provider/model"),
+            "Keep scalar values exact.",
+        );
+
+        assert!(
+            !markdown.contains("line\ncrlf"),
+            "frontmatter must escape newlines rather than create a new YAML key: {markdown}"
+        );
+        assert!(
+            !markdown.contains("\r"),
+            "renderer must not emit raw CR control bytes into frontmatter: {markdown:?}"
+        );
+        assert!(
+            markdown.contains("\\/") && markdown.contains("\\\"") && markdown.contains("\\\\"),
+            "renderer must use YAML double-quoted escapes: {markdown}"
+        );
+
+        let parsed = parse_custom_agent(&markdown, PathBuf::from("scalar-tester.md"))
+            .expect("rendered YAML must parse");
+        assert_eq!(parsed.description, description);
+    }
+
+    #[test]
+    fn parses_existing_crlf_double_and_single_quoted_scalars() {
+        let agent = parse_custom_agent(
+            "---\r\n\
+name: 'legacy-agent'\r\n\
+description: 'legacy''s agent # still text'\r\n\
+mode: \"primary\"\r\n\
+---\r\n\
+Use the legacy format.\r\n",
+            PathBuf::from("legacy.md"),
+        )
+        .expect("existing valid CRLF frontmatter must remain compatible");
+
+        assert_eq!(agent.name, "legacy-agent");
+        assert_eq!(agent.description, "legacy's agent # still text");
+        assert_eq!(agent.prompt, "Use the legacy format.");
+    }
+
+    #[test]
+    fn parses_existing_commented_frontmatter_end_markers() {
+        for contents in [
+            "---\nname: commented\ndescription: Commented closing marker\nmode: primary\n--- # end agent\nPrompt.\n",
+            "---\r\nname: commented\ndescription: Commented closing marker\nmode: primary\r\n--- # end agent\r\nPrompt.\r\n",
+        ] {
+            let agent = parse_custom_agent(contents, PathBuf::from("commented.md"))
+                .expect("a valid commented YAML closing marker must remain compatible");
+            assert_eq!(agent.name, "commented");
+            assert_eq!(agent.prompt, "Prompt.");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_or_raw_control_quoted_scalars() {
+        for (label, contents) in [
+            (
+                "unknown escape",
+                "---\nname: safe\ndescription: \"bad\\q\"\nmode: primary\n---\nprompt\n",
+            ),
+            (
+                "truncated unicode",
+                "---\nname: safe\ndescription: \"bad\\u12\"\nmode: primary\n---\nprompt\n",
+            ),
+            (
+                "surrogate",
+                "---\nname: safe\ndescription: \"bad\\uD800\"\nmode: primary\n---\nprompt\n",
+            ),
+            (
+                "raw tab",
+                "---\nname: safe\ndescription: \"bad\tcontrol\"\nmode: primary\n---\nprompt\n",
+            ),
+        ] {
+            let err = parse_custom_agent(contents, PathBuf::from("bad.md"))
+                .expect_err("{label} must not be accepted");
+            assert!(
+                err.contains("line 2"),
+                "{label} should identify the scalar line, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn generation_preflight_rejects_builtin_and_normalized_custom_collisions() {
+        let root = test_dir("generation-preflight");
+        let cwd = root.join("project");
+        fs::create_dir_all(&cwd).expect("create project");
+        let inputs = test_inputs(&root, &cwd);
+        let dir = default_project_agents_dir(&inputs.cwd);
+
+        let builtin = preflight_generation(&inputs, &dir, " PLAN ")
+            .expect_err("built-in identity must be reserved");
+        assert!(
+            builtin.to_string().contains("built-in agent 'plan'"),
+            "built-in collision must be clear: {builtin}"
+        );
+        assert!(
+            !dir.exists(),
+            "a rejected built-in collision must not create an agent directory"
+        );
+
+        fs::create_dir_all(&dir).expect("create discovery directory");
+        fs::write(
+            dir.join("existing.md"),
+            "---\nname: Existing-Agent\ndescription: Existing\nmode: primary\n---\nExisting prompt.\n",
+        )
+        .expect("write existing custom agent");
+        let custom = preflight_generation(&inputs, &dir, " existing-agent ")
+            .expect_err("normalized custom identity must be reserved");
+        assert!(
+            custom.to_string().contains("custom agent 'existing-agent'"),
+            "custom collision must be clear: {custom}"
+        );
+
+        let undiscoverable = root.join("not-an-agent-directory");
+        let target = preflight_generation(&inputs, &undiscoverable, "new-agent")
+            .expect_err("generation must never report an undiscoverable target");
+        assert!(
+            target
+                .to_string()
+                .contains("not a discovered custom-agent directory"),
+            "undiscoverable target must be clear: {target}"
+        );
+        assert!(
+            !undiscoverable.exists(),
+            "preflight must not create an undiscoverable target"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn subagent_mode_is_spawnable_but_not_primary_selectable() {
         let agent = parse_custom_agent(
             r#"---
@@ -867,5 +1288,28 @@ Help with delegated or primary work.
             "an-agent-that-writes-tests"
         );
         assert_eq!(sanitize_identifier("!!!"), "generated-agent");
+    }
+
+    fn test_inputs(home: &Path, cwd: &Path) -> ConfigInputs {
+        ConfigInputs {
+            home: Some(home.to_path_buf()),
+            xdg_config_home: None,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        }
+    }
+
+    fn test_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "cortex-custom-agents-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("create test directory");
+        path
     }
 }

@@ -1,6 +1,7 @@
 //! `cortex generate`: author a custom markdown agent with a real model turn.
 
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -103,9 +104,12 @@ pub fn run(args: GenerateArgs) -> Exit {
     let dir = args
         .agents_dir
         .as_deref()
-        .map(resolve_dir)
-        .unwrap_or_else(custom_agents::default_project_agents_dir);
-    let path = unique_agent_path(&dir, &authored.name);
+        .map(|value| resolve_dir(&inputs.cwd, value))
+        .unwrap_or_else(|| custom_agents::default_project_agents_dir(&inputs.cwd));
+    if let Err(err) = custom_agents::preflight_generation(&inputs, &dir, &authored.name) {
+        eprintln!("cortex generate: {err}");
+        return Exit::Failure;
+    }
 
     let markdown = custom_agents::render_agent_markdown(
         &authored.name,
@@ -114,6 +118,26 @@ pub fn run(args: GenerateArgs) -> Exit {
         Some(&config.model_id),
         &authored.system_prompt,
     );
+    let lock_dir = custom_agents::generation_lock_dir(&inputs);
+    if let Err(err) = std::fs::create_dir_all(&lock_dir) {
+        eprintln!(
+            "cortex generate: failed to create generation lock directory {}: {err}",
+            lock_dir.display()
+        );
+        return Exit::Failure;
+    }
+
+    let _lease = match custom_agents::GenerationLease::acquire(&lock_dir, &authored.name) {
+        Ok(lease) => lease,
+        Err(err) => {
+            eprintln!("cortex generate: {err}");
+            return Exit::Failure;
+        }
+    };
+    if let Err(err) = custom_agents::preflight_generation(&inputs, &dir, &authored.name) {
+        eprintln!("cortex generate: {err}");
+        return Exit::Failure;
+    }
     if let Err(err) = std::fs::create_dir_all(&dir) {
         eprintln!(
             "cortex generate: failed to create agent directory {}: {err}",
@@ -121,10 +145,22 @@ pub fn run(args: GenerateArgs) -> Exit {
         );
         return Exit::Failure;
     }
-    if let Err(err) = std::fs::write(&path, markdown) {
+
+    let path = dir.join(format!("{}.md", authored.name));
+    if let Err(err) = write_new_agent_file(&path, &markdown) {
         eprintln!(
             "cortex generate: failed to write agent file {}: {err}",
             path.display()
+        );
+        return Exit::Failure;
+    }
+
+    let discovery = custom_agents::discover(&inputs);
+    if !custom_agents::generated_agent_is_discoverable(&discovery, &authored.name, &path) {
+        let _ = std::fs::remove_file(&path);
+        eprintln!(
+            "cortex generate: generated agent '{}' was not immediately discoverable; no agent was created",
+            authored.name
         );
         return Exit::Failure;
     }
@@ -287,18 +323,16 @@ fn extract_json_object(answer: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&answer[start..=end]).ok()
 }
 
-fn unique_agent_path(dir: &Path, name: &str) -> PathBuf {
-    let mut candidate = dir.join(format!("{name}.md"));
-    if !candidate.exists() {
-        return candidate;
+fn write_new_agent_file(path: &Path, markdown: &str) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let result = file
+        .write_all(markdown.as_bytes())
+        .and_then(|()| file.sync_all());
+    if result.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
-    for index in 2..1000 {
-        candidate = dir.join(format!("{name}-{index}.md"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    dir.join(format!("{name}-{}.md", std::process::id()))
+    result
 }
 
 #[derive(Serialize)]
@@ -346,14 +380,12 @@ fn emit_output(
     Exit::Success
 }
 
-fn resolve_dir(value: &str) -> PathBuf {
+fn resolve_dir(cwd: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        cwd.join(path)
     }
 }
 
