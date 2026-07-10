@@ -202,6 +202,133 @@ fn rustfmt_works_with_an_isolated_home_child() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_obeys_rustup_toolchain_precedence() {
+    for scenario in ["env", "toml", "legacy", "default"] {
+        let root = temp_dir(&format!("rustup-precedence-{scenario}"));
+        write_rustup_proxy_fixture(&root);
+        match scenario {
+            "toml" => {
+                fs::write(
+                    root.join("rust-toolchain.toml"),
+                    "[toolchain]\nchannel = \"toml\"\n",
+                )
+                .expect("write TOML project toolchain");
+                fs::write(root.join("rust-toolchain"), "legacy\n")
+                    .expect("write lower-priority legacy project toolchain");
+            }
+            "legacy" => {
+                fs::write(root.join("rust-toolchain"), "legacy\n")
+                    .expect("write legacy project toolchain");
+            }
+            "env" | "default" => {}
+            _ => unreachable!("all scenarios are enumerated above"),
+        }
+
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .arg("--exact")
+            .arg("rustup_proxy_resolution_obeys_rustup_toolchain_precedence_child")
+            .arg("--nocapture")
+            .env("CORTEX_FORMAT_RUSTUP_PRECEDENCE_CHILD", scenario)
+            .env("CORTEX_FORMAT_RUSTUP_PRECEDENCE_ROOT", &root)
+            .env("HOME", root.join("isolated-home"))
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("OPENROUTER_API_KEY", synthetic_openrouter_key())
+            .env("FORMATTER_VISIBLE_VALUE", synthetic_openrouter_key());
+        if scenario == "env" {
+            command.env("RUSTUP_TOOLCHAIN", "env");
+        }
+        prepend_fixture_rustup_proxy_to_path(&mut command, &root);
+
+        let output = command
+            .output()
+            .expect("spawn rustup precedence child test");
+        assert!(
+            output.status.success(),
+            "rustup precedence child ({scenario}) failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_obeys_rustup_toolchain_precedence_child() {
+    let Ok(scenario) = std::env::var("CORTEX_FORMAT_RUSTUP_PRECEDENCE_CHILD") else {
+        return;
+    };
+    let root = PathBuf::from(
+        std::env::var("CORTEX_FORMAT_RUSTUP_PRECEDENCE_ROOT")
+            .expect("rustup precedence fixture root is set"),
+    );
+    let path = root.join("main.rs");
+    fs::write(&path, "fn  main( ){}\n").expect("write Rust input");
+
+    let outcome = FormatterRunner::new(&root).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+    assert_eq!(
+        fs::read_to_string(path).expect("read formatted Rust"),
+        format!("fn {scenario}() {{}}\n"),
+        "the selected concrete formatter must match rustup's {scenario} precedence"
+    );
+}
+
+#[cfg(unix)]
+fn write_rustup_proxy_fixture(root: &Path) {
+    use std::os::unix::fs::symlink;
+
+    let bin = root.join(".cargo").join("bin");
+    fs::create_dir_all(&bin).expect("create rustup proxy bin");
+    let rustup = bin.join("rustup");
+    write_executable(
+        &rustup,
+        "#!/usr/bin/env sh\nprintf 'rustup proxy should not execute\\n' >&2\nexit 99\n",
+    );
+    symlink(&rustup, bin.join("rustfmt")).expect("link rustfmt proxy to rustup");
+
+    for toolchain in ["env", "toml", "legacy", "default"] {
+        let formatter = root
+            .join(".rustup")
+            .join("toolchains")
+            .join(toolchain)
+            .join("bin")
+            .join("rustfmt");
+        fs::create_dir_all(formatter.parent().expect("formatter parent"))
+            .expect("create concrete formatter parent");
+        write_executable(
+            &formatter,
+            &format!(
+                "#!/usr/bin/env sh\n\
+if [ \"${{OPENROUTER_API_KEY+x}}\" = x ]; then printf 'OPENROUTER_API_KEY leaked\\n' >&2; exit 42; fi\n\
+if [ \"${{FORMATTER_VISIBLE_VALUE+x}}\" = x ]; then printf 'key-shaped value leaked\\n' >&2; exit 43; fi\n\
+for arg do file=\"$arg\"; done\n\
+printf 'fn {toolchain}() {{}}\\n' > \"$file\"\n"
+            ),
+        );
+    }
+    fs::write(
+        root.join(".rustup").join("settings.toml"),
+        "default_toolchain = \"default\"\n",
+    )
+    .expect("write rustup settings");
+}
+
+#[cfg(unix)]
+fn prepend_fixture_rustup_proxy_to_path(command: &mut Command, root: &Path) {
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![root.join(".cargo").join("bin")];
+    paths.extend(std::env::split_paths(&inherited_path));
+    command.env(
+        "PATH",
+        std::env::join_paths(paths).expect("build fixture PATH"),
+    );
+}
+
 #[test]
 fn prettier_formats_supported_files_only_when_a_marker_is_present() {
     let no_marker_dir = temp_dir("prettier-no-marker");

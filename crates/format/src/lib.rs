@@ -703,7 +703,7 @@ fn run_builtin_formatter(
         return run_overridden_command(path, command_override, env, current_dir, kind);
     }
 
-    let Some(program) = resolve_builtin_program(kind, search_root) else {
+    let Some(program) = resolve_builtin_program(kind, search_root, current_dir) else {
         return FormatOutcome::Skipped(SkipReason::MissingBinary {
             binary: kind.binary(),
         });
@@ -795,16 +795,24 @@ fn run_builtin_formatter(
 /// secret-stripped environment, and a surface may also provide an isolated `HOME`; a rustup proxy
 /// then cannot discover the toolchain that was available to the parent process. Running the
 /// concrete binary preserves the real formatter behavior without exposing the parent's secrets.
-fn resolve_builtin_program(kind: FormatterKind, search_root: &Path) -> Option<PathBuf> {
+fn resolve_builtin_program(
+    kind: FormatterKind,
+    search_root: &Path,
+    current_dir: &Path,
+) -> Option<PathBuf> {
     let program = resolve_program_path(kind.binary(), Some(search_root))?;
     if kind == FormatterKind::Rustfmt {
-        return concrete_rustfmt_for_rustup_proxy(&program).or(Some(program));
+        return concrete_rustfmt_for_rustup_proxy(&program, current_dir).or(Some(program));
     }
     Some(program)
 }
 
 /// Return a concrete `rustfmt` path when `program` is a rustup launcher proxy.
-fn concrete_rustfmt_for_rustup_proxy(program: &Path) -> Option<PathBuf> {
+///
+/// The formatter process intentionally receives a secret-stripped environment and may have an
+/// isolated `HOME`. Resolve the proxy's toolchain before constructing that process so the concrete
+/// binary follows rustup's selection rules from the formatter's project working directory.
+fn concrete_rustfmt_for_rustup_proxy(program: &Path, project_cwd: &Path) -> Option<PathBuf> {
     if program.canonicalize().ok()?.file_name()? != "rustup" {
         return None;
     }
@@ -812,22 +820,69 @@ fn concrete_rustfmt_for_rustup_proxy(program: &Path) -> Option<PathBuf> {
     program.ancestors().find_map(|ancestor| {
         let rustup_home = ancestor.join(".rustup");
         let toolchains = rustup_home.join("toolchains");
-        toolchains.is_dir().then(|| {
-            configured_rustup_toolchain(&rustup_home)
-                .map(|toolchain| toolchains.join(toolchain).join("bin").join("rustfmt"))
-                .filter(|path| is_executable_file(path))
-                .or_else(|| {
-                    let mut candidates = fs::read_dir(&toolchains)
-                        .ok()?
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.path().join("bin").join("rustfmt"))
-                        .filter(|path| is_executable_file(path))
-                        .collect::<Vec<_>>();
-                    candidates.sort();
-                    candidates.into_iter().next()
-                })
-        })?
+        if !toolchains.is_dir() {
+            return None;
+        }
+        if let Some(toolchain) = selected_rustup_toolchain(project_cwd, &rustup_home) {
+            return concrete_rustfmt_in_toolchain(&toolchains, &toolchain);
+        }
+
+        let mut candidates = fs::read_dir(&toolchains)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("bin").join("rustfmt"))
+            .filter(|path| is_executable_file(path))
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates.into_iter().next()
     })
+}
+
+fn concrete_rustfmt_in_toolchain(toolchains: &Path, toolchain: &str) -> Option<PathBuf> {
+    let mut components = Path::new(toolchain).components();
+    let std::path::Component::Normal(toolchain) = components.next()? else {
+        return None;
+    };
+    if components.next().is_some() {
+        return None;
+    }
+
+    let rustfmt = toolchains.join(toolchain).join("bin").join("rustfmt");
+    is_executable_file(&rustfmt).then_some(rustfmt)
+}
+
+/// Select rustup's active toolchain before falling back to the configured default.
+fn selected_rustup_toolchain(project_cwd: &Path, rustup_home: &Path) -> Option<String> {
+    std::env::var("RUSTUP_TOOLCHAIN")
+        .ok()
+        .filter(|toolchain| !toolchain.trim().is_empty())
+        .or_else(|| project_rustup_toolchain(project_cwd))
+        .or_else(|| configured_rustup_toolchain(rustup_home))
+}
+
+/// Read the nearest project toolchain selection using rustup's TOML-before-legacy precedence.
+fn project_rustup_toolchain(project_cwd: &Path) -> Option<String> {
+    project_cwd.ancestors().find_map(|directory| {
+        read_toml_rust_toolchain(&directory.join("rust-toolchain.toml"))
+            .or_else(|| read_legacy_rust_toolchain(&directory.join("rust-toolchain")))
+    })
+}
+
+fn read_toml_rust_toolchain(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()?
+        .parse::<toml::Value>()
+        .ok()?
+        .get("toolchain")?
+        .get("channel")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn read_legacy_rust_toolchain(path: &Path) -> Option<String> {
+    let toolchain = fs::read_to_string(path).ok()?;
+    let toolchain = toolchain.trim();
+    (!toolchain.is_empty()).then(|| toolchain.to_owned())
 }
 
 /// Read rustup's selected default toolchain from its on-disk settings, if one exists.

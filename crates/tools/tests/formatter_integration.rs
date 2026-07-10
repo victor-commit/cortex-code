@@ -257,6 +257,186 @@ async fn apply_patch_formats_written_rust_and_leaves_unknown_extensions_verbatim
 }
 
 #[cfg(unix)]
+#[test]
+fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home() {
+    let root = temp_dir("rustup-proxy-hooks");
+    write_rustup_proxy_fixture(&root);
+    fs::write(
+        root.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"project\"\n",
+    )
+    .expect("write project toolchain");
+
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .arg("--exact")
+        .arg("write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home_child")
+        .arg("--nocapture")
+        .env("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_CHILD", "1")
+        .env("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_ROOT", &root)
+        .env("HOME", root.join("isolated-home"))
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env("OPENROUTER_API_KEY", synthetic_openrouter_key())
+        .env("FORMATTER_VISIBLE_VALUE", synthetic_openrouter_key());
+    prepend_fixture_rustup_proxy_to_path(&mut command, &root);
+
+    let output = command
+        .output()
+        .expect("spawn rustup formatter hooks child");
+    assert!(
+        output.status.success(),
+        "rustup formatter hooks child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home_child() {
+    if std::env::var("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+
+    let root = PathBuf::from(
+        std::env::var("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_ROOT")
+            .expect("rustup formatter hooks fixture root is set"),
+    );
+    let ctx = context_with_formatters(&root);
+
+    let write = ToolRegistry::builtin()
+        .execute(
+            "write",
+            &serde_json::json!({
+                "path": "written.rs",
+                "content": "fn  written( ){}\n"
+            })
+            .to_string(),
+            &ctx,
+        )
+        .await;
+    assert!(!write.is_error, "{}", write.model_content());
+
+    let edited = root.join("edited.rs");
+    fs::write(&edited, "fn original() {}\n").expect("write edit input");
+    ctx.record_read(&edited);
+    let edit = ToolRegistry::builtin()
+        .execute(
+            "edit",
+            &serde_json::json!({
+                "path": "edited.rs",
+                "oldString": "fn original() {}\n",
+                "newString": "fn  edited( ){}\n"
+            })
+            .to_string(),
+            &ctx,
+        )
+        .await;
+    assert!(!edit.is_error, "{}", edit.model_content());
+
+    let marker = "*".repeat(3);
+    let patch = format!(
+        "{marker} Begin Patch\n{marker} Add File: patched.rs\n+fn  patched( ){{}}\n{marker} End Patch"
+    );
+    let apply_patch = ToolRegistry::gpt()
+        .execute(
+            "apply_patch",
+            &serde_json::json!({ "patch": patch }).to_string(),
+            &ctx,
+        )
+        .await;
+    assert!(!apply_patch.is_error, "{}", apply_patch.model_content());
+
+    let manual_path = root.join("manual.rs");
+    fs::write(&manual_path, "fn  manual( ){}\n").expect("write manual rustfmt input");
+    let manual = Command::new(
+        root.join(".rustup")
+            .join("toolchains")
+            .join("project")
+            .join("bin")
+            .join("rustfmt"),
+    )
+    .current_dir(&root)
+    .env_clear()
+    .env("PATH", "/usr/bin:/bin")
+    .arg(&manual_path)
+    .output()
+    .expect("run manually selected rustfmt");
+    assert!(
+        manual.status.success(),
+        "manual rustfmt failed: {}",
+        String::from_utf8_lossy(&manual.stderr)
+    );
+    let expected = fs::read_to_string(manual_path).expect("read manual rustfmt output");
+
+    for path in ["written.rs", "edited.rs", "patched.rs"] {
+        assert_eq!(
+            fs::read_to_string(root.join(path)).expect("read project-formatted Rust"),
+            expected,
+            "{path} must match manual rustfmt from the formatter project CWD"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn synthetic_openrouter_key() -> String {
+    let body = "deadbeef".repeat(8);
+    format!("sk-{}-{}", "or-v1", body)
+}
+
+#[cfg(unix)]
+fn write_rustup_proxy_fixture(root: &Path) {
+    use std::os::unix::fs::symlink;
+
+    let bin = root.join(".cargo").join("bin");
+    fs::create_dir_all(&bin).expect("create rustup proxy bin");
+    let rustup = bin.join("rustup");
+    write_executable(
+        &rustup,
+        "#!/usr/bin/env sh\nprintf 'rustup proxy should not execute\\n' >&2\nexit 99\n",
+    );
+    symlink(&rustup, bin.join("rustfmt")).expect("link rustfmt proxy to rustup");
+
+    for toolchain in ["project", "default"] {
+        let formatter = root
+            .join(".rustup")
+            .join("toolchains")
+            .join(toolchain)
+            .join("bin")
+            .join("rustfmt");
+        fs::create_dir_all(formatter.parent().expect("formatter parent"))
+            .expect("create concrete formatter parent");
+        write_executable(
+            &formatter,
+            &format!(
+                "#!/usr/bin/env sh\n\
+if [ \"${{OPENROUTER_API_KEY+x}}\" = x ]; then printf 'OPENROUTER_API_KEY leaked\\n' >&2; exit 42; fi\n\
+if [ \"${{FORMATTER_VISIBLE_VALUE+x}}\" = x ]; then printf 'key-shaped value leaked\\n' >&2; exit 43; fi\n\
+for arg do file=\"$arg\"; done\n\
+printf 'fn {toolchain}() {{}}\\n' > \"$file\"\n"
+            ),
+        );
+    }
+    fs::write(
+        root.join(".rustup").join("settings.toml"),
+        "default_toolchain = \"default\"\n",
+    )
+    .expect("write rustup settings");
+}
+
+#[cfg(unix)]
+fn prepend_fixture_rustup_proxy_to_path(command: &mut Command, root: &Path) {
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![root.join(".cargo").join("bin")];
+    paths.extend(std::env::split_paths(&inherited_path));
+    command.env(
+        "PATH",
+        std::env::join_paths(paths).expect("build fixture PATH"),
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn write_runs_gofmt_formatter_for_go_files() {
     let dir = temp_dir("write-gofmt");
