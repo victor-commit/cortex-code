@@ -15,12 +15,14 @@ import json
 import re
 import sys
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 
 ACCENT = "rgb(217,130,95)"
 BRIGHT = "rgb(230,233,239)"
+TXT = "rgb(200,205,214)"
 MUTED = "rgb(154,163,175)"
 FAINT = "rgb(76,85,102)"
 SURFACE = "rgb(38,43,51)"
@@ -67,6 +69,103 @@ SELECTION_CONSUMERS: dict[str, dict[str, Any]] = {
         "source": "theme_gallery",
         "filter_required": False,
         "palette": "light",
+    },
+    "session/onboarding": {"source": "step_current", "filter_required": False},
+}
+
+# Live activity ownership is deliberately closed. Each entry maps a registered
+# screen to every source construct that creates its activity, then says whether
+# the canonical band or the inline activity owns its verb, elapsed time, and
+# optional interrupt affordance. Shared renderers may service more than one
+# registered screen, but each rendered screen still has its own explicit row.
+LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
+    "session/streaming": {
+        "source_paths": ("screens/streaming.rs",),
+        "sources": ("working_band",),
+        "owner": "band",
+        "verb": "Composing",
+        "activity": "Composing",
+        "interrupt": "band",
+    },
+    "session/tool-running": {
+        "source_paths": ("screens/tool_running.rs",),
+        "sources": ("tool_running", "working_band"),
+        "owner": "band",
+        "verb": "Scouring",
+        "activity": "Scouring",
+        "interrupt": "band",
+    },
+    "session/tool-calls": {
+        "source_paths": ("screens/tool_calls.rs",),
+        "sources": ("tool_running",),
+        "owner": "inline",
+        "verb": "Search",
+        "activity": "Search(pattern: \"poll_cadence\")",
+        "interrupt": "none",
+    },
+    "session/tool-task": {
+        "source_paths": ("screens/tool_task.rs",),
+        "sources": ("tool_running",),
+        "owner": "inline",
+        "verb": "Task",
+        "activity": "Task(build: add rate-limit tests)",
+        "interrupt": "inline",
+    },
+    "session/shell": {
+        "source_paths": ("screens/shell.rs",),
+        "sources": ("shell_running",),
+        "owner": "inline",
+        "verb": "cargo test --workspace",
+        "activity": "cargo test --workspace",
+        "interrupt": "inline",
+    },
+    "session/todo-list": {
+        "source_paths": ("screens/todo_list.rs",),
+        "sources": ("working_band",),
+        "owner": "band",
+        "verb": "Writing tests",
+        "activity": "Writing tests",
+        "interrupt": "band",
+    },
+    "states/rate-limit": {
+        "source_paths": ("screens/rate_limit.rs",),
+        "sources": ("working_band",),
+        "owner": "band",
+        "verb": "Retry in",
+        "activity": "Retry in",
+        "interrupt": "band",
+    },
+    "input/subagent-picker": {
+        "source_paths": ("screens/subagent_picker.rs",),
+        "sources": ("inline_live_row",),
+        "owner": "inline",
+        "verb": "explore",
+        "activity": "explore",
+        "interrupt": "none",
+    },
+    "views/sidebar-subagents": {
+        "source_paths": ("screens/sidebar_subagents.rs",),
+        "sources": ("inline_live_row",),
+        "owner": "inline",
+        "verb": "explore",
+        "activity": "explore",
+        "interrupt": "none",
+    },
+    "orchestration/workflow-monitor": {
+        "source_paths": ("screens/workflow_monitor.rs",),
+        "sources": ("working_band",),
+        "owner": "band",
+        "verb": "Orchestrating",
+        "activity": "Orchestrating",
+        "interrupt": "band",
+    },
+    "orchestration/workflow-monitor-failure": {
+        "source_paths": ("screens/workflow_monitor.rs",),
+        "sources": ("working_band",),
+        "owner": "band",
+        "verb": "Orchestrating",
+        "activity": "Orchestrating",
+        "interrupt": "band",
     },
 }
 
@@ -177,9 +276,14 @@ STATUS_WORDS = {
     "widen",
 }
 
+# The alternatives are longest-first. In particular, an h+m token must be
+# consumed whole before the engine can consider its m component separately.
 DURATION_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9.])(?:\d+\s*[mh]\s*\d+\s*s"
-    r"|\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hr|h))(?![A-Za-z0-9.])"
+    r"(?<![A-Za-z0-9.])(?:"
+    r"\d+\s*h\s*\d+\s*m(?:\s*\d+\s*s)?"
+    r"|\d+\s*m\s*\d+\s*s"
+    r"|\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hr|h)"
+    r")(?![A-Za-z0-9.])"
 )
 VALID_DURATION = re.compile(r"^(?:[0-5]?\d(?:\.\d)?s|\d+m[0-5]\ds|\d+h[0-5]\dm)$")
 AGE = re.compile(r"^\d+[mhd] ago$")
@@ -189,6 +293,15 @@ KEY_PAIR = re.compile(rf"(?<![A-Za-z0-9/+])({KEY})(?=\s+[a-z])", re.IGNORECASE)
 SOURCE_CONSUMER = re.compile(
     r"chrome::(?:[a-z_]*select_list|fuzzy_file_list|permission_choices|review_findings_list|diff_hunk_header|theme_gallery)"
 )
+STEP_CURRENT_CONSUMER = re.compile(r"StepState::Current\b")
+LIVE_SOURCE_PATTERNS = {
+    "working_band": re.compile(r"\bchrome::working_band\s*\("),
+    "tool_running": re.compile(r"\bToolStatus::Running\s*\("),
+    "shell_running": re.compile(r"\bShellStatus::Running\s*\("),
+    "inline_live_row": re.compile(
+        r'format!\(\s*"●\s+running\b[^"]*"\s*,\s*chrome::timefmt\s*\('
+    ),
+}
 
 
 class Audit:
@@ -400,27 +513,33 @@ def duration_candidates(line: str) -> list[str]:
     return sorted(tokens, key=len, reverse=True)
 
 
-def canonical_seconds(token: str) -> int | None:
+def canonical_seconds(token: str) -> Decimal | None:
     if not VALID_DURATION.fullmatch(token):
         seconds_only = re.fullmatch(r"(\d+(?:\.\d+)?)s", token)
         if seconds_only:
-            return int(float(seconds_only.group(1)))
+            try:
+                return Decimal(seconds_only.group(1))
+            except InvalidOperation:
+                return None
         spaced_minutes = re.fullmatch(r"(\d+)m\s+(\d+)s", token)
         if spaced_minutes:
-            return int(spaced_minutes.group(1)) * 60 + int(spaced_minutes.group(2))
+            return Decimal(int(spaced_minutes.group(1)) * 60 + int(spaced_minutes.group(2)))
         return None
     if token.endswith("s") and "m" not in token and "h" not in token:
-        return int(float(token[:-1]))
+        try:
+            return Decimal(token[:-1])
+        except InvalidOperation:
+            return None
     if "h" in token:
         hours, minutes = token[:-1].split("h")
-        return int(hours) * 3600 + int(minutes) * 60
+        return Decimal(int(hours) * 3600 + int(minutes) * 60)
     minutes, seconds = token[:-1].split("m")
-    return int(minutes) * 60 + int(seconds)
+    return Decimal(int(minutes) * 60 + int(seconds))
 
 
 def validate_durations(audit: Audit, screens: list[dict[str, Any]]) -> None:
     for screen in screens:
-        seen: dict[int, str] = {}
+        seen: dict[Decimal, str] = {}
         for row in screen["rows"]:
             text = row["text"]
             for token in duration_candidates(text):
@@ -459,7 +578,7 @@ def attached_evidence(rows: list[dict[str, Any]], row_index: int) -> bool:
 
 
 def validate_dots(audit: Audit, screens: list[dict[str, Any]]) -> None:
-    semantic_colors = {ACCENT, OK, BAD, WARN, INFO, MUTED, FAINT}
+    semantic_colors = {ACCENT, BRIGHT, TXT, MUTED, FAINT, OK, BAD, WARN, INFO}
     for screen in screens:
         for row_index, row in enumerate(screen["rows"]):
             for column, glyph in enumerate(row["text"]):
@@ -503,14 +622,20 @@ def validate_dots(audit: Audit, screens: list[dict[str, Any]]) -> None:
 def source_consumers(source_root: Path, registry: dict[str, dict[str, Any]]) -> dict[str, str]:
     consumers: dict[str, str] = {}
     for source in sorted(source_root.glob("*.rs")):
-        matched = SOURCE_CONSUMER.findall(source.read_text())
+        source_text = source.read_text()
+        matched = SOURCE_CONSUMER.findall(source_text)
+        if STEP_CURRENT_CONSUMER.search(source_text):
+            matched.append("step_current")
         if not matched:
             continue
         name = source.stem.replace("_", "-")
         candidates = [screen_id for screen_id in registry if screen_id.endswith(f"/{name}")]
         if len(candidates) != 1:
             raise ValueError(f"{source}: cannot map selection consumer to exactly one registry screen")
-        consumers[candidates[0]] = matched[0].removeprefix("chrome::")
+        sources = {match.removeprefix("chrome::") for match in matched}
+        if len(sources) != 1:
+            raise ValueError(f"{source}: has multiple selection consumer types {sorted(sources)}")
+        consumers[candidates[0]] = sources.pop()
     return consumers
 
 
@@ -525,11 +650,16 @@ def validate_selection(
     screens: list[dict[str, Any]],
     source_root: Path | None,
     inventory: dict[str, dict[str, Any]] | None = None,
+    source_actual: dict[str, str] | None = None,
 ) -> None:
     inventory = SELECTION_CONSUMERS if inventory is None else inventory
     registry = {screen["id"]: screen for screen in screens}
-    if source_root is not None:
-        actual = source_consumers(source_root, registry)
+    if source_root is not None or source_actual is not None:
+        actual = (
+            source_consumers(source_root, registry)
+            if source_root is not None
+            else source_actual or {}
+        )
         expected = {screen_id: spec["source"] for screen_id, spec in inventory.items()}
         for screen_id in sorted(set(actual) - set(expected)):
             audit.fail(screen_id, 0, "selection", f"source consumer '{actual[screen_id]}' is absent from inventory")
@@ -608,62 +738,223 @@ def validate_selection(
         audit.counts["selection"] += 1
 
 
-def validate_live_activity(audit: Audit, screens: list[dict[str, Any]]) -> None:
-    for screen in screens:
-        bands = [
-            row
-            for row in screen["rows"]
-            if "…" in row["text"] and "esc to interrupt" in row["text"]
-        ]
-        if len(bands) > 1:
-            for band in bands[1:]:
-                audit.fail(screen["id"], band["line"], "live_activity", "more than one working band")
-        for band in bands:
-            elapsed = next((token for token in duration_candidates(band["text"]) if VALID_DURATION.fullmatch(token)), None)
-            if elapsed is None:
-                audit.fail(screen["id"], band["line"], "live_activity", "working band lacks canonical elapsed time")
-                continue
-            verb = band["text"].split("…", 1)[0].split("●", 1)[-1].strip()
-            for signature, title in ((verb, "verb"), (elapsed, "elapsed"), ("esc to interrupt", "interrupt")):
-                rows = [row for row in screen["rows"] if signature in row["text"]]
-                if len(rows) != 1:
-                    audit.fail(
-                        screen["id"],
-                        band["line"],
-                        "live_activity",
-                        f"authoritative {title} '{signature}' occurs on {len(rows)} rows",
-                    )
-            audit.counts["working_band"] += 1
+def live_source_types(source_text: str) -> set[str]:
+    return {
+        source_name
+        for source_name, pattern in LIVE_SOURCE_PATTERNS.items()
+        if pattern.search(source_text)
+    }
 
-        if not bands:
-            inline = [
-                row
-                for row in screen["rows"]
-                if "running" in row["text"].lower()
-                or ("Task(" in row["text"] and duration_candidates(row["text"]))
-                or ("Search(" in row["text"] and duration_candidates(row["text"]))
-            ]
-            for row in inline:
-                elapsed_tokens = [
-                    token for token in duration_candidates(row["text"]) if VALID_DURATION.fullmatch(token)
-                ]
-                for elapsed in elapsed_tokens:
-                    rows = [candidate for candidate in screen["rows"] if elapsed in candidate["text"]]
-                    if len(rows) != 1:
-                        audit.fail(
-                            screen["id"],
-                            row["line"],
-                            "live_activity",
-                            f"inline elapsed '{elapsed}' occurs on {len(rows)} rows",
-                        )
-                audit.counts["inline_live_activity"] += 1
-        interrupt_rows = [row for row in screen["rows"] if "esc to interrupt" in row["text"]]
-        if len(interrupt_rows) > 1:
+
+def live_source_consumers(
+    source_root: Path,
+    registry: dict[str, dict[str, Any]],
+) -> dict[str, set[str]]:
+    consumers: dict[str, set[str]] = {}
+    for source in sorted(source_root.glob("*.rs")):
+        matched = live_source_types(source.read_text())
+        if not matched:
+            continue
+        name = source.stem.replace("_", "-")
+        candidates = [screen_id for screen_id in registry if screen_id.endswith(f"/{name}")]
+        if len(candidates) != 1:
+            raise ValueError(f"{source}: cannot map live activity to exactly one registry screen")
+        consumers[candidates[0]] = matched
+    return consumers
+
+
+def working_bands(screen: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in screen["rows"]
+        if "…" in row["text"] and "esc to interrupt" in row["text"]
+    ]
+
+
+def active_elapsed(row: dict[str, Any]) -> str | None:
+    return next(
+        (token for token in duration_candidates(row["text"]) if VALID_DURATION.fullmatch(token)),
+        None,
+    )
+
+
+def validate_live_activity(
+    audit: Audit,
+    screens: list[dict[str, Any]],
+    source_root: Path | None,
+    inventory: dict[str, dict[str, Any]] | None = None,
+    source_actual: dict[str, set[str]] | None = None,
+) -> None:
+    inventory = LIVE_ACTIVITY_CONSUMERS if inventory is None else inventory
+    registry = {screen["id"]: screen for screen in screens}
+    actual = (
+        live_source_consumers(source_root, registry)
+        if source_root is not None
+        else (source_actual or {})
+    )
+
+    for screen_id in sorted(set(actual) - set(inventory)):
+        audit.fail(
+            screen_id,
+            0,
+            "live_activity",
+            f"source live activity {sorted(actual[screen_id])} is absent from inventory",
+        )
+    for screen_id, spec in inventory.items():
+        screen = registry.get(screen_id)
+        if screen is None:
+            audit.fail(screen_id, 0, "live_activity", "inventory screen is absent from registry")
+            continue
+
+        expected_sources = set(spec["sources"])
+        observed_sources = actual.get(screen_id)
+        if observed_sources is not None and observed_sources != expected_sources:
             audit.fail(
-                screen["id"],
-                interrupt_rows[1]["line"],
+                screen_id,
+                0,
                 "live_activity",
-                "interrupt affordance has multiple authoritative sources",
+                f"inventory sources {sorted(expected_sources)} differ from source {sorted(observed_sources)}",
+            )
+
+        if source_root is not None:
+            declared_sources: set[str] = set()
+            for relative_path in spec["source_paths"]:
+                source_path = source_root.parent / relative_path
+                declared_sources.update(live_source_types(source_path.read_text()))
+            missing_sources = expected_sources - declared_sources
+            extra_sources = declared_sources - expected_sources
+            if missing_sources:
+                audit.fail(
+                    screen_id,
+                    0,
+                    "live_activity",
+                    f"inventory sources {sorted(missing_sources)} have no declared source call site",
+                )
+            if extra_sources:
+                audit.fail(
+                    screen_id,
+                    0,
+                    "live_activity",
+                    f"declared source has unowned live activity {sorted(extra_sources)}",
+                )
+
+        bands = working_bands(screen)
+        owner = spec["owner"]
+        verb = spec["verb"]
+        activity = spec["activity"]
+        activity_rows = [row for row in screen["rows"] if activity in row["text"]]
+        interrupt_rows = [
+            row for row in screen["rows"] if "esc to interrupt" in row["text"]
+        ]
+        if len(activity_rows) != 1:
+            audit.fail(
+                screen_id,
+                activity_rows[0]["line"] if activity_rows else 0,
+                "live_activity",
+                f"authoritative activity '{activity}' occurs on {len(activity_rows)} rows",
+            )
+            continue
+        activity_row = activity_rows[0]
+
+        if owner == "band":
+            if len(bands) != 1:
+                audit.fail(
+                    screen_id,
+                    bands[1]["line"] if len(bands) > 1 else 0,
+                    "live_activity",
+                    f"band owner requires exactly one working band, found {len(bands)}",
+                )
+                continue
+            band = bands[0]
+            elapsed = active_elapsed(band)
+            if elapsed is None:
+                audit.fail(
+                    screen_id,
+                    band["line"],
+                    "live_activity",
+                    "working band lacks canonical elapsed time",
+                )
+                continue
+            if activity_row is not band:
+                audit.fail(
+                    screen_id,
+                    activity_row["line"],
+                    "live_activity",
+                    f"band does not own activity '{activity}'",
+                )
+            if verb not in band["text"]:
+                audit.fail(
+                    screen_id,
+                    band["line"],
+                    "live_activity",
+                    f"band does not own verb '{verb}'",
+                )
+            elapsed_rows = [row for row in screen["rows"] if elapsed in row["text"]]
+            if len(elapsed_rows) != 1:
+                audit.fail(
+                    screen_id,
+                    band["line"],
+                    "live_activity",
+                    f"band elapsed '{elapsed}' occurs on {len(elapsed_rows)} rows",
+                )
+            audit.counts["working_band"] += 1
+        else:
+            if bands:
+                audit.fail(
+                    screen_id,
+                    bands[0]["line"],
+                    "live_activity",
+                    "inline owner must not render a working band",
+                )
+            elapsed = active_elapsed(activity_row)
+            if elapsed is None:
+                audit.fail(
+                    screen_id,
+                    activity_row["line"],
+                    "live_activity",
+                    f"inline activity '{activity}' lacks canonical elapsed time",
+                )
+            else:
+                elapsed_rows = [row for row in screen["rows"] if elapsed in row["text"]]
+                if len(elapsed_rows) != 1:
+                    audit.fail(
+                        screen_id,
+                        activity_row["line"],
+                        "live_activity",
+                        f"inline elapsed '{elapsed}' occurs on {len(elapsed_rows)} rows",
+                    )
+            if verb not in activity_row["text"]:
+                audit.fail(
+                    screen_id,
+                    activity_row["line"],
+                    "live_activity",
+                    f"inline elapsed is not owned by verb '{verb}'",
+                )
+            audit.counts["inline_live_activity"] += 1
+
+        interrupt_owner = spec["interrupt"]
+        if interrupt_owner == "band":
+            if len(interrupt_rows) != 1 or (bands and interrupt_rows[0] not in bands):
+                audit.fail(
+                    screen_id,
+                    interrupt_rows[0]["line"] if interrupt_rows else 0,
+                    "live_activity",
+                    "working band does not exclusively own the interrupt affordance",
+                )
+        elif interrupt_owner == "inline":
+            if len(interrupt_rows) != 1:
+                audit.fail(
+                    screen_id,
+                    interrupt_rows[1]["line"] if len(interrupt_rows) > 1 else 0,
+                    "live_activity",
+                    "inline activity does not exclusively own the interrupt affordance",
+                )
+        elif interrupt_rows:
+            audit.fail(
+                screen_id,
+                interrupt_rows[0]["line"],
+                "live_activity",
+                "activity without interrupt ownership renders an interrupt affordance",
             )
 
 
@@ -675,22 +966,66 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
         return audit
     if fixture_name == "cross-002":
         validate_key_lines(audit, screens, check_inventory=False)
-    elif fixture_name == "cross-003":
-        validate_live_activity(audit, screens)
-    elif fixture_name == "cross-004":
+    elif fixture_name == "cross-003-duplicate":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {
+                "fixtures/cross-003.txt": {
+                    "sources": ("working_band",),
+                    "owner": "band",
+                    "verb": "Composing",
+                    "activity": "Composing",
+                    "interrupt": "band",
+                }
+            },
+        )
+    elif fixture_name == "cross-003-unlisted":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {},
+            {"fixtures/unlisted-live.txt": {"working_band"}},
+        )
+    elif fixture_name == "cross-003-source-unlisted":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {},
+            {
+                "fixtures/source-live.txt": live_source_types(
+                    "chrome::tool_line(ToolStatus::Running(elapsed), \"Task\", \"audit\"); "
+                    "chrome::shell_line(ShellStatus::Running(elapsed), \"cargo test\");"
+                )
+            },
+        )
+    elif fixture_name in {"cross-004-malformed", "cross-004-mixed"}:
         validate_durations(audit, screens)
-    elif fixture_name == "cross-007":
+    elif fixture_name in {"cross-004-valid", "cross-004-fractional"}:
+        validate_durations(audit, screens)
+    elif fixture_name in {"cross-007-bright", "cross-007-txt"}:
         validate_dots(audit, screens)
-    elif fixture_name == "cross-009":
+    elif fixture_name == "cross-009-current-unlisted":
         validate_selection(
             audit,
             screens,
             None,
-            {"input/model-picker": SELECTION_CONSUMERS["input/model-picker"]},
+            {},
+            {"session/onboarding": "step_current"},
+        )
+    elif fixture_name == "cross-009-current-style":
+        validate_selection(
+            audit,
+            screens,
+            None,
+            {"session/onboarding": SELECTION_CONSUMERS["session/onboarding"]},
         )
     else:
         validate_key_lines(audit, screens)
-        validate_live_activity(audit, screens)
+        validate_live_activity(audit, screens, source_root)
         validate_durations(audit, screens)
         validate_dots(audit, screens)
         validate_selection(audit, screens, source_root)
@@ -708,26 +1043,121 @@ def fixture(name: str) -> dict[str, Any]:
     if name == "cross-002":
         text = "CTRL+P open / CTRL+K close / CTRL+L next / CTRL+M previous / CTRL+N add / CTRL+O remove"
         return {"screens": [{"id": "fixtures/cross-002.txt", "rows": [row(39, text, [span(0, len(text), BRIGHT)]), status]}]}
-    if name == "cross-003":
-        one = " ● Composing… 24s · esc to interrupt"
-        two = " ● Composing… 24s · esc to interrupt"
-        return {"screens": [{"id": "fixtures/cross-003.txt", "rows": [row(1, one, [span(0, len(one), ACCENT)]), row(2, two, [span(0, len(two), ACCENT)]), status]}]}
-    if name == "cross-004":
-        text = " ● Running… 1m04s · prior form 64s · esc to interrupt"
-        return {"screens": [{"id": "fixtures/cross-004.txt", "rows": [row(1, text, [span(0, len(text), ACCENT)]), status]}]}
-    if name == "cross-007":
-        text = " ● arbitrary neighbor"
-        return {"screens": [{"id": "fixtures/cross-007.txt", "rows": [row(1, text, [span(0, 2, OK), span(2, len(text))]), status]}]}
-    if name == "cross-009":
-        first = " › first option"
-        second = " › second option"
+    if name == "cross-003-duplicate":
+        band = " ● Composing… 24s · esc to interrupt"
+        duplicate = "   ⎿ Composing still running · 24s · esc to interrupt"
         return {
             "screens": [
                 {
-                    "id": "input/model-picker",
+                    "id": "fixtures/cross-003.txt",
                     "rows": [
-                        row(1, first, [span(0, len(first), ACCENT, SURFACE)]),
-                        row(2, second, [span(0, len(second), ACCENT, SURFACE)]),
+                        row(1, band, [span(0, len(band), ACCENT)]),
+                        row(2, duplicate, [span(0, len(duplicate), MUTED)]),
+                        status,
+                    ],
+                }
+            ]
+        }
+    if name == "cross-003-unlisted":
+        band = " ● Unlisted… 24s · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/unlisted-live.txt",
+                    "rows": [row(1, band, [span(0, len(band), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-003-source-unlisted":
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/source-live.txt",
+                    "rows": [status],
+                }
+            ]
+        }
+    if name == "cross-004-valid":
+        text = " ● Retrying… 2h10m · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-004.txt",
+                    "rows": [row(1, text, [span(0, len(text), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-004-fractional":
+        text = " ● Retrying… 0.4s · 0.9s · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-004.txt",
+                    "rows": [row(1, text, [span(0, len(text), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-004-malformed":
+        text = " ● Retrying… 2h 10m · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-004.txt",
+                    "rows": [row(1, text, [span(0, len(text), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-004-mixed":
+        text = " ● Retrying… 2h10m · prior form 130m00s · esc to interrupt"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-004.txt",
+                    "rows": [row(1, text, [span(0, len(text), ACCENT)]), status],
+                }
+            ]
+        }
+    if name == "cross-007-bright":
+        text = " ● arbitrary neighbor"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-007.txt",
+                    "rows": [row(1, text, [span(0, 2, BRIGHT), span(2, len(text))]), status],
+                }
+            ]
+        }
+    if name == "cross-007-txt":
+        text = " ● arbitrary neighbor"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/cross-007.txt",
+                    "rows": [row(1, text, [span(0, 2, TXT), span(2, len(text))]), status],
+                }
+            ]
+        }
+    if name == "cross-009-current-unlisted":
+        current = " › Choose a model"
+        return {
+            "screens": [
+                {
+                    "id": "session/onboarding",
+                    "rows": [
+                        row(1, current, [span(0, len(current), ACCENT, SURFACE)]),
+                        status,
+                    ],
+                }
+            ]
+        }
+    if name == "cross-009-current-style":
+        current = " › Choose a model"
+        return {
+            "screens": [
+                {
+                    "id": "session/onboarding",
+                    "rows": [
+                        row(1, current, [span(0, len(current), MUTED, SURFACE)]),
                         status,
                     ],
                 }
@@ -740,7 +1170,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", type=Path)
     parser.add_argument("--source-root", type=Path)
-    parser.add_argument("--fixture", choices=[f"cross-{suffix:03d}" for suffix in (2, 3, 4, 7, 9)])
+    parser.add_argument(
+        "--fixture",
+        choices=(
+            "cross-002",
+            "cross-003-duplicate",
+            "cross-003-unlisted",
+            "cross-003-source-unlisted",
+            "cross-004-valid",
+            "cross-004-fractional",
+            "cross-004-malformed",
+            "cross-004-mixed",
+            "cross-007-bright",
+            "cross-007-txt",
+            "cross-009-current-unlisted",
+            "cross-009-current-style",
+        ),
+    )
     args = parser.parse_args()
     if bool(args.report) == bool(args.fixture):
         parser.error("provide exactly one of --report or --fixture")

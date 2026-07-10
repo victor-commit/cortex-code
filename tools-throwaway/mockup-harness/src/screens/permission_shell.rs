@@ -29,7 +29,7 @@ pub fn render(f: &mut Frame) {
             chrome::agent_head("Cortex"),
             Line::from("   I prepared the test command and need your approval."),
             Line::from(""),
-            chrome::tool_line(ToolStatus::Running(None), "Bash", "cargo test --all"),
+            chrome::tool_line(ToolStatus::Waiting, "Bash", "cargo test --all"),
             chrome::elbow_note("waiting for permission")[0].clone(),
         ],
     );

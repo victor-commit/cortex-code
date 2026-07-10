@@ -24,7 +24,7 @@ pub fn render(f: &mut Frame) {
         chrome::user_cmd("give login rows a default token_version", Some("4m ago")),
         Line::from(""),
         chrome::tool_line(
-            ToolStatus::Running(None),
+            ToolStatus::Waiting,
             "Proposed an edit to crates/server/src/models/session.rs",
             "",
         ),

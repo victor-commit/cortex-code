@@ -30,7 +30,7 @@ pub fn render(f: &mut Frame) {
             Line::from("   I prepared the edit and need your approval."),
             Line::from(""),
             chrome::tool_line(
-                ToolStatus::Running(None),
+                ToolStatus::Waiting,
                 "Edit",
                 "crates/server/src/auth/routes.rs",
             ),

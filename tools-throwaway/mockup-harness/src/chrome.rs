@@ -257,6 +257,9 @@ pub enum ToolStatus {
     /// working band already announces the activity - elapsed renders exactly
     /// once per activity (pattern 5).
     Running(Option<f64>),
+    /// Prepared work that cannot start until a decision or input arrives.
+    /// Waiting has no elapsed counter because it is not live work.
+    Waiting,
     Done,
     Failed,
 }
@@ -267,6 +270,7 @@ pub enum ToolStatus {
 pub fn tool_line(status: ToolStatus, name: &str, args: &str) -> Line<'static> {
     let (hue, elapsed) = match status {
         ToolStatus::Running(e) => (MUTED, e),
+        ToolStatus::Waiting => (MUTED, None),
         ToolStatus::Done => (OK, None),
         ToolStatus::Failed => (BAD, None),
     };
@@ -1725,7 +1729,7 @@ fn sidebar_transcript(f: &mut Frame, area: Rect) {
             t("I am checking the workspace state before changing anything."),
         ]),
         Line::from(""),
-        tool_line(ToolStatus::Running(None), "Read", "crates/tui/src/app.rs"),
+        tool_line(ToolStatus::Done, "Read", "crates/tui/src/app.rs"),
     ];
     lines.extend(elbow(vec![result]));
     transcript(f, area, lines);
