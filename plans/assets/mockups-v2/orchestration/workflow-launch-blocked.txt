@@ -2,11 +2,11 @@
 
    Workflow wf-42
    goal  deliver the auth, API, and web milestones in dependency order
-   levers  execution serial  ·  budget [$2.00] b edit
+   levers  parallelism [N=3] p edit · budget [$2.00] b edit
 
    Preflight · Step 0
    │ ✗ MISSING acceptance-contract.md
-   │ Create acceptance-contract.md from the approved mission contract.
+   │ MISSING <artifact>; exit 1  Create acceptance-contract.md from the approved mission contract.
    │ r re-run preflight · esc close
    ✓ architecture.md  ·  present and valid
    ✓ acceptance-state.json  ·  present and valid
@@ -19,7 +19,7 @@
    ○ workflow/wf-42/integration  ·  not seeded
    ○ progress-log.jsonl  ·  not seeded
    ○ intents/  ·  not seeded
-   ● Step 0 blocked · 7/8 author-time inputs present and valid
+   ✗ Preflight FAILED · 1 failed · 7/8 author-time inputs present and valid
    ○ 0/3 runner outputs seeded · Step 0 stopped before seeding
 
    Feature dependency graph · features.json

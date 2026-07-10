@@ -35,9 +35,10 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::raw("   "),
-            m("levers  execution "),
-            c("serial", BRIGHT),
-            m("  ·  budget "),
+            m("levers  parallelism "),
+            c("[N=3]", BRIGHT),
+            c(" p", ACCENT),
+            m(" edit · budget "),
             c("[$2.00]", BRIGHT),
             c(" b", ACCENT),
             m(" edit"),
@@ -47,7 +48,11 @@ pub fn render(f: &mut Frame) {
         chrome::fail_head("MISSING acceptance-contract.md"),
     ];
     lines.extend(chrome::fail_rows(vec![
-        vec![t("Create acceptance-contract.md from the approved mission contract.")],
+        vec![
+            c("MISSING <artifact>; exit 1", BAD),
+            m("  "),
+            t("Create acceptance-contract.md from the approved mission contract."),
+        ],
         recovery,
     ]));
     lines.extend(PRESENT_AUTHOR_TIME_INPUTS.iter().map(|artifact| {
@@ -80,8 +85,8 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::raw("   "),
-            c("● ", BAD),
-            t("Step 0 blocked · 7/8 author-time inputs present and valid"),
+            c("✗ ", BAD),
+            t("Preflight FAILED · 1 failed · 7/8 author-time inputs present and valid"),
         ]),
         Line::from(vec![
             Span::raw("   "),

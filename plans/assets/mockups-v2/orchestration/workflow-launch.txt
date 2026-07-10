@@ -3,7 +3,7 @@
 
    Workflow wf-42
    goal  deliver the auth, API, and web milestones in dependency order
-   levers  execution serial  ·  budget [$2.00] b edit
+   levers  parallelism [N=3] p edit · budget [$2.00] b edit
 
    Preflight · Step 0
    ✓ architecture.md  ·  present and valid

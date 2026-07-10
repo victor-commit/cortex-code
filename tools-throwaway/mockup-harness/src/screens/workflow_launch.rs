@@ -32,9 +32,10 @@ pub fn render(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::raw("   "),
-            m("levers  execution "),
-            c("serial", BRIGHT),
-            m("  ·  budget "),
+            m("levers  parallelism "),
+            c("[N=3]", BRIGHT),
+            c(" p", ACCENT),
+            m(" edit · budget "),
             c("[$2.00]", BRIGHT),
             c(" b", ACCENT),
             m(" edit"),
