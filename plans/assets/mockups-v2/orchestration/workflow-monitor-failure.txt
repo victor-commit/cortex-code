@@ -18,7 +18,7 @@
    ● D1 spawn  ·  ● D2 worktree  ·  ● D3 gate  ·  › D4 work
    ○ D5 check  ·  ○ D6 end feature  ·  ○ D7 reduce  ·  ○ D8 merge-back
    worker  ws-3f9a2c  ·  branch  workflow/wf-42/feat-api-routes
- ● Orchestrating… 4m12s · 3 workers · esc to interrupt
+   ● Orchestrating 4m12s · 3 workers
 
    wave scheduling · parallel metrics
  ─────────────────────────────────────────────────────────────────────────────────────────────────────────

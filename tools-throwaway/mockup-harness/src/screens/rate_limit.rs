@@ -26,10 +26,10 @@ pub fn render(f: &mut Frame) {
         usage("requests", 50, 50, "50 / 50 · at cap"),
         usage("tokens", 58, 80, "58k / 80k · 73%"),
         Line::from(""),
-        chrome::working_band("Retry in", 42.0, None),
         chrome::refreshing_note(),
         detail(vec![m("Your paused turn resumes on its own.")]),
         detail(recovery),
+        chrome::working_band("Retry in", 42.0, None),
     ];
 
     chrome::transcript(f, body, lines);

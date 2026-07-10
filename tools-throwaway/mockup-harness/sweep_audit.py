@@ -165,19 +165,19 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "orchestration/workflow-monitor": {
         "source_paths": ("screens/workflow_monitor.rs",),
-        "events": (("working_band", "Orchestrating", "4m12s", "band"),),
-        "owner": "band",
+        "events": (("inline_live_state", "Orchestrating", "4m12s", "none"),),
+        "owner": "inline",
         "verb": "Orchestrating",
         "activity": "Orchestrating",
-        "interrupt": "band",
+        "interrupt": "none",
     },
     "orchestration/workflow-monitor-failure": {
         "source_paths": ("screens/workflow_monitor.rs",),
-        "events": (("working_band", "Orchestrating", "4m12s", "band"),),
-        "owner": "band",
+        "events": (("inline_live_state", "Orchestrating", "4m12s", "none"),),
+        "owner": "inline",
         "verb": "Orchestrating",
         "activity": "Orchestrating",
-        "interrupt": "band",
+        "interrupt": "none",
     },
 }
 
@@ -214,7 +214,7 @@ KEY_LINE_ROLES: dict[str, dict[int, str]] = {
     "states/error-context": {36: "interactive_attached"},
     "states/error-network": {36: "failure_adjacent"},
     "states/interrupt": {35: "interactive_attached", 36: "interactive_attached", 37: "interactive_attached"},
-    "states/rate-limit": {36: "activity_attached"},
+    "states/rate-limit": {35: "activity_attached"},
     "states/share": {36: "interactive_attached"},
     "states/toasts": {3: "failure_adjacent"},
     "views/diff-viewer-staging": {1: "view_header", 6: "interactive_attached", 13: "interactive_attached", 22: "interactive_attached"},
@@ -772,12 +772,77 @@ def live_source_consumers(
     return consumers
 
 
-def working_bands(screen: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in screen["rows"]
-        if "…" in row["text"] and "esc to interrupt" in row["text"]
-    ]
+def bottom_frame(screen: dict[str, Any]) -> tuple[str, int | None]:
+    """Classify the status-adjacent frame from its rendered border geometry."""
+    rows = screen["rows"]
+    if len(rows) < 2:
+        return ("view", None)
+
+    bottom_index = len(rows) - 2
+    bottom = rows[bottom_index]["text"].strip()
+    if not (bottom.startswith("╰") and bottom.endswith("╯")):
+        return ("view", None)
+
+    top_index = next(
+        (
+            index
+            for index in range(bottom_index - 1, -1, -1)
+            if (
+                (text := rows[index]["text"].strip()).startswith("╭")
+                and text.endswith("╮")
+            )
+        ),
+        None,
+    )
+    if top_index is None:
+        return ("invalid_bottom_frame", None)
+
+    top = rows[top_index]["text"].strip()
+    titleless = all(character == "─" for character in top[1:-1])
+    prompt_row = rows[top_index + 1] if top_index + 1 < bottom_index else None
+    has_accent_prompt = prompt_row is not None and any(
+        character == "›"
+        and (span := style_at(prompt_row, column)) is not None
+        and span["fg"] == ACCENT
+        for column, character in enumerate(prompt_row["text"])
+    )
+    if titleless and has_accent_prompt:
+        return ("composer", rows[top_index]["line"])
+    if not titleless:
+        return ("action", rows[top_index]["line"])
+    return ("invalid_bottom_frame", rows[top_index]["line"])
+
+
+def validate_working_band_geometry(
+    audit: Audit,
+    screen: dict[str, Any],
+    event_pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    """Require event-derived bands to be the final row before a composer."""
+    bands = {
+        row["line"]: row
+        for event, row in event_pairs
+        if event.get("source") == "working_band"
+    }
+    if not bands:
+        return
+
+    frame, composer_top = bottom_frame(screen)
+    for band in bands.values():
+        if frame != "composer":
+            audit.fail(
+                screen["id"],
+                band["line"],
+                "live_activity",
+                f"working band requires a titleless composer frame, detected {frame}",
+            )
+        elif composer_top is None or band["line"] + 1 != composer_top:
+            audit.fail(
+                screen["id"],
+                band["line"],
+                "live_activity",
+                "working band is not the final transcript row before the composer",
+            )
 
 
 def canonical_elapsed_tokens(row: dict[str, Any]) -> list[str]:
@@ -1042,6 +1107,8 @@ def validate_live_activity(
                     f"live-shaped row maps to {len(matches)} render events",
                 )
 
+        validate_working_band_geometry(audit, screen, event_pairs)
+
         bands = [
             row
             for event, row in event_pairs
@@ -1221,6 +1288,21 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
                 }
             },
         )
+    elif fixture_name == "cross-003-band-not-adjacent":
+        validate_live_activity(
+            audit,
+            screens,
+            None,
+            {
+                "fixtures/band-not-adjacent.txt": {
+                    "events": (("working_band", "Composing", "24s", "band"),),
+                    "owner": "band",
+                    "verb": "Composing",
+                    "activity": "Composing",
+                    "interrupt": "band",
+                }
+            },
+        )
     elif fixture_name == "cross-003-unlisted":
         validate_live_activity(
             audit,
@@ -1338,6 +1420,42 @@ def fixture(name: str) -> dict[str, Any]:
                     "rows": [
                         row(1, band, [span(0, len(band), ACCENT)]),
                         row(2, duplicate, [span(0, len(duplicate), MUTED)]),
+                        status,
+                    ],
+                }
+            ]
+        }
+    if name == "cross-003-band-not-adjacent":
+        band = " ● Composing… 24s · esc to interrupt"
+        composer_top = f"╭{'─' * 118}╮"
+        composer_prompt = f"│ › type a follow-up{' ' * 99}│"
+        composer_bottom = f"╰{'─' * 118}╯"
+        return {
+            "screens": [
+                {
+                    "id": "fixtures/band-not-adjacent.txt",
+                    "events": [
+                        {
+                            "source": "working_band",
+                            "verb": "Composing",
+                            "elapsed": "24s",
+                            "interrupt": "band",
+                        }
+                    ],
+                    "rows": [
+                        row(1, band, [span(0, 2, ACCENT), span(2, len(band))]),
+                        row(2, "   ordinary transcript row", [span(0, 26)]),
+                        row(3, composer_top, [span(0, len(composer_top), FAINT)]),
+                        row(
+                            4,
+                            composer_prompt,
+                            [
+                                span(0, 2, FAINT),
+                                span(2, 3, ACCENT),
+                                span(3, len(composer_prompt), FAINT),
+                            ],
+                        ),
+                        row(5, composer_bottom, [span(0, len(composer_bottom), FAINT)]),
                         status,
                     ],
                 }
@@ -1539,6 +1657,7 @@ def main() -> int:
         choices=(
             "cross-002",
             "cross-003-duplicate",
+            "cross-003-band-not-adjacent",
             "cross-003-unlisted",
             "cross-003-eventless-row",
             "cross-003-verb-mismatch",

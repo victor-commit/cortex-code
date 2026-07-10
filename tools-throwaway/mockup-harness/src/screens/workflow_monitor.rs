@@ -131,7 +131,11 @@ fn render_variant(f: &mut Frame, variant: MonitorVariant) {
             m("  ·  branch  "),
             t("workflow/wf-42/feat-api-routes"),
         ]),
-        chrome::working_band("Orchestrating", 252.0, Some("3 workers")),
+        Line::from(vec![
+            Span::raw("   "),
+            m(&chrome::inline_live_state("Orchestrating", 252.0)),
+            m(" · 3 workers"),
+        ]),
         Line::from(""),
         Line::from(vec![Span::raw("   "), m("wave scheduling · parallel metrics")]),
         chrome::rule_line(105),

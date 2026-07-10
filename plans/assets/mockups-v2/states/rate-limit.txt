@@ -30,10 +30,10 @@
      requests  ██████████████████████████  50 / 50 · at cap
      tokens    ███████████████████░░░░░░░  58k / 80k · 73%
 
- ● Retry in… 42s · esc to interrupt
    ⎿ refreshing
      Your paused turn resumes on its own.
      r retry now · q quit
+ ● Retry in… 42s · esc to interrupt
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ › type a follow-up, it runs after this turn…                                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
