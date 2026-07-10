@@ -73,15 +73,17 @@ SELECTION_CONSUMERS: dict[str, dict[str, Any]] = {
     "session/onboarding": {"source": "step_current", "filter_required": False},
 }
 
-# Live activity ownership is deliberately closed. Each entry maps a registered
-# screen to every source construct that creates its activity, then says whether
-# the canonical band or the inline activity owns its verb, elapsed time, and
-# optional interrupt affordance. Shared renderers may service more than one
-# registered screen, but each rendered screen still has its own explicit row.
+# Live activity ownership is deliberately closed. Each entry records the exact
+# render-time `(source, verb, elapsed, interrupt)` event multiset expected for
+# a registered screen, then says whether the canonical band or inline row owns
+# its activity. The event inventory is deliberately independent of the
+# rendered wording, so helper-generated plain-English rows stay fail-closed.
+# Shared renderers may service more than one registered screen, but each
+# rendered screen still has its own explicit event inventory.
 LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     "session/streaming": {
         "source_paths": ("screens/streaming.rs",),
-        "sources": ("working_band",),
+        "events": (("working_band", "Composing", "24s", "band"),),
         "owner": "band",
         "verb": "Composing",
         "activity": "Composing",
@@ -89,7 +91,10 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/tool-running": {
         "source_paths": ("screens/tool_running.rs",),
-        "sources": ("tool_running", "working_band"),
+        "events": (
+            ("tool_running", "Search", None, "band"),
+            ("working_band", "Scouring", "4s", "band"),
+        ),
         "owner": "band",
         "verb": "Scouring",
         "activity": "Scouring",
@@ -97,7 +102,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/tool-calls": {
         "source_paths": ("screens/tool_calls.rs",),
-        "sources": ("tool_running",),
+        "events": (("tool_running", "Search", "12s", "none"),),
         "owner": "inline",
         "verb": "Search",
         "activity": "Search(pattern: \"poll_cadence\")",
@@ -105,7 +110,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/tool-task": {
         "source_paths": ("screens/tool_task.rs",),
-        "sources": ("tool_running",),
+        "events": (("tool_running", "Task", "48s", "inline"),),
         "owner": "inline",
         "verb": "Task",
         "activity": "Task(build: add rate-limit tests)",
@@ -113,7 +118,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/shell": {
         "source_paths": ("screens/shell.rs",),
-        "sources": ("shell_running",),
+        "events": (("shell_running", "cargo test --workspace", "4s", "inline"),),
         "owner": "inline",
         "verb": "cargo test --workspace",
         "activity": "cargo test --workspace",
@@ -121,7 +126,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "session/todo-list": {
         "source_paths": ("screens/todo_list.rs",),
-        "sources": ("working_band",),
+        "events": (("working_band", "Writing tests", "22s", "band"),),
         "owner": "band",
         "verb": "Writing tests",
         "activity": "Writing tests",
@@ -129,7 +134,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "states/rate-limit": {
         "source_paths": ("screens/rate_limit.rs",),
-        "sources": ("working_band",),
+        "events": (("working_band", "Retry in", "42s", "band"),),
         "owner": "band",
         "verb": "Retry in",
         "activity": "Retry in",
@@ -137,7 +142,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "input/subagent-picker": {
         "source_paths": ("screens/subagent_picker.rs",),
-        "sources": ("inline_live_state",),
+        "events": (("inline_live_state", "running", "12s", "none"),),
         "owner": "inline",
         "verb": "running",
         "activity": "running",
@@ -145,7 +150,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "views/sidebar-subagents": {
         "source_paths": ("screens/sidebar_subagents.rs",),
-        "sources": ("inline_live_state",),
+        "events": (("inline_live_state", "running", "12s", "none"),),
         "owner": "inline",
         "verb": "running",
         "activity": "running",
@@ -153,7 +158,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "orchestration/workflow-monitor": {
         "source_paths": ("screens/workflow_monitor.rs",),
-        "sources": ("working_band",),
+        "events": (("working_band", "Orchestrating", "4m12s", "band"),),
         "owner": "band",
         "verb": "Orchestrating",
         "activity": "Orchestrating",
@@ -161,7 +166,7 @@ LIVE_ACTIVITY_CONSUMERS: dict[str, dict[str, Any]] = {
     },
     "orchestration/workflow-monitor-failure": {
         "source_paths": ("screens/workflow_monitor.rs",),
-        "sources": ("working_band",),
+        "events": (("working_band", "Orchestrating", "4m12s", "band"),),
         "owner": "band",
         "verb": "Orchestrating",
         "activity": "Orchestrating",
@@ -800,6 +805,10 @@ def event_signature(event: dict[str, Any]) -> tuple[str, str, str | None, str]:
     )
 
 
+def inventory_event_sources(spec: dict[str, Any]) -> set[str]:
+    return {source for source, _, _, _ in spec["events"]}
+
+
 def matching_event(
     row: dict[str, Any],
     event: dict[str, Any],
@@ -896,7 +905,8 @@ def validate_live_activity(
             audit.fail(screen_id, 0, "live_activity", "inventory screen is absent from registry")
             continue
 
-        expected_sources = set(spec["sources"])
+        expected_events = Counter(spec["events"])
+        expected_sources = inventory_event_sources(spec)
         observed_sources = actual.get(screen_id)
         if observed_sources is not None and observed_sources != expected_sources:
             audit.fail(
@@ -929,16 +939,16 @@ def validate_live_activity(
                 )
 
         events = live_events(screen)
-        expected_event_sources = sorted(expected_sources)
-        observed_event_sources = sorted(
-            str(event.get("source")) for event in events
-        )
-        if observed_event_sources != expected_event_sources:
+        observed_events = Counter(event_signature(event) for event in events)
+        if observed_events != expected_events:
             audit.fail(
                 screen_id,
                 0,
                 "live_activity",
-                f"inventory sources {expected_event_sources} differ from render events {observed_event_sources}",
+                "inventory event multiplicity "
+                f"{sorted(expected_events.items(), key=lambda item: repr(item[0]))} "
+                "differs from render events "
+                f"{sorted(observed_events.items(), key=lambda item: repr(item[0]))}",
             )
 
         event_pairs = [
@@ -1137,7 +1147,7 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
             None,
             {
                 "fixtures/cross-003.txt": {
-                    "sources": ("working_band",),
+                    "events": (("working_band", "Composing", "24s", "band"),),
                     "owner": "band",
                     "verb": "Composing",
                     "activity": "Composing",
@@ -1174,7 +1184,7 @@ def run(report: dict[str, Any], source_root: Path | None, fixture_name: str | No
             {},
             {
                 "fixtures/helper-live.txt": live_source_types(
-                    'chrome::inline_live_state("cataloguing", elapsed);'
+                    'render_catalogue_state() { chrome::inline_live_state("cataloguing in background", elapsed); }'
                 )
             },
         )
@@ -1226,6 +1236,20 @@ def fixture(name: str) -> dict[str, Any]:
             "screens": [
                 {
                     "id": "fixtures/cross-003.txt",
+                    "events": [
+                        {
+                            "source": "working_band",
+                            "verb": "Composing",
+                            "elapsed": "24s",
+                            "interrupt": "band",
+                        },
+                        {
+                            "source": "working_band",
+                            "verb": "Composing",
+                            "elapsed": "24s",
+                            "interrupt": "band",
+                        }
+                    ],
                     "rows": [
                         row(1, band, [span(0, len(band), ACCENT)]),
                         row(2, duplicate, [span(0, len(duplicate), MUTED)]),
@@ -1261,7 +1285,7 @@ def fixture(name: str) -> dict[str, Any]:
                     "events": [
                         {
                             "source": "inline_live_state",
-                            "verb": "cataloguing",
+                            "verb": "cataloguing in background",
                             "elapsed": "12s",
                             "interrupt": "none",
                         }
@@ -1269,8 +1293,8 @@ def fixture(name: str) -> dict[str, Any]:
                     "rows": [
                         row(
                             1,
-                            " ● cataloguing 12s",
-                            [span(0, 2, MUTED), span(2, 18)],
+                            " ● cataloguing in background 12s",
+                            [span(0, 2, MUTED), span(2, 32)],
                         ),
                         status,
                     ],

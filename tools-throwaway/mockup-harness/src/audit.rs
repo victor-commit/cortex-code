@@ -75,14 +75,6 @@ impl LiveActivityEvent {
             interrupt,
         }
     }
-
-    /// Test-only semantic helper for an unregistered, differently worded
-    /// inline activity. Its call path must still be captured through the
-    /// canonical inline constructor.
-    #[cfg(test)]
-    pub(crate) fn unregistered_catalogue_state() -> String {
-        crate::chrome::inline_live_state("cataloguing", 12.0)
-    }
 }
 
 thread_local! {
@@ -246,6 +238,10 @@ mod tests {
         LiveActivityEvent, LiveActivityInterrupt, LiveActivitySource, capture_live_activity, escape,
     };
 
+    fn unregistered_inline_catalogue_state() -> String {
+        crate::chrome::inline_live_state("cataloguing in background", 12.0)
+    }
+
     #[test]
     fn json_escape_handles_control_characters() {
         assert_eq!(escape("\"\\\n"), "\\\"\\\\\\n");
@@ -253,15 +249,14 @@ mod tests {
 
     #[test]
     fn inline_live_helper_records_an_indirect_activity_event() {
-        let (state, events) =
-            capture_live_activity(LiveActivityEvent::unregistered_catalogue_state);
+        let (state, events) = capture_live_activity(unregistered_inline_catalogue_state);
 
-        assert_eq!(state, "● cataloguing 12s");
+        assert_eq!(state, "● cataloguing in background 12s");
         assert_eq!(
             events,
             vec![LiveActivityEvent::new(
                 LiveActivitySource::InlineLiveState,
-                "cataloguing",
+                "cataloguing in background",
                 Some("12s".to_owned()),
                 LiveActivityInterrupt::None,
             )]
