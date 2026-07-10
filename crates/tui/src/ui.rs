@@ -931,6 +931,16 @@ fn push_tool(
 
         if let Some(diff) = card.diff.as_deref() {
             push_card_diff_rows(lines, diff, bx, bw, width, border_style, theme);
+            // A mutating tool card carries both the rendered file diff and its real tool result.
+            // Keep post-mutation feedback (notably formatter/LSP diagnostics) visible alongside
+            // the diff instead of dropping it just because a diff is available.
+            if !card.output.trim().is_empty() {
+                lines.push(interior_row(&[(
+                    "tool result".to_owned(),
+                    header_style,
+                )]));
+                push_tool_generic_output(card, &interior_row, text_w, header_style, theme, lines);
+            }
         } else if card.name == "todo" {
             // VAL-TOOL-025: todo items render with three-state markers: ✓ done (OKG green),
             // ▶ in-progress (ORANGE), ○ pending (FAINT).
@@ -7684,6 +7694,37 @@ mod tests {
         assert_eq!(hint_span.style.fg, Some(theme.text_muted), "hint is FAINT");
         assert!(!text.contains("output"), "no output header while collapsed:\n{text}");
         assert!(!text.contains("use ratatui"), "no payload while collapsed:\n{text}");
+    }
+
+    #[test]
+    fn expanded_mutating_card_keeps_lsp_diagnostic_output_after_its_diff() {
+        let theme = style::ThemeColors::dark();
+        let mut card = tool_card("write", r#"{"path":"src/lib.rs","content":"broken"}"#);
+        card.attach_diff(
+            crate::diff::compute_file_diff(
+                "src/lib.rs",
+                Some("pub fn original() {}\n"),
+                Some("pub fn broken() {\n    let value: u32 = \"wrong\";\n}\n"),
+            )
+            .expect("mutation diff"),
+        );
+        card.complete(
+            &[protocol::ToolResultPart::text(
+                "Wrote src/lib.rs\nDiagnostics:\n\
+                 error [E0308] (rustc) at line 2, character 22-29: mismatched types",
+            )],
+            false,
+        );
+
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &card, 120, true, &theme);
+        let text = rendered(&lines);
+        assert!(text.contains("+ pub fn broken()"), "diff remains visible:\n{text}");
+        assert!(text.contains("tool result"), "result header follows diff:\n{text}");
+        assert!(
+            text.contains("mismatched types") && text.contains("at line 2, character 22-29"),
+            "LSP diagnostic must remain visible in the expanded write card:\n{text}"
+        );
     }
 
     #[test]
