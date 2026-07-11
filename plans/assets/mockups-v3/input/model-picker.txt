@@ -2,7 +2,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the retry conversation.                                                                              
+    You · Continue the paused conversation.                                                                             
                                                                                                                         
                                                                                                                         
     Choose a model                                                                                                      

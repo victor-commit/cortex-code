@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Resume a conversation                                                                                               
+                                                                                                                        
+    Filter · all saved conversations · 3 matches                                                                        
+                                                                                                                        
+                                                                                                                        
+    › Retry policy review                                                                                               
+      ~/project · Today, 10:42 · Current                                                                                
+      Tests pass; review is ready                                                                                       
+                                                                                                                        
+                                                                                                                        
+      Document release steps                                                                                            
+      ~/project · Yesterday, 16:08                                                                                      
+      Drafted the release checklist                                                                                     
+                                                                                                                        
+                                                                                                                        
+      Fix search pagination                                                                                             
+      ~/storefront · Monday, 14:21                                                                                      
+      Found the boundary condition                                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Retry policy review                                                                                   │  
+  │ Latest stable work · Tests pass; review is ready                                                                 │  
+  │ ~/project · latest stable work from today · Your saved draft: Add the final review note.                         │  
+  │ › [enter] Resume latest · [t] View timeline                                                                      │  
+  │ [f] Fork instead makes a copy · [esc] Back · [↑↓] Choose                                                         │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

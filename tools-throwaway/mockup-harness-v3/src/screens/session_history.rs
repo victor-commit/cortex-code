@@ -69,6 +69,7 @@ fn render_session_picker(
         return render_no_matches(canvas, screen_id, fixture_id);
     }
 
+    let gate_origin = fixture_id.starts_with("gate.work-configuration");
     let docs_selected = fixture_id.contains("selected-docs");
     let selected_index = usize::from(docs_selected);
     canvas.write(
@@ -337,9 +338,13 @@ fn render_session_picker(
             transition(
                 "action.session-picker.back",
                 "session-picker",
-                "chat-turn",
+                if gate_origin { "onboarding" } else { "chat-turn" },
                 "cancel",
-                "back restores the exact conversation origin, draft, focus, and reading position",
+                if gate_origin {
+                    "back restores the onboarding configuration hub without applying a session"
+                } else {
+                    "back restores the exact conversation origin, draft, focus, and reading position"
+                },
             ),
             transition(
                 "action.session-picker.choose",

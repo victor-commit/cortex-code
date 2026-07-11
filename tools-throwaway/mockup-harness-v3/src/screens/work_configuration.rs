@@ -5,15 +5,15 @@
 //! human-readable choices, then adds detail only for the focused pending row.
 
 use crate::{
+    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
-    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -48,7 +48,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
         work_style: match screen_id {
-            "onboarding" | "agent-picker" => Some(WorkStyleEvidence {
+            "onboarding" | "model-picker" | "agent-picker" => Some(WorkStyleEvidence {
                 applied: "Careful edits".to_owned(),
                 pending: (screen_id == "agent-picker").then(|| {
                     if fixture_id.contains("unchanged") {
@@ -79,6 +79,7 @@ fn render_onboarding(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let gate_origin = fixture_id.starts_with("gate.work-configuration");
     canvas.write(4, 4, "Code", TextStyle::bright())?;
     canvas.write(7, 4, "Let's set up one thing", TextStyle::bright())?;
     canvas.write(
@@ -115,7 +116,11 @@ fn render_onboarding(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Use Claude Sonnet 4.5",
+        if gate_origin {
+            "› [enter] Review models"
+        } else {
+            "› [enter] Use Claude Sonnet 4.5"
+        },
         TextStyle::accent(),
     )?;
     dock_line(
@@ -181,12 +186,24 @@ fn render_onboarding(
             screen_id,
             fixture_id,
             "primary-action",
-            "action.onboarding.apply-default",
+            if gate_origin {
+                "action.onboarding.review-models"
+            } else {
+                "action.onboarding.apply-default"
+            },
             reference(DOCK_TOP + 3, 4, 36),
             "focused",
             Some(action(
-                "action.onboarding.apply-default",
-                "Use Claude Sonnet 4.5",
+                if gate_origin {
+                    "action.onboarding.review-models"
+                } else {
+                    "action.onboarding.apply-default"
+                },
+                if gate_origin {
+                    "Review models"
+                } else {
+                    "Use Claude Sonnet 4.5"
+                },
                 false,
             )),
         ),
@@ -243,11 +260,23 @@ fn render_onboarding(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
-                "action.onboarding.apply-default",
+                if gate_origin {
+                    "action.onboarding.review-models"
+                } else {
+                    "action.onboarding.apply-default"
+                },
                 "onboarding",
-                "empty",
+                if gate_origin {
+                    "model-picker"
+                } else {
+                    "empty"
+                },
                 "direct",
-                "the recommended model is applied and first setup enters a usable conversation shell",
+                if gate_origin {
+                    "the configuration storyboard opens model choices without applying a pending value"
+                } else {
+                    "the recommended model is applied and first setup enters a usable conversation shell"
+                },
             ),
             transition(
                 "action.onboarding.skip",
@@ -280,6 +309,7 @@ fn render_model_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let blocked = fixture_id.contains("blocked");
+    let gate_origin = fixture_id.starts_with("gate.work-configuration");
     canvas.write(
         4,
         4,
@@ -479,6 +509,8 @@ fn render_model_picker(
     ];
     let target = if blocked {
         "connect-provider"
+    } else if gate_origin {
+        "onboarding"
     } else {
         "chat-turn"
     };
@@ -505,6 +537,8 @@ fn render_model_picker(
                 "direct",
                 if blocked {
                     "the unavailable model opens provider connection without losing the conversation or draft"
+                } else if gate_origin {
+                    "the selected model applies once and returns to the onboarding configuration hub"
                 } else {
                     "the selected model applies once and returns to the exact conversation origin"
                 },
@@ -512,9 +546,13 @@ fn render_model_picker(
             transition(
                 "action.model-picker.cancel",
                 "model-picker",
-                "chat-turn",
+                if gate_origin { "onboarding" } else { "chat-turn" },
                 "cancel",
-                "cancel discards the pending model and restores the exact conversation origin",
+                if gate_origin {
+                    "cancel discards the pending model and restores the onboarding configuration hub"
+                } else {
+                    "cancel discards the pending model and restores the exact conversation origin"
+                },
             ),
             transition(
                 "action.model-picker.filter",
@@ -533,6 +571,7 @@ fn render_agent_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let unchanged = fixture_id.contains("unchanged");
+    let gate_origin = fixture_id.starts_with("gate.work-configuration");
     let selected = if unchanged {
         "Quick implementation"
     } else {
@@ -771,9 +810,13 @@ fn render_agent_picker(
             transition(
                 "action.agent-picker.cancel",
                 "agent-picker",
-                "chat-turn",
+                if gate_origin { "onboarding" } else { "chat-turn" },
                 "cancel",
-                "cancel keeps the current work style and restores the exact conversation origin",
+                if gate_origin {
+                    "cancel keeps the current work style and restores the onboarding configuration hub"
+                } else {
+                    "cancel keeps the current work style and restores the exact conversation origin"
+                },
             ),
         ],
     ))
@@ -934,7 +977,10 @@ fn render_mode_switch(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(

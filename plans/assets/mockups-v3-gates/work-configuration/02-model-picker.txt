@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Choose a model                                                                                                      
+                                                                                                                        
+    Each row says what changes before you apply it.                                                                     
+                                                                                                                        
+                                                                                                                        
+      Claude Sonnet 4.5                                                                                                 
+      Current · Balanced speed and depth                                                                                
+                                                                                                                        
+    › Claude Opus 4.8                                                                                                   
+      More depth for complex changes · slower                                                                           
+                                                                                                                        
+      GPT-5.2 Codex                                                                                                     
+      Fast implementation help · best for focused edits                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Claude Opus 4.8                                                                                       │  
+  │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
+  │ › [enter] Apply model · [esc] Cancel                                                                             │  
+  │ [↑↓] Choose · [f] Filter models · current choice stays unchanged until Apply                                     │  
+  │ Only the selected model's pending change is explained here.                                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  
