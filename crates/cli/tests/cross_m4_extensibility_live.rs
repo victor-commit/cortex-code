@@ -449,6 +449,68 @@ fn agents_memory_and_skill_guidance_shape_headless_and_tui_then_drop_when_remove
 }
 
 #[test]
+fn task_subagent_gated_write_is_audited_under_child_session() {
+    let Some(key) = live_key() else {
+        eprintln!("skipping live test: OPENROUTER_API_KEY not set");
+        return;
+    };
+    let _guard = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let scratch = scratch("task-audit");
+    let parent = format!("cross-parent-audit-{}", std::process::id());
+    let marker = scratch.project.join("child-audit-marker.txt");
+
+    let doc = json_doc(run(cortex_in(
+        &scratch,
+        &key,
+        &[
+            "run",
+            "--session",
+            &parent,
+            "--model",
+            MODEL,
+            "--format",
+            "json",
+            "--permission-allow",
+            "task:general",
+            "--permission-allow",
+            "write:*",
+            &format!(
+                "You MUST call the task tool exactly once with agent general. \
+                 Delegate this exact instruction: use the write tool to create {} with exactly \
+                 CHILD-AUDIT-MARKER and then reply DONE. Do not answer until task returns.",
+                marker.display()
+            ),
+        ],
+    )));
+
+    let task_text = tool_result_text(&doc, "task");
+    let child = child_session_id(&task_text);
+    assert_ne!(child, parent, "subagent must get a distinct session");
+    assert!(marker.exists(), "the real child turn must write its marker");
+    assert_eq!(
+        fs::read_to_string(&marker).expect("child marker"),
+        "CHILD-AUDIT-MARKER"
+    );
+
+    let audit_path = scratch.project.join(".cortex").join("audit.jsonl");
+    let records = audit::read_jsonl(&audit_path).expect("read live audit records");
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "file_mutation"
+                && record["session"] == child
+                && record["parent_session"] == parent
+                && record["operation"] == "write"
+                && record["outcome"] == "success"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("child-audit-marker.txt"))
+        }),
+        "child write must be attributed to the child session: {records:#?}"
+    );
+    assert_no_process_references(&scratch.root.display().to_string());
+}
+
+#[test]
 fn editing_agents_md_between_processes_changes_the_later_headless_turn() {
     let Some(key) = live_key() else {
         eprintln!("skipping live test: OPENROUTER_API_KEY not set");

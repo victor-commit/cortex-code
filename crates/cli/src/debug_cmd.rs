@@ -6,7 +6,6 @@
 //! records with secrets scrubbed; `debug info` reports runtime status (version, resolved paths,
 //! build features, and the `CORTEX_NO_NET` kill-switch).
 
-use std::fs;
 use std::io::{self, Write};
 
 use db::{Database, DbPathInputs};
@@ -158,12 +157,8 @@ fn run_audit(args: DebugAuditArgs) -> Exit {
                 .join("audit.jsonl")
         });
 
-    let records: Vec<String> = match fs::read_to_string(&path) {
-        Ok(contents) => contents
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(redaction::redact)
-            .collect(),
+    let records = match audit::read_jsonl(&path) {
+        Ok(records) => records,
         Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(err) => {
             eprintln!("cortex debug audit: cannot read {}: {err}", path.display());
@@ -180,19 +175,24 @@ fn run_audit(args: DebugAuditArgs) -> Exit {
 
     match args.format.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            let values: Vec<serde_json::Value> = window
+            let values = window
                 .iter()
-                .map(|line| {
-                    serde_json::from_str(line)
-                        .unwrap_or_else(|_| serde_json::Value::String(line.clone()))
+                .map(|record| {
+                    let redacted = redaction::redact(&record.to_string());
+                    serde_json::from_str(&redacted)
+                        .unwrap_or_else(|_| serde_json::Value::String(redacted))
                 })
-                .collect();
+                .collect::<Vec<_>>();
             emit_json("debug audit", &values)
         }
         OutputFormat::Text => {
             let mut out = String::new();
-            for line in window {
-                out.push_str(line);
+            for record in window {
+                let Ok(line) = serde_json::to_string(record) else {
+                    eprintln!("cortex debug audit: failed to serialize audit record");
+                    return Exit::Failure;
+                };
+                out.push_str(&redaction::redact(&line));
                 out.push('\n');
             }
             emit_text(&out)
@@ -278,7 +278,7 @@ fn cortex_config_dir() -> Option<std::path::PathBuf> {
 // shared output helpers
 // ---------------------------------------------------------------------------
 
-fn emit_json<T: Serialize>(command: &str, value: &T) -> Exit {
+fn emit_json<T: Serialize + ?Sized>(command: &str, value: &T) -> Exit {
     match serde_json::to_string(value) {
         Ok(mut body) => {
             body.push('\n');

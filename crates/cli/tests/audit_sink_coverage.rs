@@ -635,6 +635,60 @@ fn subagent_provider_requests_are_attributed_to_the_child_session() {
 }
 
 #[test]
+fn audit_records_survive_restart_and_debug_reader_returns_ordered_json() {
+    let _guard = acquire_test_lock();
+    let scratch = Scratch::new("restart");
+    let provider = ScriptedProvider::spawn();
+    let session = format!("audit-restart-{}", std::process::id());
+
+    let out = run(cortex(
+        &scratch,
+        &provider,
+        &[
+            "run",
+            "--session",
+            &session,
+            "--format",
+            "json",
+            "--permission-allow",
+            "bash:ls *",
+            "--permission-allow",
+            "write:*",
+            "exercise durable audit restart",
+        ],
+    ));
+    assert_success(&out);
+    drop(provider);
+
+    let before_restart = read_audit(&scratch.audit);
+    assert_schema_and_order(&before_restart, Some(&session));
+    let last_sequence = before_restart
+        .last()
+        .and_then(|record| record["sequence"].as_u64())
+        .expect("last sequence");
+
+    let reader = run(cortex_without_provider(
+        &scratch,
+        &["debug", "audit", "--format", "json", "--limit", "0"],
+    ));
+    assert_success(&reader);
+    let after_restart: Vec<Value> =
+        serde_json::from_slice(&reader.stdout).expect("restart audit JSON");
+    assert_eq!(
+        after_restart.len(),
+        before_restart.len(),
+        "separate reader must return all durable records"
+    );
+    assert_schema_and_order(&after_restart, Some(&session));
+    assert_eq!(
+        after_restart
+            .last()
+            .and_then(|record| record["sequence"].as_u64()),
+        Some(last_sequence)
+    );
+}
+
+#[test]
 fn cross_m5_single_turn_observes_mcp_plugin_permission_and_audit() {
     let _guard = acquire_test_lock();
     if plugins::detect_runtime().is_none() {

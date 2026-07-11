@@ -663,15 +663,6 @@ impl PluginState {
                         continue;
                     };
                     if let Some(reason) = veto_reason(&value) {
-                        if let Some(audit) = self.audit_sink() {
-                            audit.record_plugin_hook(
-                                loaded.spec.raw_spec(),
-                                "tool.execute.before",
-                                "veto",
-                                "denied",
-                                Some(&reason),
-                            );
-                        }
                         return (
                             current,
                             Some(ToolVeto {

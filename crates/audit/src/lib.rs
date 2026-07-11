@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nix::fcntl::{Flock, FlockArg};
 use serde_json::{Map, Number, Value};
 
 /// Environment variable overriding the audit JSONL path.
@@ -430,6 +431,23 @@ impl AuditSink {
             .write_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(parent) = self.path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return;
+        }
+        let Ok(lock_file) = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.path)
+        else {
+            return;
+        };
+        let Ok(_file_lock) = Flock::lock(lock_file, FlockArg::LockExclusive) else {
+            return;
+        };
         let mut record = Map::new();
         record.insert("schema_version".to_owned(), Value::Number(Number::from(1)));
         insert_str(&mut record, "type", kind);
@@ -444,9 +462,7 @@ impl AuditSink {
         }
         record.insert(
             "sequence".to_owned(),
-            Value::Number(Number::from(
-                self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
-            )),
+            Value::Number(Number::from(self.next_sequence())),
         );
         let now = timestamp_ms();
         record.insert("timestamp_ms".to_owned(), Value::Number(Number::from(now)));
@@ -459,9 +475,6 @@ impl AuditSink {
             .or_insert_with(|| Value::String("success".to_owned()));
         let record = redact_object(record, &self.secret_literals());
 
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let Ok(line) = serde_json::to_string(&Value::Object(record)) else {
             return;
         };
@@ -471,7 +484,16 @@ impl AuditSink {
             .open(&self.path)
         {
             let _ = writeln!(file, "{line}");
+            let _ = file.sync_data();
         }
+    }
+
+    fn next_sequence(&self) -> u64 {
+        let durable = read_last_sequence(&self.path);
+        let local = self.sequence.load(Ordering::SeqCst);
+        let next = durable.max(local).saturating_add(1);
+        self.sequence.store(next, Ordering::SeqCst);
+        next
     }
 
     fn secret_literals(&self) -> Vec<String> {
@@ -501,6 +523,23 @@ pub fn read_jsonl(path: &Path) -> io::Result<Vec<Value>> {
         records.push(value);
     }
     Ok(records)
+}
+
+fn read_last_sequence(path: &Path) -> u64 {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    let reader = io::BufReader::new(file);
+    let lines = reader.lines().map_while(Result::ok).collect::<Vec<_>>();
+    lines
+        .into_iter()
+        .rev()
+        .find_map(|line| {
+            serde_json::from_str::<Value>(&line)
+                .ok()
+                .and_then(|record| record.get("sequence").and_then(Value::as_u64))
+        })
+        .unwrap_or(0)
 }
 
 /// Extract the host name from an HTTP(S) endpoint string.
@@ -705,7 +744,7 @@ mod tests {
         assert_eq!(records[1]["type"], "shell_execution");
         assert_eq!(records[1]["sequence"], 2);
         assert_eq!(records[1]["turn_id"], records[0]["turn_id"]);
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -726,7 +765,23 @@ mod tests {
         assert_eq!(records[1]["parent_session"], "ses_parent");
         assert_eq!(records[1]["parent_session_id"], "ses_parent");
         assert_ne!(records[1]["turn_id"], records[0]["turn_id"]);
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reopening_sink_continues_durable_sequence() {
+        let path = temp_log("restart-sequence");
+        let first = AuditSink::new(&path, "ses_first");
+        first.record_shell_execution("echo first", Path::new("/tmp/project"), Some(0), "success");
+
+        let second = AuditSink::new(&path, "ses_second");
+        second.record_shell_execution("echo second", Path::new("/tmp/project"), Some(0), "success");
+
+        let records = read_jsonl(&path).expect("read records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[1]["sequence"], 2);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

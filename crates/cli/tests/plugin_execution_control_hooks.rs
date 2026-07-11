@@ -145,6 +145,23 @@ fn tool_execute_before_veto_blocks_write_and_records_audit_denial() {
     assert!(audit.contains("\"outcome\":\"denied\""), "{audit}");
     assert!(audit.contains("\"tool\":\"write\""), "{audit}");
     assert!(audit.contains("tool.execute.before"), "{audit}");
+    let records = audit::read_jsonl(&scratch.audit).expect("audit JSONL");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "plugin.tool.denial")
+            .count(),
+        1,
+        "a veto emits exactly one denial record: {records:#?}"
+    );
+    assert!(
+        !records.iter().any(|record| {
+            record["type"] == "plugin_hook"
+                && record["hook"] == "tool.execute.before"
+                && record["action"] == "veto"
+        }),
+        "the compatibility denial record must not be duplicated by a generic veto record: {records:#?}"
+    );
     for line in audit.lines().filter(|line| !line.trim().is_empty()) {
         let record: serde_json::Value = serde_json::from_str(line).expect("audit json");
         assert!(
