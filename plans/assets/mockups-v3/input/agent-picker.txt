@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    How Code should work                                                                                                
+                                                                                                                        
+    Choose the outcome you want. Your current choice stays active until you apply.                                      
+                                                                                                                        
+                                                                                                                        
+      Careful edits                                                                                                     
+      Asks before editing files.                                                                                        
+                                                                                                                        
+      Quick implementation                                                                                              
+      Makes focused edits with your review at the end.                                                                  
+                                                                                                                        
+    › Autonomous changes                                                                                                
+      Can edit project files without asking each time.                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Autonomous changes                                                                                    │  
+  │ Changes access; review the concrete project scope before applying.                                               │  
+  │ › [enter] Review access change · [esc] Cancel                                                                    │  
+  │ [↑↓] Choose · each row explains how Code will work                                                               │  
+  │ Only the selected outcome gets extra detail.                                                                     │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Review a work-style change                                                                                          
+                                                                                                                        
+    Requested: Autonomous changes                                                                                       
+                                                                                                                        
+    How Code should work: edit project files without asking each time.                                                  
+                                                                                                                        
+    Scope: this project · until you choose another work style.                                                          
+                                                                                                                        
+    Your transcript and draft stay unchanged while this is pending.                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Pending · Careful edits remains active                                                                           │  
+  │ The requested access applies only after you confirm.                                                             │  
+  │ › [enter] Apply access change · [esc] Keep Careful edits                                                         │  
+  │ One confirmation changes the work style; Cancel changes nothing.                                                 │  
+  │ Return to How Code should work to choose another outcome.                                                        │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

@@ -154,6 +154,9 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "permission-deny-reason",
             "diff-edit",
             "diff-viewer-staging",
+            "agent-picker",
+            "mode-switch",
+            "mode-switch-refused",
         ]
         .contains(&screen.id)
         {

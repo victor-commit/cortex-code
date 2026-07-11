@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Access change not applied                                                                                           
+                                                                                                                        
+    Autonomous changes need approval for this project.                                                                  
+                                                                                                                        
+    You are still using Careful edits, which asks before editing files.                                                 
+                                                                                                                        
+    Your access, transcript and draft are unchanged.                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Not applied · Careful edits remains active                                                                       │  
+  │ Choose a safer work style or return to the paused conversation.                                                  │  
+  │ › [enter] Choose a safer work style · [esc] Return to work                                                       │  
+  │ Nothing was applied.                                                                                             │  
+  │ The previous work style remains the only applied choice.                                                         │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

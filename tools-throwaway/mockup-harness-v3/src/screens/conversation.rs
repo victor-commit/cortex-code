@@ -8,7 +8,7 @@
 use crate::{
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
-        SemanticEvent, TransitionTrace,
+        SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
         components::{ActivityRow, ActivityState, Component},
@@ -77,6 +77,21 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         candidates,
         events,
         transitions,
+        work_style: fixture_id.starts_with("flow3-work-style").then(|| {
+            let (applied, access_scope) = if fixture_id.contains("unchanged") {
+                ("Quick implementation", "asks before editing project files")
+            } else {
+                (
+                    "Autonomous changes",
+                    "can edit project files without asking each time, in this project",
+                )
+            };
+            WorkStyleEvidence {
+                applied: applied.to_owned(),
+                pending: None,
+                access_scope: access_scope.to_owned(),
+            }
+        }),
     })
 }
 

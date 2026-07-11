@@ -69,6 +69,13 @@ pub struct SemanticEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkStyleEvidence {
+    pub applied: String,
+    pub pending: Option<String>,
+    pub access_scope: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransitionTrace {
     pub action_id: String,
     pub from_screen_id: String,
@@ -85,6 +92,7 @@ pub struct AuditDocument {
     pub candidates: Vec<SemanticCandidate>,
     pub events: Vec<SemanticEvent>,
     pub transitions: Vec<TransitionTrace>,
+    pub work_style: Option<WorkStyleEvidence>,
 }
 
 impl AuditDocument {
@@ -113,6 +121,7 @@ impl AuditDocument {
         let mut event_candidates = BTreeSet::new();
         let mut action_ids = BTreeSet::new();
         let mut activity_owners = BTreeSet::new();
+        let mut work_style_candidates = 0;
         for event in &self.events {
             validate_identity(&event.identity, &self.screen_id, &self.fixture_id)?;
             let Some(candidate) = candidates_by_id.get(&event.identity.candidate_id) else {
@@ -147,6 +156,9 @@ impl AuditDocument {
                     event.identity.subject_id
                 ));
             }
+            if event.identity.family == "work-style" {
+                work_style_candidates += 1;
+            }
             if let Some(action) = &event.action {
                 validate_action(action)?;
                 if !action_ids.insert(action.action_id.clone()) {
@@ -160,6 +172,11 @@ impl AuditDocument {
                     "missing semantic event for candidate: {candidate_id}"
                 ));
             }
+        }
+        if self.work_style.is_some() && work_style_candidates > 1 {
+            return Err(
+                "work-style evidence must have exactly one visible semantic owner".to_owned(),
+            );
         }
 
         let mut transition_actions = BTreeSet::new();
@@ -204,6 +221,18 @@ impl AuditDocument {
                 ));
             }
         }
+        if let Some(work_style) = &self.work_style {
+            if work_style.applied.trim().is_empty() || work_style.access_scope.trim().is_empty() {
+                return Err("work-style evidence needs one applied value and a scope".to_owned());
+            }
+            if work_style
+                .pending
+                .as_deref()
+                .is_some_and(|pending| pending.trim().is_empty())
+            {
+                return Err("pending work-style evidence must be readable".to_owned());
+            }
+        }
         Ok(())
     }
 
@@ -232,6 +261,21 @@ impl AuditDocument {
             field(&mut output, "flow", screen.flow.as_str());
         }
         field(&mut output, "fixture_id", &self.fixture_id);
+        output.push_str(",\"work_style\":");
+        match &self.work_style {
+            Some(work_style) => {
+                output.push('{');
+                raw_field(&mut output, "applied", &work_style.applied);
+                output.push_str(",\"pending\":");
+                match &work_style.pending {
+                    Some(pending) => quote(&mut output, pending),
+                    None => output.push_str("null"),
+                }
+                field(&mut output, "access_scope", &work_style.access_scope);
+                output.push('}');
+            }
+            None => output.push_str("null"),
+        }
         output.push_str(",\"styled_cells\":[");
         for (index, cell) in self.styled_cells.iter().enumerate() {
             if index > 0 {
@@ -326,6 +370,16 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         return Ok(document);
     }
     if matches!(screen_id, "onboarding" | "model-picker") {
+        let document = crate::screens::work_configuration::render(screen_id, fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
+    if matches!(
+        screen_id,
+        "agent-picker" | "mode-switch" | "mode-switch-refused"
+    ) {
         let document = crate::screens::work_configuration::render(screen_id, fixture_id)?;
         document.validate()?;
         let render_hash = sha256_hex(document.render_txt().as_bytes());
@@ -447,6 +501,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         candidates,
         events,
         transitions: vec![transition],
+        work_style: None,
     };
     document.validate()?;
     let render_hash = sha256_hex(document.render_txt().as_bytes());

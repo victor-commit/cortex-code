@@ -88,6 +88,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         candidates,
         events,
         transitions,
+        work_style: None,
     })
 }
 

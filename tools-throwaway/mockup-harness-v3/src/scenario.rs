@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::audit::{
-    ActionEvidence, AuditDocument, TransitionTrace, action_json, audit_screen, field, quote,
-    sha256_hex, transition_json,
+    action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
+    AuditDocument, TransitionTrace,
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
@@ -31,6 +31,9 @@ pub struct ScenarioState {
     pub composer_height: String,
     pub pending_action: Option<String>,
     pub return_policy: String,
+    pub work_style: String,
+    pub pending_work_style: Option<String>,
+    pub access_scope: String,
     pub virtual_tick: u32,
     pub state_hash: String,
 }
@@ -165,6 +168,9 @@ impl CaseReplay {
                 "scenario transition did not preserve its session, submitted prompt, or paused activity identity"
                     .to_owned(),
             );
+        }
+        if self.case_id.starts_with("work-style-") && self.audit.work_style.is_none() {
+            return Err("work-style scenario must emit one work_style audit object".to_owned());
         }
         for state in [&self.before, &self.after] {
             if state
@@ -381,6 +387,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "model-picker-apply" => model_picker_apply(),
         "model-picker-cancel" => model_picker_cancel(),
         "model-picker-connect" => model_picker_connect(),
+        "work-style-unchanged" => work_style_unchanged(),
+        "work-style-access-pending" => work_style_access_pending(),
+        "work-style-access-confirm" => work_style_access_confirm(),
+        "work-style-access-refused" => work_style_access_refused(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -402,7 +412,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             },
         );
     }
-    let audit = audit_screen(&after.screen_id, &format!("case.{case_id}.tick.{tick}"))?;
+    let audit_fixture = if case_id.starts_with("work-style-") {
+        match case_id {
+            "work-style-unchanged" => "flow3-work-style-unchanged",
+            "work-style-access-pending" => "flow3-work-style-access",
+            "work-style-access-confirm" => "flow3-work-style-access",
+            "work-style-access-refused" => "flow3-work-style-refused",
+            _ => unreachable!(),
+        }
+    } else {
+        &format!("case.{case_id}.tick.{tick}")
+    };
+    let audit = audit_screen(&after.screen_id, audit_fixture)?;
     let replay = CaseReplay {
         case_id: case_id.to_owned(),
         requested_tick: tick,
@@ -926,6 +947,234 @@ fn model_picker_connect() -> (
         "provider-connection",
         "no-model-switch",
         "connection was requested without applying the unavailable model",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_unchanged() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "agent-picker",
+        vec!["chat-turn", "agent-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "quick-implementation",
+        "work-style-selection",
+        Some("pending.work-style.quick"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.work_style = "Quick implementation".to_owned();
+    after.access_scope = "asks before editing project files".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-picker.apply-unchanged".to_owned(),
+        label: "Use Quick implementation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the unchanged-access work style applies directly and returns to the paused conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-picker.apply-unchanged.1".to_owned(),
+        owner_id: "pending.work-style.quick".to_owned(),
+        count: 1,
+        outcome: "applied-without-access-change".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-picker.apply-unchanged",
+        "configuration",
+        "work-style-applied",
+        "Quick implementation replaced the pending style while project access stayed unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_access_pending() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "agent-picker",
+        vec!["chat-turn", "agent-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "autonomous-changes",
+        "work-style-selection",
+        Some("pending.work-style.autonomous"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "mode-switch".to_owned();
+    after.focus = "access-confirmation".to_owned();
+    after.pending_work_style = Some("Autonomous changes".to_owned());
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-picker.review-access".to_owned(),
+        label: "Review access change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the access-changing work style opens one nested confirmation before changing access"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-picker.review-access.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 0,
+        outcome: "awaiting-access-confirmation".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-picker.review-access",
+        "configuration",
+        "pending-confirmation",
+        "no access changed while Autonomous changes waits for explicit confirmation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_access_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["chat-turn", "agent-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "autonomous-changes",
+        "access-confirmation",
+        Some("pending.work-style.autonomous"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.pending_work_style = Some("Autonomous changes".to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.work_style = "Autonomous changes".to_owned();
+    after.pending_work_style = None;
+    after.access_scope =
+        "can edit project files without asking each time, in this project".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch.confirm".to_owned(),
+        label: "Apply access change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path:
+            "confirmation applies the one work_style value and returns to the paused conversation"
+                .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch.confirm.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 1,
+        outcome: "access-change-applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch.confirm",
+        "configuration",
+        "work-style-and-access-applied",
+        "Autonomous changes now applies only within this project until another style is chosen",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_access_refused() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["chat-turn", "agent-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "autonomous-changes",
+        "access-confirmation",
+        Some("pending.work-style.autonomous"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.pending_work_style = Some("Autonomous changes".to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "mode-switch-refused".to_owned();
+    after.focus = "refusal-recovery".to_owned();
+    after.pending_action = None;
+    after.pending_work_style = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch-refused.choose-safer".to_owned(),
+        label: "Choose a safer work style".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the refused access change becomes a safe recovery bridge with Careful edits still active"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch-refused.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 0,
+        outcome: "access-change-refused".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch-refused",
+        "configuration",
+        "no-change",
+        "approval was refused and the current work style and access remained active",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -2298,6 +2547,9 @@ fn state(
         composer_height: "5-visual-rows".to_owned(),
         pending_action: pending_action.map(str::to_owned),
         return_policy: return_policy.to_owned(),
+        work_style: "Careful edits".to_owned(),
+        pending_work_style: None,
+        access_scope: "asks before editing project files".to_owned(),
         virtual_tick,
         state_hash: String::new(),
     };
@@ -2374,7 +2626,7 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\ntick={}",
+            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\nwork_style={}\npending_work_style={}\naccess_scope={}\ntick={}",
             state.screen_id,
             state.session_id,
             state.submitted_prompt.as_deref().unwrap_or(""),
@@ -2389,6 +2641,9 @@ fn state_hash(state: &ScenarioState) -> String {
             state.composer_height,
             state.pending_action.as_deref().unwrap_or(""),
             state.return_policy,
+            state.work_style,
+            state.pending_work_style.as_deref().unwrap_or(""),
+            state.access_scope,
             state.virtual_tick,
         )
         .as_bytes(),
@@ -2841,6 +3096,13 @@ fn state_json(output: &mut String, state: &ScenarioState) {
         None => output.push_str("null"),
     }
     field(output, "return_policy", &state.return_policy);
+    field(output, "work_style", &state.work_style);
+    output.push_str(",\"pending_work_style\":");
+    match &state.pending_work_style {
+        Some(value) => quote(output, value),
+        None => output.push_str("null"),
+    }
+    field(output, "access_scope", &state.access_scope);
     output.push_str(",\"virtual_tick\":");
     output.push_str(&state.virtual_tick.to_string());
     field(output, "state_hash", &state.state_hash);

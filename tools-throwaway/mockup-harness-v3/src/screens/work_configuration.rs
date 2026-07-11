@@ -5,15 +5,15 @@
 //! human-readable choices, then adds detail only for the focused pending row.
 
 use crate::{
-    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
-        SemanticEvent, TransitionTrace,
+        SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
         tokens::TextStyle,
     },
+    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -34,6 +34,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "onboarding" => render_onboarding(&mut canvas, screen_id, fixture_id)?,
         "model-picker" => render_model_picker(&mut canvas, screen_id, fixture_id)?,
+        "agent-picker" => render_agent_picker(&mut canvas, screen_id, fixture_id)?,
+        "mode-switch" => render_mode_switch(&mut canvas, screen_id, fixture_id)?,
+        "mode-switch-refused" => render_mode_switch_refused(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown Flow 3 onboarding screen: {screen_id}")),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -44,6 +47,30 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         candidates,
         events,
         transitions,
+        work_style: match screen_id {
+            "onboarding" | "agent-picker" => Some(WorkStyleEvidence {
+                applied: "Careful edits".to_owned(),
+                pending: (screen_id == "agent-picker").then(|| {
+                    if fixture_id.contains("unchanged") {
+                        "Quick implementation".to_owned()
+                    } else {
+                        "Autonomous changes".to_owned()
+                    }
+                }),
+                access_scope: "asks before editing project files".to_owned(),
+            }),
+            "mode-switch" => Some(WorkStyleEvidence {
+                applied: "Careful edits".to_owned(),
+                pending: Some("Autonomous changes".to_owned()),
+                access_scope: "asks before editing project files".to_owned(),
+            }),
+            "mode-switch-refused" => Some(WorkStyleEvidence {
+                applied: "Careful edits".to_owned(),
+                pending: None,
+                access_scope: "asks before editing project files".to_owned(),
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -65,6 +92,12 @@ fn render_onboarding(
         4,
         "You can change this later. No project or account setup is needed to start.",
         TextStyle::muted(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "How Code should work · Careful edits · asks before editing files",
+        TextStyle::text(),
     )?;
     write_dock_border(canvas)?;
     dock_line(
@@ -133,6 +166,15 @@ fn render_onboarding(
             "balanced-speed-and-depth",
             reference(DOCK_TOP + 2, 4, 69),
             "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(13, 4, 76),
+            "summary",
             None,
         ),
         semantic(
@@ -241,7 +283,7 @@ fn render_model_picker(
     canvas.write(
         4,
         4,
-        "You · Continue the retry conversation.",
+        "You · Continue the paused conversation.",
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Choose a model", TextStyle::bright())?;
@@ -337,6 +379,15 @@ fn render_model_picker(
             "transcript",
             "conversation-origin",
             reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(6, 4, 76),
             "summary",
             None,
         ),
@@ -471,6 +522,594 @@ fn render_model_picker(
                 "model-picker",
                 "direct",
                 "filtering changes only the visible model rows and leaves the pending choice intact",
+            ),
+        ],
+    ))
+}
+
+fn render_agent_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let unchanged = fixture_id.contains("unchanged");
+    let selected = if unchanged {
+        "Quick implementation"
+    } else {
+        "Autonomous changes"
+    };
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "How Code should work", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Choose the outcome you want. Your current choice stays active until you apply.",
+        TextStyle::muted(),
+    )?;
+    let rows = [
+        ("Careful edits", "Asks before editing files."),
+        (
+            "Quick implementation",
+            "Makes focused edits with your review at the end.",
+        ),
+        (
+            "Autonomous changes",
+            "Can edit project files without asking each time.",
+        ),
+    ];
+    let selected_index = rows
+        .iter()
+        .position(|(label, _)| *label == selected)
+        .expect("work-style fixture must select one known row");
+    for (index, (label, consequence)) in rows.iter().enumerate() {
+        let row = 12 + index as u16 * 3;
+        let marker = if index == selected_index { "›" } else { " " };
+        let style = if index == selected_index {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!("Selected · {selected}"),
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        if unchanged {
+            "Keeps current access; this choice applies directly."
+        } else {
+            "Changes access; review the concrete project scope before applying."
+        },
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        if unchanged {
+            "› [enter] Use Quick implementation · [esc] Cancel"
+        } else {
+            "› [enter] Review access change · [esc] Cancel"
+        },
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "[↑↓] Choose · each row explains how Code will work",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Only the selected outcome gets extra detail.",
+        TextStyle::muted(),
+    )?;
+
+    let primary_id = if unchanged {
+        "action.agent-picker.apply-unchanged"
+    } else {
+        "action.agent-picker.review-access"
+    };
+    let primary_label = if unchanged {
+        "Use Quick implementation"
+    } else {
+        "Review access change"
+    };
+    let target = if unchanged {
+        "chat-turn"
+    } else {
+        "mode-switch"
+    };
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "decision",
+            "work-style-choice",
+            reference(7, 4, 22),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(7, 4, 22),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style-row",
+            "careful-edits",
+            reference(12, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style-row",
+            "quick-implementation",
+            reference(15, 4, 25),
+            if unchanged { "focused" } else { "summary" },
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style-row",
+            "autonomous-changes",
+            reference(18, 4, 22),
+            if unchanged { "summary" } else { "focused" },
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-outcome",
+            selected,
+            reference(DOCK_TOP + 1, 4, 33),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            if unchanged {
+                "same-access-applies-directly"
+            } else {
+                "access-review-needed"
+            },
+            reference(DOCK_TOP + 2, 4, 70),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            primary_id,
+            reference(DOCK_TOP + 3, 4, 58),
+            "focused",
+            Some(action(primary_id, primary_label, false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.agent-picker.cancel",
+            reference(DOCK_TOP + 3, 59, 82),
+            "summary",
+            Some(action("action.agent-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "local-control",
+        "choose-work-style",
+        reference(DOCK_TOP + 4, 4, 15),
+        "summary",
+        Some(action(
+            "action.agent-picker.choose",
+            "Choose work style",
+            false,
+        )),
+    ));
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                primary_id,
+                "agent-picker",
+                target,
+                "direct",
+                if unchanged {
+                    "the unchanged-access choice applies directly and returns to the paused conversation"
+                } else {
+                    "the access-changing choice opens one focused access review before it can apply"
+                },
+            ),
+            transition(
+                "action.agent-picker.cancel",
+                "agent-picker",
+                "chat-turn",
+                "cancel",
+                "cancel keeps the current work style and restores the exact conversation origin",
+            ),
+        ],
+    ))
+}
+
+fn render_mode_switch(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Review a work-style change", TextStyle::bright())?;
+    canvas.write(9, 4, "Requested: Autonomous changes", TextStyle::text())?;
+    canvas.write(
+        11,
+        4,
+        "How Code should work: edit project files without asking each time.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "Scope: this project · until you choose another work style.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Your transcript and draft stay unchanged while this is pending.",
+        TextStyle::muted(),
+    )?;
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Pending · Careful edits remains active",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "The requested access applies only after you confirm.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Apply access change · [esc] Keep Careful edits",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "One confirmation changes the work style; Cancel changes nothing.",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Return to How Code should work to choose another outcome.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(7, 4, 30),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "requested-behavior",
+            "autonomous-changes",
+            reference(9, 4, 38),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "capability-scope",
+            "project-file-access",
+            reference(13, 4, 80),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "origin-preserved",
+            reference(15, 4, 64),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-state",
+            "careful-edits-remains-active",
+            reference(DOCK_TOP + 1, 4, 43),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.mode-switch.confirm",
+            reference(DOCK_TOP + 3, 4, 60),
+            "focused",
+            Some(action(
+                "action.mode-switch.confirm",
+                "Apply access change",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.mode-switch.cancel",
+            reference(DOCK_TOP + 3, 61, 85),
+            "summary",
+            Some(action(
+                "action.mode-switch.cancel",
+                "Keep Careful edits",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.mode-switch.confirm",
+                "mode-switch",
+                "chat-turn",
+                "direct",
+                "confirmation applies the one work_style value and returns to the paused conversation",
+            ),
+            transition(
+                "action.mode-switch.cancel",
+                "mode-switch",
+                "agent-picker",
+                "cancel",
+                "cancel leaves Careful edits and its current access active, then returns to the work-style choice",
+            ),
+        ],
+    ))
+}
+
+fn render_mode_switch_refused(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Access change not applied", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Autonomous changes need approval for this project.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "You are still using Careful edits, which asks before editing files.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "Your access, transcript and draft are unchanged.",
+        TextStyle::muted(),
+    )?;
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Not applied · Careful edits remains active",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Choose a safer work style or return to the paused conversation.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Choose a safer work style · [esc] Return to work",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "Nothing was applied.",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "The previous work style remains the only applied choice.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(11, 4, 75),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "refusal",
+            "access-change-not-applied",
+            reference(7, 4, 32),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "origin-preserved",
+            reference(13, 4, 53),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.mode-switch-refused.choose-safer",
+            reference(DOCK_TOP + 3, 4, 54),
+            "focused",
+            Some(action(
+                "action.mode-switch-refused.choose-safer",
+                "Choose a safer work style",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.mode-switch-refused.return",
+            reference(DOCK_TOP + 3, 55, 83),
+            "summary",
+            Some(action(
+                "action.mode-switch-refused.return",
+                "Return to work",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.mode-switch-refused.choose-safer",
+                "mode-switch-refused",
+                "agent-picker",
+                "direct",
+                "the safe recovery returns to How Code should work with Careful edits still active",
+            ),
+            transition(
+                "action.mode-switch-refused.return",
+                "mode-switch-refused",
+                "chat-turn",
+                "cancel",
+                "return restores the paused conversation with its draft and access unchanged",
             ),
         ],
     ))
