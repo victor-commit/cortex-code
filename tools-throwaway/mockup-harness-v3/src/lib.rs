@@ -1,6 +1,8 @@
 //! Immutable reference and boundary checks for the isolated v3 harness.
 
+pub mod audit;
 pub mod chrome;
+pub mod scenario;
 use std::path::Path;
 use std::process::Command;
 
