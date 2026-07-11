@@ -334,6 +334,77 @@ async fn subagent_refreshes_nested_memory_before_same_turn_continuation() {
 }
 
 #[tokio::test]
+async fn subagent_refreshes_nested_memory_after_foreground_bash_workdir() {
+    let (dir, inputs) = scratch("dynamic-workdir-memory");
+    let nested = dir.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested");
+    std::fs::write(dir.join("AGENTS.md"), "SUBAGENT-WORKDIR-ROOT-MEMORY").expect("root memory");
+    std::fs::write(nested.join("AGENTS.md"), "SUBAGENT-WORKDIR-NESTED-MEMORY")
+        .expect("nested memory");
+    let db_path = dir.join("cortex.db");
+    Database::open(&db_path)
+        .expect("db")
+        .sessions()
+        .ensure("parent-session", None)
+        .expect("parent");
+    let initial_memory = memory::discover(&inputs);
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        vec![
+            LlmEvent::ToolCall(ToolCall {
+                id: "call_nested_workdir".to_owned(),
+                name: "bash".to_owned(),
+                arguments: json!({ "command": "pwd", "workdir": "nested" }).to_string(),
+            }),
+            LlmEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            LlmEvent::TextDelta {
+                text: "nested memory is active".to_owned(),
+            },
+            LlmEvent::Done {
+                reason: FinishReason::Stop,
+            },
+        ],
+    ]));
+    let catalog = permitted_catalog(&custom_agents::Discovery::default(), None);
+    let mut run_config = config(&dir, db_path, inputs)
+        .provider(provider.clone())
+        .build();
+    run_config.project_memory = initial_memory;
+    let run = runner(&catalog, run_config);
+
+    let output = run
+        .run_task(TaskRequest::new("general", "run pwd in nested"))
+        .await;
+
+    assert!(!output.is_error, "{}", output.model_content());
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2, "tool call should cause one continuation");
+    let systems: Vec<&str> = requests
+        .iter()
+        .map(|request| {
+            request
+                .messages
+                .iter()
+                .find(|message| message.role == llm::Role::System)
+                .map(|message| message.content.as_str())
+                .expect("system message")
+        })
+        .collect();
+    assert!(systems[0].contains("SUBAGENT-WORKDIR-ROOT-MEMORY"));
+    assert!(!systems[0].contains("SUBAGENT-WORKDIR-NESTED-MEMORY"));
+    let root = systems[1]
+        .find("SUBAGENT-WORKDIR-ROOT-MEMORY")
+        .expect("root memory");
+    let nested = systems[1]
+        .find("SUBAGENT-WORKDIR-NESTED-MEMORY")
+        .expect("nested memory");
+    assert!(root < nested, "memory sources must stay root-to-leaf");
+}
+
+#[tokio::test]
 async fn parent_cap_blocks_child_attempt_to_exceed_parent_permissions() {
     let (dir, inputs) = scratch("cap");
     std::fs::write(dir.join("victim.txt"), "alive").expect("victim");

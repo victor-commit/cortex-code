@@ -507,10 +507,36 @@ mod tests {
         bin.exists().then_some(bin)
     }
 
-    #[derive(Default)]
     struct DynamicMemoryProvider {
         calls: AtomicUsize,
         requests: Mutex<Vec<LlmRequest>>,
+        first_tool_call: ToolCall,
+    }
+
+    impl DynamicMemoryProvider {
+        fn scoped_read() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                first_tool_call: ToolCall {
+                    id: "call_nested_read".to_owned(),
+                    name: "read".to_owned(),
+                    arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
+                },
+            }
+        }
+
+        fn foreground_workdir() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                first_tool_call: ToolCall {
+                    id: "call_nested_workdir".to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: r#"{"command":"pwd","workdir":"nested"}"#.to_owned(),
+                },
+            }
+        }
     }
 
     impl Provider for DynamicMemoryProvider {
@@ -523,11 +549,7 @@ mod tests {
             Box::pin(async move {
                 let events = if call == 0 {
                     vec![
-                        LlmEvent::ToolCall(ToolCall {
-                            id: "call_nested_read".to_owned(),
-                            name: "read".to_owned(),
-                            arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
-                        }),
+                        LlmEvent::ToolCall(self.first_tool_call.clone()),
                         LlmEvent::Done {
                             reason: FinishReason::ToolCalls,
                         },
@@ -572,7 +594,7 @@ mod tests {
             tx,
         )
         .with_dynamic_memory(tracker);
-        let provider = DynamicMemoryProvider::default();
+        let provider = DynamicMemoryProvider::scoped_read();
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -606,6 +628,72 @@ mod tests {
         assert!(!systems[0].contains("TUI-NESTED-MEMORY"));
         let root = systems[1].find("TUI-ROOT-MEMORY").expect("root memory");
         let nested = systems[1].find("TUI-NESTED-MEMORY").expect("nested memory");
+        assert!(root < nested, "memory sources must stay root-to-leaf");
+    }
+
+    #[test]
+    fn tui_dispatcher_refreshes_nested_memory_after_foreground_bash_workdir() {
+        let dir = scratch_dir("dynamic-workdir-memory");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(dir.join("AGENTS.md"), "TUI-WORKDIR-ROOT-MEMORY").expect("root memory");
+        std::fs::write(nested.join("AGENTS.md"), "TUI-WORKDIR-NESTED-MEMORY")
+            .expect("nested memory");
+        let inputs = ConfigInputs {
+            home: Some(dir.clone()),
+            xdg_config_home: None,
+            cwd: dir.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let initial_memory = memory::discover(&inputs);
+        let tracker = DynamicMemoryTracker::new(inputs, &initial_memory);
+        let (tx, _rx) = channel();
+        let dispatcher = TurnDispatcher::new(
+            dir,
+            "google/gemini-2.5-flash",
+            "tui-workdir-memory".to_owned(),
+            tx,
+        )
+        .with_dynamic_memory(tracker);
+        let provider = DynamicMemoryProvider::foreground_workdir();
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(SessionRunner::default().run_with_tools(
+                &provider,
+                Turn::new(
+                    "google/gemini-2.5-flash",
+                    initial_memory.render().expect("root memory"),
+                    "run pwd in nested",
+                ),
+                &dispatcher,
+                |_| {},
+            ));
+        assert!(outcome.error.is_none(), "{outcome:?}");
+
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2, "tool call should cause one continuation");
+        let systems: Vec<&str> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::System)
+                    .map(|message| message.content.as_str())
+                    .expect("system message")
+            })
+            .collect();
+        assert!(systems[0].contains("TUI-WORKDIR-ROOT-MEMORY"));
+        assert!(!systems[0].contains("TUI-WORKDIR-NESTED-MEMORY"));
+        let root = systems[1]
+            .find("TUI-WORKDIR-ROOT-MEMORY")
+            .expect("root memory");
+        let nested = systems[1]
+            .find("TUI-WORKDIR-NESTED-MEMORY")
+            .expect("nested memory");
         assert!(root < nested, "memory sources must stay root-to-leaf");
     }
 

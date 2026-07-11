@@ -539,7 +539,7 @@ async fn message_route_refreshes_nested_memory_before_same_turn_continuation() {
     std::fs::write(nested.join("AGENTS.md"), "SERVER-NESTED-DYNAMIC-MEMORY")
         .expect("nested memory");
     std::fs::write(nested.join("target.txt"), "read me").expect("target");
-    let provider = Arc::new(DynamicMemoryProvider::default());
+    let provider = Arc::new(DynamicMemoryProvider::scoped_read());
     let state =
         server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
     let app = server::app_with_state(state);
@@ -567,6 +567,54 @@ async fn message_route_refreshes_nested_memory_before_same_turn_continuation() {
         .expect("root memory");
     let nested = systems[1]
         .find("SERVER-NESTED-DYNAMIC-MEMORY")
+        .expect("nested memory");
+    assert!(root < nested, "memory sources must stay root-to-leaf");
+}
+
+#[tokio::test]
+async fn message_route_refreshes_nested_memory_after_foreground_bash_workdir() {
+    let scratch = Scratch::new("server-dynamic-workdir-memory");
+    let workspace = scratch.dir.join("workspace");
+    let nested = workspace.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested workspace");
+    std::fs::write(
+        workspace.join("AGENTS.md"),
+        "SERVER-WORKDIR-ROOT-DYNAMIC-MEMORY",
+    )
+    .expect("root memory");
+    std::fs::write(
+        nested.join("AGENTS.md"),
+        "SERVER-WORKDIR-NESTED-DYNAMIC-MEMORY",
+    )
+    .expect("nested memory");
+    let provider = Arc::new(DynamicMemoryProvider::foreground_workdir());
+    let state =
+        server::ServerState::with_provider(scratch.db_path(), provider.clone()).with_cwd(workspace);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"run pwd in nested"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("message response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let systems = provider.seen_systems();
+    assert_eq!(systems.len(), 2, "tool call should cause one continuation");
+    assert!(systems[0].contains("SERVER-WORKDIR-ROOT-DYNAMIC-MEMORY"));
+    assert!(!systems[0].contains("SERVER-WORKDIR-NESTED-DYNAMIC-MEMORY"));
+    let root = systems[1]
+        .find("SERVER-WORKDIR-ROOT-DYNAMIC-MEMORY")
+        .expect("root memory");
+    let nested = systems[1]
+        .find("SERVER-WORKDIR-NESTED-DYNAMIC-MEMORY")
         .expect("nested memory");
     assert!(root < nested, "memory sources must stay root-to-leaf");
 }
@@ -3161,10 +3209,37 @@ struct EchoProvider {
     delay: Option<Duration>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DynamicMemoryProvider {
     calls: AtomicUsize,
     seen_systems: Mutex<Vec<String>>,
+    first_tool_call: ToolCall,
+}
+
+impl DynamicMemoryProvider {
+    fn scoped_read() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            seen_systems: Mutex::new(Vec::new()),
+            first_tool_call: ToolCall {
+                id: "call_nested_read".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
+            },
+        }
+    }
+
+    fn foreground_workdir() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            seen_systems: Mutex::new(Vec::new()),
+            first_tool_call: ToolCall {
+                id: "call_nested_workdir".to_owned(),
+                name: "bash".to_owned(),
+                arguments: r#"{"command":"pwd","workdir":"nested"}"#.to_owned(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3298,11 +3373,7 @@ impl Provider for DynamicMemoryProvider {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let events = if call == 0 {
                 vec![
-                    LlmEvent::ToolCall(ToolCall {
-                        id: "call_nested_read".to_owned(),
-                        name: "read".to_owned(),
-                        arguments: r#"{"path":"nested/target.txt"}"#.to_owned(),
-                    }),
+                    LlmEvent::ToolCall(self.first_tool_call.clone()),
                     LlmEvent::Done {
                         reason: FinishReason::ToolCalls,
                     },

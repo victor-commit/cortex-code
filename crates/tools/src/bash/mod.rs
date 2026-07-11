@@ -159,7 +159,10 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
     } else {
         run_foreground(command, &working_dir, ctx, timeout_for(&arguments)).await
     };
-    if has_explicit_workdir && !output.is_error {
+    // A background result only confirms that the child was accepted, not that the command
+    // completed successfully. Nested memory is therefore authorized solely by a successful
+    // foreground completion.
+    if !background && has_explicit_workdir && !output.is_error {
         ctx.record_memory_scope(&working_dir);
     }
     output
@@ -632,6 +635,13 @@ mod tests {
         let failed = run(json!({ "command": "exit 7", "workdir": "nested" }), &ctx).await;
         assert!(failed.is_error, "{}", failed.model_content());
 
+        let timed_out = run(
+            json!({ "command": "sleep 30", "workdir": "nested", "timeout": 1 }),
+            &ctx,
+        )
+        .await;
+        assert!(timed_out.is_error, "{}", timed_out.model_content());
+
         let missing = run(json!({ "command": "pwd", "workdir": "missing" }), &ctx).await;
         assert!(missing.is_error, "{}", missing.model_content());
         assert!(
@@ -843,6 +853,70 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!pid_alive(pid), "pid {pid} reaped on shutdown (no orphan)");
+    }
+
+    #[tokio::test]
+    async fn background_workdirs_never_activate_memory_after_spawn_or_completion() {
+        let dir = temp_dir("background-memory-scope");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        let ctx = ToolContext::new(dir);
+
+        let zero = run(
+            json!({
+                "command": "sleep 0.05; printf background-zero",
+                "background": true,
+                "workdir": "nested"
+            }),
+            &ctx,
+        )
+        .await;
+        let nonzero = run(
+            json!({
+                "command": "sleep 0.05; printf background-nonzero >&2; exit 7",
+                "background": true,
+                "workdir": "nested"
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(!zero.is_error, "{}", zero.model_content());
+        assert!(!nonzero.is_error, "{}", nonzero.model_content());
+        assert!(
+            ctx.memory_scopes().is_empty(),
+            "accepting background work must not activate nested memory"
+        );
+
+        let handles = ctx.background_jobs().handles();
+        assert_eq!(handles.len(), 2, "both background jobs remain tracked");
+        for _ in 0..50 {
+            let outputs_finished = handles.iter().all(|handle| {
+                std::fs::read_to_string(&handle.log_path)
+                    .is_ok_and(|log| log.contains("background-"))
+            });
+            if outputs_finished {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            std::fs::read_to_string(&handles[0].log_path)
+                .expect("zero-exit output")
+                .contains("background-zero"),
+            "the zero-exit background command completed"
+        );
+        assert!(
+            std::fs::read_to_string(&handles[1].log_path)
+                .expect("nonzero-exit output")
+                .contains("background-nonzero"),
+            "the nonzero-exit background command completed"
+        );
+        assert!(
+            ctx.memory_scopes().is_empty(),
+            "background completion must not activate nested memory"
+        );
+
+        ctx.background_jobs().shutdown().await;
     }
 
     // VAL-TOOLS-037: large output is truncated with a notice and spilled complete to disk.

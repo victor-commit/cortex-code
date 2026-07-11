@@ -397,10 +397,37 @@ mod tests {
             .block_on(future)
     }
 
-    #[derive(Default)]
     struct DynamicMemoryCaptureProvider {
         calls: AtomicUsize,
         requests: Mutex<Vec<LlmRequest>>,
+        first_tool_call: ToolCall,
+    }
+
+    impl DynamicMemoryCaptureProvider {
+        fn foreground_workdir() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                first_tool_call: ToolCall {
+                    id: "call_nested_workdir".to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: r#"{"command":"pwd","workdir":"nested"}"#.to_owned(),
+                },
+            }
+        }
+
+        fn background_workdir() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                first_tool_call: ToolCall {
+                    id: "call_background_workdir".to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: r#"{"command":"sleep 30","background":true,"workdir":"nested"}"#
+                        .to_owned(),
+                },
+            }
+        }
     }
 
     impl Provider for DynamicMemoryCaptureProvider {
@@ -413,11 +440,7 @@ mod tests {
             Box::pin(async move {
                 let events = if call == 0 {
                     vec![
-                        LlmEvent::ToolCall(ToolCall {
-                            id: "call_nested_workdir".to_owned(),
-                            name: "bash".to_owned(),
-                            arguments: r#"{"command":"pwd","workdir":"nested"}"#.to_owned(),
-                        }),
+                        LlmEvent::ToolCall(self.first_tool_call.clone()),
                         LlmEvent::Done {
                             reason: FinishReason::ToolCalls,
                         },
@@ -460,7 +483,7 @@ mod tests {
             Arc::new(NoopTodos),
         )
         .with_dynamic_memory(DynamicMemoryTracker::new(inputs, &initial_memory));
-        let provider = DynamicMemoryCaptureProvider::default();
+        let provider = DynamicMemoryCaptureProvider::foreground_workdir();
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -499,6 +522,76 @@ mod tests {
             .find("HEADLESS-NESTED-DYNAMIC-MEMORY")
             .expect("nested memory");
         assert!(root < nested, "memory sources must stay root-to-leaf");
+    }
+
+    #[test]
+    fn headless_dispatcher_does_not_activate_nested_memory_for_background_bash_workdir() {
+        let dir = scratch_dir("background-workdir-memory");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(dir.join("AGENTS.md"), "HEADLESS-BACKGROUND-ROOT-MEMORY")
+            .expect("root memory");
+        std::fs::write(
+            nested.join("AGENTS.md"),
+            "HEADLESS-BACKGROUND-NESTED-MEMORY",
+        )
+        .expect("nested memory");
+        let inputs = ConfigInputs {
+            home: Some(dir.clone()),
+            xdg_config_home: None,
+            cwd: dir.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let initial_memory = memory::discover(&inputs);
+        let dispatcher = RegistryDispatcher::for_model(
+            dir,
+            "google/gemini-2.5-flash",
+            "ses_background_workdir".to_owned(),
+            Arc::new(NoopTodos),
+        )
+        .with_dynamic_memory(DynamicMemoryTracker::new(inputs, &initial_memory));
+        let provider = DynamicMemoryCaptureProvider::background_workdir();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let outcome = runtime.block_on(SessionRunner::default().run_with_tools(
+            &provider,
+            Turn::new(
+                "google/gemini-2.5-flash",
+                initial_memory.render().expect("root memory"),
+                "start a background command in nested",
+            ),
+            &dispatcher,
+            |_| {},
+        ));
+        runtime.block_on(dispatcher.background_jobs().shutdown());
+        assert!(outcome.error.is_none(), "{outcome:?}");
+
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(
+            requests.len(),
+            2,
+            "background tool call should continue once"
+        );
+        let systems: Vec<&str> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == Role::System)
+                    .map(|message| message.content.as_str())
+                    .expect("system message")
+            })
+            .collect();
+        assert!(systems[0].contains("HEADLESS-BACKGROUND-ROOT-MEMORY"));
+        assert!(!systems[0].contains("HEADLESS-BACKGROUND-NESTED-MEMORY"));
+        assert!(
+            !systems[1].contains("HEADLESS-BACKGROUND-NESTED-MEMORY"),
+            "a background spawn must not activate nested memory"
+        );
     }
 
     #[test]
