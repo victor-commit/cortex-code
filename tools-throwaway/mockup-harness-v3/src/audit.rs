@@ -167,6 +167,13 @@ impl AuditDocument {
         let mut output = String::new();
         output.push_str("{\"document_type\":\"typed-render-audit\",\"schema_version\":1");
         field(&mut output, "screen_id", &self.screen_id);
+        if let Some(screen) = canonical_inventory()
+            .iter()
+            .find(|screen| screen.id == self.screen_id)
+        {
+            field(&mut output, "category", screen.category.as_str());
+            field(&mut output, "flow", screen.flow.as_str());
+        }
         field(&mut output, "fixture_id", &self.fixture_id);
         output.push_str(",\"styled_cells\":[");
         for (index, cell) in self.styled_cells.iter().enumerate() {

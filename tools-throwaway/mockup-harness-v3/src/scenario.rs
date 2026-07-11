@@ -550,10 +550,30 @@ pub fn write_scenario_png(
     use std::fs::OpenOptions;
     use std::io::Write as _;
 
+    validate_png_destination(destination)?;
+    let bytes = render_audit_png(&replay.audit)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("could not create temporary scenario PNG: {error}"))?;
+    output
+        .write_all(&bytes)
+        .map_err(|error| format!("could not write temporary scenario PNG: {error}"))?;
+    output
+        .sync_all()
+        .map_err(|error| format!("could not finalize temporary scenario PNG: {error}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
+/// Rasterizes any validated typed audit with the same deterministic renderer
+/// used by public scenario and gallery artifacts.
+#[cfg(feature = "png")]
+pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
     use image::{DynamicImage, ImageFormat, Rgb as Pixel, RgbImage};
 
-    validate_png_destination(destination)?;
-    let canvas = &replay.audit.styled_cells;
+    audit.validate()?;
+    let canvas = &audit.styled_cells;
     let palette = crate::chrome::tokens::palette(crate::chrome::tokens::Theme::Dark);
     let canvas_color = palette.color(crate::chrome::tokens::ColorToken::Canvas);
     let mut image = RgbImage::from_pixel(
@@ -602,18 +622,7 @@ pub fn write_scenario_png(
     DynamicImage::ImageRgb8(image)
         .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
         .map_err(|error| format!("could not encode scenario PNG: {error}"))?;
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-        .map_err(|error| format!("could not create temporary scenario PNG: {error}"))?;
-    output
-        .write_all(&bytes)
-        .map_err(|error| format!("could not write temporary scenario PNG: {error}"))?;
-    output
-        .sync_all()
-        .map_err(|error| format!("could not finalize temporary scenario PNG: {error}"))?;
-    Ok(sha256_hex(&bytes))
+    Ok(bytes)
 }
 
 #[cfg(feature = "png")]

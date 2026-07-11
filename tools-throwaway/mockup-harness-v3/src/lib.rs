@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod chrome;
+pub mod renderer;
 pub mod scenario;
 use std::path::Path;
 use std::process::Command;

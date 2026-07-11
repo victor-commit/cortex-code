@@ -3,7 +3,12 @@
 use std::process::ExitCode;
 
 use mockup_harness_v3::{
-    audit::audit_screen, canonical_inventory, scenario::replay_case, validate_canonical_map,
+    canonical_inventory,
+    renderer::{
+        audit_json, flow_manifest_json, parse_selector, preflight_render, publish, RenderExit,
+    },
+    scenario::replay_case,
+    validate_canonical_map,
 };
 
 fn main() -> ExitCode {
@@ -11,17 +16,13 @@ fn main() -> ExitCode {
     if arguments.as_slice() == ["--list"] {
         return list_inventory();
     }
-    if arguments.as_slice() == ["--audit-json"] {
-        return emit_audit_json();
-    }
     if let Some((case_id, tick, output)) = parse_case_arguments(&arguments) {
         return emit_case(case_id, tick, output);
     }
-
-    eprintln!(
-        "usage: mockup-harness-v3 --list | --audit-json | --case <case-id> --tick <n> (--audit-json | --txt | --png <absolute-temporary-path>)"
-    );
-    ExitCode::from(2)
+    if let Some(audit_arguments) = arguments.strip_prefix(&["--audit-json".to_owned()]) {
+        return emit_audit_json(audit_arguments);
+    }
+    emit_render(&arguments)
 }
 
 fn list_inventory() -> ExitCode {
@@ -44,10 +45,21 @@ fn list_inventory() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn emit_audit_json() -> ExitCode {
-    match audit_screen("permission-shell", "public-audit") {
-        Ok(audit) => {
-            println!("{}", audit.to_json());
+fn emit_audit_json(arguments: &[String]) -> ExitCode {
+    let selector = if arguments.is_empty() {
+        None
+    } else {
+        match parse_selector(arguments) {
+            Ok(selector) => Some(selector),
+            Err(error) => {
+                eprintln!("audit usage error: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    };
+    match audit_json(selector.as_ref()) {
+        Ok(json) => {
+            println!("{json}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -55,6 +67,51 @@ fn emit_audit_json() -> ExitCode {
             ExitCode::from(3)
         }
     }
+}
+
+fn emit_render(arguments: &[String]) -> ExitCode {
+    let selector = match parse_selector(arguments) {
+        Ok(selector) => selector,
+        Err(error) => {
+            eprintln!("render usage error: {error}");
+            print_usage();
+            return ExitCode::from(2);
+        }
+    };
+    let plan = match preflight_render(&selector) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("render validation failed: {error}");
+            return ExitCode::from(3);
+        }
+    };
+    let flow = plan.flow_name().and_then(|name| {
+        mockup_harness_v3::flow_manifests()
+            .iter()
+            .find(|flow| flow.name == name)
+    });
+    match publish(&plan) {
+        Ok(()) => {
+            if let Some(flow) = flow {
+                println!("{}", flow_manifest_json(flow));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("render failed: {}", error.message);
+            match error.exit {
+                RenderExit::Io => ExitCode::from(1),
+                RenderExit::Validation => ExitCode::from(3),
+                RenderExit::Busy => ExitCode::from(75),
+            }
+        }
+    }
+}
+
+fn print_usage() {
+    eprintln!(
+        "usage: mockup-harness-v3 --list | --implemented | --all | <screen> | <category> | --flow <name> | --audit-json [selector] | --case <case-id> --tick <n> (--audit-json | --txt | --png <absolute-temporary-path>)"
+    );
 }
 
 #[derive(Clone, Copy)]
