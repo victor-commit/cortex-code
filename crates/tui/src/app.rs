@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use checkpoints::{RestoreOutcome, ShadowStore};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use engine::{Agent, RunnerEvent, extract_message_content_parts};
+use engine::{
+    Agent, PartLifecycleTracker, RunOutcome, RunnerEvent, build_assistant_message_parts,
+    extract_message_content_parts,
+};
 use llm::{Message, MessageContentPart, Usage};
 use permissions::{Decision, ScopedDecision};
 use plugins::PluginEventHooks;
@@ -1049,6 +1052,9 @@ pub struct App {
     turn_prompt: Option<String>,
     /// Attachments submitted with the in-flight user prompt.
     turn_attachments: Vec<InputAttachment>,
+    /// Assistant-visible text received for the active turn only, independent from older transcript
+    /// entries separated by tool cards or prior turns.
+    turn_answer: String,
     /// Whether the in-flight turn already surfaced an error (so finalization skips the answer).
     turn_errored: bool,
     /// The latest usage event for the in-flight turn, persisted once the turn settles.
@@ -1058,6 +1064,18 @@ pub struct App {
     turn_compaction: bool,
     /// Whether the in-flight turn's user message has already been persisted.
     turn_user_persisted: bool,
+    /// The persisted user-message id that anchors rich assistant-part lifecycle ids for this turn.
+    turn_user_message_id: Option<String>,
+    /// Every normalized runner event received for the active turn, retained until its assistant
+    /// message is durably written with the source-preserving typed parts.
+    turn_events: Vec<RunnerEvent>,
+    /// The final runner outcome received from the worker after a successful, non-interrupted turn.
+    turn_outcome: Option<RunOutcome>,
+    /// The model selected when the active turn began, retained so durable part metadata cannot
+    /// change if the visible status is updated before finalization.
+    turn_model: Option<String>,
+    /// The agent selected when the active turn began, retained with the same lifecycle as model.
+    turn_agent: Option<String>,
     /// Streaming redaction state for assistant-visible answer deltas in the active turn.
     answer_redactor: redaction::StreamingRedactor,
     /// Streaming redaction state for reasoning deltas in the active turn, independent from answer.
@@ -1340,10 +1358,16 @@ impl App {
             selection_anim: None,
             turn_prompt: None,
             turn_attachments: Vec::new(),
+            turn_answer: String::new(),
             turn_errored: false,
             turn_usage: None,
             turn_compaction: false,
             turn_user_persisted: false,
+            turn_user_message_id: None,
+            turn_events: Vec::new(),
+            turn_outcome: None,
+            turn_model: None,
+            turn_agent: None,
             answer_redactor: redaction::StreamingRedactor::new(),
             reasoning_redactor: redaction::StreamingRedactor::new(),
             expanded_tool_ids: BTreeSet::new(),
@@ -2191,6 +2215,9 @@ impl App {
         rx: Receiver<TurnMessage>,
         cancel: Arc<AtomicBool>,
     ) {
+        // A previous turn must never be able to contribute source tool data to this one, even if a
+        // worker was interrupted or disconnected before its ordinary finalization message arrived.
+        self.clear_rich_turn_state();
         let header = self.pending_header.take().unwrap_or_else(|| prompt.clone());
         let attachments = std::mem::take(&mut self.pending_attachments);
         self.transcript
@@ -2204,6 +2231,8 @@ impl App {
         self.turn_usage = None;
         self.turn_compaction = std::mem::take(&mut self.pending_compaction);
         self.turn_user_persisted = false;
+        self.turn_model = Some(self.status.model.clone());
+        self.turn_agent = Some(self.status.agent.clone());
         self.answer_redactor.reset();
         self.reasoning_redactor.reset();
         // Persist the user message to the durable store so this conversation is resumable from
@@ -2213,8 +2242,8 @@ impl App {
         // are persisted at turn finalization so failed turns can drop unsupported media safely.
         if !self.turn_compaction && attachments.is_empty() {
             let user_parts = user_message_parts(&prompt, &attachments);
-            self.persist_message("user", &prompt, &user_parts);
-            self.turn_user_persisted = true;
+            self.turn_user_message_id = self.persist_message_with_id("user", &prompt, &user_parts);
+            self.turn_user_persisted = self.turn_user_message_id.is_some();
         }
         self.turn_prompt = Some(prompt);
         self.turn_attachments = attachments;
@@ -2509,6 +2538,10 @@ impl App {
             TurnMessage::FileDiff(diff) => self.push_diff(*diff),
             TurnMessage::Permission(ask) => self.open_permission(*ask),
             TurnMessage::SetupError(message) => self.set_turn_error(message),
+            TurnMessage::Completed(outcome) if !self.turn_errored => {
+                self.turn_outcome = Some(outcome);
+            }
+            TurnMessage::Completed(_) => {}
             TurnMessage::Finished => self.finish_turn(),
         }
     }
@@ -2546,6 +2579,9 @@ impl App {
 
     /// Apply one normalized runner event.
     fn apply_event(&mut self, event: RunnerEvent) {
+        if !self.turn_errored && !matches!(event, RunnerEvent::Error { .. }) {
+            self.turn_events.push(event.clone());
+        }
         match event {
             RunnerEvent::TextDelta { text } => self.append_answer(&text),
             RunnerEvent::Reasoning { text, .. } => self.append_reasoning(&text),
@@ -2722,6 +2758,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.turn_answer.push_str(&text);
         match self.transcript.last_mut() {
             Some(Entry::Assistant(turn)) => turn.answer.push_str(&text),
             _ => self.transcript.push(Entry::Assistant(AssistantTurn {
@@ -2762,6 +2799,53 @@ impl App {
         self.push_answer_text(answer);
     }
 
+    /// Clear every turn-local value used to construct durable rich assistant parts.
+    ///
+    /// Terminal paths call this unconditionally. A new turn also calls it defensively before
+    /// accepting any events, making an interrupted or disconnected worker unable to leak a typed
+    /// MCP source result into a later assistant message.
+    fn clear_rich_turn_state(&mut self) {
+        self.turn_user_message_id = None;
+        self.turn_events.clear();
+        self.turn_outcome = None;
+        self.turn_model = None;
+        self.turn_agent = None;
+        self.turn_answer.clear();
+    }
+
+    /// Consume the current turn's normalized event stream and outcome to build the durable rich
+    /// assistant parts. The bounded `ToolResultPart` projection and complete `McpToolResult` source
+    /// data stay distinct because the engine builder owns that typed conversion.
+    fn take_rich_assistant_parts(&mut self) -> Vec<MessagePart> {
+        let user_message_id = self.turn_user_message_id.take();
+        let runner_events = std::mem::take(&mut self.turn_events);
+        let outcome = self.turn_outcome.take();
+        let model = self.turn_model.take();
+        let agent = self.turn_agent.take();
+        let (Some(user_message_id), Some(model), Some(agent)) = (user_message_id, model, agent)
+        else {
+            return Vec::new();
+        };
+        let Some(outcome) = outcome else {
+            return Vec::new();
+        };
+        if !outcome.is_success() {
+            return Vec::new();
+        }
+        let mut lifecycle = PartLifecycleTracker::new(&user_message_id, &model);
+        for event in &runner_events {
+            let _ = lifecycle.observe(event);
+        }
+        build_assistant_message_parts(
+            &model,
+            &agent,
+            &user_message_id,
+            &runner_events,
+            &outcome,
+            &lifecycle.part_timestamps(),
+        )
+    }
+
     /// Surface a turn error: drop an empty in-progress assistant entry, then record the error as an
     /// in-conversation `✦ Cortex` / `✗ error` block (per `err_inline.png`). The failure is NEVER
     /// raised as a toast/notification — it lives only in the transcript so it reads as the
@@ -2776,6 +2860,7 @@ impl App {
         }
         self.transcript.push(Entry::TurnError(message));
         self.turn_errored = true;
+        self.clear_rich_turn_state();
         self.emit_attention(AttentionEvent::Error);
     }
 
@@ -2795,14 +2880,19 @@ impl App {
         self.spinner_start = None;
         let prompt = self.turn_prompt.take();
         let turn_attachments = std::mem::take(&mut self.turn_attachments);
-        let errored = std::mem::take(&mut self.turn_errored);
+        let errored = std::mem::take(&mut self.turn_errored)
+            || self
+                .turn_outcome
+                .as_ref()
+                .is_some_and(|outcome| !outcome.is_success());
         let turn_usage = self.turn_usage.take();
         let compaction = std::mem::take(&mut self.turn_compaction);
         let user_persisted = std::mem::take(&mut self.turn_user_persisted);
 
         if compaction {
             if !errored {
-                if let Some(summary) = self.latest_assistant_answer() {
+                if !self.turn_answer.is_empty() {
+                    let summary = self.turn_answer.clone();
                     self.history = vec![Message::system(format!(
                         "Summary of the conversation so far:\n{summary}"
                     ))];
@@ -2815,6 +2905,7 @@ impl App {
                 }
                 self.emit_attention(AttentionEvent::Completion);
             }
+            self.clear_rich_turn_state();
             self.start_next_queued();
             return;
         }
@@ -2833,14 +2924,25 @@ impl App {
                 } else {
                     user_message_parts(&prompt, &turn_attachments)
                 };
-                self.persist_message("user", &prompt, &persisted_parts);
+                self.turn_user_message_id =
+                    self.persist_message_with_id("user", &prompt, &persisted_parts);
             }
             if !errored {
-                if let Some(answer) = self.latest_assistant_answer() {
+                let answer = (!self.turn_answer.is_empty())
+                    .then(|| self.turn_answer.clone())
+                    .or_else(|| {
+                        self.turn_outcome
+                            .as_ref()
+                            .filter(|outcome| outcome.is_success())
+                            .map(|outcome| outcome.answer().to_owned())
+                    });
+                if let Some(answer) = answer {
                     self.history.push(Message::assistant(answer.clone()));
                     // Persist the assistant reply so a resumed session (headless or picker) sees the
-                    // full exchange.
-                    self.persist_message("assistant", &answer, &[]);
+                    // full exchange. Rich source tool results remain separate from their bounded
+                    // model projection, exactly as they do for CLI, server, and ACP turns.
+                    let assistant_parts = self.take_rich_assistant_parts();
+                    self.persist_message("assistant", &answer, &assistant_parts);
                 }
                 if let Some(usage) = turn_usage.as_ref() {
                     self.persist_usage(usage);
@@ -2848,6 +2950,7 @@ impl App {
                 self.emit_attention(AttentionEvent::Completion);
             }
         }
+        self.clear_rich_turn_state();
         self.start_next_queued();
     }
 
@@ -2902,14 +3005,15 @@ impl App {
                 } else {
                     user_message_parts(&prompt, &turn_attachments)
                 };
-                self.persist_message("user", &prompt, &persisted_parts);
+                self.turn_user_message_id =
+                    self.persist_message_with_id("user", &prompt, &persisted_parts);
             }
-            if !errored {
-                if let Some(answer) = self.latest_assistant_answer() {
-                    self.history.push(Message::assistant(answer));
-                }
+            if !errored && !self.turn_answer.is_empty() {
+                self.history
+                    .push(Message::assistant(self.turn_answer.clone()));
             }
         }
+        self.clear_rich_turn_state();
         self.queued_prompts.clear();
         self.transcript
             .push(Entry::Notice("Turn interrupted.".to_owned()));
@@ -3073,15 +3177,6 @@ impl App {
         self.push_toast(level, label.clone());
         self.transcript.push(Entry::Notice(label));
         self.pin_to_bottom();
-    }
-
-    /// The most recent assistant entry's answer text, if any. A tool/diff entry may sit after the
-    /// answer, so this scans back rather than reading only the last entry.
-    fn latest_assistant_answer(&self) -> Option<String> {
-        self.transcript.iter().rev().find_map(|entry| match entry {
-            Entry::Assistant(turn) if !turn.answer.is_empty() => Some(turn.answer.clone()),
-            _ => None,
-        })
     }
 
     /// The current prompt text (all lines joined with `\n`).
@@ -6511,9 +6606,21 @@ impl App {
     /// needed. Best-effort: a disabled/unopenable store or a write error leaves the turn rendered
     /// in-memory without aborting it (the answer has already been shown).
     fn persist_message(&mut self, role: &str, content: &str, parts: &[MessagePart]) {
-        let Some(id) = self.ensure_session_id() else {
-            return;
-        };
+        let _ = self.persist_message_with_id(role, content, parts);
+    }
+
+    /// Persist one conversation message and return its durable id when the write succeeds.
+    ///
+    /// The active turn uses the user id as the stable anchor for its rich assistant part ids.
+    /// Other call sites retain the existing best-effort, id-agnostic persistence behavior through
+    /// [`persist_message`](Self::persist_message).
+    fn persist_message_with_id(
+        &mut self,
+        role: &str,
+        content: &str,
+        parts: &[MessagePart],
+    ) -> Option<String> {
+        let id = self.ensure_session_id()?;
         if let Some(db) = self.open_store() {
             let persisted = if parts.is_empty() {
                 db.messages().create(&id, role, content)
@@ -6521,9 +6628,11 @@ impl App {
                 db.messages().create_with_parts(&id, role, content, parts)
             };
             if let Ok(message) = persisted {
-                self.seen_message_ids.insert(message.id);
+                self.seen_message_ids.insert(message.id.clone());
+                return Some(message.id);
             }
         }
+        None
     }
 
     /// Persist one turn's usage under the active session so stats and cross-surface usage views
@@ -17795,6 +17904,438 @@ mod tests {
         assert_eq!(messages[0].content, "remember the word marmalade");
         assert_eq!(messages[1].role, "assistant");
         assert_eq!(messages[1].content, "noted: marmalade");
+    }
+
+    fn all_kinds_mcp_result() -> protocol::McpToolResult {
+        use protocol::{McpContentBlock, McpEmbeddedResource, McpPayload, McpStructuredContent};
+
+        protocol::McpToolResult {
+            blocks: vec![
+                McpContentBlock::Text {
+                    text: McpPayload::Inline("source text".to_owned()),
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                    metadata: Some(serde_json::json!({ "block_meta": "text" })),
+                },
+                McpContentBlock::Image {
+                    data: McpPayload::Inline("source-image-base64".to_owned()),
+                    media_type: "image/png".to_owned(),
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                    metadata: Some(serde_json::json!({ "block_meta": "image" })),
+                },
+                McpContentBlock::Audio {
+                    data: McpPayload::Inline("source-audio-base64".to_owned()),
+                    media_type: "audio/wav".to_owned(),
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                },
+                McpContentBlock::EmbeddedResource {
+                    resource: McpEmbeddedResource::Text {
+                        uri: "fixture://embedded-text".to_owned(),
+                        mime_type: Some("text/plain".to_owned()),
+                        text: McpPayload::Inline("embedded source text".to_owned()),
+                        metadata: Some(serde_json::json!({ "resource_meta": true })),
+                    },
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                    metadata: Some(serde_json::json!({ "block_meta": "embedded-text" })),
+                },
+                McpContentBlock::EmbeddedResource {
+                    resource: McpEmbeddedResource::Blob {
+                        uri: "fixture://embedded-blob".to_owned(),
+                        mime_type: Some("application/octet-stream".to_owned()),
+                        blob: McpPayload::Inline("embedded-blob-base64".to_owned()),
+                        metadata: Some(serde_json::json!({ "resource_meta": true })),
+                    },
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                    metadata: Some(serde_json::json!({ "block_meta": "embedded-blob" })),
+                },
+                McpContentBlock::ResourceLink {
+                    uri: "fixture://resource-link".to_owned(),
+                    name: "typed-resource-link".to_owned(),
+                    title: Some("Typed resource link".to_owned()),
+                    description: Some("source metadata survives".to_owned()),
+                    mime_type: Some("application/octet-stream".to_owned()),
+                    size: Some(12),
+                    icons: Some(serde_json::json!([{"src": "fixture://icon"}])),
+                    annotations: Some(serde_json::json!({ "priority": 0.75 })),
+                    metadata: Some(serde_json::json!({ "block_meta": "resource-link" })),
+                },
+            ],
+            structured_content: Some(McpStructuredContent::Inline(serde_json::json!({
+                "nested": [1, { "typed": true }],
+                "source": "all_kinds",
+            }))),
+            metadata: Some(serde_json::json!({ "result_meta": "fixture" })),
+            is_error: Some(true),
+        }
+    }
+
+    fn successful_outcome(answer: &str) -> engine::RunOutcome {
+        engine::RunOutcome {
+            message: Message::assistant(answer),
+            usage: None,
+            finish_reason: llm::FinishReason::Stop,
+            steps: 1,
+            compactions: Vec::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn tui_persists_typed_mcp_results_across_reopen_reload_and_cross_surface_reads() {
+        let path = session_store_path("typed-mcp-result");
+        let mcp_result = all_kinds_mcp_result();
+        let mut tui_app = app();
+        tui_app.set_session_store(Some(path.clone()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        tui_app.begin_turn("call all kinds".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "call_all_kinds".to_owned(),
+            name: "demo_all_kinds".to_owned(),
+            arguments: "{}".to_owned(),
+        }))
+        .expect("send tool call");
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "call_all_kinds".to_owned(),
+            name: "demo_all_kinds".to_owned(),
+            parts: vec![
+                protocol::ToolResultPart::text(
+                    "bounded MCP presentation [image omitted] [audio omitted]",
+                ),
+                protocol::ToolResultPart::image("image/png", "/tmp/tui-mcp-image.png"),
+                protocol::ToolResultPart::document("application/pdf", "/tmp/tui-mcp-document.pdf"),
+            ],
+            mcp_result: Some(mcp_result.clone()),
+            is_error: true,
+        }))
+        .expect("send tool result");
+        tx.send(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "The MCP tool reported an error.".to_owned(),
+        }))
+        .expect("send answer");
+        tx.send(TurnMessage::Completed(successful_outcome(
+            "The MCP tool reported an error.",
+        )))
+        .expect("send outcome");
+        tx.send(TurnMessage::Finished).expect("finish turn");
+        tui_app.poll_turn();
+
+        let session_id = tui_app.session_id.clone().expect("durable session");
+        let db = db::Database::open(&path).expect("reopen TUI store");
+        let messages = db
+            .messages()
+            .list_for_session(&session_id)
+            .expect("cross-surface read");
+        let assistant = messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("assistant message");
+        let tool_parts = assistant
+            .parts
+            .iter()
+            .filter_map(|part| match &part.body {
+                MessagePartBody::Tool {
+                    call_id,
+                    name,
+                    state,
+                    input,
+                    output,
+                    attachments,
+                    mcp_result,
+                    metadata,
+                } if call_id == "call_all_kinds" && name == "demo_all_kinds" => {
+                    Some((*state, input, output, attachments, mcp_result, metadata))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool_parts
+                .iter()
+                .map(|(state, ..)| *state)
+                .collect::<Vec<_>>(),
+            vec![
+                protocol::ToolPartState::Pending,
+                protocol::ToolPartState::Running,
+                protocol::ToolPartState::Error,
+            ],
+            "call identity and the complete tool lifecycle are durable"
+        );
+        let (_, input, output, attachments, persisted_mcp, metadata) =
+            tool_parts.last().expect("terminal tool part");
+        assert!(input.is_none(), "terminal result has no duplicate input");
+        assert_eq!(
+            output.as_deref(),
+            Some("bounded MCP presentation [image omitted] [audio omitted]")
+        );
+        assert!(
+            !output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source-image-base64"),
+            "the bounded model projection never becomes the raw source payload"
+        );
+        assert_eq!(
+            **attachments,
+            vec![
+                protocol::ToolResultPart::text(
+                    "bounded MCP presentation [image omitted] [audio omitted]",
+                ),
+                protocol::ToolResultPart::image("image/png", "/tmp/tui-mcp-image.png"),
+                protocol::ToolResultPart::document("application/pdf", "/tmp/tui-mcp-document.pdf",),
+            ]
+        );
+        assert_eq!(
+            persisted_mcp.as_ref(),
+            Some(&mcp_result),
+            "all source MCP kinds, metadata, structured JSON, and protocol error survive exactly"
+        );
+        assert_eq!(**metadata, serde_json::json!({ "is_error": true }));
+        drop(db);
+
+        let mut reloaded = app();
+        reloaded.set_session_store(Some(path.clone()));
+        reloaded.load_session(&session_id);
+        assert_eq!(
+            reloaded
+                .history_snapshot()
+                .last()
+                .map(|message| message.content.as_str()),
+            Some("The MCP tool reported an error."),
+            "a reloaded TUI reconstructs the assistant projection"
+        );
+
+        let db = db::Database::open(&path).expect("reopen after TUI reload");
+        let reread = db
+            .messages()
+            .list_for_session(&session_id)
+            .expect("cross-surface reread");
+        let reread_terminal = reread
+            .iter()
+            .flat_map(|message| &message.parts)
+            .find_map(|part| match &part.body {
+                MessagePartBody::Tool {
+                    call_id,
+                    state: protocol::ToolPartState::Error,
+                    mcp_result,
+                    ..
+                } if call_id == "call_all_kinds" => mcp_result.as_ref(),
+                _ => None,
+            })
+            .expect("typed terminal result after reload");
+        assert_eq!(
+            reread_terminal, &mcp_result,
+            "TUI reload leaves the canonical typed source result semantically unchanged"
+        );
+    }
+
+    fn seed_rich_tool_result(app: &mut App) {
+        app.apply_event(RunnerEvent::ToolResult {
+            id: "stale_call".to_owned(),
+            name: "demo_all_kinds".to_owned(),
+            parts: vec![protocol::ToolResultPart::text("bounded stale projection")],
+            mcp_result: Some(all_kinds_mcp_result()),
+            is_error: true,
+        });
+    }
+
+    fn assert_no_active_rich_turn_state(app: &App) {
+        assert!(
+            app.turn_events.is_empty(),
+            "runner events must not survive a terminal turn"
+        );
+        assert!(
+            app.turn_outcome.is_none(),
+            "the completed outcome must not survive a terminal turn"
+        );
+        assert!(
+            app.turn_user_message_id.is_none(),
+            "the durable user-message identity must not survive a terminal turn"
+        );
+        assert!(
+            app.turn_model.is_none() && app.turn_agent.is_none(),
+            "the turn model and agent snapshot must not survive a terminal turn"
+        );
+        assert!(
+            app.turn_answer.is_empty(),
+            "the active turn's answer must not survive a terminal turn"
+        );
+    }
+
+    #[test]
+    fn every_terminal_tui_path_clears_rich_turn_state_before_the_next_turn() {
+        let path = session_store_path("rich-turn-state-clearing");
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+
+        // Interrupting a tool turn must discard its rich result before the following durable turn.
+        let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+        a.begin_turn("interrupted tool turn".to_owned(), interrupt_rx, flag());
+        seed_rich_tool_result(&mut a);
+        a.interrupt_turn();
+        drop(interrupt_tx);
+        assert_no_active_rich_turn_state(&a);
+
+        let (next_tx, next_rx) = std::sync::mpsc::channel();
+        a.begin_turn("clean successor".to_owned(), next_rx, flag());
+        next_tx
+            .send(TurnMessage::Event(RunnerEvent::TextDelta {
+                text: "clean answer".to_owned(),
+            }))
+            .expect("send successor answer");
+        next_tx
+            .send(TurnMessage::Completed(successful_outcome("clean answer")))
+            .expect("send successor outcome");
+        next_tx
+            .send(TurnMessage::Finished)
+            .expect("finish successor");
+        a.poll_turn();
+        assert_no_active_rich_turn_state(&a);
+
+        let session_id = a.session_id.clone().expect("durable successor session");
+        let db = db::Database::open(&path).expect("open successor store");
+        let successor = db
+            .messages()
+            .list_for_session(&session_id)
+            .expect("read successor messages")
+            .into_iter()
+            .rev()
+            .find(|message| message.role == "assistant")
+            .expect("successor assistant");
+        assert!(
+            successor.parts.iter().all(|part| !matches!(
+                &part.body,
+                MessagePartBody::Tool {
+                    mcp_result: Some(_),
+                    ..
+                }
+            )),
+            "the next turn must never inherit an interrupted turn's typed MCP result"
+        );
+        drop(db);
+
+        // Completion, failure, compaction, and a disappeared worker each take the same clearing
+        // path, so no rich event can cross any terminal boundary.
+        let (complete_tx, complete_rx) = std::sync::mpsc::channel();
+        a.begin_turn("complete".to_owned(), complete_rx, flag());
+        seed_rich_tool_result(&mut a);
+        complete_tx
+            .send(TurnMessage::Completed(successful_outcome("complete")))
+            .expect("send completed outcome");
+        complete_tx
+            .send(TurnMessage::Finished)
+            .expect("finish completed");
+        a.poll_turn();
+        assert_no_active_rich_turn_state(&a);
+
+        let (error_tx, error_rx) = std::sync::mpsc::channel();
+        a.begin_turn("failure".to_owned(), error_rx, flag());
+        seed_rich_tool_result(&mut a);
+        error_tx
+            .send(TurnMessage::SetupError("setup failed".to_owned()))
+            .expect("send setup failure");
+        error_tx
+            .send(TurnMessage::Completed(successful_outcome(
+                "must be ignored",
+            )))
+            .expect("send failed outcome");
+        error_tx
+            .send(TurnMessage::Finished)
+            .expect("finish failure");
+        a.poll_turn();
+        assert_no_active_rich_turn_state(&a);
+
+        a.pending_compaction = true;
+        let (compact_tx, compact_rx) = std::sync::mpsc::channel();
+        a.begin_turn("compact".to_owned(), compact_rx, flag());
+        seed_rich_tool_result(&mut a);
+        compact_tx
+            .send(TurnMessage::Completed(successful_outcome("summary")))
+            .expect("send compaction outcome");
+        compact_tx
+            .send(TurnMessage::Finished)
+            .expect("finish compaction");
+        a.poll_turn();
+        assert_no_active_rich_turn_state(&a);
+
+        let db = db::Database::open(&path).expect("open store before disconnect");
+        let assistant_count_before_disconnect = db
+            .messages()
+            .list_for_session(&session_id)
+            .expect("read messages before disconnect")
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .count();
+        drop(db);
+
+        let (disconnect_tx, disconnect_rx) = std::sync::mpsc::channel();
+        a.begin_turn("disconnected".to_owned(), disconnect_rx, flag());
+        seed_rich_tool_result(&mut a);
+        drop(disconnect_tx);
+        assert!(a.poll_turn(), "disconnect is observed");
+        assert_no_active_rich_turn_state(&a);
+
+        let db = db::Database::open(&path).expect("open store after disconnect");
+        let assistant_count_after_disconnect = db
+            .messages()
+            .list_for_session(&session_id)
+            .expect("read messages after disconnect")
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .count();
+        assert_eq!(
+            assistant_count_after_disconnect, assistant_count_before_disconnect,
+            "a disconnected worker must not fabricate a completed assistant message from partial MCP data"
+        );
+    }
+
+    #[test]
+    fn tui_persists_tool_only_successful_turns_with_rich_mcp_parts() {
+        let path = session_store_path("tool-only-rich-parts");
+        let mcp_result = all_kinds_mcp_result();
+        let mut a = app();
+        a.set_session_store(Some(path.clone()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.begin_turn("call MCP without prose".to_owned(), rx, flag());
+        tx.send(TurnMessage::Event(RunnerEvent::ToolCall {
+            id: "tool_only_call".to_owned(),
+            name: "demo_all_kinds".to_owned(),
+            arguments: "{}".to_owned(),
+        }))
+        .expect("send tool call");
+        tx.send(TurnMessage::Event(RunnerEvent::ToolResult {
+            id: "tool_only_call".to_owned(),
+            name: "demo_all_kinds".to_owned(),
+            parts: vec![protocol::ToolResultPart::text(
+                "bounded tool-only projection",
+            )],
+            mcp_result: Some(mcp_result.clone()),
+            is_error: true,
+        }))
+        .expect("send tool result");
+        tx.send(TurnMessage::Completed(successful_outcome("")))
+            .expect("send empty successful outcome");
+        tx.send(TurnMessage::Finished)
+            .expect("finish tool-only turn");
+        a.poll_turn();
+
+        let id = a.session_id.clone().expect("session");
+        let db = db::Database::open(&path).expect("open store");
+        let assistant = db
+            .messages()
+            .list_for_session(&id)
+            .expect("read messages")
+            .into_iter()
+            .find(|message| message.role == "assistant")
+            .expect("tool-only assistant message");
+        assert_eq!(assistant.content, "");
+        assert!(assistant.parts.iter().any(|part| matches!(
+            &part.body,
+            MessagePartBody::Tool {
+                call_id,
+                state: protocol::ToolPartState::Error,
+                mcp_result: Some(result),
+                ..
+            } if call_id == "tool_only_call" && result == &mcp_result
+        )));
     }
 
     #[test]

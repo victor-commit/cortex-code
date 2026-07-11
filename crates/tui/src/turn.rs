@@ -5,7 +5,8 @@
 //! [`SessionRunner`]. The runner's normalized [`RunnerEvent`] stream is forwarded over a channel as
 //! [`TurnMessage`]s; the UI thread drains them each tick to grow the assistant text, surface
 //! reasoning, update usage, and clear the busy indicator when the worker reports it is
-//! [`TurnMessage::Finished`].
+//! [`TurnMessage::Finished`]. A successful worker sends its completed [`RunOutcome`] immediately
+//! beforehand so the app can persist the normalized stream as rich assistant message parts.
 //!
 //! No mocks live on this path: the same runner and OpenRouter provider the headless `cortex run`
 //! uses drive the turn here. Setup failures (the network kill-switch, a missing credential, a bad
@@ -23,7 +24,8 @@ use std::time::Duration;
 use crate::permission::{PermissionAsk, UiResponder};
 use crate::tooling::TurnDispatcher;
 use engine::{
-    Agent, CompactionPolicy, EnvironmentBlock, RunnerEvent, SessionRunner, SystemContext, Turn,
+    Agent, CompactionPolicy, EnvironmentBlock, RunOutcome, RunnerEvent, SessionRunner,
+    SystemContext, Turn,
 };
 use events::Event;
 use llm::Message;
@@ -44,6 +46,9 @@ pub enum TurnMessage {
     Permission(Box<PermissionAsk>),
     /// The turn could not start: a setup-time diagnostic (net-disabled, no-credential, bad model).
     SetupError(String),
+    /// The final runner outcome, delivered before [`Self::Finished`] when a non-interrupted worker
+    /// completed. The app combines it with its retained event stream to build durable rich parts.
+    Completed(RunOutcome),
     /// The worker has finished; the UI clears the busy indicator and finalizes the turn.
     Finished,
 }
@@ -256,27 +261,29 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                             // Race the streaming turn against the interrupt signal: if the UI asks
                             // to cancel, the runner future is dropped here (closing the upstream
                             // stream) and the turn stops streaming at a safe boundary.
-                            let cancelled = tokio::select! {
-                                _ = runner.run_with_tools(setup.provider.as_ref(), setup.turn, &dispatcher, |event| {
+                            let turn_outcome = tokio::select! {
+                                outcome = runner.run_with_tools(setup.provider.as_ref(), setup.turn, &dispatcher, |event| {
                                     if let Some(remote) = &remote {
                                         remote.publish_runner_event(&event);
                                     }
                                     let _ = tx_events.send(TurnMessage::Event(event));
-                                }) => false,
-                                () = wait_for_cancel(cancel.clone()) => true,
+                                }) => Some(outcome),
+                                () = wait_for_cancel(cancel.clone()) => None,
                             };
-                            if cancelled
+                            if turn_outcome.is_none()
                                 && let Some(remote) = &remote
                             {
                                 remote.publish_aborted();
                             }
-                            if cancelled {
+                            if turn_outcome.is_none() {
                                 plugin_hooks.invoke_event(&Event::turn_done(
                                     session_id.clone(),
                                     message_id.clone(),
                                     "aborted",
                                     0,
                                 ));
+                            } else if let Some(outcome) = turn_outcome {
+                                let _ = tx_events.send(TurnMessage::Completed(outcome));
                             }
                             // Complete every background child task before the parent TUI turn
                             // releases its runtime. This persists the child transcript and lets
