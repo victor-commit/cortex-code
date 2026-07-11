@@ -9,10 +9,8 @@ fn active_session_id() -> String {
         .parent()
         .expect("Factory runtime settings must have a parent directory")
         .join("isolation-guard-v3");
-    fs::read_to_string(
-        state_dir.join("current-session"),
-    )
-    .expect("active worker-session identity must be recorded")
+    fs::read_to_string(state_dir.join("current-session"))
+        .expect("active worker-session identity must be recorded")
 }
 
 #[test]

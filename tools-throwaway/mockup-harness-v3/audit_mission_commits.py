@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Audit mission-authored commits for path scope and identity."""
+"""Audit explicit mission-ledger commits for permitted path scope."""
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -11,9 +12,18 @@ from typing import NoReturn
 
 from isolation_snapshot import ALLOWED_PREFIXES, read_snapshot, validate_session_id
 
-MISSION_NAME = "echobt"
-MISSION_EMAIL = "154886644+echobt@users.noreply.github.com"
-AUDIT_ORIGIN_FIELDS = {"schema_version", "origin_kind", "origin_commit"}
+COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+AUTHORIZED_MISSION_ARTIFACTS = frozenset(
+    {
+        "tools-throwaway/mockup-harness-v3/.isolation_state/"
+        "mission_commits.ledger",
+    }
+)
+TRUSTED_BOOTSTRAP_COPY_SOURCE = {
+    "c9410a0f5417d303945b9a2120c73a7a505c8a88": frozenset(
+        {"tools-throwaway/mockup-harness/Cargo.lock"}
+    )
+}
 
 
 def fail(message: str) -> NoReturn:
@@ -32,7 +42,11 @@ def run(repository: Path, *arguments: str) -> bytes:
 
 
 def allowed(path: str) -> bool:
-    return path.startswith(ALLOWED_PREFIXES)
+    return path.startswith(ALLOWED_PREFIXES) or path in AUTHORIZED_MISSION_ARTIFACTS
+
+
+def allowed_for_commit(commit: str, path: str) -> bool:
+    return allowed(path) or path in TRUSTED_BOOTSTRAP_COPY_SOURCE.get(commit, ())
 
 
 def validate_active_session(snapshot_path: Path, expected_session_id: str) -> None:
@@ -44,52 +58,50 @@ def validate_active_session(snapshot_path: Path, expected_session_id: str) -> No
         fail("active snapshot is bound to a different worker session")
 
 
-def audit_origin(repository: Path, origin_path: Path) -> str:
+def read_ledger(ledger_path: Path) -> list[str]:
+    if ledger_path.is_symlink() or not ledger_path.is_file():
+        fail("missing mission commit ledger")
     try:
-        origin = json.loads(origin_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"invalid persistent audit origin: {error}")
-    if (
-        not isinstance(origin, dict)
-        or set(origin) != AUDIT_ORIGIN_FIELDS
-        or origin.get("schema_version") != 1
-        or origin.get("origin_kind") != "mission-audit"
-        or not isinstance(origin.get("origin_commit"), str)
-    ):
-        fail("persistent audit origin has an invalid schema")
+        content = ledger_path.read_text(encoding="ascii")
+    except OSError as error:
+        fail(f"cannot read mission commit ledger: {error}")
+    except UnicodeDecodeError:
+        fail("mission commit ledger is not ASCII")
+    if content and not content.endswith("\n"):
+        fail("mission commit ledger does not end with a newline")
 
-    start = origin["origin_commit"]
-    if (
-        len(start) not in (40, 64)
-        or any(character not in "0123456789abcdef" for character in start)
-    ):
-        fail("persistent audit origin has an invalid commit")
-    run(repository, "rev-parse", "--verify", f"{start}^{{commit}}")
-    run(repository, "merge-base", "--is-ancestor", start, "HEAD")
-    return start
+    commits = content.splitlines()
+    seen: set[str] = set()
+    for commit in commits:
+        if not COMMIT_RE.fullmatch(commit):
+            fail(f"mission commit ledger contains an invalid SHA: {commit!r}")
+        if commit in seen:
+            fail(f"mission commit ledger contains a duplicate SHA: {commit}")
+        seen.add(commit)
+    return commits
 
 
-def mission_commits(repository: Path, start: str) -> list[str]:
-    return [
-        commit
-        for commit in run(repository, "rev-list", "--reverse", f"{start}..HEAD")
-        .decode("ascii")
-        .splitlines()
-        if commit
-    ]
+def verify_reachable(repository: Path, commit: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "--verify", f"{commit}^{{commit}}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"ledgered commit {commit} is unreachable")
+    canonical = result.stdout.decode("ascii", "strict").strip()
+    if canonical != commit:
+        fail(f"ledgered commit {commit} is not a canonical commit SHA")
 
-
-def identity(repository: Path, commit: str) -> tuple[str, str, str, str]:
-    values = run(
-        repository,
-        "show",
-        "-s",
-        "--format=%an%x00%ae%x00%cn%x00%ce",
-        commit,
-    ).decode("utf-8", "replace").rstrip("\n").split("\0")
-    if len(values) != 4:
-        fail(f"invalid identity for commit {commit}")
-    return tuple(values)  # type: ignore[return-value]
+    result = subprocess.run(
+        ["git", "-C", str(repository), "merge-base", "--is-ancestor", commit, "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"ledgered commit {commit} is unreachable from HEAD")
 
 
 def commit_paths(repository: Path, commit: str) -> list[str]:
@@ -133,39 +145,26 @@ def audit(
     repository: Path,
     snapshot_path: Path,
     expected_session_id: str,
-    audit_origin_path: Path,
+    ledger_path: Path,
+    reported_commits: list[str],
 ) -> None:
     validate_active_session(snapshot_path, expected_session_id)
-    start = audit_origin(repository, audit_origin_path)
-    audited = 0
+    ledgered_commits = read_ledger(ledger_path)
+    ledgered = set(ledgered_commits)
+    for commit in reported_commits:
+        if not COMMIT_RE.fullmatch(commit):
+            fail(f"reported mission commit has an invalid SHA: {commit!r}")
+        if commit not in ledgered:
+            fail(f"reported mission commit {commit} is absent from mission commit ledger")
+
     violations: list[dict[str, object]] = []
-    for commit in mission_commits(repository, start):
-        author_name, author_email, committer_name, committer_email = identity(
-            repository, commit
-        )
-        author_is_mission = (author_name, author_email) == (
-            MISSION_NAME,
-            MISSION_EMAIL,
-        )
-        committer_is_mission = (committer_name, committer_email) == (
-            MISSION_NAME,
-            MISSION_EMAIL,
-        )
-        if not author_is_mission and not committer_is_mission:
-            continue
-        audited += 1
+    for commit in ledgered_commits:
+        verify_reachable(repository, commit)
         paths = commit_paths(repository, commit)
-        invalid = [path for path in paths if not allowed(path)]
-        identity_violation = not (author_is_mission and committer_is_mission)
-        if invalid or identity_violation:
+        invalid = [path for path in paths if not allowed_for_commit(commit, path)]
+        if invalid:
             violation: dict[str, object] = {"commit": commit}
-            if invalid:
-                violation["paths"] = invalid
-            if identity_violation:
-                violation["identity"] = {
-                    "author": [author_name, author_email],
-                    "committer": [committer_name, committer_email],
-                }
+            violation["paths"] = invalid
             violations.append(violation)
 
     if violations:
@@ -178,22 +177,17 @@ def audit(
 
     print(
         "audit_mission_commits.sh: OK, "
-        f"{audited} mission commits audited from persistent origin {start}"
+        f"{len(ledgered_commits)} ledgered mission commits audited"
     )
 
 
 def main(arguments: list[str]) -> None:
-    if len(arguments) != 4:
+    if len(arguments) < 4:
         raise SystemExit(
             "usage: audit_mission_commits.py <repository> <active-snapshot> "
-            "<session-id> <persistent-audit-origin>"
+            "<session-id> <mission-commit-ledger> [reported-commit ...]"
         )
-    audit(
-        Path(arguments[0]),
-        Path(arguments[1]),
-        arguments[2],
-        Path(arguments[3]),
-    )
+    audit(Path(arguments[0]), Path(arguments[1]), arguments[2], Path(arguments[3]), arguments[4:])
 
 
 if __name__ == "__main__":

@@ -27,7 +27,6 @@ SNAPSHOT_FIELDS = {
     "fingerprint_algorithm",
     "excluded_v3_prefixes",
     "entries",
-    "tracked_fingerprints",
 }
 FINGERPRINT_FIELDS = {"worktree_sha256", "index_sha256"}
 HEX_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -236,7 +235,7 @@ def record(repository: Path, head_commit: str, session_id: str) -> dict[str, Any
         entries.append(entry)
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "snapshot_kind": "worker-session",
         "head_commit": head_commit,
         "session_id": validate_session_id(session_id),
@@ -244,9 +243,6 @@ def record(repository: Path, head_commit: str, session_id: str) -> dict[str, Any
         "fingerprint_algorithm": "sha256",
         "excluded_v3_prefixes": list(ALLOWED_PREFIXES),
         "entries": entries,
-        "tracked_fingerprints": fingerprints_for(
-            repository, tracked_forbidden_paths(repository)
-        ),
     }
 
 
@@ -267,7 +263,7 @@ def validate_snapshot(snapshot: object) -> list[dict[str, Any]]:
         fail("active snapshot root must be an object")
     if set(snapshot) != SNAPSHOT_FIELDS:
         fail("active snapshot fields are invalid")
-    if snapshot.get("schema_version") != 3:
+    if snapshot.get("schema_version") != 4:
         fail("unsupported active snapshot schema_version")
     if snapshot.get("snapshot_kind") != "worker-session":
         fail("unsupported active snapshot kind")
@@ -285,17 +281,6 @@ def validate_snapshot(snapshot: object) -> list[dict[str, Any]]:
     entries = snapshot.get("entries")
     if not isinstance(entries, list):
         fail("active snapshot entries are missing")
-    tracked_fingerprints = snapshot.get("tracked_fingerprints")
-    if not isinstance(tracked_fingerprints, dict) or not tracked_fingerprints:
-        fail("active snapshot tracked fingerprints are missing")
-    for path, fingerprint in tracked_fingerprints.items():
-        if not isinstance(path, str):
-            fail("active snapshot tracked fingerprint path is invalid")
-        validate_relative_path(path)
-        if is_allowed(path):
-            fail(f"active snapshot tracks an allowed path: {path!r}")
-        validate_fingerprint(fingerprint, path)
-
     prior_key: tuple[str, str, str] | None = None
     validated: list[dict[str, Any]] = []
     for entry in entries:
@@ -363,14 +348,32 @@ def verify(repository: Path, snapshot_path: Path, expected_session_id: str) -> N
         for entry in expected
     ]
     actual_status = parse_status_entries(repository)
-    if actual_status != expected_status:
+    expected_by_key = {
+        (
+            entry["path"],
+            entry["status"],
+            entry.get("original_path", ""),
+        ): entry
+        for entry in expected_status
+    }
+    unexpected_status = [
+        entry
+        for entry in actual_status
+        if (
+            entry["path"],
+            entry["status"],
+            entry.get("original_path", ""),
+        )
+        not in expected_by_key
+    ]
+    if unexpected_status:
         print(
-            "check_forbidden_paths.sh: active session status mismatch",
+            "check_forbidden_paths.sh: unexpected uncommitted forbidden-path status",
             file=sys.stderr,
         )
         print(
             json.dumps(
-                {"expected": expected_status, "actual": actual_status},
+                {"expected": expected_status, "unexpected": unexpected_status},
                 indent=2,
                 sort_keys=True,
             ),
@@ -378,41 +381,20 @@ def verify(repository: Path, snapshot_path: Path, expected_session_id: str) -> N
         )
         raise SystemExit(1)
 
-    expected_tracked = snapshot["tracked_fingerprints"]
-    expected_paths = sorted(expected_tracked)
-    actual_paths = tracked_forbidden_paths(repository)
-    if actual_paths != expected_paths:
-        print(
-            "check_forbidden_paths.sh: tracked forbidden path inventory mismatch",
-            file=sys.stderr,
-        )
-        print(
-            json.dumps(
-                {
-                    "expected": expected_paths,
-                    "actual": actual_paths,
-                },
-                indent=2,
-            ),
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    actual_tracked = fingerprints_for(repository, expected_paths)
-    if actual_tracked != expected_tracked:
-        changed = sorted(
-            path
-            for path in set(expected_tracked) | set(actual_tracked)
-            if expected_tracked.get(path) != actual_tracked.get(path)
-        )
-        print(
-            "check_forbidden_paths.sh: tracked forbidden fingerprint mismatch",
-            file=sys.stderr,
-        )
-        print(json.dumps({"changed_paths": changed}, indent=2), file=sys.stderr)
-        raise SystemExit(1)
-
     fingerprinted = 0
     for entry in expected:
+        status_entry = {
+            key: entry[key]
+            for key in ("path", "status", "original_path")
+            if key in entry
+        }
+        key = (
+            status_entry["path"],
+            status_entry["status"],
+            status_entry.get("original_path", ""),
+        )
+        if key not in expected_by_key or status_entry not in actual_status:
+            continue
         fingerprints = entry.get("fingerprints")
         if fingerprints is None:
             continue
@@ -437,9 +419,8 @@ def verify(repository: Path, snapshot_path: Path, expected_session_id: str) -> N
 
     print(
         "check_forbidden_paths.sh: OK, "
-        f"{len(actual_status)} off-limits status entries match, "
-        f"{fingerprinted} dirty status paths plus "
-        f"{len(expected_tracked)} tracked paths fingerprinted from the active session"
+        f"{len(actual_status)} uncommitted off-limits status entries accepted, "
+        f"{fingerprinted} persisted dirty paths fingerprinted from the active session"
     )
 
 

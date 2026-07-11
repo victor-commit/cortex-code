@@ -24,16 +24,30 @@ fi
     exit 2
 }
 SNAPSHOT="$STATE_DIR/snapshots/$SESSION_ID.json"
-AUDIT_ORIGIN="$STATE_DIR/mission-audit-origin.json"
+LEDGER_DIR="$HARNESS_DIR/.isolation_state"
+LEDGER="$LEDGER_DIR/mission_commits.ledger"
 
 [[ -f "$SNAPSHOT" ]] || {
     echo "audit_mission_commits.sh: missing active worker-session snapshot" >&2
     exit 2
 }
-[[ -f "$AUDIT_ORIGIN" ]] || {
-    echo "audit_mission_commits.sh: missing persistent mission audit origin" >&2
-    exit 2
-}
+reported_commits=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reported-commit)
+            [[ $# -ge 2 ]] || {
+                echo "audit_mission_commits.sh: --reported-commit requires a SHA" >&2
+                exit 2
+            }
+            reported_commits+=("$2")
+            shift 2
+            ;;
+        *)
+            echo "usage: audit_mission_commits.sh [--reported-commit <SHA> ...]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 python3 "$HARNESS_DIR/audit_mission_commits.py" \
-    "$REPO_ROOT" "$SNAPSHOT" "$SESSION_ID" "$AUDIT_ORIGIN"
+    "$REPO_ROOT" "$SNAPSHOT" "$SESSION_ID" "$LEDGER" "${reported_commits[@]}"

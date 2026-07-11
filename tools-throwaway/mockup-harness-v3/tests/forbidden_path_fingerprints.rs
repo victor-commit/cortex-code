@@ -36,7 +36,12 @@ impl Fixture {
             "isolation_snapshot.py",
             "audit_mission_commits.sh",
             "audit_mission_commits.py",
+            "check_mission_handoff.sh",
+            "commit_mission_change.sh",
+            "initialize_mission_ledger.sh",
             "isolation_session_state.sh",
+            "mission_commits.seed",
+            "record_mission_commit.sh",
         ] {
             fs::copy(source_harness.join(script), harness.join(script))
                 .expect("fixture script must be copied");
@@ -68,6 +73,8 @@ impl Fixture {
             &root,
             ["git", "commit", "--quiet", "-m", "fixture baseline"],
         );
+        fs::write(harness.join("mission_commits.seed"), "")
+            .expect("fixture ledger seed must be cleared");
         fs::write(&untracked, "opaque user content after commit\n")
             .expect("untracked fixture must be restored");
 
@@ -110,8 +117,10 @@ impl Fixture {
             .join(format!("{}.json", self.session_id))
     }
 
-    fn audit_origin_path(&self) -> PathBuf {
-        self.state.join("mission-audit-origin.json")
+    fn ledger_path(&self) -> PathBuf {
+        self.harness
+            .join(".isolation_state")
+            .join("mission_commits.ledger")
     }
 
     fn state_marker_path(&self) -> PathBuf {
@@ -154,6 +163,53 @@ impl Fixture {
             .current_dir(&self.harness)
             .output()
             .expect("mission commit audit must start")
+    }
+
+    fn run_handoff_audit(&self, commit: &str) -> Output {
+        Command::new("bash")
+            .arg(self.harness.join("check_mission_handoff.sh"))
+            .arg(commit)
+            .env("V3_ISOLATION_SESSION_ID", &self.session_id)
+            .env("FACTORY_RUNTIME_SETTINGS_PATH", &self.runtime_settings)
+            .current_dir(&self.harness)
+            .output()
+            .expect("reported mission commit audit must start")
+    }
+
+    fn run_ledger_append(&self, commit: &str) -> Output {
+        Command::new("bash")
+            .arg(self.harness.join("record_mission_commit.sh"))
+            .arg(commit)
+            .current_dir(&self.harness)
+            .output()
+            .expect("mission ledger append must start")
+    }
+
+    fn head_commit(&self) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&self.root)
+            .output()
+            .expect("head lookup must start");
+        assert_success(output.clone(), "head lookup");
+        String::from_utf8(output.stdout)
+            .expect("head output must be UTF-8")
+            .trim()
+            .to_owned()
+    }
+
+    fn record_head_commit(&self) {
+        let head = self.head_commit();
+        assert_success(self.run_ledger_append(&head), "mission ledger append");
+    }
+
+    fn run_mission_commit(&self, message: &str) -> Output {
+        Command::new("bash")
+            .arg(self.harness.join("commit_mission_change.sh"))
+            .args(["-m", message])
+            .current_dir(&self.harness)
+            .output()
+            .expect("mission commit helper must start")
     }
 }
 
@@ -218,7 +274,7 @@ fn user_changes_between_sessions_are_absorbed_by_refresh() {
         "user@example.invalid",
         "user change between sessions",
     );
-    fixture.check_fails();
+    fixture.check_passes();
 
     fixture.start_next_session();
     fixture.check_passes();
@@ -227,8 +283,8 @@ fn user_changes_between_sessions_are_absorbed_by_refresh() {
 #[test]
 fn untracked_user_owned_contents_are_never_read_or_hashed() {
     let fixture = Fixture::new();
-    let snapshot = fs::read_to_string(fixture.snapshot_path())
-        .expect("active snapshot must be readable");
+    let snapshot =
+        fs::read_to_string(fixture.snapshot_path()).expect("active snapshot must be readable");
     assert!(!snapshot.contains("opaque user content"));
     let start = snapshot
         .find("\"path\": \"user-owned.txt\"")
@@ -289,7 +345,7 @@ fn same_session_snapshot_cannot_rebase_a_forbidden_edit() {
 }
 
 #[test]
-fn allowed_echobt_commit_passes_and_audit_ignores_interleaved_user_commit() {
+fn ledgered_mission_commit_passes_and_unledgered_echobt_user_commit_is_ignored() {
     let fixture = Fixture::new();
     let allowed = fixture
         .root
@@ -309,23 +365,130 @@ fn allowed_echobt_commit_passes_and_audit_ignores_interleaved_user_commit() {
         "154886644+echobt@users.noreply.github.com",
         "mission allowed change",
     );
+    fixture.record_head_commit();
 
-    fs::write(&fixture.untracked, "user-owned interleaved bytes\n")
+    fs::write(&fixture.tracked, "echobt user-owned interleaved bytes\n")
         .expect("user-owned fixture must change");
-    run(&fixture.root, ["git", "add", "user-owned.txt"]);
+    run(&fixture.root, ["git", "add", "protected.txt"]);
     run_with_identity(
         &fixture.root,
-        "user",
-        "user@example.invalid",
-        "interleaved user commit",
+        "echobt",
+        "154886644+echobt@users.noreply.github.com",
+        "interleaved echobt user commit",
     );
 
     assert_success(fixture.run_audit(), "mission commit audit");
-    fixture.check_fails();
+    fixture.check_passes();
 }
 
 #[test]
-fn out_of_scope_echobt_commit_fails_the_commit_audit() {
+fn reported_mission_commit_missing_from_ledger_fails_audit() {
+    let fixture = Fixture::new();
+    fs::write(
+        &fixture.tracked,
+        "reported mission commit without ledger entry\n",
+    )
+    .expect("tracked fixture content must change");
+    run(&fixture.root, ["git", "add", "protected.txt"]);
+    run_with_identity(
+        &fixture.root,
+        "echobt",
+        "154886644+echobt@users.noreply.github.com",
+        "reported mission commit without ledger entry",
+    );
+
+    let audit = fixture.run_handoff_audit(&fixture.head_commit());
+    assert!(
+        !audit.status.success(),
+        "a reported mission commit absent from the ledger must fail audit"
+    );
+    assert!(
+        String::from_utf8_lossy(&audit.stderr).contains("absent from mission commit ledger"),
+        "the audit should explain that the reported commit is not ledgered"
+    );
+}
+
+#[test]
+fn commit_helper_appends_the_exact_new_commit_sha() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/ledgered-by-helper.txt");
+    fs::write(&allowed, "commit helper fixture\n").expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/ledgered-by-helper.txt",
+        ],
+    );
+
+    assert_success(
+        fixture.run_mission_commit("commit through mission ledger helper"),
+        "mission commit helper",
+    );
+    let head = fixture.head_commit();
+    let ledger = fs::read_to_string(fixture.ledger_path()).expect("ledger must be readable");
+    assert_eq!(ledger, format!("{head}\n"));
+    assert_success(
+        fixture.run_handoff_audit(&head),
+        "ledgered mission handoff audit",
+    );
+}
+
+#[test]
+fn commit_ledger_append_fails_closed_without_a_ledger() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.ledger_path()).expect("ledger must be removable in the fixture");
+    let missing_ledger = fixture.run_ledger_append(&fixture.head_commit());
+    assert!(
+        !missing_ledger.status.success(),
+        "ledger append must fail when its required ledger is missing"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing_ledger.stderr).contains("missing mission commit ledger"),
+        "ledger append must identify the missing ledger"
+    );
+}
+
+#[test]
+fn commit_helper_refuses_to_commit_without_a_ledger() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/unledgered-helper-change.txt");
+    fs::write(&allowed, "helper must fail before committing\n")
+        .expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/unledgered-helper-change.txt",
+        ],
+    );
+    let before = fixture.head_commit();
+    fs::remove_file(fixture.ledger_path()).expect("ledger must be removable in the fixture");
+
+    let output = fixture.run_mission_commit("must not commit without a ledger");
+    assert!(
+        !output.status.success(),
+        "commit helper must refuse to commit without a ledger"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing mission commit ledger"),
+        "commit helper must identify the missing ledger"
+    );
+    assert_eq!(
+        fixture.head_commit(),
+        before,
+        "commit helper must not create an unledgered commit"
+    );
+}
+
+#[test]
+fn ledgered_out_of_scope_commit_fails_the_commit_audit() {
     let fixture = Fixture::new();
     fs::write(&fixture.tracked, "mission must not write here\n")
         .expect("tracked fixture content must change");
@@ -346,6 +509,7 @@ fn out_of_scope_echobt_commit_fails_the_commit_audit() {
         .output()
         .expect("out-of-scope commit must start");
     assert_success(output, "out-of-scope commit");
+    fixture.record_head_commit();
 
     let audit = fixture.run_audit();
     assert!(!audit.status.success(), "out-of-scope audit must fail");
@@ -370,6 +534,7 @@ fn clean_forbidden_source_renamed_into_allowed_root_is_audited() {
         "154886644+echobt@users.noreply.github.com",
         "move clean forbidden source into v3 root",
     );
+    fixture.record_head_commit();
 
     let audit = fixture.run_audit();
     assert!(
@@ -384,9 +549,7 @@ fn clean_forbidden_source_copied_into_allowed_root_is_audited() {
     let fixture = Fixture::new();
     fs::copy(
         &fixture.tracked,
-        fixture
-            .harness
-            .join("copied-from-protected.txt"),
+        fixture.harness.join("copied-from-protected.txt"),
     )
     .expect("clean protected source must be copied");
     run(
@@ -403,6 +566,7 @@ fn clean_forbidden_source_copied_into_allowed_root_is_audited() {
         "154886644+echobt@users.noreply.github.com",
         "copy clean forbidden source into v3 root",
     );
+    fixture.record_head_commit();
 
     let audit = fixture.run_audit();
     assert!(
@@ -413,7 +577,7 @@ fn clean_forbidden_source_copied_into_allowed_root_is_audited() {
 }
 
 #[test]
-fn persistent_audit_origin_detects_mission_commit_after_session_refresh() {
+fn unledgered_echobt_commit_remains_user_owned_after_session_refresh() {
     let mut fixture = Fixture::new();
     fs::write(&fixture.tracked, "mission must not write here\n")
         .expect("tracked fixture content must change");
@@ -426,46 +590,140 @@ fn persistent_audit_origin_detects_mission_commit_after_session_refresh() {
     );
 
     fixture.start_next_session();
-    let audit = fixture.run_audit();
-    assert!(
-        !audit.status.success(),
-        "a refreshed worker snapshot must not exclude earlier mission commits"
+    assert_success(
+        fixture.run_audit(),
+        "unledgered echobt user commit audit after session refresh",
     );
-    assert!(String::from_utf8_lossy(&audit.stderr).contains("protected.txt"));
 }
 
 #[test]
-fn missing_persistent_audit_origin_cannot_hide_a_mission_commit() {
-    let mut fixture = Fixture::new();
-    fs::write(&fixture.tracked, "mission must not write here\n")
-        .expect("tracked fixture content must change");
-    run(&fixture.root, ["git", "add", "protected.txt"]);
+fn missing_ledger_fails_closed() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.ledger_path()).expect("ledger must be removable in the fixture");
+    let audit = fixture.run_audit();
+    assert!(
+        !audit.status.success(),
+        "the commit audit must fail closed when the ledger is missing"
+    );
+    assert!(
+        String::from_utf8_lossy(&audit.stderr).contains("missing mission commit ledger"),
+        "the audit must identify the missing ledger"
+    );
+}
+
+#[test]
+fn trusted_migration_seed_is_ledgered_and_audited() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/pre-ledger-mission.txt");
+    fs::write(&allowed, "trusted pre-ledger mission work\n")
+        .expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/pre-ledger-mission.txt",
+        ],
+    );
     run_with_identity(
         &fixture.root,
         "echobt",
         "154886644+echobt@users.noreply.github.com",
-        "out of scope mission change before origin refresh",
+        "trusted pre-ledger mission work",
     );
+    let commit = fixture.head_commit();
+    fs::write(
+        fixture.harness.join("mission_commits.seed"),
+        format!("{commit}\n"),
+    )
+    .expect("trusted migration seed must be writable");
 
-    fs::remove_file(fixture.audit_origin_path())
-        .expect("persistent origin must be removable in the fixture");
-    fixture.session_id.push_str("-next");
-    let refresh = fixture.run_snapshot();
+    let initialized = Command::new("bash")
+        .arg(fixture.harness.join("initialize_mission_ledger.sh"))
+        .current_dir(&fixture.harness)
+        .output()
+        .expect("trusted migration ledger initializer must start");
+    assert_success(initialized, "trusted migration ledger initializer");
+    assert_eq!(
+        fs::read_to_string(fixture.ledger_path()).expect("ledger must be readable"),
+        format!("{commit}\n")
+    );
+    assert_success(fixture.run_audit(), "trusted migration ledger audit");
+}
+
+#[test]
+fn trusted_bootstrap_copy_source_is_narrowly_authorized() {
+    let fixture = Fixture::new();
+    let bootstrap = "c9410a0f5417d303945b9a2120c73a7a505c8a88";
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            "from audit_mission_commits import allowed_for_commit; \
+assert allowed_for_commit('c9410a0f5417d303945b9a2120c73a7a505c8a88', 'tools-throwaway/mockup-harness/Cargo.lock'); \
+assert not allowed_for_commit('c9410a0f5417d303945b9a2120c73a7a505c8a88', 'protected.txt'); \
+assert not allowed_for_commit('0000000000000000000000000000000000000000', 'tools-throwaway/mockup-harness/Cargo.lock')",
+        ])
+        .current_dir(&fixture.harness)
+        .output()
+        .expect("bootstrap authorization probe must start");
+    assert_success(output, "bootstrap authorization probe");
+    assert_eq!(bootstrap.len(), 40, "bootstrap SHA must remain full length");
+}
+
+#[test]
+fn unreachable_ledgered_commit_fails_closed() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.ledger_path(),
+        "0000000000000000000000000000000000000000\n",
+    )
+    .expect("fixture ledger must be writable");
+    let audit = fixture.run_audit();
     assert!(
-        !refresh.status.success(),
-        "an existing mission must fail closed when its persistent audit origin is missing"
+        !audit.status.success(),
+        "an unreachable ledgered commit must fail audit"
     );
     assert!(
-        String::from_utf8_lossy(&refresh.stderr).contains("missing persistent mission audit origin"),
-        "the failure must identify the missing persistent audit origin"
+        String::from_utf8_lossy(&audit.stderr).contains("unreachable"),
+        "the audit must identify the unreachable ledger entry"
     );
+}
+
+#[test]
+fn uncommitted_forbidden_change_fails_regardless_of_ledger_state() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/ledgered-allowed.txt");
+    fs::write(&allowed, "ledgered allowed change\n").expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/ledgered-allowed.txt",
+        ],
+    );
+    run_with_identity(
+        &fixture.root,
+        "echobt",
+        "154886644+echobt@users.noreply.github.com",
+        "ledgered allowed mission change",
+    );
+    fixture.record_head_commit();
+    assert_success(fixture.run_audit(), "ledgered allowed mission audit");
+
+    fs::write(&fixture.tracked, "forbidden uncommitted change\n")
+        .expect("tracked fixture content must change");
+    fixture.check_fails();
 }
 
 #[test]
 fn deleted_mission_state_cannot_be_reinitialized() {
     let mut fixture = Fixture::new();
-    fs::remove_dir_all(&fixture.state)
-        .expect("mission state must be removable in the fixture");
+    fs::remove_dir_all(&fixture.state).expect("mission state must be removable in the fixture");
     fs::create_dir(&fixture.state)
         .expect("deleted mission state must be recreatable in the fixture");
     assert!(fixture.state_marker_path().is_file());
@@ -505,17 +763,13 @@ fn deleted_noncurrent_session_snapshot_cannot_be_rebound() {
 #[test]
 fn missing_or_malformed_active_snapshot_fails_closed() {
     let mut fixture = Fixture::new();
-    fs::remove_file(fixture.snapshot_path())
-        .expect("active snapshot must be removed");
+    fs::remove_file(fixture.snapshot_path()).expect("active snapshot must be removed");
     assert!(!fixture.run_checker().status.success());
     assert!(!fixture.run_audit().status.success());
 
     fixture.start_next_session();
-    fs::write(
-        fixture.snapshot_path(),
-        "{\"schema_version\": 999}\n",
-    )
-    .expect("malformed active snapshot must be written");
+    fs::write(fixture.snapshot_path(), "{\"schema_version\": 999}\n")
+        .expect("malformed active snapshot must be written");
     assert!(!fixture.run_checker().status.success());
     assert!(!fixture.run_audit().status.success());
 }

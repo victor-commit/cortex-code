@@ -14,16 +14,10 @@ pub use registry::{
     Surface,
 };
 
-fn run_check(
-    repository: &Path,
-    script_name: &str,
-    session_id: Option<&str>,
-) -> Result<(), String> {
+fn run_check(repository: &Path, script_name: &str, session_id: Option<&str>) -> Result<(), String> {
     let harness = repository.join("tools-throwaway/mockup-harness-v3");
     let mut command = Command::new("bash");
-    command
-        .arg(harness.join(script_name))
-        .current_dir(&harness);
+    command.arg(harness.join(script_name)).current_dir(&harness);
     if let Some(session_id) = session_id {
         command.env("V3_ISOLATION_SESSION_ID", session_id);
     }
@@ -49,12 +43,13 @@ pub fn verify_frozen_references(repository: &Path) -> Result<(), String> {
     run_check(repository, "check_v2_immutable.sh", None)
 }
 
-/// Proves forbidden paths retain the state captured at this worker-session start.
+/// Proves no newly introduced uncommitted forbidden-path change exists during
+/// this worker session.
 pub fn verify_forbidden_paths(repository: &Path, session_id: &str) -> Result<(), String> {
     run_check(repository, "check_forbidden_paths.sh", Some(session_id))
 }
 
-/// Audits mission-authored commits from the immutable mission audit origin.
+/// Audits exactly the commits recorded in the append-only mission ledger.
 pub fn verify_mission_commit_paths(repository: &Path, session_id: &str) -> Result<(), String> {
     run_check(repository, "audit_mission_commits.sh", Some(session_id))
 }
