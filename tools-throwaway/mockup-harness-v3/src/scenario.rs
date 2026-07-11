@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::audit::{
-    action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
-    AuditDocument, TransitionTrace,
+    ActionEvidence, AuditDocument, TransitionTrace, action_json, audit_screen, field, quote,
+    sha256_hex, transition_json,
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
@@ -565,7 +565,7 @@ fn onboarding_complete() -> (
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.onboarding.apply-default".to_owned(),
-        label: "Use Claude Sonnet 4.5".to_owned(),
+        label: "Continue".to_owned(),
         enabled: true,
         automatic: false,
     };

@@ -20,6 +20,15 @@ const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
 const DOCK_TOP: u16 = 31;
+const ONBOARDING_DOCK_TOP: u16 = 25;
+const CODE_BANNER: [&str; 6] = [
+    " ██████              ██",
+    "██                   ██",
+    "██        ████    █████   ████",
+    "██       ██  ██  ██  ██  ██████",
+    "██       ██  ██  ██  ██  ██",
+    " ██████   ████    █████   █████",
+];
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -80,69 +89,114 @@ fn render_onboarding(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let gate_origin = fixture_id.starts_with("gate.work-configuration");
-    canvas.write(4, 4, "Code", TextStyle::bright())?;
-    canvas.write(7, 4, "Let's set up one thing", TextStyle::bright())?;
+    for (offset, line) in CODE_BANNER.iter().enumerate() {
+        canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
+    }
+    canvas.write(10, 4, "Set up your first conversation", TextStyle::bright())?;
     canvas.write(
-        9,
+        12,
         4,
-        "Choose the model Code should use for your next conversation.",
+        "Choose the model Code will use when you begin.",
         TextStyle::text(),
     )?;
     canvas.write(
-        11,
+        14,
         4,
-        "You can change this later. No project or account setup is needed to start.",
+        "The recommended model is a safe everyday default.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "You can change it later. You do not need to connect an account yet.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        13,
+        20,
         4,
-        "How Code should work · Careful edits · asks before editing files",
+        "How Code should work: Careful edits, which asks before changing files.",
         TextStyle::text(),
     )?;
-    write_dock_border(canvas)?;
+    canvas.write(
+        23,
+        4,
+        "Review the safe recommendation below, then continue or choose another model.",
+        TextStyle::muted(),
+    )?;
+    write_onboarding_dock_border(canvas)?;
     dock_line(
         canvas,
-        DOCK_TOP + 1,
-        "Recommended · Claude Sonnet 4.5",
+        ONBOARDING_DOCK_TOP + 1,
+        "Recommended starting model",
         TextStyle::bright(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 2,
+        ONBOARDING_DOCK_TOP + 2,
+        "Claude Sonnet 4.5",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        ONBOARDING_DOCK_TOP + 3,
         "Balanced speed and depth for everyday coding conversations.",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 3,
-        if gate_origin {
-            "› [enter] Review models"
-        } else {
-            "› [enter] Use Claude Sonnet 4.5"
-        },
+        ONBOARDING_DOCK_TOP + 4,
+        "Works with Careful edits, which asks before changing files.",
+        TextStyle::muted(),
+    )?;
+    dock_line(canvas, ONBOARDING_DOCK_TOP + 5, "", TextStyle::text())?;
+    dock_line(
+        canvas,
+        ONBOARDING_DOCK_TOP + 6,
+        "› [enter] Continue",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 4,
+        ONBOARDING_DOCK_TOP + 7,
         "  [s] Skip with this safe default",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 5,
-        "[m] See other models · [esc] Back · first setup returns here",
+        ONBOARDING_DOCK_TOP + 8,
+        "  [m] Review other models",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        ONBOARDING_DOCK_TOP + 9,
+        "  [esc] Back to the previous setup step",
+        TextStyle::muted(),
+    )?;
+    dock_line(canvas, ONBOARDING_DOCK_TOP + 10, "", TextStyle::text())?;
+    dock_line(
+        canvas,
+        ONBOARDING_DOCK_TOP + 11,
+        "Continue accepts the recommendation. Skip keeps the same safe default.",
         TextStyle::muted(),
     )?;
 
-    let pairs = [
+    let pairs = vec![
+        semantic_with_refs(
+            screen_id,
+            fixture_id,
+            "entry-brand",
+            "code-ascii-banner",
+            (2..=7).map(|row| reference(row, 4, 39)).collect(),
+            "summary",
+            None,
+        ),
         semantic(
             screen_id,
             fixture_id,
             "surface",
             "onboarding-action-dock",
-            reference(7, 4, 26),
+            reference(10, 4, 34),
             "summary",
             None,
         ),
@@ -151,7 +205,7 @@ fn render_onboarding(
             fixture_id,
             "decision",
             "first-model-choice",
-            reference(9, 4, 67),
+            reference(12, 4, 53),
             "focused",
             None,
         ),
@@ -160,7 +214,7 @@ fn render_onboarding(
             fixture_id,
             "default",
             "recommended-claude-sonnet-4-5",
-            reference(DOCK_TOP + 1, 4, 41),
+            reference(ONBOARDING_DOCK_TOP + 1, 4, 30),
             "focused",
             None,
         ),
@@ -169,7 +223,7 @@ fn render_onboarding(
             fixture_id,
             "consequence",
             "balanced-speed-and-depth",
-            reference(DOCK_TOP + 2, 4, 69),
+            reference(ONBOARDING_DOCK_TOP + 3, 4, 63),
             "focused",
             None,
         ),
@@ -178,7 +232,7 @@ fn render_onboarding(
             fixture_id,
             "work-style",
             "work_style",
-            reference(13, 4, 76),
+            reference(20, 4, 73),
             "summary",
             None,
         ),
@@ -191,7 +245,7 @@ fn render_onboarding(
             } else {
                 "action.onboarding.apply-default"
             },
-            reference(DOCK_TOP + 3, 4, 36),
+            reference(ONBOARDING_DOCK_TOP + 6, 4, 24),
             "focused",
             Some(action(
                 if gate_origin {
@@ -199,11 +253,7 @@ fn render_onboarding(
                 } else {
                     "action.onboarding.apply-default"
                 },
-                if gate_origin {
-                    "Review models"
-                } else {
-                    "Use Claude Sonnet 4.5"
-                },
+                "Continue",
                 false,
             )),
         ),
@@ -212,7 +262,7 @@ fn render_onboarding(
             fixture_id,
             "secondary-action",
             "action.onboarding.skip",
-            reference(DOCK_TOP + 4, 4, 37),
+            reference(ONBOARDING_DOCK_TOP + 7, 4, 37),
             "summary",
             Some(action(
                 "action.onboarding.skip",
@@ -225,11 +275,11 @@ fn render_onboarding(
             fixture_id,
             "secondary-action",
             "action.onboarding.other-models",
-            reference(DOCK_TOP + 5, 4, 55),
+            reference(ONBOARDING_DOCK_TOP + 8, 4, 29),
             "summary",
             Some(action(
                 "action.onboarding.other-models",
-                "See other models",
+                "Review other models",
                 false,
             )),
         ),
@@ -238,7 +288,7 @@ fn render_onboarding(
             fixture_id,
             "cancel-action",
             "action.onboarding.back",
-            reference(DOCK_TOP + 5, 57, 75),
+            reference(ONBOARDING_DOCK_TOP + 9, 4, 43),
             "summary",
             Some(action("action.onboarding.back", "Back", false)),
         ),
@@ -266,11 +316,7 @@ fn render_onboarding(
                     "action.onboarding.apply-default"
                 },
                 "onboarding",
-                if gate_origin {
-                    "model-picker"
-                } else {
-                    "empty"
-                },
+                if gate_origin { "model-picker" } else { "empty" },
                 "direct",
                 if gate_origin {
                     "the configuration storyboard opens model choices without applying a pending value"
@@ -546,7 +592,11 @@ fn render_model_picker(
             transition(
                 "action.model-picker.cancel",
                 "model-picker",
-                if gate_origin { "onboarding" } else { "chat-turn" },
+                if gate_origin {
+                    "onboarding"
+                } else {
+                    "chat-turn"
+                },
                 "cancel",
                 if gate_origin {
                     "cancel discards the pending model and restores the onboarding configuration hub"
@@ -810,7 +860,11 @@ fn render_agent_picker(
             transition(
                 "action.agent-picker.cancel",
                 "agent-picker",
-                if gate_origin { "onboarding" } else { "chat-turn" },
+                if gate_origin {
+                    "onboarding"
+                } else {
+                    "chat-turn"
+                },
                 "cancel",
                 if gate_origin {
                     "cancel keeps the current work style and restores the onboarding configuration hub"
@@ -1177,6 +1231,22 @@ fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
     Ok(())
 }
 
+fn write_onboarding_dock_border(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(
+        ONBOARDING_DOCK_TOP,
+        2,
+        &format!("╭{}╮", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        ONBOARDING_DOCK_TOP + 12,
+        2,
+        &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    Ok(())
+}
+
 fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Result<(), String> {
     canvas.write(row, 2, "│", TextStyle::muted())?;
     canvas.write(row, 4, text, style)?;
@@ -1206,6 +1276,26 @@ fn semantic(
     detail_level: &str,
     action: Option<ActionEvidence>,
 ) -> (SemanticCandidate, SemanticEvent) {
+    semantic_with_refs(
+        screen_id,
+        fixture_id,
+        family,
+        subject_id,
+        vec![render_ref],
+        detail_level,
+        action,
+    )
+}
+
+fn semantic_with_refs(
+    screen_id: &str,
+    fixture_id: &str,
+    family: &str,
+    subject_id: &str,
+    render_refs: Vec<RenderRef>,
+    detail_level: &str,
+    action: Option<ActionEvidence>,
+) -> (SemanticCandidate, SemanticEvent) {
     let identity = Identity {
         screen_id: screen_id.to_owned(),
         fixture_id: fixture_id.to_owned(),
@@ -1213,7 +1303,7 @@ fn semantic(
         event_id: format!("event.{family}.{subject_id}"),
         family: family.to_owned(),
         subject_id: subject_id.to_owned(),
-        render_refs: vec![render_ref],
+        render_refs,
         detail_level: detail_level.to_owned(),
     };
     (

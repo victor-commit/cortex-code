@@ -1,4 +1,4 @@
-use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
+use mockup_harness_v3::{audit::audit_screen, chrome::tokens::ColorToken, scenario::replay_case};
 
 #[test]
 fn onboarding_leads_with_one_decision_and_a_safe_default() {
@@ -9,12 +9,15 @@ fn onboarding_leads_with_one_decision_and_a_safe_default() {
         .expect("onboarding audit must be bijective");
 
     let text = audit.render_txt();
-    assert!(text.contains("Let's set up one thing"));
-    assert!(text.contains("Choose the model Code should use"));
+    assert!(text.contains("Set up your first conversation"));
+    assert!(text.contains("Choose the model Code will use when you begin."));
+    assert!(text.contains("The recommended model is a safe everyday default."));
     assert!(text.contains("Recommended"));
     assert!(text.contains("Claude Sonnet 4.5"));
     assert!(text.contains("Balanced speed and depth"));
-    assert!(text.contains("[enter] Use Claude Sonnet 4.5"));
+    assert!(text.contains("› [enter] Continue"));
+    assert!(text.contains("[esc] Back to the previous setup step"));
+    assert!(!text.contains("first setup returns here"));
     assert!(!text.contains("capability matrix"));
     assert!(!text.contains("provider/model"));
     assert_eq!(
@@ -29,6 +32,63 @@ fn onboarding_leads_with_one_decision_and_a_safe_default() {
         transition.action_id == "action.onboarding.apply-default"
             && transition.to_screen_id == "empty"
     }));
+}
+
+#[test]
+fn onboarding_uses_a_multiline_accent_banner_with_compact_dock_spacing() {
+    let audit = audit_screen("onboarding", "flow3-onboarding")
+        .expect("onboarding must render typed evidence");
+    let text = audit.render_txt();
+    let lines = text.lines().collect::<Vec<_>>();
+
+    let banner_rows = audit
+        .styled_cells
+        .iter()
+        .filter(|cell| {
+            (2..=7).contains(&cell.row)
+                && cell.glyph != ' '
+                && cell.style.foreground == ColorToken::Accent
+        })
+        .map(|cell| cell.row)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        banner_rows,
+        (2..=7).collect(),
+        "the approved Code entry brand must span six accent rows"
+    );
+    assert!(
+        lines[2..=7]
+            .iter()
+            .all(|line| line.contains('█') && !line.trim().eq("Code")),
+        "the onboarding brand must be restrained ASCII art, not a single Code row"
+    );
+
+    let dock_top = lines
+        .iter()
+        .position(|line| line.contains('╭'))
+        .expect("onboarding must retain a bottom action dock");
+    let last_instruction = lines[..dock_top]
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .expect("onboarding must contain instructions before the dock");
+    assert!(
+        dock_top - last_instruction <= 2,
+        "instruction content and the dock must not be separated by a large unexplained gap"
+    );
+    let dock_bottom = lines
+        .iter()
+        .position(|line| line.contains('╰'))
+        .expect("onboarding dock must have a closing border");
+    assert_eq!(
+        dock_bottom, 37,
+        "the action dock must remain bottom-anchored"
+    );
+    assert!(
+        lines[dock_top + 1..dock_bottom]
+            .iter()
+            .all(|line| line.chars().nth(2) == Some('│') && line.chars().nth(117) == Some('│')),
+        "every action-dock content row must retain both side borders"
+    );
 }
 
 #[test]
