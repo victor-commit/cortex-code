@@ -118,7 +118,13 @@ pub fn run(args: GenerateArgs) -> Exit {
         Some(&config.model_id),
         &authored.system_prompt,
     );
-    let lock_dir = custom_agents::generation_lock_dir(&inputs);
+    let Some(lock_dir) = custom_agents::generation_lock_dir(&inputs) else {
+        eprintln!(
+            "cortex generate: cannot determine a Cortex state location for generated-agent leases; \
+             set HOME, XDG_DATA_HOME, CORTEX_DATA_DIR, or CORTEX_DB_PATH"
+        );
+        return Exit::Failure;
+    };
     if let Err(err) = std::fs::create_dir_all(&lock_dir) {
         eprintln!(
             "cortex generate: failed to create generation lock directory {}: {err}",

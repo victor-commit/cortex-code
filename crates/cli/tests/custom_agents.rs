@@ -876,3 +876,91 @@ fn concurrent_generation_across_configured_dirs_allows_one_success() {
         "both generators must reach the fixture"
     );
 }
+
+#[test]
+fn concurrent_generation_outside_home_uses_workspace_state_lease() {
+    let (home, _) = scratch_tree("generate-loopback-outside-home");
+    let project = std::env::temp_dir().join(format!(
+        "cortex-generated-agent-outside-home-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state_dir = home.join("writable-cortex-state");
+    fs::create_dir_all(project.join(".cortex/one")).expect("create first configured agent dir");
+    fs::create_dir_all(project.join(".cortex/two")).expect("create second configured agent dir");
+    fs::write(
+        project.join("cortex.toml"),
+        "agent_dirs = [\".cortex/one\", \".cortex/two\"]\n",
+    )
+    .expect("configure both generated agent directories");
+
+    let fixture = GenerationFixture::start(2, "outside-home-race");
+    let mut first = fixture_generate(
+        &home,
+        &project,
+        &fixture.base_url,
+        "outside-home-race",
+        Some(".cortex/one"),
+    );
+    let mut second = fixture_generate(
+        &home,
+        &project,
+        &fixture.base_url,
+        "outside-home-race",
+        Some(".cortex/two"),
+    );
+    first.env("CORTEX_DATA_DIR", &state_dir);
+    second.env("CORTEX_DATA_DIR", &state_dir);
+    let first_thread = thread::spawn(move || run(first, Duration::from_secs(15)));
+    let second_thread = thread::spawn(move || run(second, Duration::from_secs(15)));
+    let first = first_thread.join().expect("join first generator");
+    let second = second_thread.join().expect("join second generator");
+
+    let outcomes = [&first, &second];
+    assert_eq!(
+        outcomes.iter().filter(|out| out.status.success()).count(),
+        1,
+        "one workspace-keyed normalized-name lease must exclude cross-directory races"
+    );
+    assert_eq!(
+        usize::from(project.join(".cortex/one/outside-home-race.md").is_file())
+            + usize::from(project.join(".cortex/two/outside-home-race.md").is_file()),
+        1,
+        "the successful generation must remain discoverable in one configured target"
+    );
+    assert!(
+        !project.join(".cortex/agents").exists(),
+        "generation must not create a project-local .cortex/agents directory solely for locking"
+    );
+
+    let lease_dir = state_dir
+        .join("generated-agent-leases")
+        .join(checkpoints::workspace_key(&project));
+    assert!(
+        lease_dir.is_dir(),
+        "leases must use the writable Cortex state directory: {}",
+        lease_dir.display()
+    );
+    let lease_entries = fs::read_dir(&lease_dir)
+        .expect("read released lease directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !lease_entries
+            .iter()
+            .any(|entry| entry.starts_with(".cortex-generate-") && entry.ends_with(".lock")),
+        "leases must be removed after generation: {lease_entries:?}"
+    );
+    assert_eq!(
+        fixture.finish(),
+        2,
+        "both generators must reach the deterministic loopback provider"
+    );
+
+    let _ = fs::remove_dir_all(&home);
+    let _ = fs::remove_dir_all(&project);
+}

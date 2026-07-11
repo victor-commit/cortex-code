@@ -312,17 +312,25 @@ pub fn preflight_generation(
     Ok(())
 }
 
-/// The project-wide directory used for generation leases.
+/// The Cortex-state directory used for generation leases.
 ///
-/// All agents discoverable from nested project paths include the outermost conventional directory,
-/// so it gives one shared lock location even when two generators target different configured agent
-/// directories.
+/// Leases stay outside the project tree and use the canonical workspace key, so all configured
+/// agent directories for a workspace contend for the same normalized-name lease without requiring
+/// a writable ancestor or `.cortex/agents` directory.
 #[must_use]
-pub fn generation_lock_dir(inputs: &ConfigInputs) -> PathBuf {
-    conventional_project_dirs(inputs.home.as_deref(), &inputs.cwd)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| default_project_agents_dir(&inputs.cwd))
+pub fn generation_lock_dir(inputs: &ConfigInputs) -> Option<PathBuf> {
+    generation_lock_dir_with(inputs, &db::DbPathInputs::from_process())
+}
+
+fn generation_lock_dir_with(
+    inputs: &ConfigInputs,
+    state_inputs: &db::DbPathInputs,
+) -> Option<PathBuf> {
+    state_inputs.resolve().map(|db_path| {
+        db_path
+            .with_file_name("generated-agent-leases")
+            .join(checkpoints::workspace_key(&inputs.cwd))
+    })
 }
 
 /// An exclusive, per-name generation lease held while a new agent is persisted and re-discovered.
@@ -1288,6 +1296,72 @@ Help with delegated or primary work.
             "an-agent-that-writes-tests"
         );
         assert_eq!(sanitize_identifier("!!!"), "generated-agent");
+    }
+
+    #[test]
+    fn generation_leases_use_the_state_resolver_and_workspace_key() {
+        let root = test_dir("generation-lease-state");
+        let first_workspace = root.join("first-project");
+        let second_workspace = root.join("second-project");
+        fs::create_dir_all(&first_workspace).expect("create first workspace");
+        fs::create_dir_all(&second_workspace).expect("create second workspace");
+        let state_db = root.join("state").join("cortex.db");
+        let state_inputs = db::DbPathInputs {
+            db_path: Some(state_db.clone()),
+            ..Default::default()
+        };
+
+        let first = generation_lock_dir_with(
+            &test_inputs(&root.join("home"), &first_workspace),
+            &state_inputs,
+        )
+        .expect("an explicit state path resolves a generation lease directory");
+        let second = generation_lock_dir_with(
+            &test_inputs(&root.join("home"), &second_workspace),
+            &state_inputs,
+        )
+        .expect("an explicit state path resolves a generation lease directory");
+
+        assert_eq!(
+            first,
+            state_db
+                .with_file_name("generated-agent-leases")
+                .join(checkpoints::workspace_key(&first_workspace))
+        );
+        assert_eq!(
+            second,
+            state_db
+                .with_file_name("generated-agent-leases")
+                .join(checkpoints::workspace_key(&second_workspace))
+        );
+        assert_ne!(
+            first, second,
+            "workspaces sharing a Cortex state directory need distinct lease directories"
+        );
+        assert!(
+            !first.starts_with(&first_workspace) && !second.starts_with(&second_workspace),
+            "generation leases must not be derived from workspace ancestors"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generation_leases_require_a_resolvable_cortex_state_location() {
+        let root = test_dir("generation-lease-no-state");
+        let workspace = root.join("project");
+        fs::create_dir_all(&workspace).expect("create workspace");
+
+        assert_eq!(
+            generation_lock_dir_with(
+                &test_inputs(&root.join("home"), &workspace),
+                &db::DbPathInputs::default(),
+            ),
+            None,
+            "generation must fail clearly instead of deriving a lock directory from a workspace ancestor"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn test_inputs(home: &Path, cwd: &Path) -> ConfigInputs {
