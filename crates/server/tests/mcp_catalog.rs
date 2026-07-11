@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use events::{Event, EventBus};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -176,12 +178,6 @@ fn echo_server_bin() -> Option<PathBuf> {
     bin.exists().then_some(bin)
 }
 
-fn remote_server_bin() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let bin = exe.parent()?.parent()?.join("cortex-mcp-remote-server");
-    bin.exists().then_some(bin)
-}
-
 fn toml_escape(path: &std::path::Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
@@ -198,39 +194,19 @@ where
 
 #[tokio::test]
 async fn mcp_route_surfaces_needs_auth_without_an_oauth_challenge() {
-    let Some(remote) = remote_server_bin() else {
-        eprintln!("skipping /mcp auth-state test: cortex-mcp-remote-server is unavailable");
-        return;
-    };
     let scratch = Scratch::new("server-mcp-needs-auth");
     let workspace = scratch.workspace();
-    let challenge =
-        "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-reach-server\"";
-    let mut fixture = std::process::Command::new(remote)
-        .env("CORTEX_MCP_MODE", "oauth")
-        .env("CORTEX_MCP_PORT", "3242")
-        .env("CORTEX_MCP_WWW_AUTHENTICATE", challenge)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn real OAuth MCP fixture");
-
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", 3242))
-            .await
-            .is_ok()
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    let fixture = NeedsAuthFixture::start().await;
     std::fs::write(
         workspace.join("cortex.toml"),
-        r#"
+        format!(
+            r#"
 [mcp.api]
 type = "remote"
-url = "http://127.0.0.1:3242/mcp"
+url = "{}"
 "#,
+            fixture.url
+        ),
     )
     .expect("write cortex.toml");
 
@@ -249,8 +225,7 @@ url = "http://127.0.0.1:3242/mcp"
         )
         .await
         .expect("response");
-    let _ = fixture.kill();
-    let _ = fixture.wait();
+    fixture.finish().await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = json_body(response).await;
@@ -259,15 +234,145 @@ url = "http://127.0.0.1:3242/mcp"
         .and_then(|servers| servers.iter().find(|server| server["name"] == "api"))
         .expect("api MCP server status");
     assert_eq!(api["status"], "needs_auth");
-    let rendered = api.to_string();
+    let rendered = body.to_string();
     assert!(
         rendered.contains("authorization required"),
         "server status remains actionable: {rendered}"
     );
     assert!(
-        !rendered.contains(challenge) && !rendered.contains("challenge-must-not-reach-server"),
+        !rendered.contains(OPAQUE_AUTH_CHALLENGE)
+            && !rendered.contains("challenge-must-not-reach-server"),
         "server surface must never serialize OAuth challenges: {rendered}"
     );
+}
+
+const OPAQUE_AUTH_CHALLENGE: &str =
+    "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-reach-server\"";
+
+/// A self-contained remote-MCP probe fixture. Its sole response is a real HTTP 401 to an
+/// initialize POST, and the spawned task has a deadline and is awaited by the test.
+struct NeedsAuthFixture {
+    url: String,
+    handle: Option<tokio::task::JoinHandle<Result<(), String>>>,
+}
+
+impl NeedsAuthFixture {
+    async fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind ephemeral needs-auth fixture");
+        let port = listener
+            .local_addr()
+            .expect("needs-auth fixture local address")
+            .port();
+        let handle = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .map_err(|err| format!("accept MCP probe: {err}"))?;
+                let request = read_http_request(&mut stream)
+                    .await
+                    .map_err(|err| format!("read MCP probe: {err}"))?;
+                assert_initialize_probe(&request)?;
+                stream
+                    .write_all(unauthorized_response().as_bytes())
+                    .await
+                    .map_err(|err| format!("write MCP 401 response: {err}"))?;
+                stream
+                    .flush()
+                    .await
+                    .map_err(|err| format!("flush MCP 401 response: {err}"))?;
+                Ok(())
+            })
+            .await
+            .map_err(|_| "timed out waiting for an MCP probe".to_owned())?
+        });
+        Self {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            handle: Some(handle),
+        }
+    }
+
+    async fn finish(mut self) {
+        self.handle
+            .take()
+            .expect("needs-auth fixture task handle")
+            .await
+            .expect("needs-auth fixture task should not panic")
+            .expect("needs-auth fixture should serve an MCP initialize probe");
+    }
+}
+
+impl Drop for NeedsAuthFixture {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let headers_end = loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(request);
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..headers_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let mut remaining = content_length.saturating_sub(request.len() - headers_end);
+    while remaining > 0 {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+        remaining = remaining.saturating_sub(read);
+    }
+    Ok(request)
+}
+
+fn assert_initialize_probe(request: &[u8]) -> Result<(), String> {
+    let request =
+        std::str::from_utf8(request).map_err(|err| format!("MCP probe was not UTF-8: {err}"))?;
+    let (headers, body) = request
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "MCP probe omitted HTTP headers".to_owned())?;
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("POST /mcp "))
+    {
+        return Err(format!("expected an MCP POST probe, got {headers:?}"));
+    }
+    let method = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|body| body["method"].as_str().map(str::to_owned));
+    if method.as_deref() != Some("initialize") {
+        return Err(format!("expected an MCP initialize probe, got {method:?}"));
+    }
+    Ok(())
+}
+
+fn unauthorized_response() -> String {
+    format!(
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {OPAQUE_AUTH_CHALLENGE}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 struct Scratch {

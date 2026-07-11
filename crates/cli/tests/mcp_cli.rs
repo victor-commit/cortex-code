@@ -3,9 +3,11 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -111,6 +113,174 @@ impl Drop for Fixture {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+const OPAQUE_AUTH_CHALLENGE: &str =
+    "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-leak\"";
+
+/// A self-contained loopback fixture that proves the remote MCP probe executes an actual HTTP
+/// `401` response. It serves a fixed number of initialize requests and joins its worker before
+/// the test returns, so no listener can outlive the regression test.
+struct NeedsAuthFixture {
+    url: String,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl NeedsAuthFixture {
+    fn start(expected_requests: usize) -> Self {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral needs-auth fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set needs-auth fixture listener nonblocking");
+        let port = listener
+            .local_addr()
+            .expect("needs-auth fixture local address")
+            .port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_thread = shutdown.clone();
+        let handle = std::thread::spawn(move || {
+            for request_number in 1..=expected_requests {
+                let Some(mut stream) = accept_fixture_connection(&listener, &shutdown_thread)?
+                else {
+                    return Ok(());
+                };
+                let request = read_http_request(&mut stream)
+                    .map_err(|err| format!("read fixture request {request_number}: {err}"))?;
+                assert_initialize_probe(&request, request_number)?;
+                stream
+                    .write_all(unauthorized_response().as_bytes())
+                    .map_err(|err| format!("write fixture 401 response {request_number}: {err}"))?;
+                stream
+                    .flush()
+                    .map_err(|err| format!("flush fixture 401 response {request_number}: {err}"))?;
+            }
+            Ok(())
+        });
+
+        Self {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn finish(mut self) {
+        self.join()
+            .expect("needs-auth fixture should serve every MCP probe");
+    }
+
+    fn join(&mut self) -> Result<(), String> {
+        self.handle
+            .take()
+            .expect("needs-auth fixture handle")
+            .join()
+            .map_err(|_| "needs-auth fixture worker panicked".to_owned())?
+    }
+}
+
+impl Drop for NeedsAuthFixture {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if self.handle.is_some() {
+            let _ = self.join();
+        }
+    }
+}
+
+fn accept_fixture_connection(
+    listener: &TcpListener,
+    shutdown: &AtomicBool,
+) -> Result<Option<TcpStream>, String> {
+    let deadline = Instant::now() + RUN_TIMEOUT;
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        match listener.accept() {
+            Ok((stream, _)) => return Ok(Some(stream)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("timed out waiting for an MCP probe".to_owned());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Err(format!("accept MCP probe: {err}")),
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let headers_end = loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(request);
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..headers_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let mut remaining = content_length.saturating_sub(request.len() - headers_end);
+    while remaining > 0 {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+        remaining = remaining.saturating_sub(read);
+    }
+    Ok(request)
+}
+
+fn assert_initialize_probe(request: &[u8], request_number: usize) -> Result<(), String> {
+    let request = std::str::from_utf8(request)
+        .map_err(|err| format!("fixture request {request_number} was not UTF-8: {err}"))?;
+    let (headers, body) = request
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("fixture request {request_number} omitted HTTP headers"))?;
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("POST /mcp "))
+    {
+        return Err(format!(
+            "fixture request {request_number} should be an MCP POST, got {headers:?}"
+        ));
+    }
+    let method = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|body| body["method"].as_str().map(str::to_owned));
+    if method.as_deref() != Some("initialize") {
+        return Err(format!(
+            "fixture request {request_number} should initialize MCP, got {method:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn unauthorized_response() -> String {
+    format!(
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {OPAQUE_AUTH_CHALLENGE}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 fn wait_for_port(port: u16) {
@@ -756,39 +926,24 @@ url = "http://127.0.0.1:3226/mcp"
 
 #[test]
 fn mcp_list_surfaces_needs_auth_without_exposing_a_real_oauth_challenge() {
-    let Some(bin) = remote_server_bin() else {
-        eprintln!("skipping: cortex-mcp-remote-server fixture not built");
-        return;
-    };
     let scratch = Scratch::new("needs-auth-safe-status");
-    let log = scratch.root.join("needs-auth-safe-status.log");
-    let challenge = "Bearer realm=\"fixture\", opaque_challenge=\"challenge-must-not-leak\"";
-    let mut fixture = Command::new(bin);
-    fixture
-        .env("CORTEX_MCP_MODE", "oauth")
-        .env("CORTEX_MCP_PORT", "3241")
-        .env("CORTEX_MCP_LOG", &log)
-        .env("CORTEX_MCP_WWW_AUTHENTICATE", challenge)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut fixture = fixture.spawn().expect("spawn remote MCP fixture");
-    wait_for_port(3241);
+    let fixture = NeedsAuthFixture::start(2);
 
-    scratch.write_project_config(
+    scratch.write_project_config(&format!(
         r#"
 [mcp.api]
 type = "remote"
-url = "http://127.0.0.1:3241/mcp"
+url = "{}"
 "#,
-    );
+        fixture.url()
+    ));
 
     let json = run_command(cortex_command(
         &scratch,
         &["mcp", "list", "--format", "json"],
     ));
     let text = run_command(cortex_command(&scratch, &["mcp", "list"]));
-    let _ = fixture.kill();
-    let _ = fixture.wait();
+    fixture.finish();
 
     assert_eq!(json.status.code(), Some(0));
     assert_eq!(text.status.code(), Some(0));
@@ -806,7 +961,7 @@ url = "http://127.0.0.1:3241/mcp"
         "both surfaces retain the safe actionable state: {observed}"
     );
     assert!(
-        !observed.contains(challenge) && !observed.contains("challenge-must-not-leak"),
+        !observed.contains(OPAQUE_AUTH_CHALLENGE) && !observed.contains("challenge-must-not-leak"),
         "OAuth challenges must not appear in CLI JSON or text: {observed}"
     );
 }
