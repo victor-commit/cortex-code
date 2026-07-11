@@ -75,6 +75,34 @@ pub struct PermissionEvidence {
     pub persistent_scope: Option<PersistentPermissionScope>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiffHunkEvidence {
+    pub hunk_id: String,
+    pub file_path: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub state: String,
+    pub content_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiffEvidence {
+    pub patch_revision: String,
+    pub file_path: String,
+    pub hunks: Vec<DiffHunkEvidence>,
+    pub focused_hunk: String,
+    pub included_count: usize,
+    pub applied_hunks: Vec<String>,
+    pub excluded_hunks: Vec<String>,
+    pub write_count: u32,
+    pub working_tree_before: String,
+    pub working_tree_after: String,
+    pub git_index_before: String,
+    pub git_index_after: String,
+}
+
 impl PermissionEvidence {
     pub fn reconstructed_bytes(&self) -> Vec<u8> {
         decode_escaped_bytes(&self.display_notation)
@@ -94,6 +122,7 @@ pub struct CaseReplay {
     pub attempts: Vec<AttemptEvidence>,
     pub side_effects: Vec<SideEffectEvidence>,
     pub permission: Option<PermissionEvidence>,
+    pub diff: Option<DiffEvidence>,
     pub audit: AuditDocument,
 }
 
@@ -145,7 +174,8 @@ impl CaseReplay {
         }
         if self.attempts.len() != 1
             || (self.attempts[0].count != 1
-                && !(self.permission.is_some() && self.attempts[0].count == 0))
+                && !((self.permission.is_some() || self.diff.is_some())
+                    && self.attempts[0].count == 0))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -190,6 +220,9 @@ impl CaseReplay {
             if permission.verdict == "denied" && permission.invocation_count != 0 {
                 return Err("denied permission evidence contains an invocation".to_owned());
             }
+        }
+        if let Some(diff) = &self.diff {
+            validate_diff(diff)?;
         }
         Ok(())
     }
@@ -264,6 +297,11 @@ impl CaseReplay {
             Some(permission) => permission_json(&mut output, permission),
             None => output.push_str("null"),
         }
+        output.push_str(",\"diff\":");
+        match &self.diff {
+            Some(diff) => diff_json(&mut output, diff),
+            None => output.push_str("null"),
+        }
         output.push_str(",\"audit\":");
         output.push_str(&self.audit.to_json());
         output.push('}');
@@ -295,6 +333,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "file-mention-insert" => file_mention_insert(),
         "file-mention-dismiss" => file_mention_dismiss(),
         "file-mention-no-results" => file_mention_no_results(),
+        "diff-review" => diff_review(),
+        "diff-apply-all" => diff_apply_all(),
+        "diff-cancel" => diff_cancel(),
+        "staging-include-hunk" => staging_include_hunk(),
+        "staging-exclude-hunk" => staging_exclude_hunk(),
+        "staging-include-all" => staging_include_all(),
+        "staging-finish" => staging_finish(),
+        "staging-cancel" | "staging-back" => staging_cancel(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -320,6 +366,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         attempts: vec![attempt],
         side_effects: vec![effect],
         permission: permission_evidence(case_id),
+        diff: diff_evidence(case_id),
         audit,
     };
     replay.validate()?;
@@ -1298,6 +1345,355 @@ fn file_mention_no_results() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn diff_review() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "diff-edit",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "review-changes",
+        "pending-edit",
+        Some("pending.edit.patch-retry-18"),
+        "return-to-paused-turn",
+        0,
+    );
+    let after = state(
+        "diff-viewer-staging",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "hunk.retry-test",
+        "staging-detail",
+        Some("pending.edit.patch-retry-18"),
+        "return-to-pending-edit",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.diff-edit.review-changes".to_owned(),
+        label: "Review changes".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "read-only review opens the same patch revision without writing or approving it"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.diff.review.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 0,
+        outcome: "opened-read-only".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.diff.review",
+        "patch-review",
+        "no-write",
+        "review opened exact file and hunk identities without changing the working tree or index",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_apply_all() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = diff_pending_state("apply-all", 0);
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "apply-all",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = diff_action("action.diff-edit.apply-all", "Apply all");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "direct",
+        "apply all writes the shown patch atomically and resumes the paused activity",
+    );
+    let attempt = diff_attempt("attempt.diff.apply-all.1", "applied-all", 1);
+    let effect = simulated_effect(
+        "effect.diff.apply-all",
+        "patch-application",
+        "applied-all-hunks",
+        "both disclosed hunks were applied in one simulated atomic write",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = diff_pending_state("cancel", 0);
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "cancel",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = diff_action("action.diff-edit.cancel", "Cancel");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "cancel",
+        "cancel writes nothing and restores the paused conversation and draft",
+    );
+    let attempt = diff_attempt("attempt.diff.cancel.1", "cancelled-without-write", 0);
+    let effect = simulated_effect(
+        "effect.diff.cancel",
+        "patch-decision",
+        "no-write",
+        "pending edit cancellation discarded no hunk and restored the exact origin",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn staging_include_hunk() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    staging_toggle("include", "hunk.retry-test", "Include")
+}
+
+fn staging_exclude_hunk() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    staging_toggle("exclude", "hunk.retry-guard", "Exclude")
+}
+
+fn staging_include_all() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = staging_state("include-all", 0);
+    let after = staging_state("include-all", 1);
+    let action = diff_action("action.staging.include-all", "Include all");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "direct",
+        "Include all marks every eligible hunk Included without writing the working tree",
+    );
+    let attempt = diff_attempt("attempt.staging.include-all.1", "include-all", 0);
+    let effect = simulated_effect(
+        "effect.staging.include-all",
+        "hunk-selection",
+        "no-write",
+        "all eligible hunks were selected while the working tree and Git index stayed unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn staging_finish() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = staging_state("finish", 0);
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "finish",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = diff_action("action.staging.finish", "Finish");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "direct",
+        "Finish applies only the included hunk atomically and resumes the paused activity",
+    );
+    let attempt = diff_attempt("attempt.staging.finish.1", "applied-included-hunks", 1);
+    let effect = simulated_effect(
+        "effect.staging.finish",
+        "patch-application",
+        "applied-included-hunks",
+        "one included hunk was written atomically and the excluded hunk remained pending",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn staging_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = staging_state("cancel", 0);
+    let after = diff_pending_state("return", 1);
+    let action = diff_action("action.staging.cancel", "Cancel");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "cancel",
+        "Cancel applies none and returns one level to the unchanged pending edit",
+    );
+    let attempt = diff_attempt("attempt.staging.cancel.1", "cancelled-without-write", 0);
+    let effect = simulated_effect(
+        "effect.staging.cancel",
+        "patch-review",
+        "no-write",
+        "staging cancellation preserved the patch revision and included states without writing",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_pending_state(selection: &str, tick: u32) -> ScenarioState {
+    state(
+        "diff-edit",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        selection,
+        "pending-edit",
+        Some("pending.edit.patch-retry-18"),
+        "return-to-paused-turn",
+        tick,
+    )
+}
+
+fn staging_state(selection: &str, tick: u32) -> ScenarioState {
+    state(
+        "diff-viewer-staging",
+        vec!["chat-turn", "permission-shell", "diff-edit"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        selection,
+        "staging-detail",
+        Some("pending.edit.patch-retry-18"),
+        "return-to-pending-edit",
+        tick,
+    )
+}
+
+fn diff_action(action_id: &str, label: &str) -> ActionEvidence {
+    ActionEvidence {
+        action_id: action_id.to_owned(),
+        label: label.to_owned(),
+        enabled: true,
+        automatic: false,
+    }
+}
+
+fn diff_transition(
+    action: &ActionEvidence,
+    before: &ScenarioState,
+    after: &ScenarioState,
+    kind: &str,
+    path: &str,
+) -> TransitionTrace {
+    TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: kind.to_owned(),
+        path: path.to_owned(),
+    }
+}
+
+fn diff_attempt(attempt_id: &str, outcome: &str, count: u32) -> AttemptEvidence {
+    AttemptEvidence {
+        attempt_id: attempt_id.to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count,
+        outcome: outcome.to_owned(),
+    }
+}
+
+fn staging_toggle(
+    name: &str,
+    focused_hunk: &str,
+    label: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = staging_state(name, 0);
+    let after = staging_state(name, 1);
+    let action = diff_action(&format!("action.staging.{}", name), label);
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "direct",
+        &format!("{} changes only the focused hunk {focused_hunk} and writes nothing", label),
+    );
+    let attempt = diff_attempt(
+        &format!("attempt.staging.{name}.1"),
+        "selection-updated",
+        0,
+    );
+    let effect = simulated_effect(
+        &format!("effect.staging.{name}"),
+        "hunk-selection",
+        "no-write",
+        &format!("{label} changed only focused hunk {focused_hunk}"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn state(
     screen_id: &str,
@@ -1344,6 +1740,48 @@ fn validate_state(state: &ScenarioState) -> Result<(), String> {
     }
     if state_hash(state) != state.state_hash {
         return Err("scenario state hash does not match its stable fields".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
+    if diff.patch_revision != "patch-retry-18"
+        || diff.file_path != "src/net/retry_policy.rs"
+        || diff.hunks.len() != 2
+        || diff.focused_hunk.trim().is_empty()
+        || diff.git_index_before != diff.git_index_after
+        || diff.hunks.iter().any(|hunk| {
+            hunk.file_path != diff.file_path
+                || hunk.hunk_id.trim().is_empty()
+                || !matches!(hunk.state.as_str(), "Included" | "Excluded" | "Pending")
+                || hunk.content_hash.len() != 64
+        })
+        || diff.included_count != diff
+            .hunks
+            .iter()
+            .filter(|hunk| hunk.state == "Included")
+            .count()
+    {
+        return Err("diff evidence has incomplete identity, state, or index preservation".to_owned());
+    }
+    if diff.applied_hunks.iter().any(|hunk| {
+        !diff
+            .hunks
+            .iter()
+            .any(|candidate| candidate.hunk_id == *hunk && candidate.state == "Included")
+    }) {
+        return Err("diff evidence applies a hunk that is not included".to_owned());
+    }
+    if diff.excluded_hunks.iter().any(|hunk| {
+        !diff
+            .hunks
+            .iter()
+            .any(|candidate| candidate.hunk_id == *hunk && candidate.state != "Included")
+    }) {
+        return Err("diff evidence loses an excluded hunk".to_owned());
+    }
+    if diff.write_count > 1 {
+        return Err("diff evidence exceeds one atomic write".to_owned());
     }
     Ok(())
 }
@@ -1408,6 +1846,11 @@ fn preserved_hashes(
         ),
         ("focus", before.focus.as_str(), after.focus.as_str()),
         (
+            "patch_revision",
+            "patch-retry-18",
+            "patch-retry-18",
+        ),
+        (
             "composer_height",
             before.composer_height.as_str(),
             after.composer_height.as_str(),
@@ -1422,6 +1865,113 @@ fn preserved_hashes(
         );
     }
     hashes
+}
+
+fn diff_hunks(states: [&str; 2]) -> Vec<DiffHunkEvidence> {
+    vec![
+        DiffHunkEvidence {
+            hunk_id: "hunk.retry-guard".to_owned(),
+            file_path: "src/net/retry_policy.rs".to_owned(),
+            old_start: 42,
+            old_lines: 2,
+            new_start: 42,
+            new_lines: 3,
+            state: states[0].to_owned(),
+            content_hash: sha256_hex(b"hunk.retry-guard\n-    return retry_after\n+    return retry_after + jitter"),
+        },
+        DiffHunkEvidence {
+            hunk_id: "hunk.retry-test".to_owned(),
+            file_path: "src/net/retry_policy.rs".to_owned(),
+            old_start: 88,
+            old_lines: 2,
+            new_start: 88,
+            new_lines: 2,
+            state: states[1].to_owned(),
+            content_hash: sha256_hex(b"hunk.retry-test\n-assert_eq!(wait, 4)\n+assert_eq!(wait, 5)"),
+        },
+    ]
+}
+
+fn diff_evidence(case_id: &str) -> Option<DiffEvidence> {
+    if !matches!(
+        case_id,
+        "diff-review"
+            | "diff-apply-all"
+            | "diff-cancel"
+            | "staging-include-hunk"
+            | "staging-exclude-hunk"
+            | "staging-include-all"
+            | "staging-finish"
+            | "staging-cancel"
+            | "staging-back"
+    ) {
+        return None;
+    }
+    let (states, focused_hunk, applied_hunks, excluded_hunks, write_count, tree_after) =
+        match case_id {
+            "diff-apply-all" => (
+                ["Included", "Included"],
+                "hunk.retry-guard",
+                vec!["hunk.retry-guard".to_owned(), "hunk.retry-test".to_owned()],
+                vec![],
+                1,
+                "tree-after-all",
+            ),
+            "staging-include-all" => (
+                ["Included", "Included"],
+                "hunk.retry-guard",
+                vec![],
+                vec![],
+                0,
+                "tree-before",
+            ),
+            "staging-include-hunk" => (
+                ["Included", "Included"],
+                "hunk.retry-test",
+                vec![],
+                vec![],
+                0,
+                "tree-before",
+            ),
+            "staging-exclude-hunk" => (
+                ["Excluded", "Pending"],
+                "hunk.retry-guard",
+                vec![],
+                vec![],
+                0,
+                "tree-before",
+            ),
+            "staging-finish" => (
+                ["Included", "Pending"],
+                "hunk.retry-guard",
+                vec!["hunk.retry-guard".to_owned()],
+                vec!["hunk.retry-test".to_owned()],
+                1,
+                "tree-after-guard",
+            ),
+            _ => (
+                ["Included", "Pending"],
+                "hunk.retry-test",
+                vec![],
+                vec!["hunk.retry-test".to_owned()],
+                0,
+                "tree-before",
+            ),
+        };
+    Some(DiffEvidence {
+        patch_revision: "patch-retry-18".to_owned(),
+        file_path: "src/net/retry_policy.rs".to_owned(),
+        hunks: diff_hunks(states),
+        focused_hunk: focused_hunk.to_owned(),
+        included_count: states.iter().filter(|state| **state == "Included").count(),
+        applied_hunks,
+        excluded_hunks,
+        write_count,
+        working_tree_before: "tree-before".to_owned(),
+        working_tree_after: tree_after.to_owned(),
+        git_index_before: "index-unchanged".to_owned(),
+        git_index_after: "index-unchanged".to_owned(),
+    })
 }
 
 fn simulated_effect(effect_id: &str, kind: &str, status: &str, detail: &str) -> SideEffectEvidence {
@@ -1603,6 +2153,58 @@ fn permission_json(output: &mut String, permission: &PermissionEvidence) {
         None => output.push_str("null"),
     }
     output.push('}');
+}
+
+fn diff_json(output: &mut String, diff: &DiffEvidence) {
+    output.push('{');
+    raw_field(output, "patch_revision", &diff.patch_revision);
+    field(output, "file_path", &diff.file_path);
+    output.push_str(",\"hunks\":[");
+    for (index, hunk) in diff.hunks.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push('{');
+        raw_field(output, "hunk_id", &hunk.hunk_id);
+        field(output, "file_path", &hunk.file_path);
+        output.push_str(",\"old_start\":");
+        output.push_str(&hunk.old_start.to_string());
+        output.push_str(",\"old_lines\":");
+        output.push_str(&hunk.old_lines.to_string());
+        output.push_str(",\"new_start\":");
+        output.push_str(&hunk.new_start.to_string());
+        output.push_str(",\"new_lines\":");
+        output.push_str(&hunk.new_lines.to_string());
+        field(output, "state", &hunk.state);
+        field(output, "content_hash", &hunk.content_hash);
+        output.push('}');
+    }
+    output.push(']');
+    field(output, "focused_hunk", &diff.focused_hunk);
+    output.push_str(",\"included_count\":");
+    output.push_str(&diff.included_count.to_string());
+    string_array(output, "applied_hunks", &diff.applied_hunks);
+    string_array(output, "excluded_hunks", &diff.excluded_hunks);
+    output.push_str(",\"write_count\":");
+    output.push_str(&diff.write_count.to_string());
+    field(output, "working_tree_before", &diff.working_tree_before);
+    field(output, "working_tree_after", &diff.working_tree_after);
+    field(output, "git_index_before", &diff.git_index_before);
+    field(output, "git_index_after", &diff.git_index_after);
+    output.push('}');
+}
+
+fn string_array(output: &mut String, name: &str, values: &[String]) {
+    output.push(',');
+    quote(output, name);
+    output.push_str(":[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        quote(output, value);
+    }
+    output.push(']');
 }
 
 fn state_json(output: &mut String, state: &ScenarioState) {

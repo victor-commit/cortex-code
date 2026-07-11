@@ -312,7 +312,12 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
     }
     if matches!(
         screen_id,
-        "composer-multiline" | "file-mention" | "permission-shell" | "permission-deny-reason"
+        "composer-multiline"
+            | "file-mention"
+            | "permission-shell"
+            | "permission-deny-reason"
+            | "diff-edit"
+            | "diff-viewer-staging"
     ) {
         let document = crate::screens::input_and_approval::render(screen_id, fixture_id)?;
         document.validate()?;

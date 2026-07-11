@@ -75,6 +75,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "diff-edit" if fixture_id.starts_with("case.permission-allow-once") => {
             render_permission_resume(&mut canvas, screen_id, fixture_id)?
         }
+        "diff-edit" => render_diff_edit(&mut canvas, screen_id, fixture_id)?,
+        "diff-viewer-staging" => render_diff_staging(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown Flow 2 composer screen: {screen_id}")),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -87,6 +89,499 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
     })
+}
+
+fn render_diff_edit(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Check the project files before summarizing the retry result.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code · Pending edit", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Pending edit · nothing has been written.",
+        TextStyle::accent(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "File: src/net/retry_policy.rs · revision: patch-retry-18",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "Patch summary +4 -3 · 2 hunks",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "Hunk @@ -42,2 +42,3",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        6,
+        "42  42  -    return retry_after",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        6,
+        "43  43  -    backoff = backoff + 1",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        6,
+        "    42  +    return retry_after + jitter",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        6,
+        "    43  +    backoff = backoff + jitter",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        18,
+        6,
+        "    44  +    log_retry_window(jitter)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "Hunk @@ -88,2 +88,2",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        21,
+        6,
+        "88  88  -assert_eq!(wait, 4)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        22,
+        6,
+        "    89  +assert_eq!(wait, 5)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "Why this change: keep retry timing from repeating the same failed window.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        26,
+        4,
+        "The paused conversation and your draft stay unchanged until you decide.",
+        TextStyle::muted(),
+    )?;
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Pending edit · choose one next step",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "› [enter] Review changes · open read-only staging detail",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "  [a] Apply all · write this exact patch and resume the paused turn",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Cancel · write nothing and return to the paused conversation",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Review is read-only · editing is available inside staging detail",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-edit",
+            "pending.edit.patch-retry-18",
+            reference(9, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "file",
+            "src/net/retry_policy.rs",
+            reference(11, 4, 52),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-guard",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-test",
+            reference(20, 4, 28),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "rationale",
+            "retry-window-jitter",
+            reference(24, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.diff-edit.review-changes",
+            reference(DOCK_TOP + 2, 4, 60),
+            "focused",
+            Some(action(
+                "action.diff-edit.review-changes",
+                "Review changes",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.diff-edit.apply-all",
+            reference(DOCK_TOP + 3, 4, 77),
+            "summary",
+            Some(action("action.diff-edit.apply-all", "Apply all", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.diff-edit.cancel",
+            reference(DOCK_TOP + 4, 4, 78),
+            "summary",
+            Some(action("action.diff-edit.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.diff-edit.review-changes",
+            "diff-edit",
+            "diff-viewer-staging",
+            "direct",
+            "Review changes opens exact patch revision in read-only staging detail without writing",
+        ),
+        transition(
+            "action.diff-edit.apply-all",
+            "diff-edit",
+            "chat-turn",
+            "direct",
+            "Apply all writes exactly the shown patch atomically and resumes the paused activity",
+        ),
+        transition(
+            "action.diff-edit.cancel",
+            "diff-edit",
+            "chat-turn",
+            "cancel",
+            "Cancel writes nothing and restores the paused conversation and draft",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_diff_staging(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(3, 4, "Review changes · temporary detail", TextStyle::bright())?;
+    canvas.write(
+        4,
+        4,
+        "From pending edit in the paused retry conversation",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        6,
+        4,
+        "File: src/net/retry_policy.rs · revision: patch-retry-18",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        7,
+        4,
+        "Included 1 of 2 hunks · Git index unchanged",
+        TextStyle::accent(),
+    )?;
+    canvas.write(
+        9,
+        4,
+        "› ✓ Included · hunk.retry-guard · old 42-43 · new 42-44",
+        TextStyle::bright(),
+    )?;
+    canvas.write(10, 6, "42  42  -    return retry_after", TextStyle::text())?;
+    canvas.write(
+        11,
+        6,
+        "43  43  -    backoff = backoff + 1",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        6,
+        "    42  +    return retry_after + jitter",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        6,
+        "    43  +    backoff = backoff + jitter",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        6,
+        "    44  +    log_retry_window(jitter)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "○ Pending · hunk.retry-test · old 88-89 · new 88-89",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        6,
+        "88  88  -assert_eq!(wait, 4)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        18,
+        6,
+        "    89  +assert_eq!(wait, 5)",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "Each action changes only the focused hunk. No file is written until Finish.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "[i] Include  [x] Exclude  [a] Include all  [e] Edit",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        23,
+        4,
+        "[enter] Finish  [esc] Cancel · Return to pending edit",
+        TextStyle::accent(),
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "detail-origin",
+            "pending.edit.patch-retry-18",
+            reference(4, 4, 60),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "file",
+            "src/net/retry_policy.rs",
+            reference(6, 4, 52),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "included-count",
+            "included-1-of-2",
+            reference(7, 4, 43),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-guard",
+            reference(9, 4, 60),
+            "focused",
+            Some(action("action.staging.include-hunk", "Include", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "focused-hunk",
+            "hunk.retry-guard",
+            reference(9, 4, 60),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-test",
+            reference(13, 4, 60),
+            "summary",
+            Some(action("action.staging.exclude-hunk", "Exclude", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "include-all-action",
+            "include-all-hunks",
+            reference(19, 4, 50),
+            "summary",
+            Some(action("action.staging.include-all", "Include all", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "edit-action",
+            "edit-focused-hunk",
+            reference(19, 52, 62),
+            "summary",
+            Some(action("action.staging.edit", "Edit", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "finish-included-hunks",
+            reference(21, 4, 23),
+            "focused",
+            Some(action("action.staging.finish", "Finish", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "return-pending-edit",
+            reference(21, 25, 55),
+            "summary",
+            Some(action("action.staging.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.staging.include-hunk",
+                "diff-viewer-staging",
+                "diff-viewer-staging",
+                "direct",
+                "Include changes only the focused hunk and updates the textual count",
+            ),
+            transition(
+                "action.staging.exclude-hunk",
+                "diff-viewer-staging",
+                "diff-viewer-staging",
+                "direct",
+                "Exclude changes only the focused hunk and updates the textual count",
+            ),
+            transition(
+                "action.staging.include-all",
+                "diff-viewer-staging",
+                "diff-viewer-staging",
+                "direct",
+                "Include all marks every eligible hunk Included without writing",
+            ),
+            transition(
+                "action.staging.edit",
+                "diff-viewer-staging",
+                "diff-viewer-staging",
+                "direct",
+                "Edit opens only from staging detail and does not approve the patch",
+            ),
+            transition(
+                "action.staging.finish",
+                "diff-viewer-staging",
+                "chat-turn",
+                "direct",
+                "Finish applies only included hunks atomically and resumes the paused activity",
+            ),
+            transition(
+                "action.staging.cancel",
+                "diff-viewer-staging",
+                "diff-edit",
+                "cancel",
+                "Cancel applies none and returns one level to the unchanged pending edit",
+            ),
+        ],
+    ))
 }
 
 fn render_permission_shell(

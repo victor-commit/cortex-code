@@ -245,7 +245,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "shell",
@@ -455,7 +455,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "help",

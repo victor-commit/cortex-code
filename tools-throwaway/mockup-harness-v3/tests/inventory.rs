@@ -150,6 +150,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "composer-multiline",
             "permission-shell",
             "permission-deny-reason",
+            "diff-edit",
+            "diff-viewer-staging",
         ]
         .contains(&screen.id)
         {

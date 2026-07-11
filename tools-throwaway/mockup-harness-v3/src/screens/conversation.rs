@@ -49,6 +49,15 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "chat-turn" if fixture_id.starts_with("case.permission-cancel") => {
             render_permission_cancel_turn(&mut canvas, screen_id, fixture_id)?
         }
+        "chat-turn"
+            if fixture_id.starts_with("case.staging-finish")
+                || fixture_id.starts_with("case.diff-apply-all") =>
+        {
+            render_diff_applied_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if fixture_id.starts_with("case.diff-cancel") => {
+            render_diff_cancel_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" => render_chat_turn(&mut canvas, screen_id, fixture_id)?,
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
@@ -66,6 +75,159 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
     })
+}
+
+fn render_diff_applied_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Check the project files before summarizing the retry result.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Applied 1 hunk to src/net/retry_policy.rs.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "hunk.retry-test remains pending and was not written.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "The paused activity resumed with the same patch revision.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Working tree updated once · Git index unchanged",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "applied-hunk-result",
+            reference(9, 4, 53),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-hunk",
+            "hunk.retry-test",
+            reference(11, 4, 53),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the accurate edit result remains inline before the next response",
+        )],
+    ))
+}
+
+fn render_diff_cancel_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    permission_outcome_transcript(
+        canvas,
+        "Pending edit unchanged",
+        "Cancel wrote nothing and returned to the paused conversation.",
+        "Patch revision patch-retry-18 remains pending for a later decision.",
+        "Your draft and transcript are unchanged.",
+        "No file or Git index change was made.",
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "pending-edit-cancelled",
+            reference(9, 4, 72),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-edit",
+            "patch-retry-18",
+            reference(11, 4, 68),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the unchanged paused conversation remains available",
+        )],
+    ))
 }
 
 fn render_home(

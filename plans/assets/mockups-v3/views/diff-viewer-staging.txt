@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Review changes · temporary detail                                                                                   
+    From pending edit in the paused retry conversation                                                                  
+                                                                                                                        
+    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
+    Included 1 of 2 hunks · Git index unchanged                                                                         
+                                                                                                                        
+    › ✓ Included · hunk.retry-guard · old 42-43 · new 42-44                                                             
+      42  42  -    return retry_after                                                                                   
+      43  43  -    backoff = backoff + 1                                                                                
+          42  +    return retry_after + jitter                                                                          
+          43  +    backoff = backoff + jitter                                                                           
+          44  +    log_retry_window(jitter)                                                                             
+                                                                                                                        
+    ○ Pending · hunk.retry-test · old 88-89 · new 88-89                                                                 
+      88  88  -assert_eq!(wait, 4)                                                                                      
+          89  +assert_eq!(wait, 5)                                                                                      
+                                                                                                                        
+    Each action changes only the focused hunk. No file is written until Finish.                                         
+                                                                                                                        
+    [i] Include  [x] Exclude  [a] Include all  [e] Edit                                                                 
+    [enter] Finish  [esc] Cancel · Return to pending edit                                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    
