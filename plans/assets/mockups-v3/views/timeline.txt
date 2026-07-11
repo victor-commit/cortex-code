@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Retry policy review                                                                                                 
+                                                                                                                        
+    ~/project · Session history · Oldest first                                                                          
+                                                                                                                        
+    A temporary detail from the selected session preview.                                                               
+                                                                                                                        
+                                                                                                                        
+    Today, 09:14                                                                                                        
+        Opened the retry review                                                                                         
+        Started from the failing network test.                                                                          
+                                                                                                                        
+                                                                                                                        
+    Today, 09:37                                                                                                        
+        Updated the retry policy                                                                                        
+        Checkpoint · Fork available from this point.                                                                    
+                                                                                                                        
+                                                                                                                        
+    Today, 10:06                                                                                                        
+        Tests passed                                                                                                    
+        All focused retry checks completed.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Today, 10:42                                                                                                        
+        Current · Review ready                                                                                          
+        Latest stable state · saved draft is recoverable.                                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Selected point · Today, 09:37 · Updated the retry policy                                                            
+                                                                                                                        
+    Historical points fork into a copy. Only the latest state can resume directly.                                      
+                                                                                                                        
+                                                                                                                        
+    › [enter] Resume latest                                                                                             
+    [f] Fork from selected point · [esc] Back to session preview · [↑↓] Choose point                                    
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

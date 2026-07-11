@@ -55,6 +55,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "agent-picker",
     "mode-switch",
     "mode-switch-refused",
+    "session-picker",
+    "timeline",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -1302,7 +1304,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 17);
+        assert_eq!(implemented.canonical_ids().count(), 19);
         assert!(preflight_render(&PublicSelector::All)
             .expect_err("full render must reject missing renderers")
             .contains("chat-long-scroll"));

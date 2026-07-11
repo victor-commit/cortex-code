@@ -378,7 +378,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "subagent-picker",
@@ -434,7 +434,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "mcp",

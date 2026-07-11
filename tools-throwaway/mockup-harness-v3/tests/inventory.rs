@@ -157,6 +157,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "agent-picker",
             "mode-switch",
             "mode-switch-refused",
+            "session-picker",
+            "timeline",
         ]
         .contains(&screen.id)
         {

@@ -64,6 +64,8 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("input", "model-picker"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),
+        ("input", "session-picker"),
+        ("views", "timeline"),
     ] {
         assert!(
             Path::new(&format!(
@@ -116,6 +118,8 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("input", "model-picker"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),
+        ("input", "session-picker"),
+        ("views", "timeline"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);

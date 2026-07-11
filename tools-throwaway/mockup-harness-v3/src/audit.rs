@@ -386,6 +386,13 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
+    if matches!(screen_id, "session-picker" | "timeline") {
+        let document = crate::screens::session_history::render(screen_id, fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
     if screen_id == "diff-edit" && fixture_id.starts_with("case.permission-allow-once") {
         let document = crate::screens::input_and_approval::render(screen_id, fixture_id)?;
         document.validate()?;

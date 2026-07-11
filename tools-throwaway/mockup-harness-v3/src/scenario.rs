@@ -159,8 +159,9 @@ impl CaseReplay {
         if self.before.origin_stack != self.after.origin_stack {
             return Err("scenario transition did not preserve its origin stack".to_owned());
         }
-        if self.before.session_id != self.after.session_id
-            || self.before.paused_activity_id != self.after.paused_activity_id
+        if ((self.before.session_id != self.after.session_id
+            || self.before.paused_activity_id != self.after.paused_activity_id)
+            && self.case_id != "session-resume-latest")
             || (self.case_id != "flow2-submit-bridge"
                 && self.before.submitted_prompt != self.after.submitted_prompt)
         {
@@ -212,7 +213,8 @@ impl CaseReplay {
         if self.attempts.len() != 1
             || (self.attempts[0].count != 1
                 && !((self.permission.is_some() || self.diff.is_some())
-                    && self.attempts[0].count == 0))
+                    && self.attempts[0].count == 0)
+                && !(self.case_id.starts_with("session-") && self.attempts[0].count == 0))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -391,6 +393,16 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "work-style-access-pending" => work_style_access_pending(),
         "work-style-access-confirm" => work_style_access_confirm(),
         "work-style-access-refused" => work_style_access_refused(),
+        "session-preview-open" => session_preview_open(),
+        "session-selected-docs-preview" => session_selected_docs_preview(),
+        "session-preview-back" => session_preview_back(),
+        "session-timeline-open" => session_timeline_open(),
+        "session-timeline-back" => session_timeline_back(),
+        "session-resume-latest" => session_resume_latest(),
+        "session-no-sessions-open" => session_no_sessions_open(),
+        "session-no-sessions" => session_no_sessions(),
+        "session-no-matches-filter" => session_no_matches_filter(),
+        "session-no-matches" => session_no_matches(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -409,6 +421,15 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(before.draft.replacen(MENTION_FRAGMENT, "", 1).as_bytes()),
                 after: sha256_hex(after.draft.replacen(INSERTED_FILE, "", 1).as_bytes()),
+            },
+        );
+    }
+    if case_id.starts_with("session-") {
+        preserved_field_hashes.insert(
+            "source_history".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"retry-policy-review-history-v1"),
+                after: sha256_hex(b"retry-policy-review-history-v1"),
             },
         );
     }
@@ -1176,6 +1197,506 @@ fn work_style_access_refused() -> (
         "no-change",
         "approval was refused and the current work style and access remained active",
     );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn session_preview_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "saved-conversations",
+        Some("pending.session-picker"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.choose",
+        "Choose Retry policy review",
+        "direct",
+        "choosing a row opens its read-only preview without changing the current session or source history",
+        "attempt.session-picker.preview.1",
+        0,
+        "preview-opened",
+        "effect.session-picker.preview",
+        "session-preview",
+        "read-only",
+        "the selected row gained one preview without changing current or source session state",
+    )
+}
+
+fn session_preview_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.preview-back",
+        "Back to session rows",
+        "cancel",
+        "preview Back restores the same picker filter, focused row, scroll position, and source history",
+        "attempt.session-picker.preview-back.1",
+        0,
+        "preview-closed",
+        "effect.session-picker.preview-back",
+        "session-preview",
+        "no-change",
+        "preview Back closed read-only detail and preserved the current session",
+    )
+}
+
+fn session_selected_docs_preview() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "all",
+        "document-release-steps",
+        Some("preview.document-release-steps"),
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.choose",
+        "Choose Document release steps",
+        "direct",
+        "choosing another row replaces only the read-only destination preview",
+        "attempt.session-picker.preview-docs.1",
+        0,
+        "preview-opened",
+        "effect.session-picker.preview-docs",
+        "session-preview",
+        "read-only",
+        "the selected docs row gained one preview without changing current or source session state",
+    )
+}
+
+fn session_timeline_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "timeline",
+        "all",
+        "retry-policy-review",
+        Some("timeline.retry-policy-review"),
+        "return-to-session-preview",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.timeline",
+        "View timeline",
+        "direct",
+        "timeline opens as a read-only temporary detail tied to the selected preview",
+        "attempt.session-picker.timeline.1",
+        0,
+        "timeline-opened",
+        "effect.session-picker.timeline",
+        "session-history",
+        "read-only",
+        "timeline opened without changing the current session or source history",
+    )
+}
+
+fn session_timeline_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "timeline",
+        "all",
+        "retry-policy-review",
+        Some("timeline.retry-policy-review"),
+        "return-to-session-preview",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.timeline.back",
+        "Back to session preview",
+        "cancel",
+        "timeline Back restores the same preview, filter, focus, scroll position, and conversation origin",
+        "attempt.timeline.back.1",
+        0,
+        "preview-restored",
+        "effect.timeline.back",
+        "session-history",
+        "no-change",
+        "timeline Back restored the exact read-only session preview",
+    )
+}
+
+fn session_resume_latest() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = session_state(
+        "chat-turn",
+        "all",
+        "retry-policy-review",
+        None,
+        "return-to-session-picker",
+        1,
+    );
+    after.session_id = "session.retry-policy-review".to_owned();
+    after.paused_activity_id = "activity.retry-policy-review.latest".to_owned();
+    after.transcript =
+        "Retry policy review\nTests pass; review is ready at the latest stable state.".to_owned();
+    after.draft = "Add the final review note.".to_owned();
+    after.focus = "composer".to_owned();
+    after.scroll_anchor = "retry-policy-review-latest".to_owned();
+    after.state_hash = state_hash(&after);
+    session_case(
+        before,
+        after,
+        "action.session-picker.resume",
+        "Resume latest",
+        "direct",
+        "resume makes the selected latest stable conversation current without forking or changing source history",
+        "attempt.session-picker.resume.1",
+        1,
+        "selected-session-resumed",
+        "effect.session-picker.resume",
+        "session-current-selection",
+        "selected-session-resumed",
+        "the selected conversation became current exactly once at its latest stable state",
+    )
+}
+
+fn session_no_sessions() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "none",
+        "no-saved-conversations",
+        Some("empty.session-list"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = session_state(
+        "empty",
+        "none",
+        "new-conversation",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    after.focus = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    session_case(
+        before,
+        after,
+        "action.session-picker.start",
+        "Start a conversation",
+        "direct",
+        "the local empty recovery opens a usable conversation while preserving the origin draft",
+        "attempt.session-picker.start.1",
+        1,
+        "new-conversation-opened",
+        "effect.session-picker.start",
+        "conversation-start",
+        "started-once",
+        "one empty conversation opened without modifying the paused origin",
+    )
+}
+
+fn session_no_sessions_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = session_state(
+        "chat-turn",
+        "none",
+        "resume-sessions",
+        None,
+        "return-to-chat-turn",
+        0,
+    );
+    before.focus = "composer".to_owned();
+    before.state_hash = state_hash(&before);
+    let after = session_state(
+        "session-picker",
+        "none",
+        "no-saved-conversations",
+        Some("empty.session-list"),
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.chat-turn.open-sessions",
+        "Resume a conversation",
+        "direct",
+        "opening session choice with no saved conversations stays local to the exact conversation origin",
+        "attempt.session-picker.open-empty.1",
+        0,
+        "empty-session-list-opened",
+        "effect.session-picker.open-empty",
+        "session-picker-open",
+        "read-only",
+        "the local empty state opened without changing the current session or draft",
+    )
+}
+
+fn session_no_matches_filter() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "billing",
+        "no-filter-matches",
+        Some("filter.billing"),
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.filter",
+        "Filter saved conversations",
+        "direct",
+        "a nonmatching query keeps the query visible and changes only the local session rows",
+        "attempt.session-picker.filter.1",
+        0,
+        "no-matches",
+        "effect.session-picker.filter",
+        "session-filter",
+        "read-only",
+        "the filter produced no matches without changing current or source session state",
+    )
+}
+
+fn session_no_matches() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "billing",
+        "no-filter-matches",
+        Some("filter.billing"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.session-picker.clear-filter",
+        "Clear filter",
+        "direct",
+        "clear filter restores the saved-session rows with the origin and source history unchanged",
+        "attempt.session-picker.clear-filter.1",
+        0,
+        "filter-cleared",
+        "effect.session-picker.clear-filter",
+        "session-filter",
+        "no-session-change",
+        "the local filter cleared without changing current or source session state",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_state(
+    screen_id: &str,
+    filter: &str,
+    selection: &str,
+    pending_action: Option<&str>,
+    return_policy: &str,
+    virtual_tick: u32,
+) -> ScenarioState {
+    let mut state = state(
+        screen_id,
+        vec!["chat-turn", "session-picker"],
+        "Continue the current draft while choosing a saved conversation.",
+        "turn-current-latest",
+        selection,
+        if screen_id == "timeline" {
+            "timeline-point"
+        } else {
+            "session-row"
+        },
+        pending_action,
+        return_policy,
+        virtual_tick,
+    );
+    state.transcript = "Current conversation · Retry behavior before session choice.".to_owned();
+    state.queued_follow_up = format!("session-filter={filter}");
+    state.work_style = "Careful edits".to_owned();
+    state.access_scope = "asks before editing project files".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_case(
+    before: ScenarioState,
+    after: ScenarioState,
+    action_id: &str,
+    label: &str,
+    kind: &str,
+    path: &str,
+    attempt_id: &str,
+    attempt_count: u32,
+    outcome: &str,
+    effect_id: &str,
+    effect_kind: &str,
+    effect_status: &str,
+    effect_detail: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let action = ActionEvidence {
+        action_id: action_id.to_owned(),
+        label: label.to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: kind.to_owned(),
+        path: path.to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: attempt_id.to_owned(),
+        owner_id: "selected-session-preview".to_owned(),
+        count: attempt_count,
+        outcome: outcome.to_owned(),
+    };
+    let effect = simulated_effect(effect_id, effect_kind, effect_status, effect_detail);
     (before, after, action, transition, attempt, effect)
 }
 
@@ -2843,6 +3364,9 @@ fn simulated_effect(effect_id: &str, kind: &str, status: &str, detail: &str) -> 
 }
 
 fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
+    if case_id.starts_with("session-") {
+        return None;
+    }
     use crate::screens::input_and_approval::{
         LONG_SHELL_COMMAND, SHORT_SHELL_COMMAND, UNSAFE_SHELL_COMMAND,
     };
