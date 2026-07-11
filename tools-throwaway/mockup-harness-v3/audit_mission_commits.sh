@@ -7,11 +7,33 @@ export LC_ALL
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HARNESS_DIR/../.." && pwd)"
-SNAPSHOT="$HARNESS_DIR/.isolation-session/active.json"
+source "$HARNESS_DIR/isolation_session_state.sh"
+STATE_DIR="$V3_ISOLATION_STATE_DIR"
+CURRENT_SESSION="$STATE_DIR/current-session"
+isolation_require_state || exit $?
+if [[ -n "${V3_ISOLATION_SESSION_ID:-}" ]]; then
+    SESSION_ID="$V3_ISOLATION_SESSION_ID"
+elif [[ -r "$CURRENT_SESSION" ]]; then
+    SESSION_ID="$(<"$CURRENT_SESSION")"
+else
+    echo "audit_mission_commits.sh: missing active worker-session identity" >&2
+    exit 2
+fi
+[[ "$SESSION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+    echo "audit_mission_commits.sh: invalid worker session identifier" >&2
+    exit 2
+}
+SNAPSHOT="$STATE_DIR/snapshots/$SESSION_ID.json"
+AUDIT_ORIGIN="$STATE_DIR/mission-audit-origin.json"
 
 [[ -f "$SNAPSHOT" ]] || {
     echo "audit_mission_commits.sh: missing active worker-session snapshot" >&2
     exit 2
 }
+[[ -f "$AUDIT_ORIGIN" ]] || {
+    echo "audit_mission_commits.sh: missing persistent mission audit origin" >&2
+    exit 2
+}
 
-python3 "$HARNESS_DIR/audit_mission_commits.py" "$REPO_ROOT" "$SNAPSHOT"
+python3 "$HARNESS_DIR/audit_mission_commits.py" \
+    "$REPO_ROOT" "$SNAPSHOT" "$SESSION_ID" "$AUDIT_ORIGIN"

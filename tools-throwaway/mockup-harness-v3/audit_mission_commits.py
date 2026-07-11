@@ -9,14 +9,11 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-ALLOWED_PREFIXES = (
-    "tools-throwaway/mockup-harness-v3/",
-    "plans/assets/mockups-v3/",
-    "plans/assets/mockups-v3-gates/",
-    "evidence/v3-human-gate/",
-)
+from isolation_snapshot import ALLOWED_PREFIXES, read_snapshot, validate_session_id
+
 MISSION_NAME = "echobt"
 MISSION_EMAIL = "154886644+echobt@users.noreply.github.com"
+AUDIT_ORIGIN_FIELDS = {"schema_version", "origin_kind", "origin_commit"}
 
 
 def fail(message: str) -> NoReturn:
@@ -38,19 +35,38 @@ def allowed(path: str) -> bool:
     return path.startswith(ALLOWED_PREFIXES)
 
 
-def snapshot_head(snapshot_path: Path) -> str:
+def validate_active_session(snapshot_path: Path, expected_session_id: str) -> None:
     try:
-        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        snapshot, _ = read_snapshot(snapshot_path)
+    except SystemExit as error:
         fail(f"invalid active snapshot: {error}")
+    if snapshot["session_id"] != validate_session_id(expected_session_id):
+        fail("active snapshot is bound to a different worker session")
+
+
+def audit_origin(repository: Path, origin_path: Path) -> str:
+    try:
+        origin = json.loads(origin_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"invalid persistent audit origin: {error}")
     if (
-        not isinstance(snapshot, dict)
-        or snapshot.get("schema_version") != 3
-        or snapshot.get("snapshot_kind") != "worker-session"
-        or not isinstance(snapshot.get("head_commit"), str)
+        not isinstance(origin, dict)
+        or set(origin) != AUDIT_ORIGIN_FIELDS
+        or origin.get("schema_version") != 1
+        or origin.get("origin_kind") != "mission-audit"
+        or not isinstance(origin.get("origin_commit"), str)
     ):
-        fail("active snapshot does not contain a valid worker-session head")
-    return snapshot["head_commit"]
+        fail("persistent audit origin has an invalid schema")
+
+    start = origin["origin_commit"]
+    if (
+        len(start) not in (40, 64)
+        or any(character not in "0123456789abcdef" for character in start)
+    ):
+        fail("persistent audit origin has an invalid commit")
+    run(repository, "rev-parse", "--verify", f"{start}^{{commit}}")
+    run(repository, "merge-base", "--is-ancestor", start, "HEAD")
+    return start
 
 
 def mission_commits(repository: Path, start: str) -> list[str]:
@@ -86,6 +102,9 @@ def commit_paths(repository: Path, commit: str) -> list[str]:
         "-z",
         "-r",
         "-m",
+        "--find-renames",
+        "--find-copies",
+        "--find-copies-harder",
         commit,
     )
     fields = raw.split(b"\0")
@@ -110,8 +129,14 @@ def commit_paths(repository: Path, commit: str) -> list[str]:
     return sorted(set(paths))
 
 
-def audit(repository: Path, snapshot_path: Path) -> None:
-    start = snapshot_head(snapshot_path)
+def audit(
+    repository: Path,
+    snapshot_path: Path,
+    expected_session_id: str,
+    audit_origin_path: Path,
+) -> None:
+    validate_active_session(snapshot_path, expected_session_id)
+    start = audit_origin(repository, audit_origin_path)
     audited = 0
     violations: list[dict[str, object]] = []
     for commit in mission_commits(repository, start):
@@ -153,16 +178,22 @@ def audit(repository: Path, snapshot_path: Path) -> None:
 
     print(
         "audit_mission_commits.sh: OK, "
-        f"{audited} mission commits audited from session head {start}"
+        f"{audited} mission commits audited from persistent origin {start}"
     )
 
 
 def main(arguments: list[str]) -> None:
-    if len(arguments) != 2:
+    if len(arguments) != 4:
         raise SystemExit(
-            "usage: audit_mission_commits.py <repository> <active-snapshot>"
+            "usage: audit_mission_commits.py <repository> <active-snapshot> "
+            "<session-id> <persistent-audit-origin>"
         )
-    audit(Path(arguments[0]), Path(arguments[1]))
+    audit(
+        Path(arguments[0]),
+        Path(arguments[1]),
+        arguments[2],
+        Path(arguments[3]),
+    )
 
 
 if __name__ == "__main__":

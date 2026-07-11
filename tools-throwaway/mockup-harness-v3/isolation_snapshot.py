@@ -22,6 +22,7 @@ SNAPSHOT_FIELDS = {
     "schema_version",
     "snapshot_kind",
     "head_commit",
+    "session_id",
     "status_format",
     "fingerprint_algorithm",
     "excluded_v3_prefixes",
@@ -30,6 +31,7 @@ SNAPSHOT_FIELDS = {
 }
 FINGERPRINT_FIELDS = {"worktree_sha256", "index_sha256"}
 HEX_RE = re.compile(r"^[0-9a-f]{40,64}$")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def fail(message: str) -> NoReturn:
@@ -50,6 +52,12 @@ def is_allowed(path: str) -> bool:
     return path.startswith(ALLOWED_PREFIXES)
 
 
+def validate_session_id(session_id: object) -> str:
+    if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):
+        fail("active snapshot has an invalid worker session identifier")
+    return session_id
+
+
 def git(repository: Path, *arguments: str) -> bytes:
     try:
         return subprocess.check_output(
@@ -62,7 +70,14 @@ def git(repository: Path, *arguments: str) -> bytes:
 
 
 def parse_status_entries(repository: Path) -> list[dict[str, str]]:
-    raw = git(repository, "status", "--porcelain=v1", "-z")
+    raw = git(
+        repository,
+        "-c",
+        "status.renames=copies",
+        "status",
+        "--porcelain=v1",
+        "-z",
+    )
     fields = raw.split(b"\0")
     entries: list[dict[str, str]] = []
     index = 0
@@ -209,7 +224,7 @@ def tracked_forbidden_paths(repository: Path) -> list[str]:
     return sorted(paths)
 
 
-def record(repository: Path, head_commit: str) -> dict[str, Any]:
+def record(repository: Path, head_commit: str, session_id: str) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for status_entry in parse_status_entries(repository):
         entry: dict[str, Any] = dict(status_entry)
@@ -224,6 +239,7 @@ def record(repository: Path, head_commit: str) -> dict[str, Any]:
         "schema_version": 3,
         "snapshot_kind": "worker-session",
         "head_commit": head_commit,
+        "session_id": validate_session_id(session_id),
         "status_format": "git status --porcelain=v1 -z",
         "fingerprint_algorithm": "sha256",
         "excluded_v3_prefixes": list(ALLOWED_PREFIXES),
@@ -255,6 +271,7 @@ def validate_snapshot(snapshot: object) -> list[dict[str, Any]]:
         fail("unsupported active snapshot schema_version")
     if snapshot.get("snapshot_kind") != "worker-session":
         fail("unsupported active snapshot kind")
+    validate_session_id(snapshot.get("session_id"))
     head_commit = snapshot.get("head_commit")
     if not isinstance(head_commit, str) or not HEX_RE.fullmatch(head_commit):
         fail("active snapshot has an invalid head commit")
@@ -333,8 +350,10 @@ def read_snapshot(snapshot_path: Path) -> tuple[dict[str, Any], list[dict[str, A
     return snapshot, entries
 
 
-def verify(repository: Path, snapshot_path: Path) -> None:
+def verify(repository: Path, snapshot_path: Path, expected_session_id: str) -> None:
     snapshot, expected = read_snapshot(snapshot_path)
+    if snapshot["session_id"] != validate_session_id(expected_session_id):
+        fail("active snapshot is bound to a different worker session")
     expected_status = [
         {
             key: entry[key]
@@ -427,23 +446,23 @@ def verify(repository: Path, snapshot_path: Path) -> None:
 def main(arguments: list[str]) -> None:
     if not arguments:
         raise SystemExit(
-            "usage: isolation_snapshot.py record <repository> <head-commit> | "
-            "verify <repository> <active-snapshot>"
+            "usage: isolation_snapshot.py record <repository> <head-commit> "
+            "<session-id> | verify <repository> <active-snapshot> <session-id>"
         )
     command, *values = arguments
-    if command == "record" and len(values) == 2:
-        repository, head_commit = values
+    if command == "record" and len(values) == 3:
+        repository, head_commit, session_id = values
         json.dump(
-            record(Path(repository), head_commit),
+            record(Path(repository), head_commit, session_id),
             sys.stdout,
             indent=2,
             sort_keys=True,
         )
         sys.stdout.write("\n")
         return
-    if command == "verify" and len(values) == 2:
-        repository, snapshot_path = values
-        verify(Path(repository), Path(snapshot_path))
+    if command == "verify" and len(values) == 3:
+        repository, snapshot_path, session_id = values
+        verify(Path(repository), Path(snapshot_path), session_id)
         return
     raise SystemExit("invalid isolation snapshot command")
 
