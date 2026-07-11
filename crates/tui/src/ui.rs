@@ -4954,9 +4954,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     frame.render_widget(footer, area);
 }
 
-/// Build the 3-zone status bar: left `? for help` (or an attention cue when one is active), a
-/// mathematically-centered autonomy/permission segment, and the real active model id flush to the
-/// right margin. It is painted on the `BAR` surface by [`draw_footer`]. The right zone shows the
+/// Build the 3-zone status bar: the left help/attention zone includes usage when there is room, the
+/// autonomy/permission segment is mathematically centered, and the real active model id is flush to
+/// the right margin. It is painted on the `BAR` surface by [`draw_footer`]. The right zone shows the
 /// live binary default model id (never the mockup `opus-4.8`), so switching model recolors/relabels
 /// it; the colors come from the active theme so a theme switch visibly recolors the bar.
 pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
@@ -4988,6 +4988,11 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
     };
     place_segments(&mut cells, 2, &left);
 
+    // The usage segment belongs to the left zone, after its help/attention cue. It yields on narrow
+    // screens instead of overwriting the centered autonomy/permission state, model display, or a
+    // higher-priority attention cue.
+    let usage = status_bar_usage_text(app);
+
     // Center zone: `auto` (AMBER head) + ` (high)` (FAINT tail) + ` · ` (GHOST) + permission (DIM),
     // centered so its midpoint sits at the terminal's horizontal center. In plan mode the permission
     // word reads `read-only · plan` instead of `allow all commands` (VAL-PERM-017); in `!` shell mode
@@ -5016,6 +5021,16 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
     };
     let center_len: usize = center.iter().map(|(t, _)| t.chars().count()).sum();
     let center_start = w.saturating_sub(center_len) / 2;
+    let left_len: usize = left.iter().map(|(t, _)| t.chars().count()).sum();
+    let usage_start = 2 + left_len + 2;
+    let usage_end = usage_start + usage.chars().count();
+    if usage_end <= center_start {
+        place_segments(
+            &mut cells,
+            usage_start,
+            &[(usage, Style::default().fg(theme.text_muted))],
+        );
+    }
     place_segments(&mut cells, center_start, &center);
 
     // Right zone: the real active model id, flush to the right margin.
@@ -5025,6 +5040,20 @@ pub fn status_bar_line(app: &App, width: usize) -> Line<'static> {
     place_segments(&mut cells, right_start, &[(model, base)]);
 
     cells_to_line(&cells)
+}
+
+/// Format the parseable cumulative usage segment displayed in the status bar.
+fn status_bar_usage_text(app: &App) -> String {
+    let usage = app.usage;
+    if !usage.reported {
+        return "usage —".to_owned();
+    }
+
+    let mut text = format!("usage ↑{} ↓{} tok", usage.input_tokens, usage.output_tokens);
+    if let Some(cost) = usage.cost {
+        text.push_str(&format!(" ${cost:.4}"));
+    }
+    text
 }
 
 /// Overwrite `cells` starting at column `start` with the characters of each styled segment, clipping
@@ -5068,7 +5097,7 @@ pub(crate) fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AssistantTurn, Status};
+    use crate::app::{App, AssistantTurn, Status, UsageSummary};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
@@ -9336,16 +9365,61 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_renders_usage_placeholder_and_reported_totals() {
+        let mut a = app();
+        let placeholder = plain(&status_bar_line(&a, 120));
+        assert!(
+            placeholder.contains("usage —"),
+            "unreported usage renders a placeholder:\n{placeholder}"
+        );
+
+        a.usage = UsageSummary {
+            reported: true,
+            input_tokens: 12_345,
+            output_tokens: 678,
+            total_tokens: 13_023,
+            cost: Some(0.012_345),
+        };
+        let reported = plain(&status_bar_line(&a, 120));
+        assert!(
+            reported.contains("usage ↑12345 ↓678 tok $0.0123"),
+            "reported usage renders parseable tokens and a four-decimal cost:\n{reported}"
+        );
+
+        a.usage.cost = None;
+        let no_cost = plain(&status_bar_line(&a, 120));
+        assert!(
+            no_cost.contains("usage ↑12345 ↓678 tok"),
+            "reported usage without a cost keeps its token totals:\n{no_cost}"
+        );
+        assert!(
+            !no_cost.contains('$'),
+            "reported usage without a cost omits the optional cost:\n{no_cost}"
+        );
+    }
+
+    #[test]
     fn constrained_footer_keeps_attention_cue_visible_and_quiet_suppresses_it() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
         let mut enabled = app();
+        enabled.usage = UsageSummary {
+            reported: true,
+            input_tokens: 12,
+            output_tokens: 34,
+            total_tokens: 46,
+            cost: Some(0.0021),
+        };
         enabled.note_error("network disabled".to_owned());
         let enabled_footer = plain(&status_bar_line(&enabled, 70));
         assert!(
             enabled_footer.trim_start().starts_with("attention error"),
             "attention cue should be prioritized in the status bar's left zone: {enabled_footer}"
+        );
+        assert!(
+            !enabled_footer.contains("usage "),
+            "narrow attention footers yield usage space before the attention cue: {enabled_footer}"
         );
 
         let enabled_backend = TestBackend::new(70, 12);
