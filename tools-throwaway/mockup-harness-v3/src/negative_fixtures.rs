@@ -524,7 +524,7 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<FixtureOutcome, String
                 b"must survive unsafe cleanup",
             )
             .map_err(|error| format!("could not write unsafe cleanup sentinel: {error}"))?;
-            cleanup_fixture_staging(&output, &unsafe_stage);
+            let _ = cleanup_fixture_staging(&output, &unsafe_stage);
             let validation = validate_cleanup_paths(&output, &unsafe_stage);
             if !unsafe_stage.join("sentinel.txt").is_file() {
                 return Err("unsafe cleanup removed its sentinel".to_owned());

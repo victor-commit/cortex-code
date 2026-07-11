@@ -501,7 +501,8 @@ pub fn publication_failure_fixture(root: &Path) -> Result<(), String> {
     cleanup_stages(&[StagedRoot {
         root: output.clone(),
         stage: stage.clone(),
-    }]);
+    }])
+    .map_err(|error| error.message)?;
     if fs::read(output.join("previous.txt"))
         .map_err(|error| format!("could not verify fixture publication baseline: {error}"))?
         != previous
@@ -516,11 +517,12 @@ pub fn publication_failure_fixture(root: &Path) -> Result<(), String> {
 
 /// Runs the production cleanup guard for a fixture-owned staging path. Unsafe
 /// paths remain untouched, so a sentinel can prove fail-closed cleanup.
-pub fn cleanup_fixture_staging(output_root: &Path, staging_root: &Path) {
+pub fn cleanup_fixture_staging(output_root: &Path, staging_root: &Path) -> Result<(), String> {
     cleanup_stages(&[StagedRoot {
         root: output_root.to_path_buf(),
         stage: staging_root.to_path_buf(),
-    }]);
+    }])
+    .map_err(|error| error.message)
 }
 
 fn require_implemented(inventory: &[ScreenSpec]) -> Result<(), String> {
@@ -714,25 +716,40 @@ fn publish_prepared_roots(
     roots: &[PreparedRoot],
     fail_after_staging: bool,
 ) -> Result<(), RenderFailure> {
+    publish_prepared_roots_with_cleanup(roots, fail_after_staging, cleanup_stages)
+}
+
+fn publish_prepared_roots_with_cleanup(
+    roots: &[PreparedRoot],
+    fail_after_staging: bool,
+    cleanup: impl Fn(&[StagedRoot]) -> Result<(), RenderFailure>,
+) -> Result<(), RenderFailure> {
     let mut staged = Vec::with_capacity(roots.len());
     for root in roots {
         match stage_root(root) {
             Ok(value) => staged.push(value),
             Err(error) => {
-                cleanup_stages(&staged);
+                let _ = cleanup(&staged);
                 return Err(error);
             }
         }
     }
     if fail_after_staging {
-        cleanup_stages(&staged);
+        cleanup(&staged)?;
         return Err(RenderFailure::validation(
             "injected staged validation failure before publication",
         ));
     }
 
+    publish_staged_roots_with_cleanup(&staged, cleanup)
+}
+
+fn publish_staged_roots_with_cleanup(
+    staged: &[StagedRoot],
+    cleanup: impl Fn(&[StagedRoot]) -> Result<(), RenderFailure>,
+) -> Result<(), RenderFailure> {
     let mut exchanged: Vec<&StagedRoot> = Vec::new();
-    for staged_root in &staged {
+    for staged_root in staged {
         if let Err(error) = exchange_root(&staged_root.root, &staged_root.stage) {
             let mut rollback_errors = Vec::new();
             for exchanged_root in exchanged.iter().rev() {
@@ -740,11 +757,16 @@ fn publish_prepared_roots(
                     rollback_errors.push(rollback.to_string());
                 }
             }
-            cleanup_stages(&staged);
+            let cleanup_error = cleanup(staged).err();
             let detail = if rollback_errors.is_empty() {
                 String::new()
             } else {
                 format!("; rollback failed: {}", rollback_errors.join("; "))
+            };
+            let detail = if let Some(cleanup_error) = cleanup_error {
+                format!("{detail}; cleanup failed: {}", cleanup_error.message)
+            } else {
+                detail
             };
             return Err(RenderFailure::io(
                 &format!("atomic publication failed{detail}"),
@@ -753,8 +775,7 @@ fn publish_prepared_roots(
         }
         exchanged.push(staged_root);
     }
-    cleanup_stages(&staged);
-    Ok(())
+    cleanup(staged)
 }
 
 fn stage_root(prepared: &PreparedRoot) -> Result<StagedRoot, RenderFailure> {
@@ -1063,12 +1084,31 @@ fn exchange_root(root: &Path, stage: &Path) -> io::Result<()> {
     }
 }
 
-fn cleanup_stages(staged: &[StagedRoot]) {
+fn cleanup_stages(staged: &[StagedRoot]) -> Result<(), RenderFailure> {
+    let mut first_error = None;
     for stage in staged {
-        if validate_cleanup_paths(&stage.root, &stage.stage).is_ok() {
-            let _ = fs::remove_dir_all(&stage.stage);
+        if let Err(error) = validate_cleanup_paths(&stage.root, &stage.stage) {
+            if first_error.is_none() {
+                first_error = Some(RenderFailure::validation(error));
+            }
+            continue;
+        }
+        if !stage.stage.exists() {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(&stage.stage) {
+            if first_error.is_none() {
+                first_error = Some(RenderFailure::io(
+                    &format!(
+                        "could not clean up stale renderer staging root {}",
+                        stage.stage.display()
+                    ),
+                    error,
+                ));
+            }
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn transition_kind_name(kind: TransitionKind) -> &'static str {
@@ -1202,12 +1242,22 @@ mod tests {
         fs::create_dir(&stage).unwrap();
         fs::write(root.join("previous.txt"), "previous complete gallery\n").unwrap();
         fs::write(stage.join("published.txt"), "new complete gallery\n").unwrap();
+        fs::create_dir(stage.join("session")).unwrap();
+        fs::write(
+            stage.join("session").join("complete.txt"),
+            "second published artifact\n",
+        )
+        .unwrap();
 
         exchange_root(&root, &stage).expect("staging and output roots share one filesystem");
 
         assert_eq!(
             fs::read_to_string(root.join("published.txt")).unwrap(),
             "new complete gallery\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("session").join("complete.txt")).unwrap(),
+            "second published artifact\n"
         );
         assert!(!root.join("previous.txt").exists());
         assert_eq!(
@@ -1218,11 +1268,53 @@ mod tests {
         fs::remove_dir_all(parent).unwrap();
     }
 
+    #[test]
+    fn cleanup_failure_after_exchange_is_reported_without_losing_published_root() {
+        let parent = temporary_root("cleanup-failure");
+        let root = parent.join("output");
+        let stage = parent.join(".output.render-staging-test");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(root.join("previous.txt"), "previous complete gallery\n").unwrap();
+        fs::write(stage.join("published.txt"), "new complete gallery\n").unwrap();
+        let roots = [StagedRoot {
+            root: root.clone(),
+            stage: stage.clone(),
+        }];
+
+        let result = publish_staged_roots_with_cleanup(&roots, |staged| {
+            Err(RenderFailure::io(
+                &format!(
+                    "could not clean up stale renderer staging root {}",
+                    staged[0].stage.display()
+                ),
+                io::Error::new(io::ErrorKind::PermissionDenied, "injected cleanup failure"),
+            ))
+        });
+
+        let error = result.expect_err("cleanup failure must fail publication");
+        assert_eq!(error.exit, RenderExit::Io);
+        assert!(error.message.contains(&stage.display().to_string()));
+        assert_eq!(
+            fs::read_to_string(root.join("published.txt")).unwrap(),
+            "new complete gallery\n"
+        );
+        assert!(!root.join("previous.txt").exists());
+        assert_eq!(
+            fs::read_to_string(stage.join("previous.txt")).unwrap(),
+            "previous complete gallery\n"
+        );
+        assert!(stage.exists(), "the failed cleanup must leave a named stale root");
+
+        cleanup_stages(&roots).expect("the test cleanup should remove the stale root");
+        fs::remove_dir_all(parent).unwrap();
+    }
+
     fn publish_staged_for_test(staged: &[StagedRoot]) -> RenderFailure {
         if staged.is_empty() {
             return RenderFailure::validation("test setup requires a stage");
         }
-        cleanup_stages(staged);
+        cleanup_stages(staged).unwrap();
         RenderFailure::validation("injected staged validation failure before publication")
     }
 }
