@@ -279,6 +279,232 @@ fn rustup_proxy_resolution_obeys_rustup_toolchain_precedence_child() {
 }
 
 #[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_honors_safe_project_toolchain_path() {
+    for scenario in ["path", "env"] {
+        let root = temp_dir(&format!("rustup-path-{scenario}"));
+        write_rustup_proxy_fixture(&root);
+        install_project_path_toolchain(&root);
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            "[toolchain]\npath = \"local-toolchain\"\n",
+        )
+        .expect("write TOML project path toolchain");
+        fs::write(root.join("rust-toolchain"), "legacy\n")
+            .expect("write lower-priority legacy project toolchain");
+
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .arg("--exact")
+            .arg("rustup_proxy_resolution_honors_safe_project_toolchain_path_child")
+            .arg("--nocapture")
+            .env("CORTEX_FORMAT_RUSTUP_PATH_CHILD", scenario)
+            .env("CORTEX_FORMAT_RUSTUP_PATH_ROOT", &root)
+            .env("HOME", root.join("isolated-home"))
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("OPENROUTER_API_KEY", synthetic_openrouter_key())
+            .env("FORMATTER_VISIBLE_VALUE", synthetic_openrouter_key());
+        if scenario == "env" {
+            command.env("RUSTUP_TOOLCHAIN", "env");
+        }
+        prepend_fixture_rustup_proxy_to_path(&mut command, &root);
+
+        let output = command
+            .output()
+            .expect("spawn rustup path-resolution child");
+        assert!(
+            output.status.success(),
+            "rustup path-resolution child ({scenario}) failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_honors_safe_project_toolchain_path_child() {
+    let Ok(scenario) = std::env::var("CORTEX_FORMAT_RUSTUP_PATH_CHILD") else {
+        return;
+    };
+    let root = PathBuf::from(
+        std::env::var("CORTEX_FORMAT_RUSTUP_PATH_ROOT")
+            .expect("rustup path-resolution fixture root is set"),
+    );
+    let path = root.join("main.rs");
+    fs::write(&path, "fn  main( ){}\n").expect("write Rust input");
+
+    let outcome = FormatterRunner::new(&root).format_path(&path);
+
+    assert_eq!(outcome, FormatOutcome::Formatted(FormatterKind::Rustfmt));
+
+    let manual_rustfmt = match scenario.as_str() {
+        "path" => root.join("local-toolchain").join("bin").join("rustfmt"),
+        "env" => root
+            .join(".rustup")
+            .join("toolchains")
+            .join("env")
+            .join("bin")
+            .join("rustfmt"),
+        _ => unreachable!("safe-path scenarios are enumerated above"),
+    };
+    let manual_path = root.join("manual.rs");
+    fs::write(&manual_path, "fn  manual( ){}\n").expect("write manual Rust input");
+    run_manual(
+        Command::new(manual_rustfmt)
+            .current_dir(&root)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .arg(&manual_path),
+    );
+
+    assert_eq!(
+        fs::read_to_string(path).expect("read project-formatted Rust"),
+        fs::read_to_string(manual_path).expect("read manually formatted Rust"),
+        "formatter output must match the selected toolchain under a sanitized environment"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_rejects_unsafe_project_toolchain_paths() {
+    use std::os::unix::fs::symlink;
+
+    for scenario in [
+        "absolute",
+        "parent",
+        "symlink-escape",
+        "formatter-symlink-escape",
+        "missing",
+        "non-executable",
+        "empty",
+    ] {
+        let root = temp_dir(&format!("rustup-unsafe-path-{scenario}"));
+        let outside = temp_dir(&format!("rustup-unsafe-path-outside-{scenario}"));
+        write_rustup_proxy_fixture(&root);
+        let outside_rustfmt = outside.join("bin").join("rustfmt");
+        fs::create_dir_all(outside_rustfmt.parent().expect("outside formatter parent"))
+            .expect("create outside formatter parent");
+        write_executable(
+            &outside_rustfmt,
+            "#!/usr/bin/env sh\nfor arg do file=\"$arg\"; done\nprintf 'fn outside() {}\\n' > \"$file\"\n",
+        );
+        let non_executable = root
+            .join("non-executable-toolchain")
+            .join("bin")
+            .join("rustfmt");
+        fs::create_dir_all(
+            non_executable
+                .parent()
+                .expect("non-executable formatter parent"),
+        )
+        .expect("create non-executable formatter parent");
+        fs::write(&non_executable, "#!/usr/bin/env sh\nexit 0\n")
+            .expect("write non-executable formatter");
+        symlink(&outside, root.join("escape-link")).expect("create escaping toolchain symlink");
+        let formatter_symlink = root
+            .join("formatter-symlink-toolchain")
+            .join("bin")
+            .join("rustfmt");
+        fs::create_dir_all(
+            formatter_symlink
+                .parent()
+                .expect("formatter symlink parent"),
+        )
+        .expect("create formatter symlink parent");
+        symlink(&outside_rustfmt, &formatter_symlink).expect("create escaping formatter symlink");
+
+        let configured_path = match scenario {
+            "absolute" => outside.display().to_string(),
+            "parent" => format!(
+                "../{}",
+                outside.file_name().expect("outside name").display()
+            ),
+            "symlink-escape" => "escape-link".to_owned(),
+            "formatter-symlink-escape" => "formatter-symlink-toolchain".to_owned(),
+            "missing" => "missing-toolchain".to_owned(),
+            "non-executable" => "non-executable-toolchain".to_owned(),
+            "empty" => String::new(),
+            _ => unreachable!("unsafe-path scenarios are enumerated above"),
+        };
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            format!("[toolchain]\npath = {configured_path:?}\n"),
+        )
+        .expect("write unsafe TOML project path toolchain");
+        fs::write(root.join("rust-toolchain"), "legacy\n")
+            .expect("write lower-priority legacy project toolchain");
+
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .arg("--exact")
+            .arg("rustup_proxy_resolution_rejects_unsafe_project_toolchain_paths_child")
+            .arg("--nocapture")
+            .env("CORTEX_FORMAT_RUSTUP_UNSAFE_PATH_CHILD", scenario)
+            .env("CORTEX_FORMAT_RUSTUP_UNSAFE_PATH_ROOT", &root)
+            .env("HOME", root.join("isolated-home"))
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("OPENROUTER_API_KEY", synthetic_openrouter_key())
+            .env("FORMATTER_VISIBLE_VALUE", synthetic_openrouter_key());
+        prepend_fixture_rustup_proxy_to_path(&mut command, &root);
+
+        let output = command.output().expect("spawn rustup unsafe-path child");
+        assert!(
+            output.status.success(),
+            "rustup unsafe-path child ({scenario}) failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rustup_proxy_resolution_rejects_unsafe_project_toolchain_paths_child() {
+    if std::env::var("CORTEX_FORMAT_RUSTUP_UNSAFE_PATH_CHILD").is_err() {
+        return;
+    }
+    let root = PathBuf::from(
+        std::env::var("CORTEX_FORMAT_RUSTUP_UNSAFE_PATH_ROOT")
+            .expect("rustup unsafe-path fixture root is set"),
+    );
+    let path = root.join("main.rs");
+    let raw = "fn  main( ){}\n";
+    fs::write(&path, raw).expect("write Rust input");
+
+    let outcome = FormatterRunner::new(&root).format_path(&path);
+
+    assert!(
+        matches!(
+            outcome,
+            FormatOutcome::Skipped(format::SkipReason::MissingBinary { binary: "rustfmt" })
+        ),
+        "unsafe project toolchain path must fail closed instead of running another rustfmt: {outcome:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(path).expect("read unformatted Rust"),
+        raw,
+        "unsafe project toolchain path must leave the file unchanged"
+    );
+}
+
+#[cfg(unix)]
+fn install_project_path_toolchain(root: &Path) {
+    let source = root
+        .join(".rustup")
+        .join("toolchains")
+        .join("path")
+        .join("bin")
+        .join("rustfmt");
+    let target = root.join("local-toolchain").join("bin").join("rustfmt");
+    fs::create_dir_all(target.parent().expect("project toolchain formatter parent"))
+        .expect("create project toolchain formatter parent");
+    fs::hard_link(source, target).expect("link project toolchain formatter");
+}
+
+#[cfg(unix)]
 fn write_rustup_proxy_fixture(root: &Path) {
     use std::os::unix::fs::symlink;
 
@@ -291,7 +517,7 @@ fn write_rustup_proxy_fixture(root: &Path) {
     );
     symlink(&rustup, bin.join("rustfmt")).expect("link rustfmt proxy to rustup");
 
-    for toolchain in ["env", "toml", "legacy", "default"] {
+    for toolchain in ["env", "toml", "legacy", "default", "path"] {
         let formatter = root
             .join(".rustup")
             .join("toolchains")

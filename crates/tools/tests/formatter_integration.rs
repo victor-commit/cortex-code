@@ -258,19 +258,20 @@ async fn apply_patch_formats_written_rust_and_leaves_unknown_extensions_verbatim
 
 #[cfg(unix)]
 #[test]
-fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home() {
+fn write_edit_and_gpt_apply_patch_use_project_path_toolchain_with_isolated_home() {
     let root = temp_dir("rustup-proxy-hooks");
     write_rustup_proxy_fixture(&root);
+    install_project_path_toolchain(&root);
     fs::write(
         root.join("rust-toolchain.toml"),
-        "[toolchain]\nchannel = \"project\"\n",
+        "[toolchain]\npath = \"project-toolchain\"\n",
     )
-    .expect("write project toolchain");
+    .expect("write project path toolchain");
 
     let mut command = Command::new(std::env::current_exe().expect("current test binary"));
     command
         .arg("--exact")
-        .arg("write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home_child")
+        .arg("write_edit_and_gpt_apply_patch_use_project_path_toolchain_with_isolated_home_child")
         .arg("--nocapture")
         .env("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_CHILD", "1")
         .env("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_ROOT", &root)
@@ -294,7 +295,7 @@ fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_hom
 
 #[cfg(unix)]
 #[tokio::test]
-async fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolated_home_child() {
+async fn write_edit_and_gpt_apply_patch_use_project_path_toolchain_with_isolated_home_child() {
     if std::env::var("CORTEX_TOOLS_RUSTUP_PROXY_HOOKS_CHILD").as_deref() != Ok("1") {
         return;
     }
@@ -350,19 +351,13 @@ async fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolat
 
     let manual_path = root.join("manual.rs");
     fs::write(&manual_path, "fn  manual( ){}\n").expect("write manual rustfmt input");
-    let manual = Command::new(
-        root.join(".rustup")
-            .join("toolchains")
-            .join("project")
-            .join("bin")
-            .join("rustfmt"),
-    )
-    .current_dir(&root)
-    .env_clear()
-    .env("PATH", "/usr/bin:/bin")
-    .arg(&manual_path)
-    .output()
-    .expect("run manually selected rustfmt");
+    let manual = Command::new(root.join("project-toolchain").join("bin").join("rustfmt"))
+        .current_dir(&root)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .arg(&manual_path)
+        .output()
+        .expect("run manually selected rustfmt");
     assert!(
         manual.status.success(),
         "manual rustfmt failed: {}",
@@ -377,6 +372,20 @@ async fn write_edit_and_gpt_apply_patch_use_project_rustup_toolchain_with_isolat
             "{path} must match manual rustfmt from the formatter project CWD"
         );
     }
+}
+
+#[cfg(unix)]
+fn install_project_path_toolchain(root: &Path) {
+    let source = root
+        .join(".rustup")
+        .join("toolchains")
+        .join("project")
+        .join("bin")
+        .join("rustfmt");
+    let target = root.join("project-toolchain").join("bin").join("rustfmt");
+    fs::create_dir_all(target.parent().expect("project toolchain formatter parent"))
+        .expect("create project toolchain formatter parent");
+    fs::hard_link(source, target).expect("link project toolchain formatter");
 }
 
 #[cfg(unix)]
