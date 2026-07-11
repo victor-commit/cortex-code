@@ -426,6 +426,72 @@ models = [{{ id = "{model_id}", name = "Local Test Model", tool_call = true, con
 }
 
 #[test]
+fn metacharacter_parent_instruction_glob_never_reaches_the_provider_request() {
+    let scratch = Scratch::new("instruction-glob-metachar-parent");
+    let model_id = "local/test-model";
+    let api_key = synthetic_config_api_key("instruction-glob-metachar-parent");
+    let outside = scratch
+        .project
+        .parent()
+        .expect("project parent")
+        .join("outside.md");
+    let sentinel = "OUTSIDE-GLOB-SENTINEL";
+    fs::write(&outside, sentinel).expect("write outside sentinel");
+    let (base_url, captures, handle) = start_chat_fixture(model_id, "contained response");
+    scratch.write_project_config(&format!(
+        r#"
+instructions = [".[.]/outside.md"]
+
+[provider]
+enabled = ["local"]
+disabled = ["openrouter"]
+
+[provider.model_overrides]
+"google/gemini-2.5-flash" = "{model_id}"
+
+[provider.local]
+base_url = "{base_url}"
+api_key = "{api_key}"
+protocol = "openai-chat"
+models = [{{ id = "{model_id}", name = "Local Test Model", tool_call = true, context_length = 8192, max_output_tokens = 1024 }}]
+"#,
+    ));
+
+    let out = run(scratch.command(&["run", "--format", "json", "say hi"]));
+    handle.join().expect("join fixture");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let outside_path = outside.display().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ignoring local instructions glob `.[.]/outside.md`"),
+        "unsafe pattern must be rejected before expansion: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&outside_path),
+        "external match path must not be reported: {stderr}"
+    );
+
+    let captures = captures.lock().expect("captures lock");
+    let request = captures.first().expect("provider request");
+    assert!(
+        !request.body.contains(sentinel),
+        "external instruction content must never reach the provider: {}",
+        request.body
+    );
+    assert!(
+        !request.body.contains(&outside_path),
+        "external path must never reach the provider: {}",
+        request.body
+    );
+}
+
+#[test]
 fn models_refresh_lists_secondary_provider_namespaces_and_caches_offline() {
     const FIXTURE: &str = r#"{
       "openrouter": {

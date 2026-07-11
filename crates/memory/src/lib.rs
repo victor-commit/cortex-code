@@ -729,7 +729,15 @@ fn has_instruction_glob_escape(pattern: &str) -> bool {
         || pattern.starts_with('\\')
         || pattern
             .split(['/', '\\'])
-            .any(|component| component == "..")
+            .any(glob_component_matches_special_directory_entry)
+}
+
+fn glob_component_matches_special_directory_entry(component: &str) -> bool {
+    if component == "." {
+        return false;
+    }
+
+    glob::Pattern::new(component).is_ok_and(|pattern| pattern.matches(".") || pattern.matches(".."))
 }
 
 fn append_file_source(
@@ -911,12 +919,54 @@ mod tests {
     }
 
     #[test]
-    fn instruction_glob_escape_detection_rejects_windows_prefixes() {
+    fn config_instruction_globs_reject_metacharacter_parent_entries_before_expansion() {
+        let (root, home, proj) = scratch("instruction-glob-metachar-parent");
+        let outside = root.join("outside.md");
+        write(&outside, "OUTSIDE-INSTRUCTION-SENTINEL");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            r#"instructions = [".[.]/outside.md"]"#,
+        );
+
+        let memory = discover(&inputs(&home, &proj));
+        assert!(memory.is_empty());
+        assert!(
+            memory.warnings().iter().any(|warning| {
+                warning.contains("ignoring local instructions glob `.[.]/outside.md`")
+                    && !warning.contains(&outside.display().to_string())
+            }),
+            "metacharacter parent match must be rejected without reporting the external match: {:?}",
+            memory.warnings()
+        );
+    }
+
+    #[test]
+    fn instruction_glob_escape_detection_rejects_special_directory_matchers() {
         assert!(has_instruction_glob_escape("/outside/*.md"));
         assert!(has_instruction_glob_escape("../outside/*.md"));
         assert!(has_instruction_glob_escape(r"C:\outside\*.md"));
         assert!(has_instruction_glob_escape(r"\\host\share\*.md"));
+        assert!(has_instruction_glob_escape(".[.]"));
+        assert!(has_instruction_glob_escape(".?"));
+        assert!(has_instruction_glob_escape(".*"));
+        assert!(has_instruction_glob_escape("[.]"));
+        assert!(!has_instruction_glob_escape("."));
+        assert!(!has_instruction_glob_escape("./rules/*.md"));
         assert!(!has_instruction_glob_escape("rules/*.md"));
+    }
+
+    #[test]
+    fn config_instruction_globs_allow_current_directory_prefixes() {
+        let (_root, home, proj) = scratch("instruction-glob-current-directory");
+        write(&proj.join("rules/inside.md"), "INSIDE-INSTRUCTION");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            r#"instructions = ["./rules/*.md"]"#,
+        );
+
+        let memory = discover(&inputs(&home, &proj));
+        assert_eq!(source_names(&memory), vec!["inside.md"]);
+        assert!(memory.warnings().is_empty());
     }
 
     #[cfg(unix)]
