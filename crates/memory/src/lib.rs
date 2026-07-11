@@ -737,7 +737,13 @@ fn glob_component_matches_special_directory_entry(component: &str) -> bool {
         return false;
     }
 
-    glob::Pattern::new(component).is_ok_and(|pattern| pattern.matches(".") || pattern.matches(".."))
+    // `glob::glob` considers synthetic `.` and `..` entries only when the
+    // component begins with a literal dot token. Matching either entry alone
+    // would incorrectly reject ordinary wildcard components such as `*` and
+    // `?`, which the traversal engine never uses to visit those entries.
+    component.starts_with('.')
+        && glob::Pattern::new(component)
+            .is_ok_and(|pattern| pattern.matches(".") || pattern.matches(".."))
 }
 
 fn append_file_source(
@@ -941,6 +947,74 @@ mod tests {
     }
 
     #[test]
+    fn instruction_glob_engine_special_entries_require_a_literal_leading_dot() {
+        let (root, _home, proj) = scratch("instruction-glob-engine-special-entries");
+        let outside = root.join("outside.md");
+        write(&outside, "OUTSIDE-INSTRUCTION-SENTINEL");
+
+        let expand = |component: &str| {
+            let pattern = proj
+                .join(component)
+                .join("outside.md")
+                .to_string_lossy()
+                .replace('\\', "/");
+            glob::glob(&pattern)
+                .expect("valid glob")
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>()
+        };
+
+        let outside = fs::canonicalize(outside).expect("canonical outside");
+        assert!(
+            expand(".[.]")
+                .iter()
+                .any(|path| fs::canonicalize(path).ok().as_ref() == Some(&outside)),
+            "a literal leading dot lets the glob engine traverse to `..`"
+        );
+        for component in ["*", "?", "**", "*.*", "[.]", "[.][.]"] {
+            assert!(
+                expand(component).is_empty(),
+                "{component:?} must not traverse to the glob engine's special entries"
+            );
+        }
+    }
+
+    #[test]
+    fn config_instruction_globs_expand_contained_wildcard_components() {
+        let (_root, home, proj) = scratch("instruction-glob-wildcard-components");
+        write(&proj.join("star/star.md"), "STAR-WILDCARD-INSTRUCTION");
+        write(&proj.join("single/x"), "QUESTION-WILDCARD-INSTRUCTION");
+        write(
+            &proj.join("recursive/nested/deep.md"),
+            "RECURSIVE-WILDCARD-INSTRUCTION",
+        );
+        write(&proj.join("mixed/alpha.md"), "MIXED-WILDCARD-INSTRUCTION");
+        write(
+            &proj.join(PROJECT_CONFIG_FILE),
+            r#"instructions = ["star/*", "single/?", "recursive/**/*.md", "mixed/*.*"]"#,
+        );
+
+        let memory = discover(&inputs(&home, &proj));
+        let rendered = memory.render().expect("rendered");
+        for content in [
+            "STAR-WILDCARD-INSTRUCTION",
+            "QUESTION-WILDCARD-INSTRUCTION",
+            "RECURSIVE-WILDCARD-INSTRUCTION",
+            "MIXED-WILDCARD-INSTRUCTION",
+        ] {
+            assert!(
+                rendered.contains(content),
+                "contained wildcard instruction glob must load {content}: {rendered}"
+            );
+        }
+        assert!(
+            memory.warnings().is_empty(),
+            "contained wildcard globs must not be rejected: {:?}",
+            memory.warnings()
+        );
+    }
+
+    #[test]
     fn instruction_glob_escape_detection_rejects_special_directory_matchers() {
         assert!(has_instruction_glob_escape("/outside/*.md"));
         assert!(has_instruction_glob_escape("../outside/*.md"));
@@ -949,9 +1023,14 @@ mod tests {
         assert!(has_instruction_glob_escape(".[.]"));
         assert!(has_instruction_glob_escape(".?"));
         assert!(has_instruction_glob_escape(".*"));
-        assert!(has_instruction_glob_escape("[.]"));
         assert!(!has_instruction_glob_escape("."));
         assert!(!has_instruction_glob_escape("./rules/*.md"));
+        assert!(!has_instruction_glob_escape("*"));
+        assert!(!has_instruction_glob_escape("?"));
+        assert!(!has_instruction_glob_escape("**"));
+        assert!(!has_instruction_glob_escape("*.*"));
+        assert!(!has_instruction_glob_escape("[.]"));
+        assert!(!has_instruction_glob_escape("[.][.]"));
         assert!(!has_instruction_glob_escape("rules/*.md"));
     }
 

@@ -426,6 +426,74 @@ models = [{{ id = "{model_id}", name = "Local Test Model", tool_call = true, con
 }
 
 #[test]
+fn contained_wildcard_instruction_globs_reach_the_provider_request() {
+    let scratch = Scratch::new("instruction-glob-wildcard-components");
+    let model_id = "local/test-model";
+    let api_key = synthetic_config_api_key("instruction-glob-wildcard-components");
+    for (path, content) in [
+        ("star/star.md", "STAR-WILDCARD-INSTRUCTION"),
+        ("single/x", "QUESTION-WILDCARD-INSTRUCTION"),
+        ("recursive/nested/deep.md", "RECURSIVE-WILDCARD-INSTRUCTION"),
+        ("mixed/alpha.md", "MIXED-WILDCARD-INSTRUCTION"),
+    ] {
+        let path = scratch.project.join(path);
+        fs::create_dir_all(path.parent().expect("instruction parent"))
+            .expect("create instruction parent");
+        fs::write(path, content).expect("write instruction");
+    }
+
+    let (base_url, captures, handle) = start_chat_fixture(model_id, "contained response");
+    scratch.write_project_config(&format!(
+        r#"
+instructions = ["star/*", "single/?", "recursive/**/*.md", "mixed/a*.md"]
+
+[provider]
+enabled = ["local"]
+disabled = ["openrouter"]
+
+[provider.model_overrides]
+"google/gemini-2.5-flash" = "{model_id}"
+
+[provider.local]
+base_url = "{base_url}"
+api_key = "{api_key}"
+protocol = "openai-chat"
+models = [{{ id = "{model_id}", name = "Local Test Model", tool_call = true, context_length = 8192, max_output_tokens = 1024 }}]
+"#,
+    ));
+
+    let out = run(scratch.command(&["run", "--format", "json", "say hi"]));
+    handle.join().expect("join fixture");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("ignoring local instructions glob"),
+        "contained wildcard globs must not be rejected: {stderr}"
+    );
+
+    let captures = captures.lock().expect("captures lock");
+    let request = captures.first().expect("provider request");
+    for content in [
+        "STAR-WILDCARD-INSTRUCTION",
+        "QUESTION-WILDCARD-INSTRUCTION",
+        "RECURSIVE-WILDCARD-INSTRUCTION",
+        "MIXED-WILDCARD-INSTRUCTION",
+    ] {
+        assert!(
+            request.body.contains(content),
+            "contained wildcard instruction glob must reach provider request: {content}\n{}",
+            request.body
+        );
+    }
+}
+
+#[test]
 fn metacharacter_parent_instruction_glob_never_reaches_the_provider_request() {
     let scratch = Scratch::new("instruction-glob-metachar-parent");
     let model_id = "local/test-model";
