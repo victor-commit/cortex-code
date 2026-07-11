@@ -753,6 +753,30 @@ assert not allowed_for_commit('0000000000000000000000000000000000000000', 'tools
 }
 
 #[test]
+fn deterministic_foundation_font_copy_source_is_narrowly_authorized() {
+    let fixture = Fixture::new();
+    let foundation = "023e2019d6cfc362a075ec6b29c89a93f51e9259";
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            "from audit_mission_commits import allowed_for_commit; \
+assert allowed_for_commit('023e2019d6cfc362a075ec6b29c89a93f51e9259', 'tools-throwaway/mockup-harness/assets/DejaVuSansMono.ttf'); \
+assert allowed_for_commit('023e2019d6cfc362a075ec6b29c89a93f51e9259', 'tools-throwaway/mockup-harness/assets/DejaVuSansMono-Bold.ttf'); \
+assert not allowed_for_commit('023e2019d6cfc362a075ec6b29c89a93f51e9259', 'tools-throwaway/mockup-harness/Cargo.lock'); \
+assert not allowed_for_commit('0000000000000000000000000000000000000000', 'tools-throwaway/mockup-harness/assets/DejaVuSansMono.ttf')",
+        ])
+        .current_dir(&fixture.harness)
+        .output()
+        .expect("foundation font authorization probe must start");
+    assert_success(output, "foundation font authorization probe");
+    assert_eq!(
+        foundation.len(),
+        40,
+        "foundation SHA must remain full length"
+    );
+}
+
+#[test]
 fn unreachable_ledgered_commit_fails_closed() {
     let fixture = Fixture::new();
     fs::write(

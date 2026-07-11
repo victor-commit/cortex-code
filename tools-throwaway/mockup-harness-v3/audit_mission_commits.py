@@ -24,6 +24,14 @@ TRUSTED_BOOTSTRAP_COPY_SOURCE = {
         {"tools-throwaway/mockup-harness/Cargo.lock"}
     )
 }
+TRUSTED_FOUNDATION_FONT_COPY_SOURCE = {
+    "023e2019d6cfc362a075ec6b29c89a93f51e9259": frozenset(
+        {
+            "tools-throwaway/mockup-harness/assets/DejaVuSansMono.ttf",
+            "tools-throwaway/mockup-harness/assets/DejaVuSansMono-Bold.ttf",
+        }
+    )
+}
 
 
 def fail(message: str) -> NoReturn:
@@ -46,7 +54,11 @@ def allowed(path: str) -> bool:
 
 
 def allowed_for_commit(commit: str, path: str) -> bool:
-    return allowed(path) or path in TRUSTED_BOOTSTRAP_COPY_SOURCE.get(commit, ())
+    return (
+        allowed(path)
+        or path in TRUSTED_BOOTSTRAP_COPY_SOURCE.get(commit, ())
+        or path in TRUSTED_FOUNDATION_FONT_COPY_SOURCE.get(commit, ())
+    )
 
 
 def validate_active_session(snapshot_path: Path, expected_session_id: str) -> None:
