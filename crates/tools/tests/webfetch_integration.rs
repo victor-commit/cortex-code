@@ -1,21 +1,31 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tools::{Tool, ToolContext, ToolRegistry, WebFetchTool};
 
 static WEBFETCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static NEXT_LOOPBACK_PORT: AtomicU16 = AtomicU16::new(3200);
 
 fn bind_loopback() -> (TcpListener, u16) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
-    listener
-        .set_nonblocking(false)
-        .expect("set listener blocking");
-    let port = listener.local_addr().expect("local addr").port();
-    (listener, port)
+    for _ in 0..100 {
+        let port = NEXT_LOOPBACK_PORT.fetch_add(1, Ordering::Relaxed);
+        if port > 3299 {
+            NEXT_LOOPBACK_PORT.store(3200, Ordering::Relaxed);
+            continue;
+        }
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            listener
+                .set_nonblocking(false)
+                .expect("set listener blocking");
+            return (listener, port);
+        }
+    }
+    panic!("no available loopback port in the reserved Cortex range 3200-3299");
 }
 
 fn serve_once(content_type: &'static str, body: Vec<u8>) -> (String, thread::JoinHandle<String>) {
@@ -274,6 +284,170 @@ async fn webfetch_rejects_malformed_urls_cleanly() {
     let rendered = output.model_content();
     assert!(rendered.contains("invalid URL"), "{rendered}");
     assert!(!rendered.contains("panicked"), "{rendered}");
+}
+
+#[tokio::test]
+async fn webfetch_reports_a_bounded_transport_error_for_a_closed_host() {
+    let _guard = WEBFETCH_TEST_LOCK.lock().await;
+    let (listener, port) = bind_loopback();
+    drop(listener);
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+    let started = Instant::now();
+
+    let output = WebFetchTool
+        .execute(
+            serde_json::json!({
+                "url": format!("http://127.0.0.1:{port}/unreachable"),
+                "timeout_ms": 200
+            }),
+            &ctx,
+        )
+        .await;
+
+    assert!(output.is_error);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "closed-host fetch must return within its bounded timeout"
+    );
+    let rendered = output.model_content().to_ascii_lowercase();
+    assert!(
+        rendered.contains("transport") || rendered.contains("timeout"),
+        "expected transport/timeout error, got: {}",
+        output.model_content()
+    );
+    assert!(
+        !rendered.contains("fetched url"),
+        "unreachable URL must not fabricate page content: {}",
+        output.model_content()
+    );
+}
+
+#[tokio::test]
+async fn webfetch_rejects_embedded_credentials_before_connecting() {
+    let _guard = WEBFETCH_TEST_LOCK.lock().await;
+    let (listener, port) = bind_loopback();
+    listener
+        .set_nonblocking(true)
+        .expect("set listener nonblocking");
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let start = SystemTime::now();
+        loop {
+            match listener.accept() {
+                Ok((_stream, _)) => {
+                    accepted_tx.send(true).expect("send accepted");
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed().expect("elapsed") > Duration::from_millis(500) {
+                        accepted_tx.send(false).expect("send no accept");
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("accept failed: {err}"),
+            }
+        }
+    });
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+    let password = "fixture-password";
+
+    let output = WebFetchTool
+        .execute(
+            serde_json::json!({
+                "url": format!("http://fixture-user:{password}@127.0.0.1:{port}/probe")
+            }),
+            &ctx,
+        )
+        .await;
+
+    let accepted = accepted_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("accept result");
+    handle.join().expect("server thread");
+    assert!(output.is_error);
+    let rendered = output.model_content().to_ascii_lowercase();
+    assert!(
+        rendered.contains("embedded credentials"),
+        "expected credential rejection, got: {}",
+        output.model_content()
+    );
+    assert!(!output.model_content().contains(password));
+    assert!(
+        !accepted,
+        "webfetch must reject URL credentials before opening a socket"
+    );
+}
+
+#[tokio::test]
+async fn webfetch_does_not_follow_redirects_with_embedded_credentials() {
+    let _guard = WEBFETCH_TEST_LOCK.lock().await;
+    let (target_listener, target_port) = bind_loopback();
+    target_listener
+        .set_nonblocking(true)
+        .expect("set target listener nonblocking");
+    let (target_accepted_tx, target_accepted_rx) = mpsc::channel();
+    let target_handle = thread::spawn(move || {
+        let start = SystemTime::now();
+        loop {
+            match target_listener.accept() {
+                Ok((_stream, _)) => {
+                    target_accepted_tx.send(true).expect("send accepted");
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed().expect("elapsed") > Duration::from_millis(500) {
+                        target_accepted_tx.send(false).expect("send no accept");
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("target accept failed: {err}"),
+            }
+        }
+    });
+    let (redirect_listener, redirect_port) = bind_loopback();
+    let password = "redirect-password";
+    let redirect_handle = thread::spawn(move || {
+        let (mut stream, _) = redirect_listener.accept().expect("accept redirect request");
+        let _ = read_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://redirect-user:{password}@127.0.0.1:{target_port}/probe\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write redirect response");
+    });
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebFetchTool
+        .execute(
+            serde_json::json!({
+                "url": format!("http://127.0.0.1:{redirect_port}/redirect")
+            }),
+            &ctx,
+        )
+        .await;
+
+    redirect_handle.join().expect("redirect server thread");
+    let target_accepted = target_accepted_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("target accept result");
+    target_handle.join().expect("target server thread");
+    assert!(output.is_error);
+    assert!(
+        output
+            .model_content()
+            .to_ascii_lowercase()
+            .contains("embedded credentials"),
+        "expected credential rejection, got: {}",
+        output.model_content()
+    );
+    assert!(!output.model_content().contains(password));
+    assert!(
+        !target_accepted,
+        "webfetch must not follow a redirect carrying credentials"
+    );
 }
 
 #[tokio::test]

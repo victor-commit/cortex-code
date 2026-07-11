@@ -2,18 +2,19 @@
 //!
 //! The test is gated on `OPENROUTER_API_KEY`: without a key it skips cleanly, while mission
 //! validation runs it with the real key. The fetched page is served by a real loopback HTTP server
-//! on an OS-assigned ephemeral port (127.0.0.1:0), and the model must call the real built-in tool
-//! to read the page-specific marker.
+//! in the reserved 3200-3299 range, and the model must call the real built-in tool to read the
+//! page-specific marker.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
+static NEXT_LOOPBACK_PORT: AtomicU16 = AtomicU16::new(3220);
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -36,12 +37,20 @@ fn isolated_home() -> PathBuf {
 }
 
 fn bind_loopback() -> (TcpListener, u16) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral loopback listener");
-    listener
-        .set_nonblocking(true)
-        .expect("set nonblocking listener");
-    let port = listener.local_addr().expect("local addr").port();
-    (listener, port)
+    for _ in 0..80 {
+        let port = NEXT_LOOPBACK_PORT.fetch_add(1, Ordering::Relaxed);
+        if port > 3299 {
+            NEXT_LOOPBACK_PORT.store(3220, Ordering::Relaxed);
+            continue;
+        }
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            listener
+                .set_nonblocking(true)
+                .expect("set listener nonblocking");
+            return (listener, port);
+        }
+    }
+    panic!("no available loopback port in the reserved Cortex range 3200-3299");
 }
 
 fn serve_marker_page(marker: String) -> (String, thread::JoinHandle<Option<String>>) {

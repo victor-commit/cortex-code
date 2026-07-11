@@ -105,14 +105,14 @@ async fn run(arguments: Value, ctx: &ToolContext) -> ToolOutput {
         return ToolOutput::error("webfetch: the 'url' argument must not be empty");
     }
 
-    if let Err(message) = ctx.ensure_permitted("webfetch", raw_url) {
-        return ToolOutput::error(redaction::redact(&message));
-    }
-
     let url = match parse_http_url(raw_url) {
         Ok(url) => url,
         Err(message) => return ToolOutput::error(message),
     };
+
+    if let Err(message) = ctx.ensure_permitted("webfetch", &safe_url(&url)) {
+        return ToolOutput::error(redaction::redact(&message));
+    }
 
     let options = match options_from(&arguments) {
         Ok(options) => options,
@@ -201,7 +201,17 @@ async fn fetch(
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .no_proxy()
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if has_embedded_credentials(attempt.url()) {
+                // Stop before reqwest can construct a request that derives Basic authentication
+                // from the redirect target's userinfo.
+                attempt.stop()
+            } else if attempt.previous().len() > MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
         .connect_timeout(options.timeout.min(Duration::from_secs(3)))
         .timeout(options.timeout)
         .user_agent(concat!(
@@ -251,6 +261,14 @@ async fn fetch(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_owned();
+
+    if status.is_redirection() {
+        record_network(audit, &final_url, Some(status), "blocked");
+        return Err(format!(
+            "webfetch: refusing redirect with embedded credentials from {}",
+            safe_url(&final_url)
+        ));
+    }
 
     let body = match collect_body(response, options).await {
         Ok(body) => body,
@@ -344,13 +362,20 @@ async fn collect_body(
 
 fn parse_http_url(raw_url: &str) -> Result<Url, String> {
     let url = Url::parse(raw_url)
-        .map_err(|err| redaction::redact(&format!("webfetch: invalid URL `{raw_url}`: {err}")))?;
+        .map_err(|err| redaction::redact(&format!("webfetch: invalid URL: {err}")))?;
     match url.scheme() {
+        "http" | "https" if has_embedded_credentials(&url) => {
+            Err("webfetch: invalid URL: embedded credentials are not permitted".to_owned())
+        }
         "http" | "https" => Ok(url),
-        scheme => Err(redaction::redact(&format!(
-            "webfetch: invalid URL `{raw_url}`: unsupported scheme `{scheme}` (expected http or https)"
-        ))),
+        scheme => Err(format!(
+            "webfetch: invalid URL: unsupported scheme `{scheme}` (expected http or https)"
+        )),
     }
+}
+
+fn has_embedded_credentials(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
 }
 
 fn string_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
@@ -517,7 +542,10 @@ fn status_line(status: StatusCode) -> String {
 }
 
 fn safe_url(url: &Url) -> String {
-    redaction::redact(url.as_str())
+    let mut sanitized = url.clone();
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
+    redaction::redact(sanitized.as_str())
 }
 
 fn bound_markdown(markdown: &str) -> String {
