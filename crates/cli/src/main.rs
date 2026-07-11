@@ -110,7 +110,7 @@ fn main() -> ExitCode {
             auth_login: false,
         }),
         Some(Command::Run(args)) => run::run(args, bus.clone(), pure_plugins).into(),
-        Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone()).into(),
+        Some(Command::Acp(args)) => acp_cmd::run(args, bus.clone(), pure_plugins).into(),
         Some(Command::Config(args)) => config::run(args).into(),
         Some(Command::Session(args)) => session::run(args).into(),
         Some(Command::Export(args)) => export_import::run_export(args).into(),

@@ -50,7 +50,10 @@ use client::{
 const OUTBOUND_OPERATION: &str = "ACP LLM turn";
 
 /// Run the ACP stdio server in a fresh Tokio runtime.
-pub fn run_stdio(bus: Arc<EventBus>) -> Exit {
+///
+/// `pure_plugins` is captured from the CLI's global `--pure`/`CORTEX_PURE=1` decision so ACP
+/// compaction turns use the same hard plugin kill switch as every other surface.
+pub fn run_stdio(bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -63,7 +66,7 @@ pub fn run_stdio(bus: Arc<EventBus>) -> Exit {
     };
 
     runtime.block_on(async move {
-        let service = match AcpService::from_process(bus) {
+        let service = match AcpService::from_process(bus, pure_plugins) {
             Ok(service) => service,
             Err(message) => {
                 eprintln!("cortex acp: {message}");
@@ -97,6 +100,7 @@ struct AcpState {
     client_seq: AtomicU64,
     sessions: StdMutex<HashMap<String, SessionRuntime>>,
     credentials: StdMutex<HashMap<String, String>>,
+    pure_plugins: bool,
 }
 
 /// The subset of client capabilities the ACP surface acts on, captured at `initialize`.
@@ -166,7 +170,7 @@ enum ProviderSource {
 
 impl AcpService {
     /// Build an ACP service from the process environment and shared database location.
-    pub fn from_process(event_bus: Arc<EventBus>) -> Result<Self, String> {
+    pub fn from_process(event_bus: Arc<EventBus>, pure_plugins: bool) -> Result<Self, String> {
         let Some(db_path) = DbPathInputs::from_process().resolve() else {
             return Err(
                 "cannot determine a database location; set HOME, XDG_DATA_HOME, CORTEX_DATA_DIR, or CORTEX_DB_PATH"
@@ -174,7 +178,12 @@ impl AcpService {
             );
         };
         Database::open(&db_path).map_err(|err| format!("cannot open session database: {err}"))?;
-        Ok(Self::new(db_path, ProviderSource::OpenRouter, event_bus))
+        Ok(Self::new(
+            db_path,
+            ProviderSource::OpenRouter,
+            event_bus,
+            pure_plugins,
+        ))
     }
 
     #[cfg(test)]
@@ -190,10 +199,16 @@ impl AcpService {
                 provider,
             },
             Arc::new(EventBus::new()),
+            false,
         )
     }
 
-    fn new(db_path: PathBuf, provider: ProviderSource, event_bus: Arc<EventBus>) -> Self {
+    fn new(
+        db_path: PathBuf,
+        provider: ProviderSource,
+        event_bus: Arc<EventBus>,
+        pure_plugins: bool,
+    ) -> Self {
         Self {
             state: Arc::new(AcpState {
                 db_path,
@@ -206,6 +221,7 @@ impl AcpService {
                 client_seq: AtomicU64::new(0),
                 sessions: StdMutex::new(HashMap::new()),
                 credentials: StdMutex::new(HashMap::new()),
+                pure_plugins,
             }),
         }
     }
@@ -674,7 +690,7 @@ impl AcpService {
         // the server and headless `run` paths so an ACP-driven compaction stays consistent across
         // surfaces. Loaded lazily only when the turn actually compacted.
         if !outcome.compactions.is_empty() {
-            match load_plugin_compaction_hooks(&plugin_cwd) {
+            match load_plugin_compaction_hooks(&plugin_cwd, self.state.pure_plugins) {
                 Ok(hooks) => apply_plugin_compaction_hooks(
                     &hooks,
                     &resolved.model_id,
@@ -1579,14 +1595,18 @@ fn parse_context_limit(raw: Option<&str>) -> Option<usize> {
 /// plugins yields an empty, no-op hook set without requiring a JS runtime.
 fn load_plugin_compaction_hooks(
     cwd: &std::path::Path,
+    pure_plugins: bool,
 ) -> Result<plugins::PluginEventHooks, String> {
+    if pure_plugins {
+        return Ok(plugins::PluginEventHooks::disabled("acp"));
+    }
     let config_inputs = settings::ConfigInputs::from_process(BTreeMap::new())
         .map_err(|err| format!("cannot load configuration context: {err}"))?;
     let effective =
         settings::load(config_inputs).map_err(|err| format!("cannot load configuration: {err}"))?;
     let plugin_config = plugins::PluginConfig::from_toml_value(effective.get("plugin"), cwd)
         .map_err(|message| format!("invalid plugin configuration: {message}"))?;
-    plugins::PluginEventHooks::load_or_disabled(&plugin_config, false, "acp")
+    plugins::PluginEventHooks::load(&plugin_config, "acp")
         .map_err(|err| format!("plugin runtime error: {err}"))
 }
 
@@ -3074,6 +3094,45 @@ export default async function plugin() {
         assert_eq!(compactions[0].summary, "ACP_HOOKED:kept BLUEBIRD");
         assert_eq!(compactions[0].tail_start_id, "tail-7");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pure_compaction_hooks_leave_configured_plugins_unloaded() {
+        let dir = temp_dir("acp-pure-compaction-plugin");
+        let plugin = dir.join("plugin.mjs");
+        std::fs::write(
+            &plugin,
+            r#"
+export default async function plugin() {
+  return {
+    experimental: {
+      session: {
+        compacting: async (record) => ({
+          ...record,
+          summary: `UNEXPECTED_PLUGIN:${record.summary}`
+        })
+      }
+    }
+  };
+}
+"#,
+        )
+        .expect("write plugin");
+        std::fs::write(dir.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
+            .expect("write config");
+
+        let hooks =
+            load_plugin_compaction_hooks(&dir, true).expect("pure mode must not resolve plugins");
+        let mut compactions = vec![engine::CompactionRecord {
+            summary: "kept BLUEBIRD".to_owned(),
+            tail_start_id: "tail-7".to_owned(),
+            continued_request: true,
+            model: None,
+        }];
+        apply_plugin_compaction_hooks(&hooks, "google/gemini-2.5-flash", &mut compactions);
+
+        assert_eq!(compactions[0].summary, "kept BLUEBIRD");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -379,6 +379,141 @@ export default async function plugin() {{
 }
 
 #[test]
+fn cortex_run_config_pair_options_change_a_local_plugin_effect() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("local-options");
+    let marker = sandbox.project.join("option-marker.txt");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(_input, options) {
+  return {
+    async event() {
+      await writeFile(options.marker, `label=${options.label}`);
+    }
+  };
+}
+"#,
+    );
+    let config = sandbox.project.join("cortex.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "plugin = [[\"./plugin.mjs\", {{ marker = \"{}\", label = \"L1\" }}]]\n",
+            marker.display()
+        ),
+    )
+    .expect("write L1 config");
+
+    let l1 = run(
+        cortex(
+            &sandbox,
+            &["run", "--command", "echo", "--command-arg", "options"],
+        ),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        l1.status.code(),
+        Some(0),
+        "L1 run succeeds: {}",
+        String::from_utf8_lossy(&l1.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "label=L1");
+
+    std::fs::write(
+        &config,
+        format!(
+            "plugin = [[\"./plugin.mjs\", {{ marker = \"{}\", label = \"L2\" }}]]\n",
+            marker.display()
+        ),
+    )
+    .expect("write L2 config");
+    let l2 = run(
+        cortex(
+            &sandbox,
+            &["run", "--command", "echo", "--command-arg", "options"],
+        ),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        l2.status.code(),
+        Some(0),
+        "L2 run succeeds: {}",
+        String::from_utf8_lossy(&l2.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "label=L2");
+}
+
+#[test]
+fn cortex_run_reports_missing_and_syntax_invalid_local_plugin_entries() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let missing = Sandbox::new("missing-plugin");
+    std::fs::write(
+        missing.project.join("cortex.toml"),
+        "plugin = [\"./does-not-exist.mjs\"]\n",
+    )
+    .expect("write missing plugin config");
+    let missing_output = run(
+        cortex(
+            &missing,
+            &["run", "--command", "echo", "--command-arg", "missing"],
+        ),
+        Duration::from_secs(30),
+    );
+    assert_ne!(missing_output.status.code(), Some(0));
+    let missing_stderr = String::from_utf8_lossy(&missing_output.stderr);
+    assert!(
+        missing_stderr.contains("does-not-exist.mjs")
+            && missing_stderr.contains("does not exist")
+            && !missing_stderr.contains("panicked"),
+        "missing entry fails with an attributed, non-panicking diagnostic: {missing_stderr}"
+    );
+
+    let syntax = Sandbox::new("syntax-plugin");
+    let plugin = syntax.project.join("syntax-error.mjs");
+    write_plugin(
+        &plugin,
+        r#"
+export default async function plugin() {
+  return {
+    event: async () => {
+      this is not valid JavaScript;
+    }
+  };
+}
+"#,
+    );
+    std::fs::write(
+        syntax.project.join("cortex.toml"),
+        "plugin = [\"./syntax-error.mjs\"]\n",
+    )
+    .expect("write syntax plugin config");
+    let syntax_output = run(
+        cortex(
+            &syntax,
+            &["run", "--command", "echo", "--command-arg", "syntax"],
+        ),
+        Duration::from_secs(30),
+    );
+    assert_ne!(syntax_output.status.code(), Some(0));
+    let syntax_stderr = String::from_utf8_lossy(&syntax_output.stderr);
+    assert!(
+        syntax_stderr.contains("syntax-error.mjs")
+            && syntax_stderr.to_ascii_lowercase().contains("syntax")
+            && !syntax_stderr.contains("panicked"),
+        "syntax error names the offending entry without a panic: {syntax_stderr}"
+    );
+}
+
+#[test]
 fn cortex_run_fires_plugin_event_hook_for_turn_lifecycle() {
     if skip_without_runtime() {
         return;
@@ -690,30 +825,37 @@ export default async function plugin() {{
 }
 
 #[test]
-fn cortex_pure_env_skips_plugin_registered_models() {
+fn cortex_pure_env_skips_plugin_hooks_and_registered_models() {
     if skip_without_runtime() {
         return;
     }
 
     let sandbox = Sandbox::new("pure-env");
+    let marker = sandbox.project.join("pure-env.marker");
     write_plugin(
         &sandbox.project.join("plugin.mjs"),
-        r#"
-export default async function plugin() {
-  return {
-    async auth() {
-      return { id: "plugin-auth", name: "Plugin Auth" };
-    },
-    async provider() {
-      return {
+        &format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+
+export default async function plugin() {{
+  await writeFile("{}", "plugin-loaded");
+  return {{
+    async auth() {{
+      return {{ id: "plugin-auth", name: "Plugin Auth" }};
+    }},
+    async provider() {{
+      return {{
         id: "plugin-provider",
         name: "Plugin Provider",
-        models: [{ id: "plugin/model", name: "Plugin Model" }]
-      };
-    }
-  };
-}
+        models: [{{ id: "plugin/model", name: "Plugin Model" }}]
+      }};
+    }}
+  }};
+}}
 "#,
+            marker.display()
+        ),
     );
     std::fs::write(
         sandbox.project.join("cortex.toml"),
@@ -721,11 +863,28 @@ export default async function plugin() {
     )
     .expect("write config");
 
-    let pure_models = cortex(&sandbox, &["models", "--pure", "--format", "json"]);
+    let loaded_models = run(
+        cortex(&sandbox, &["models", "--format", "json"]),
+        Duration::from_secs(30),
+    );
+    assert_eq!(loaded_models.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&loaded_models.stdout).contains("plugin/model"),
+        "normal mode materializes the plugin provider"
+    );
+    assert!(marker.exists(), "normal mode executed the plugin");
+
+    std::fs::remove_file(&marker).expect("clear normal plugin marker");
+    let mut pure_models = cortex(&sandbox, &["models", "--pure", "--format", "json"]);
+    pure_models.env("CORTEX_PURE", "1");
     let pure_models = run(pure_models, Duration::from_secs(10));
     assert_eq!(pure_models.status.code(), Some(0));
     assert!(
         !String::from_utf8_lossy(&pure_models.stdout).contains("plugin/model"),
         "--pure removes plugin models/providers"
+    );
+    assert!(
+        !marker.exists(),
+        "CORTEX_PURE=1 must suppress every plugin load side effect"
     );
 }

@@ -5,6 +5,6 @@ use events::EventBus;
 
 use crate::cli::AcpArgs;
 
-pub fn run(_args: AcpArgs, bus: Arc<EventBus>) -> Exit {
-    acp::run_stdio(bus)
+pub fn run(_args: AcpArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Exit {
+    acp::run_stdio(bus, pure_plugins)
 }
