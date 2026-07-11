@@ -23,7 +23,10 @@ pub struct ScenarioState {
     pub paused_activity_id: String,
     pub origin_stack: Vec<String>,
     pub draft: String,
+    pub attachment: String,
     pub transcript: String,
+    pub partial_response: String,
+    pub queue: String,
     pub queued_follow_up: String,
     pub scroll_anchor: String,
     pub selection: String,
@@ -2194,7 +2197,7 @@ fn streaming_interrupt() -> (
     let mut before = state(
         "streaming",
         vec!["home", "chat-turn", "streaming"],
-        "Also list the tests that should cover the change.",
+        "Add a short note about the auth refactor.",
         "assistant-partial-auth-refactor",
         "stop-reply",
         "streaming-interrupt",
@@ -2202,15 +2205,21 @@ fn streaming_interrupt() -> (
         "return-to-paused-turn",
         0,
     );
-    before.transcript = "The refactor moves token checks into one shared session guard.".to_owned();
-    before.queued_follow_up =
-        "Also list the tests that should cover the change. [attachment: auth-notes.md]".to_owned();
+    before.attachment = "auth-notes.md".to_owned();
+    before.partial_response = "The refactor moves token checks into one shared session guard.\n\
+It keeps sign-in, refresh, and sign-out on the same safety rule."
+        .to_owned();
+    before.transcript = before.partial_response.clone();
+    before.queue =
+        "1: Also list the tests that should cover the change. [attachment: auth-notes.md]"
+            .to_owned();
+    before.queued_follow_up = before.queue.clone();
     before.state_hash = state_hash(&before);
 
     let mut after = state(
         "chat-turn",
         vec!["home", "chat-turn", "streaming"],
-        "Also list the tests that should cover the change.",
+        "Add a short note about the auth refactor.",
         "assistant-partial-auth-refactor",
         "composer",
         "composer",
@@ -2219,6 +2228,9 @@ fn streaming_interrupt() -> (
         1,
     );
     after.transcript = before.transcript.clone();
+    after.attachment = before.attachment.clone();
+    after.partial_response = before.partial_response.clone();
+    after.queue = before.queue.clone();
     after.queued_follow_up = before.queued_follow_up.clone();
     after.state_hash = state_hash(&after);
 
@@ -3060,7 +3072,10 @@ fn state(
         paused_activity_id: "activity.current-turn".to_owned(),
         origin_stack: origin_stack.into_iter().map(str::to_owned).collect(),
         draft: draft.to_owned(),
+        attachment: String::new(),
         transcript: "The current conversation remains available.".to_owned(),
+        partial_response: String::new(),
+        queue: String::new(),
         queued_follow_up: String::new(),
         scroll_anchor: scroll_anchor.to_owned(),
         selection: selection.to_owned(),
@@ -3147,14 +3162,17 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\nwork_style={}\npending_work_style={}\naccess_scope={}\ntick={}",
+            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\nattachment={}\ntranscript={}\npartial_response={}\nqueue={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\nwork_style={}\npending_work_style={}\naccess_scope={}\ntick={}",
             state.screen_id,
             state.session_id,
             state.submitted_prompt.as_deref().unwrap_or(""),
             state.paused_activity_id,
             state.origin_stack.join(">"),
             state.draft,
+            state.attachment,
             state.transcript,
+            state.partial_response,
+            state.queue,
             state.queued_follow_up,
             state.scroll_anchor,
             state.selection,
@@ -3194,10 +3212,21 @@ fn preserved_hashes(
         ),
         ("draft", before.draft.as_str(), after.draft.as_str()),
         (
+            "attachment",
+            before.attachment.as_str(),
+            after.attachment.as_str(),
+        ),
+        (
             "transcript",
             before.transcript.as_str(),
             after.transcript.as_str(),
         ),
+        (
+            "partial_response",
+            before.partial_response.as_str(),
+            after.partial_response.as_str(),
+        ),
+        ("queue", before.queue.as_str(), after.queue.as_str()),
         (
             "queued_follow_up",
             before.queued_follow_up.as_str(),
@@ -3212,6 +3241,16 @@ fn preserved_hashes(
             "origin_stack",
             &before.origin_stack.join(">"),
             &after.origin_stack.join(">"),
+        ),
+        (
+            "origin",
+            &before.origin_stack.join(">"),
+            &after.origin_stack.join(">"),
+        ),
+        (
+            "reading_anchor",
+            before.scroll_anchor.as_str(),
+            after.scroll_anchor.as_str(),
         ),
         (
             "return_policy",
@@ -3608,7 +3647,10 @@ fn state_json(output: &mut String, state: &ScenarioState) {
     }
     output.push(']');
     field(output, "draft", &state.draft);
+    field(output, "attachment", &state.attachment);
     field(output, "transcript", &state.transcript);
+    field(output, "partial_response", &state.partial_response);
+    field(output, "queue", &state.queue);
     field(output, "queued_follow_up", &state.queued_follow_up);
     field(output, "scroll_anchor", &state.scroll_anchor);
     field(output, "selection", &state.selection);

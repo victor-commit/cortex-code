@@ -11,14 +11,14 @@
                                                                                                                         
     That keeps sign-in, refresh, and sign-out on the same safety rule.                                                  
                                                                                                                         
-    The answer is still being written                                                                                   
-                                                                                                                        
-                                                                                                                        
-    ● Writing reply · Running                                                                                           
-      24s elapsed · partial answer stays above                                                                          
-      [s] Stop reply                                                                                                    
+    ● Writing reply · Running · 24s elapsed · 2 sections received · [s] Stop reply                                      
                                                                                                                         
     When this reply is complete, Code will automatically search project files.                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -915,21 +915,16 @@ fn render_streaming(
         "That keeps sign-in, refresh, and sign-out on the same safety rule.",
         TextStyle::text(),
     )?;
-    canvas.write(
-        13,
-        4,
-        "The answer is still being written",
-        TextStyle::muted(),
-    )?;
     let live = ActivityRow::new(
         "Writing reply",
         ActivityState::Running,
-        "24s elapsed · partial answer stays above",
+        "24s elapsed · 2 sections received",
     )
-    .with_interrupt("Stop reply");
-    write_component(canvas, 16, 4, &live)?;
+    .with_interrupt("Stop reply")
+    .compact();
+    write_component(canvas, 13, 4, &live)?;
     canvas.write(
-        20,
+        15,
         4,
         "When this reply is complete, Code will automatically search project files.",
         TextStyle::muted(),
@@ -954,7 +949,7 @@ fn render_streaming(
         fixture_id,
         "live-state",
         "active-response",
-        reference(16, 4, 41),
+        reference(13, 4, 77),
         "summary",
         Some(action("action.streaming.interrupt", "Stop reply", false)),
     );
@@ -972,7 +967,7 @@ fn render_streaming(
         fixture_id,
         "automatic-transition",
         "action.streaming.start-requested-tool",
-        reference(20, 4, 42),
+        reference(15, 4, 82),
         "summary",
         Some(action(
             "action.streaming.start-requested-tool",
@@ -1048,7 +1043,7 @@ fn render_interrupted_chat_turn(
     canvas.write(
         14,
         4,
-        "● Reply stopped safely. Partial answer and draft are saved.",
+        "● Reply stopped safely. The partial answer is saved.",
         TextStyle::text(),
     )?;
     canvas.write(
@@ -1057,7 +1052,18 @@ fn render_interrupted_chat_turn(
         "Queued follow-up: Also list the tests that should cover the change.",
         TextStyle::text(),
     )?;
-    composer(canvas, "Reply to Code", Some("Send reply"))?;
+    canvas.write(
+        18,
+        4,
+        "[attachment: auth-notes.md] remains queued with this follow-up.",
+        TextStyle::muted(),
+    )?;
+    composer_with_draft(
+        canvas,
+        "Add a short note about the auth refactor.",
+        "auth-notes.md",
+        Some("Send reply"),
+    )?;
 
     let partial_answer = semantic(
         screen_id,
@@ -1073,7 +1079,25 @@ fn render_interrupted_chat_turn(
         fixture_id,
         "queued-input",
         "follow-up",
-        reference(14, 4, 73),
+        reference(17, 4, 73),
+        "summary",
+        None,
+    );
+    let draft = semantic(
+        screen_id,
+        fixture_id,
+        "draft",
+        "restored-draft",
+        reference(COMPOSER_TOP + 1, 4, 43),
+        "focused",
+        None,
+    );
+    let attachment = semantic(
+        screen_id,
+        fixture_id,
+        "attachment",
+        "auth-notes.md",
+        reference(COMPOSER_TOP + 2, 4, 33),
         "summary",
         None,
     );
@@ -1095,7 +1119,14 @@ fn render_interrupted_chat_turn(
         "summary",
         None,
     );
-    let pairs = [partial_answer, queued_follow_up, composer, status];
+    let pairs = [
+        partial_answer,
+        queued_follow_up,
+        draft,
+        attachment,
+        composer,
+        status,
+    ];
     Ok((
         pairs
             .iter()
@@ -1611,6 +1642,47 @@ fn composer(
         2,
         &format!("│ › {placeholder}"),
         TextStyle::bright(),
+    )?;
+    canvas.write(
+        COMPOSER_BOTTOM,
+        2,
+        &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    if let Some(action_label) = action_label {
+        canvas.write(
+            COMPOSER_BOTTOM - 1,
+            4,
+            &format!("[enter] {action_label}"),
+            TextStyle::accent(),
+        )?;
+    }
+    Ok(())
+}
+
+fn composer_with_draft(
+    canvas: &mut Canvas,
+    draft: &str,
+    attachment: &str,
+    action_label: Option<&str>,
+) -> Result<(), String> {
+    canvas.write(
+        COMPOSER_TOP,
+        2,
+        &format!("╭{}╮", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 1,
+        2,
+        &format!("│ › {draft}"),
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 2,
+        2,
+        &format!("│   [attachment: {attachment}]"),
+        TextStyle::muted(),
     )?;
     canvas.write(
         COMPOSER_BOTTOM,

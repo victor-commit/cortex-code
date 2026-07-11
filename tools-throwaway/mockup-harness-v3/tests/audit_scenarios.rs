@@ -139,7 +139,7 @@ fn conversation_pilot_screens_keep_the_transcript_and_one_clear_next_step() {
     assert_eq!(completed.transitions[0].to_screen_id, "streaming");
 
     let streaming_text = streaming.render_txt();
-    assert!(streaming_text.contains("The answer is still being written"));
+    assert!(streaming_text.contains("Writing reply · Running"));
     assert!(streaming_text.contains("will wait until this reply finishes"));
     assert_eq!(
         streaming
@@ -190,10 +190,94 @@ fn streaming_interrupt_preserves_partial_answer_and_queued_follow_up() {
             .unwrap_or_else(|| panic!("{field} preservation must be recorded"));
         assert_eq!(hashes.before, hashes.after, "{field} must survive interruption");
     }
-    assert!(replay.audit.render_txt().contains("Reply to Code"));
     let interrupted = replay.audit.render_txt();
-    assert!(interrupted.contains("It keeps sign-in, refresh, and sign-out on the same safety rule."));
-    assert!(interrupted.contains("Reply stopped safely. Partial answer and draft are saved."));
+    assert!(
+        interrupted.contains("It keeps sign-in, refresh, and sign-out on the same safety rule.")
+    );
+    assert!(interrupted.contains("Reply stopped safely. The partial answer is saved."));
+    assert!(interrupted.contains("Add a short note about the auth refactor."));
+    assert!(interrupted.contains("[attachment: auth-notes.md]"));
+}
+
+#[test]
+fn streaming_interrupt_restores_each_real_input_and_response_field() {
+    let replay = replay_case("streaming-interrupt", 1)
+        .expect("the streaming interruption replay must expose preserved fields");
+
+    for field in [
+        "draft",
+        "attachment",
+        "transcript",
+        "partial_response",
+        "queue",
+        "origin_stack",
+        "scroll_anchor",
+    ] {
+        let hashes = replay
+            .preserved_field_hashes
+            .get(field)
+            .unwrap_or_else(|| panic!("{field} preservation must be recorded"));
+        assert_eq!(
+            hashes.before, hashes.after,
+            "{field} must survive the interruption transition"
+        );
+    }
+
+    assert_eq!(
+        replay.before.attachment, "auth-notes.md",
+        "the attachment must be a real preserved fixture value"
+    );
+    assert_eq!(
+        replay.before.partial_response,
+        "The refactor moves token checks into one shared session guard.\n\
+It keeps sign-in, refresh, and sign-out on the same safety rule."
+    );
+    assert_eq!(
+        replay.before.queue,
+        "1: Also list the tests that should cover the change. [attachment: auth-notes.md]"
+    );
+    let text = replay.audit.render_txt();
+    assert!(text.contains("Add a short note about the auth refactor."));
+    assert!(text.contains("[attachment: auth-notes.md]"));
+    assert!(text.contains("Queued follow-up: Also list the tests that should cover the change."));
+}
+
+#[test]
+fn streaming_has_one_compact_live_owner_and_one_local_stop() {
+    let streaming = audit_screen("streaming", "flow1-live-owner")
+        .expect("the streaming state must render typed live evidence");
+    streaming
+        .validate()
+        .expect("streaming evidence must remain semantically bijective");
+
+    assert_eq!(
+        streaming
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "live-state")
+            .count(),
+        1
+    );
+    assert_eq!(
+        streaming
+            .events
+            .iter()
+            .filter(|event| {
+                event
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| !action.automatic)
+            })
+            .count(),
+        1
+    );
+    let text = streaming.render_txt();
+    assert_eq!(
+        text.matches("The answer is still being written").count(),
+        0,
+        "streaming must not duplicate the compact live row with prose status"
+    );
+    assert_eq!(text.matches("Stop reply").count(), 1);
 }
 
 #[test]
