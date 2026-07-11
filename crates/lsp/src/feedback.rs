@@ -1,10 +1,13 @@
 //! Post-mutation diagnostics feedback built on real language servers.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use nix::fcntl::{Flock, FlockArg};
 use redaction::guard_outbound;
 use url::Url;
 
@@ -27,6 +30,7 @@ const NAVIGATION_RETRY_INTERVAL: Duration = Duration::from_millis(150);
 const PULL_DIAGNOSTICS_WAIT_BEFORE_FALLBACK: Duration = Duration::from_millis(1200);
 const LSP_CRASH_STATE_DIR: &str = "lsp/crash-state";
 const LSP_RUNTIME_STATE_DIR: &str = "lsp/runtime-state";
+static RUNTIME_STATE_UPDATE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 // LSP cancellation/readiness errors that rust-analyzer may return while a just-opened workspace is
 // still loading or while it invalidates an in-flight query after didOpen/didChange. Treat these as
 // retryable for navigation only, without weakening fatal transport/process handling.
@@ -282,7 +286,7 @@ impl DurableCrashState {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct ManagedServer {
     pid: u32,
     /// `None` is a legacy PID-only record and must fail closed: it cannot establish ownership
@@ -319,60 +323,140 @@ impl RuntimeServerState {
         let path = runtime_state_path(root);
         let servers = path
             .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| {
-                serde_json::from_slice::<BTreeMap<String, ManagedServer>>(&bytes).ok()
-            })
-            .unwrap_or_default();
+            .map_or_else(BTreeMap::new, |path| read_runtime_servers(path));
         Self { path, servers }
     }
 
     fn status_for(&mut self, language_id: &str) -> RegisteredServer {
+        self.reload();
         let Some(server) = self.servers.get(language_id).cloned() else {
             return RegisteredServer::None;
         };
         if server.is_live() {
             return RegisteredServer::Running(server.pid);
         }
-        self.servers.remove(language_id);
-        self.persist();
-        RegisteredServer::Stale
-    }
-
-    fn register(&mut self, language_id: &str, identity: LspProcessIdentity) {
-        self.servers.insert(
-            language_id.to_owned(),
-            ManagedServer {
-                pid: identity.pid(),
-                start_time: Some(identity.start_time()),
-            },
-        );
-        self.persist();
-    }
-
-    fn unregister(&mut self, language_id: &str) {
-        if self.servers.remove(language_id).is_some() {
-            self.persist();
+        if self.remove_if_matches(language_id, &server) {
+            return RegisteredServer::Stale;
         }
+        self.servers
+            .get(language_id)
+            .filter(|replacement| replacement.is_live())
+            .map_or(RegisteredServer::Stale, |replacement| {
+                RegisteredServer::Running(replacement.pid)
+            })
     }
 
-    fn persist(&self) {
-        let Some(path) = self.path.as_ref() else {
+    fn register(&mut self, language_id: &str, identity: Option<LspProcessIdentity>) {
+        let Some(identity) = identity else {
             return;
+        };
+        let server = ManagedServer {
+            pid: identity.pid(),
+            start_time: Some(identity.start_time()),
+        };
+        self.update(|servers| {
+            let changed = servers.get(language_id) != Some(&server);
+            if changed {
+                servers.insert(language_id.to_owned(), server);
+            }
+            ((), changed)
+        });
+    }
+
+    fn unregister(&mut self, language_id: &str, identity: Option<LspProcessIdentity>) {
+        let Some(identity) = identity else {
+            return;
+        };
+        let expected = ManagedServer {
+            pid: identity.pid(),
+            start_time: Some(identity.start_time()),
+        };
+        let _ = self.remove_if_matches(language_id, &expected);
+    }
+
+    fn reload(&mut self) {
+        self.update(|_| ((), false));
+    }
+
+    fn remove_if_matches(&mut self, language_id: &str, expected: &ManagedServer) -> bool {
+        self.update(|servers| {
+            let matches = servers.get(language_id) == Some(expected);
+            if matches {
+                servers.remove(language_id);
+            }
+            (matches, matches)
+        })
+    }
+
+    fn update<T>(
+        &mut self,
+        operation: impl FnOnce(&mut BTreeMap<String, ManagedServer>) -> (T, bool),
+    ) -> T {
+        let Some(path) = self.path.clone() else {
+            let (result, _) = operation(&mut self.servers);
+            return result;
         };
         let Some(parent) = path.parent() else {
-            return;
+            let (result, _) = operation(&mut self.servers);
+            return result;
         };
         if std::fs::create_dir_all(parent).is_err() {
-            return;
+            let (result, _) = operation(&mut self.servers);
+            return result;
         }
-        let Ok(bytes) = serde_json::to_vec(&self.servers) else {
-            return;
+
+        let guard = RUNTIME_STATE_UPDATE_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock_path = path.with_extension("lock");
+        let Ok(lock_file) = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+        else {
+            drop(guard);
+            let (result, _) = operation(&mut self.servers);
+            return result;
         };
-        let temporary = path.with_extension("tmp");
-        if std::fs::write(&temporary, bytes).is_ok() {
-            let _ = std::fs::rename(temporary, path);
+        let Ok(_lock_file) = Flock::lock(lock_file, FlockArg::LockExclusive) else {
+            drop(guard);
+            let (result, _) = operation(&mut self.servers);
+            return result;
+        };
+
+        let mut servers = read_runtime_servers(&path);
+        let (result, changed) = operation(&mut servers);
+        if changed {
+            persist_runtime_servers(&path, &servers);
         }
+        self.servers = servers;
+        drop(guard);
+        result
+    }
+}
+
+fn read_runtime_servers(path: &Path) -> BTreeMap<String, ManagedServer> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn persist_runtime_servers(path: &Path, servers: &BTreeMap<String, ManagedServer>) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec(servers) else {
+        return;
+    };
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        let _ = std::fs::rename(temporary, path);
     }
 }
 
@@ -876,7 +960,8 @@ impl FeedbackManager {
                         clear_crashed = true;
                         ServerRunState::Running(client.child_id())
                     } else {
-                        self.runtime_state.unregister(server.language_id());
+                        self.runtime_state
+                            .unregister(server.language_id(), client.process_identity());
                         mark_crashed = true;
                         ServerRunState::Crashed
                     }
@@ -921,9 +1006,10 @@ impl FeedbackManager {
         for language_id in languages {
             if let Some(ServerSlot::Running { mut client, .. }) = self.servers.remove(&language_id)
             {
+                let identity = client.process_identity();
                 let _ = client.shutdown();
                 let _ = client.exit();
-                self.runtime_state.unregister(&language_id);
+                self.runtime_state.unregister(&language_id, identity);
                 self.crash_state.clear_crashed(&language_id);
             }
         }
@@ -1019,9 +1105,10 @@ impl FeedbackManager {
     }
 
     fn mark_broken(&mut self, language_id: &str) {
-        self.runtime_state.unregister(language_id);
         if let Some(ServerSlot::Running { mut client, .. }) = self.servers.remove(language_id) {
+            let identity = client.process_identity();
             client.force_reap();
+            self.runtime_state.unregister(language_id, identity);
         }
         self.servers
             .insert(language_id.to_owned(), ServerSlot::Broken);
@@ -1928,7 +2015,7 @@ mod tests {
             path: None,
             servers: BTreeMap::new(),
         };
-        state.register("fixture", identity);
+        state.register("fixture", Some(identity));
 
         assert_eq!(
             state.status_for("fixture"),
@@ -1955,7 +2042,7 @@ mod tests {
             servers: BTreeMap::new(),
         };
 
-        state.register("fixture", identity);
+        state.register("fixture", Some(identity));
 
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).expect("persisted runtime record"))
@@ -2016,6 +2103,7 @@ mod tests {
                 },
             )]),
         };
+        persist_runtime_servers(&path, &state.servers);
 
         assert_eq!(state.status_for("legacy"), RegisteredServer::Stale);
         assert!(!state.servers.contains_key("legacy"));
@@ -2023,6 +2111,142 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("persisted stale removal"))
                 .expect("runtime state JSON");
         assert!(persisted.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_registration_skips_unverified_process_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-lsp-runtime-unverified-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let path = root.join("runtime.json");
+        let mut state = RuntimeServerState {
+            path: Some(path.clone()),
+            servers: BTreeMap::new(),
+        };
+
+        state.register("fixture", None);
+
+        assert!(state.servers.is_empty());
+        assert!(
+            !path.exists(),
+            "a platform without a stable process token must not persist PID-only ownership"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_unregister_preserves_a_replacement_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "cortex-lsp-runtime-unregister-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let path = root.join("runtime.json");
+        let original = LspProcessIdentity::from_parts(101, 1001);
+        let replacement = LspProcessIdentity::from_parts(202, 2002);
+        let mut state = RuntimeServerState {
+            path: Some(path.clone()),
+            servers: BTreeMap::new(),
+        };
+
+        state.register("fixture", Some(replacement));
+        state.unregister("fixture", Some(original));
+
+        let persisted: BTreeMap<String, ManagedServer> =
+            serde_json::from_slice(&std::fs::read(&path).expect("persisted runtime state"))
+                .expect("runtime state JSON");
+        assert_eq!(
+            persisted.get("fixture"),
+            Some(&ManagedServer {
+                pid: replacement.pid(),
+                start_time: Some(replacement.start_time()),
+            })
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_stale_cleanup_cannot_erase_concurrently_registered_replacement() {
+        use std::sync::{Arc, Barrier};
+
+        let root = std::env::temp_dir().join(format!(
+            "cortex-lsp-runtime-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let path = root.join("runtime.json");
+        let replacement_identity = LspProcessIdentity::capture(std::process::id())
+            .expect("the current Linux process must have start ticks");
+        let stale = ManagedServer {
+            pid: replacement_identity.pid(),
+            start_time: Some(replacement_identity.start_time().saturating_add(1)),
+        };
+        let replacement = ManagedServer {
+            pid: replacement_identity.pid(),
+            start_time: Some(replacement_identity.start_time()),
+        };
+        let mut stale_cleaner = RuntimeServerState {
+            path: Some(path.clone()),
+            servers: BTreeMap::from([("fixture".to_owned(), stale)]),
+        };
+        persist_runtime_servers(&path, &stale_cleaner.servers);
+        let barrier = Arc::new(Barrier::new(2));
+
+        std::thread::scope(|scope| {
+            let registrar_barrier = barrier.clone();
+            let registrar_path = path.clone();
+            scope.spawn(move || {
+                let mut registrar = RuntimeServerState {
+                    path: Some(registrar_path),
+                    servers: BTreeMap::new(),
+                };
+                registrar_barrier.wait();
+                registrar.register(
+                    "fixture",
+                    LspProcessIdentity::from_parts(
+                        replacement.pid,
+                        replacement.start_time.expect("replacement start time"),
+                    )
+                    .into(),
+                );
+                registrar_barrier.wait();
+            });
+
+            barrier.wait();
+            barrier.wait();
+            assert_eq!(
+                stale_cleaner.status_for("fixture"),
+                RegisteredServer::Running(replacement.pid),
+                "cleanup must observe the concurrently registered live replacement"
+            );
+        });
+
+        let persisted: BTreeMap<String, ManagedServer> =
+            serde_json::from_slice(&std::fs::read(&path).expect("persisted runtime state"))
+                .expect("runtime state JSON");
+        assert_eq!(
+            persisted.get("fixture").map(|server| server.pid),
+            Some(replacement.pid)
+        );
+        assert_eq!(
+            persisted
+                .get("fixture")
+                .and_then(|server| server.start_time),
+            replacement.start_time
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

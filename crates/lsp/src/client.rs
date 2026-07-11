@@ -158,7 +158,7 @@ impl NotificationOutcome {
 #[derive(Debug)]
 pub struct LspClient {
     child: Child,
-    process_identity: LspProcessIdentity,
+    process_identity: Option<LspProcessIdentity>,
     stdin: Option<ChildStdin>,
     incoming: Receiver<ReaderEvent>,
     reader: Option<JoinHandle<()>>,
@@ -239,10 +239,7 @@ impl LspClient {
             .stderr(Stdio::null());
 
         let mut child = command.spawn().map_err(|_| LspError::Spawn)?;
-        let Some(process_identity) = LspProcessIdentity::capture(child.id()) else {
-            force_kill(&mut child);
-            return Err(LspError::Spawn);
-        };
+        let process_identity = LspProcessIdentity::capture(child.id());
         let stdin = match child.stdin.take() {
             Some(stdin) => stdin,
             None => {
@@ -542,7 +539,7 @@ impl LspClient {
 
     /// Stable identity of the exact child process Cortex spawned.
     #[must_use]
-    pub(crate) const fn process_identity(&self) -> LspProcessIdentity {
+    pub(crate) const fn process_identity(&self) -> Option<LspProcessIdentity> {
         self.process_identity
     }
 
@@ -970,6 +967,17 @@ mod tests {
             LspClient::spawn(&LspServerCommand::new("")).expect_err("empty command should fail"),
             LspError::InvalidCommand
         );
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn spawn_succeeds_without_a_persistent_process_identity() {
+        let mut client =
+            LspClient::spawn(&LspServerCommand::new("sh").with_args(["-c", "sleep 60"]))
+                .expect("Unix LSP child should start without Linux /proc metadata");
+
+        assert_eq!(client.process_identity(), None);
+        client.exit().expect("reap exact spawned child");
     }
 
     #[test]

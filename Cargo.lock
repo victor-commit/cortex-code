@@ -1854,6 +1854,7 @@ version = "0.1.0"
 dependencies = [
  "checkpoints",
  "errors",
+ "nix 0.31.3",
  "redaction",
  "serde",
  "serde_json",

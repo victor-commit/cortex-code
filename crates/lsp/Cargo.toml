@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 checkpoints = { workspace = true }
 errors = { workspace = true }
+nix = { workspace = true }
 redaction = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
