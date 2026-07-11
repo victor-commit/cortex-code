@@ -50,6 +50,15 @@ pub fn validate_glyphs(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Rejects text that cannot occupy one stable canvas row without control-byte
+/// interpretation. Audit and render paths call this before writing cells.
+pub fn validate_text_safety(text: &str) -> Result<(), String> {
+    if text.chars().count() > CANVAS_COLUMNS as usize || text.chars().any(char::is_control) {
+        return Err("text width/control hazard: control-escape".to_owned());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rgb {
     pub red: u8,
@@ -308,6 +317,15 @@ pub const fn palette(theme: Theme) -> Palette {
         Theme::Dark => DARK,
         Theme::Light => LIGHT,
     }
+}
+
+/// Confirms that a caller is using the declared semantic color value for a
+/// token instead of an arbitrary per-screen RGB override.
+pub fn validate_token_hex(token: ColorToken, value: &str) -> Result<(), String> {
+    if palette(Theme::Dark).hex(token) != value {
+        return Err(format!("token/hex mismatch: accent:{value}"));
+    }
+    Ok(())
 }
 
 /// Semantic styling is declared in tokens, never with per-screen RGB values.

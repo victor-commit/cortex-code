@@ -119,6 +119,7 @@ impl RootKind {
 
 struct PreparedRoot {
     kind: RootKind,
+    root: PathBuf,
     artifacts: BTreeMap<String, Vec<u8>>,
 }
 
@@ -293,7 +294,7 @@ pub fn publish(plan: &RenderPlan) -> Result<(), RenderFailure> {
 
     let mut locks = Vec::with_capacity(roots.len());
     for root in &roots {
-        locks.push(CoordinatorLock::acquire(root.kind.path())?);
+        locks.push(CoordinatorLock::acquire(&root.root)?);
     }
 
     publish_prepared_roots(&roots, false)?;
@@ -433,15 +434,6 @@ fn validate_renderer_map(inventory: &[ScreenSpec], renderer_ids: &[&str]) -> Res
     Ok(())
 }
 
-/// Fixture-only access to renderer map preflight, kept deterministic so the
-/// negative suite can prove inventory ownership bypasses fail before I/O.
-pub fn validate_renderer_map_fixture(
-    inventory: &[ScreenSpec],
-    renderer_ids: &[&str],
-) -> Result<(), String> {
-    validate_renderer_map(inventory, renderer_ids)
-}
-
 /// Rejects cleanup paths that do not belong to the same renderer-owned parent
 /// and staging namespace as the output root. This predicate runs before any
 /// fixture cleanup can remove a temporary directory.
@@ -482,47 +474,104 @@ pub fn validate_cleanup_paths(output_root: &Path, staging_root: &Path) -> Result
     Ok(())
 }
 
-/// Exercises the staged-failure cleanup path inside a caller-owned temporary
-/// root and deliberately returns the validation error that blocks publication.
-pub fn publication_failure_fixture(root: &Path) -> Result<(), String> {
-    let output = root.join("published");
-    let stage = root.join(".published.render-staging-fixture");
-    fs::create_dir_all(&output)
-        .map_err(|error| format!("could not create fixture publication root: {error}"))?;
-    fs::write(output.join("previous.txt"), b"previous complete gallery\n")
-        .map_err(|error| format!("could not write fixture publication baseline: {error}"))?;
-    fs::create_dir(&stage)
-        .map_err(|error| format!("could not create fixture staging root: {error}"))?;
-    fs::write(stage.join("candidate.txt"), b"incomplete staged gallery\n")
-        .map_err(|error| format!("could not write fixture staging artifact: {error}"))?;
-    validate_cleanup_paths(&output, &stage)?;
-    let previous = fs::read(output.join("previous.txt"))
-        .map_err(|error| format!("could not read fixture publication baseline: {error}"))?;
-    cleanup_stages(&[StagedRoot {
-        root: output.clone(),
-        stage: stage.clone(),
-    }])
-    .map_err(|error| error.message)?;
-    if fs::read(output.join("previous.txt"))
-        .map_err(|error| format!("could not verify fixture publication baseline: {error}"))?
-        != previous
-        || stage.exists()
-    {
-        return Err(
-            "publication failure fixture did not preserve the prior complete root".to_owned(),
-        );
+/// Runs the renderer-oriented negative cases through the same map validation,
+/// staging, publication, and guarded cleanup operations used by the renderer.
+/// The caller provides a disposable root, never a canonical or gate root.
+pub fn run_renderer_negative_fixture(id: &str, root: &Path) -> Result<(), String> {
+    match id {
+        "inventory-without-renderer" => {
+            let mut inventory = canonical_inventory().to_vec();
+            inventory[0].status = ImplementationStatus::Implemented;
+            validate_renderer_map(&inventory, &[])
+        }
+        "renderer-outside-inventory" => {
+            validate_renderer_map(canonical_inventory(), &["outside-the-contract"])
+        }
+        "unsafe-cleanup" => fixture_unsafe_cleanup(root),
+        "publication-failure" => fixture_publication_failure(root),
+        other => Err(format!("unknown renderer negative fixture: {other}")),
     }
-    Err("injected staged validation failure before publication".to_owned())
 }
 
-/// Runs the production cleanup guard for a fixture-owned staging path. Unsafe
-/// paths remain untouched, so a sentinel can prove fail-closed cleanup.
-pub fn cleanup_fixture_staging(output_root: &Path, staging_root: &Path) -> Result<(), String> {
-    cleanup_stages(&[StagedRoot {
-        root: output_root.to_path_buf(),
-        stage: staging_root.to_path_buf(),
-    }])
-    .map_err(|error| error.message)
+fn fixture_unsafe_cleanup(root: &Path) -> Result<(), String> {
+    let output = root.join("published");
+    let unsafe_stage = root.join("outside-staging");
+    fs::create_dir(&unsafe_stage)
+        .map_err(|error| format!("could not create unsafe cleanup sentinel: {error}"))?;
+    fs::write(
+        unsafe_stage.join("sentinel.txt"),
+        b"must survive unsafe cleanup",
+    )
+    .map_err(|error| format!("could not write unsafe cleanup sentinel: {error}"))?;
+
+    let cleanup = cleanup_stages(&[StagedRoot {
+        root: output,
+        stage: unsafe_stage.clone(),
+    }]);
+    if !unsafe_stage.join("sentinel.txt").is_file() {
+        return Err("unsafe cleanup removed its sentinel".to_owned());
+    }
+    cleanup.map_err(|error| error.message)
+}
+
+fn fixture_publication_failure(root: &Path) -> Result<(), String> {
+    let output = root.join("published");
+    let prior = fixture_prepared_root(&output, "previous complete gallery");
+    publish_prepared_roots(&[prior], false).map_err(|error| error.message)?;
+    let before = fixture_tree_manifest(&output)?;
+
+    let candidate = fixture_prepared_root(&output, "candidate incomplete gallery");
+    let publication = publish_prepared_roots(&[candidate], true)
+        .expect_err("injected validation failure must stop production publication");
+    let after = fixture_tree_manifest(&output)?;
+    if before != after {
+        return Err("publication failure fixture did not preserve the prior complete root".to_owned());
+    }
+    let prefix = ".published.render-staging-";
+    let stale_stage = fs::read_dir(root)
+        .map_err(|error| format!("could not inspect fixture publication parent: {error}"))?
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with(prefix));
+    if stale_stage {
+        return Err("publication failure fixture left a renderer staging root".to_owned());
+    }
+    Err(publication.message)
+}
+
+fn fixture_prepared_root(root: &Path, contents: &str) -> PreparedRoot {
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert("session/fixture.txt".to_owned(), fixture_txt(contents).into_bytes());
+    PreparedRoot {
+        kind: RootKind::Canonical,
+        root: root.to_path_buf(),
+        artifacts,
+    }
+}
+
+fn fixture_txt(label: &str) -> String {
+    let mut text = String::new();
+    let line = format!("fixture gallery: {label}");
+    for row in 0..40 {
+        let content = if row == 0 { line.as_str() } else { "" };
+        text.push_str(content);
+        text.push_str(&" ".repeat(120 - content.chars().count()));
+        text.push('\n');
+    }
+    text
+}
+
+fn fixture_tree_manifest(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut manifest = collect_regular_files(root)?
+        .into_iter()
+        .map(|path| {
+            let relative = relative_path(root, &path)?;
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("could not read fixture gallery artifact: {error}"))?;
+            Ok((relative, sha256_hex(&bytes)))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    manifest.sort();
+    Ok(manifest)
 }
 
 fn require_implemented(inventory: &[ScreenSpec]) -> Result<(), String> {
@@ -569,6 +618,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     if !canonical.is_empty() {
         roots.push(PreparedRoot {
             kind: RootKind::Canonical,
+            root: RootKind::Canonical.path().to_path_buf(),
             artifacts: canonical,
         });
     }
@@ -588,6 +638,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
         }
         roots.push(PreparedRoot {
             kind: RootKind::Gate,
+            root: RootKind::Gate.path().to_path_buf(),
             artifacts: gate,
         });
     }
@@ -779,7 +830,7 @@ fn publish_staged_roots_with_cleanup(
 }
 
 fn stage_root(prepared: &PreparedRoot) -> Result<StagedRoot, RenderFailure> {
-    let root = prepared.kind.path().to_path_buf();
+    let root = prepared.root.clone();
     let parent = root.parent().ok_or_else(|| {
         RenderFailure::validation(format!("output root has no parent: {}", root.display()))
     })?;

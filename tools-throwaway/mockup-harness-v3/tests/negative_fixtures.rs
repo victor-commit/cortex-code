@@ -1,11 +1,22 @@
-use mockup_harness_v3::negative_fixtures::{
-    fixture_manifest, run_negative_fixtures, REQUIRED_FIXTURE_IDS,
-};
+use std::process::{Command, Output};
+
+use mockup_harness_v3::negative_fixtures::{fixture_manifest, REQUIRED_FIXTURE_IDS};
+
+fn harness() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
+}
+
+fn run(arguments: &[&str]) -> Output {
+    harness()
+        .args(arguments)
+        .output()
+        .expect("the public negative-fixture CLI must run")
+}
 
 #[test]
-fn isolated_negative_fixture_manifest_rejects_every_required_bypass() {
+fn public_negative_fixture_matrix_rejects_every_required_bypass() {
     let manifest = fixture_manifest();
-    let static_manifest = include_str!("negative-fixtures.manifest")
+    let static_manifest = include_str!("negative-fixtures.tsv")
         .lines()
         .filter(|line| !line.starts_with('#'))
         .map(|line| line.split('\t').collect::<Vec<_>>())
@@ -23,7 +34,9 @@ fn isolated_negative_fixture_manifest_rejects_every_required_bypass() {
             row,
             vec![
                 fixture.id,
+                "mockup-harness-v3",
                 fixture.command,
+                "3",
                 fixture.validator,
                 fixture.screen_id,
                 fixture.offending_identity,
@@ -32,41 +45,60 @@ fn isolated_negative_fixture_manifest_rejects_every_required_bypass() {
         );
     }
 
-    let report = run_negative_fixtures()
-        .expect("every negative fixture must reject its intended invalid input safely");
-    assert_eq!(report.outcomes.len(), REQUIRED_FIXTURE_IDS.len());
-    assert_eq!(report.protected_before, report.protected_after);
-    assert!(!report.fixture_root_exists);
-
-    for outcome in &report.outcomes {
+    for fixture in manifest {
+        let output = run(&[fixture.command.split(' ').next().unwrap(), fixture.id]);
         assert_eq!(
-            outcome.exit_code, 3,
-            "{} must use the public validation exit code",
-            outcome.id
+            output.status.code(),
+            Some(3),
+            "{} must return the real public validation exit code",
+            fixture.id
         );
         assert!(
-            outcome
-                .diagnostic
-                .contains(&format!("fixture {}", outcome.id)),
+            output.stdout.is_empty(),
+            "{} must not mix rejection diagnostics into stdout",
+            fixture.id
+        );
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains(&format!("fixture {}", fixture.id)),
             "{} must name the fixture",
-            outcome.id
+            fixture.id
         );
         assert!(
-            outcome
-                .diagnostic
-                .contains(&format!("screen {}", outcome.screen_id)),
+            diagnostic.contains(&format!("screen {}", fixture.screen_id)),
             "{} must name the screen or case",
-            outcome.id
+            fixture.id
         );
         assert!(
-            outcome.diagnostic.contains(outcome.offending_identity),
+            diagnostic.contains(fixture.offending_identity),
             "{} must name the offending identity",
-            outcome.id
+            fixture.id
         );
         assert!(
-            outcome.diagnostic.contains(outcome.expected_diagnostic),
+            diagnostic.contains(fixture.expected_diagnostic),
             "{} must preserve its intended validator diagnostic",
-            outcome.id
+            fixture.id
+        );
+    }
+}
+
+#[test]
+fn public_negative_fixture_usage_failures_are_distinct_from_validation_failures() {
+    for arguments in [
+        vec!["negative-fixture"],
+        vec!["negative-fixture", "unknown-fixture"],
+        vec!["negative-fixture", "orphan-candidate", "extra"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{arguments:?} must be a public usage error"
+        );
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert!(
+            !output.stderr.is_empty(),
+            "{arguments:?} must emit its usage diagnostic on stderr"
         );
     }
 }

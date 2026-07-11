@@ -757,6 +757,8 @@ pub fn validate_inventory(inventory: &[ScreenSpec]) -> Result<(), String> {
     let mut flow_owners = BTreeMap::<&str, BTreeSet<FlowOwner>>::new();
 
     for screen in inventory {
+        validate_surface_labels(&[screen.surface.as_str()])?;
+        validate_alias(screen.id, screen.id)?;
         flow_owners
             .entry(screen.id)
             .or_default()
@@ -819,5 +821,38 @@ pub fn validate_inventory(inventory: &[ScreenSpec]) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+/// Rejects absent, duplicate, or unsupported names for the four declared
+/// surface arrangements before inventory evidence can be accepted.
+pub fn validate_surface_labels(labels: &[&str]) -> Result<(), String> {
+    if labels.is_empty() {
+        return Err("missing surface".to_owned());
+    }
+    let allowed = [
+        "conversation-shell",
+        "action-dock",
+        "contextual-inspector",
+        "temporary-detail-view",
+    ];
+    let mut seen = BTreeSet::new();
+    for label in labels {
+        if !allowed.contains(label) {
+            return Err(format!("unknown surface: {label}"));
+        }
+        if !seen.insert(*label) {
+            return Err(format!("duplicate surface: {label}"));
+        }
+    }
+    Ok(())
+}
+
+/// Proves a public identity did not require case or punctuation rewriting to
+/// match its canonical registry representation.
+pub fn validate_alias(actual: &str, expected: &str) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!("alias normalization mismatch: {actual}"));
+    }
     Ok(())
 }

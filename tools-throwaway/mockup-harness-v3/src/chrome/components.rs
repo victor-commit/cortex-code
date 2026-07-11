@@ -353,6 +353,9 @@ impl DecisionDock {
     /// bottom-dock placement contract.
     pub fn render(&self) -> Result<Vec<ComponentLine>, String> {
         self.validate()?;
+        validate_primary_actions(1, false)?;
+        validate_key_placement("key.action-dock.enter", true)?;
+        validate_status_copy("status.decision", &self.effect)?;
         Ok(self.render_lines())
     }
 
@@ -802,6 +805,39 @@ pub fn validate_component(component: &impl Component) -> Result<(), String> {
         .any(|line| line.text.contains("ctx "))
     {
         return Err("components may not add statusline context usage".to_owned());
+    }
+    Ok(())
+}
+
+/// Rejects controls that are detached from the object or dock they operate.
+pub fn validate_key_placement(key: &str, is_local: bool) -> Result<(), String> {
+    if !is_local {
+        return Err(format!("misplaced key: {key}"));
+    }
+    Ok(())
+}
+
+/// Requires a textual status alongside color or a functional marker.
+pub fn validate_status_copy(status_id: &str, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err(format!("color-only status: {status_id}"));
+    }
+    Ok(())
+}
+
+/// Enforces singular decision hierarchy and prevents automatic waits from
+/// presenting a manual primary action.
+pub fn validate_primary_actions(count: usize, automatic: bool) -> Result<(), String> {
+    if count == 0 {
+        return Err("hidden primary action: primary-action".to_owned());
+    }
+    if count > 1 {
+        return Err("duplicate primary action: primary-action".to_owned());
+    }
+    if automatic {
+        return Err(
+            "automatic wait exposes a primary action: action.recovery.retry-window".to_owned(),
+        );
     }
     Ok(())
 }

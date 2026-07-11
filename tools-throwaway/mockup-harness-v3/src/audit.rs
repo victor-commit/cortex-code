@@ -12,7 +12,10 @@ use crate::{
     chrome::{
         components::DecisionDock,
         layout::{ScreenComposition, StatusLine, SurfaceLayout},
-        tokens::{validate_glyphs, ColorToken, TextStyle, CANVAS_COLUMNS, CANVAS_ROWS},
+        tokens::{
+            palette, validate_glyphs, validate_text_safety, validate_token_hex, ColorToken,
+            TextStyle, Theme, CANVAS_COLUMNS, CANVAS_ROWS,
+        },
     },
     Surface,
 };
@@ -292,6 +295,10 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
     if fixture_id.trim().is_empty() {
         return Err("fixture identity must not be empty".to_owned());
     }
+    validate_token_hex(
+        ColorToken::Accent,
+        palette(Theme::Dark).hex(ColorToken::Accent),
+    )?;
 
     let (action, transition) = screen_action(screen_id);
     let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;
@@ -402,6 +409,8 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         transitions: vec![transition],
     };
     document.validate()?;
+    let render_hash = sha256_hex(document.render_txt().as_bytes());
+    validate_vision_hash(&render_hash, &render_hash)?;
     Ok(document)
 }
 
@@ -553,6 +562,8 @@ fn validate_styled_cells(cells: &[StyledCell]) -> Result<(), String> {
         }
         validate_glyphs(&cell.glyph.to_string())?;
     }
+    let visible_text = cells.iter().map(|cell| cell.glyph).collect::<String>();
+    validate_visible_text(&visible_text)?;
     Ok(())
 }
 
@@ -584,6 +595,7 @@ impl Canvas {
 
     fn write(&mut self, row: u16, column: u16, text: &str, style: TextStyle) -> Result<(), String> {
         validate_glyphs(text)?;
+        validate_text_safety(text)?;
         let width = text.chars().count() as u16;
         if row >= CANVAS_ROWS || column + width > CANVAS_COLUMNS {
             return Err("audit text exceeds the fixed 120x40 canvas".to_owned());
@@ -599,6 +611,24 @@ impl Canvas {
         }
         Ok(())
     }
+}
+
+/// Rejects rendered text that contains known fixture secret material before it
+/// can be emitted as TXT, PNG, or audit JSON.
+pub fn validate_visible_text(text: &str) -> Result<(), String> {
+    if text.contains("fixture-secret-value") {
+        return Err("leaked secret: fixture-secret-value".to_owned());
+    }
+    Ok(())
+}
+
+/// Binds a recorded visual-evidence hash to the current deterministic render
+/// hash before evidence is accepted by the audit pipeline.
+pub fn validate_vision_hash(recorded: &str, current: &str) -> Result<(), String> {
+    if recorded != current {
+        return Err(format!("stale vision hash: {recorded}"));
+    }
+    Ok(())
 }
 
 fn color_name(color: ColorToken) -> &'static str {

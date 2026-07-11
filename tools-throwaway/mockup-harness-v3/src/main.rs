@@ -16,6 +16,12 @@ fn main() -> ExitCode {
     if arguments.as_slice() == ["--list"] {
         return list_inventory();
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "negative-fixture")
+    {
+        return emit_negative_fixture(&arguments);
+    }
     if let Some((case_id, tick, output)) = parse_case_arguments(&arguments) {
         return emit_case(case_id, tick, output);
     }
@@ -23,6 +29,36 @@ fn main() -> ExitCode {
         return emit_audit_json(audit_arguments);
     }
     emit_render(&arguments)
+}
+
+fn emit_negative_fixture(arguments: &[String]) -> ExitCode {
+    let [command, fixture_id] = arguments else {
+        eprintln!("negative fixture usage error: expected one fixture ID");
+        print_usage();
+        return ExitCode::from(2);
+    };
+    if command != "negative-fixture" {
+        eprintln!("negative fixture usage error: expected negative-fixture command");
+        print_usage();
+        return ExitCode::from(2);
+    }
+    if !mockup_harness_v3::negative_fixtures::fixture_manifest()
+        .iter()
+        .any(|fixture| fixture.id == fixture_id)
+    {
+        eprintln!("negative fixture usage error: unknown fixture ID: {fixture_id}");
+        return ExitCode::from(2);
+    }
+    match mockup_harness_v3::negative_fixtures::run_public_negative_fixture(fixture_id) {
+        Ok(()) => {
+            eprintln!("negative fixture unexpectedly accepted invalid input: {fixture_id}");
+            ExitCode::from(3)
+        }
+        Err(error) => {
+            eprintln!("negative fixture validation failed: {error}");
+            ExitCode::from(3)
+        }
+    }
 }
 
 fn list_inventory() -> ExitCode {
@@ -110,7 +146,7 @@ fn emit_render(arguments: &[String]) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "usage: mockup-harness-v3 --list | --implemented | --all | <screen> | <category> | --flow <name> | --audit-json [selector] | --case <case-id> --tick <n> (--audit-json | --txt | --png <absolute-temporary-path>)"
+        "usage: mockup-harness-v3 --list | --implemented | --all | <screen> | <category> | --flow <name> | --audit-json [selector] | --case <case-id> --tick <n> (--audit-json | --txt | --png <absolute-temporary-path>) | negative-fixture <fixture-id>"
     );
 }
 

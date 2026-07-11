@@ -8,15 +8,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::audit::{audit_screen, AuditDocument, SemanticCandidate, SemanticEvent};
-use crate::chrome::layout::StatusLine;
-use crate::chrome::tokens::{validate_glyphs, ColorToken};
-use crate::flows::validate_flow_manifests;
-use crate::registry::{canonical_inventory, validate_inventory, ImplementationStatus};
-use crate::renderer::{
-    cleanup_fixture_staging, publication_failure_fixture, validate_cleanup_paths,
-    validate_renderer_map_fixture,
+use crate::audit::{
+    audit_screen, validate_visible_text, validate_vision_hash, AuditDocument, SemanticCandidate,
+    SemanticEvent,
 };
+use crate::chrome::components::{
+    validate_key_placement, validate_primary_actions, validate_status_copy,
+};
+use crate::chrome::layout::StatusLine;
+use crate::chrome::tokens::{
+    validate_glyphs, validate_text_safety, validate_token_hex, ColorToken,
+};
+use crate::flows::validate_flow_manifests;
+use crate::registry::{
+    canonical_inventory, validate_alias, validate_inventory, validate_surface_labels,
+};
+use crate::renderer::run_renderer_negative_fixture;
 
 const CANONICAL_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3";
 const GATE_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";
@@ -46,29 +53,6 @@ pub struct FixtureSpec {
     pub screen_id: &'static str,
     pub offending_identity: &'static str,
     pub expected_diagnostic: &'static str,
-}
-
-/// Result evidence for one intentionally rejected fixture.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FixtureOutcome {
-    pub id: &'static str,
-    pub command: &'static str,
-    pub validator: &'static str,
-    pub screen_id: &'static str,
-    pub offending_identity: &'static str,
-    pub expected_diagnostic: &'static str,
-    pub exit_code: u8,
-    pub diagnostic: String,
-}
-
-/// Complete, reversible suite evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FixtureReport {
-    pub outcomes: Vec<FixtureOutcome>,
-    pub protected_before: String,
-    pub protected_after: String,
-    pub fixture_root_listing: Vec<String>,
-    pub fixture_root_exists: bool,
 }
 
 pub const REQUIRED_FIXTURE_IDS: &[&str] = &[
@@ -378,20 +362,21 @@ pub const fn fixture_manifest() -> &'static [FixtureSpec] {
     FIXTURE_MANIFEST
 }
 
-/// Runs every negative case under one disposable root and proves the canonical,
-/// gate, and frozen-reference manifests are unchanged before returning.
-pub fn run_negative_fixtures() -> Result<FixtureReport, String> {
+/// Drives one named negative case through the public harness CLI. Each case
+/// uses a disposable fixture root, returns its production rejection unchanged,
+/// and proves protected roots and cleanup fencing remain intact.
+pub fn run_public_negative_fixture(id: &str) -> Result<(), String> {
     verify_fixture_manifest()?;
+    let spec = FIXTURE_MANIFEST
+        .iter()
+        .find(|spec| spec.id == id)
+        .ok_or_else(|| format!("unknown negative fixture: {id}"))?;
     crate::verify_frozen_references(Path::new("/projects/cortex-code"))?;
     let protected_before = protected_manifest()?;
     let fixture = FixtureRoot::new()?;
     let fixture_path = fixture.path.clone();
-    let mut outcomes = Vec::with_capacity(FIXTURE_MANIFEST.len());
-
-    for spec in FIXTURE_MANIFEST {
-        outcomes.push(run_fixture(spec, &fixture_path)?);
-        reset_fixture_root(&fixture_path)?;
-    }
+    let rejection = run_fixture(spec, &fixture_path);
+    reset_fixture_root(&fixture_path)?;
     let fixture_root_listing = list_fixture_root(&fixture_path)?;
     if !fixture_root_listing.is_empty() {
         return Err(format!(
@@ -406,18 +391,11 @@ pub fn run_negative_fixtures() -> Result<FixtureReport, String> {
     if protected_before != protected_after {
         return Err("negative fixtures changed canonical, gate, or frozen manifests".to_owned());
     }
-
-    Ok(FixtureReport {
-        outcomes,
-        protected_before,
-        protected_after,
-        fixture_root_listing,
-        fixture_root_exists: fixture_path.exists(),
-    })
+    rejected_fixture(spec, rejection)
 }
 
-fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<FixtureOutcome, String> {
-    let rejected = match spec.id {
+fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
+    match spec.id {
         "orphan-candidate" => audit_rejection(|document| {
             document.candidates[0].identity.screen_id = "not-the-rendered-screen".to_owned();
         }),
@@ -478,14 +456,8 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<FixtureOutcome, String
         "hidden-primary-action" => validate_primary_actions(0, false),
         "duplicate-primary-action" => validate_primary_actions(2, false),
         "automatic-wait-primary-action" => validate_primary_actions(1, true),
-        "inventory-without-renderer" => {
-            let mut inventory = canonical_inventory().to_vec();
-            inventory[0].status = ImplementationStatus::Implemented;
-            validate_renderer_map_fixture(&inventory, &[])
-        }
-        "renderer-outside-inventory" => {
-            validate_renderer_map_fixture(canonical_inventory(), &["outside-the-contract"])
-        }
+        "inventory-without-renderer" | "renderer-outside-inventory" | "unsafe-cleanup"
+        | "publication-failure" => run_renderer_negative_fixture(spec.id, root),
         "duplicate-canonical-id" => {
             let mut inventory = canonical_inventory().to_vec();
             inventory[1].id = "home";
@@ -514,27 +486,8 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<FixtureOutcome, String
         }
         "alias-normalization-mismatch" => validate_alias("Home", "home"),
         "stale-vision-hash" => validate_vision_hash("vision-hash-old", "vision-hash-current"),
-        "unsafe-cleanup" => {
-            let output = root.join("published");
-            let unsafe_stage = root.join("outside-staging");
-            fs::create_dir(&unsafe_stage)
-                .map_err(|error| format!("could not create unsafe cleanup sentinel: {error}"))?;
-            fs::write(
-                unsafe_stage.join("sentinel.txt"),
-                b"must survive unsafe cleanup",
-            )
-            .map_err(|error| format!("could not write unsafe cleanup sentinel: {error}"))?;
-            let _ = cleanup_fixture_staging(&output, &unsafe_stage);
-            let validation = validate_cleanup_paths(&output, &unsafe_stage);
-            if !unsafe_stage.join("sentinel.txt").is_file() {
-                return Err("unsafe cleanup removed its sentinel".to_owned());
-            }
-            validation
-        }
-        "publication-failure" => publication_failure_fixture(root),
-        other => return Err(format!("unknown negative fixture: {other}")),
-    };
-    rejected_fixture(spec, rejected)
+        other => Err(format!("unknown negative fixture: {other}")),
+    }
 }
 
 fn audit_rejection(mutate: impl FnOnce(&mut AuditDocument)) -> Result<(), String> {
@@ -575,7 +528,7 @@ fn add_duplicate_activity_owner(document: &mut AuditDocument) {
 fn rejected_fixture(
     spec: &FixtureSpec,
     rejected: Result<(), String>,
-) -> Result<FixtureOutcome, String> {
+) -> Result<(), String> {
     let error = rejected.err().ok_or_else(|| {
         format!(
             "fixture {} unexpectedly accepted its invalid input",
@@ -584,109 +537,14 @@ fn rejected_fixture(
     })?;
     if !error.contains(spec.expected_diagnostic) {
         return Err(format!(
-            "fixture {} expected diagnostic {:?}, got {:?}",
-            spec.id, spec.expected_diagnostic, error
+            "fixture {} screen {} offending identity {} rejected with unexpected diagnostic: {}",
+            spec.id, spec.screen_id, spec.offending_identity, error
         ));
     }
-    Ok(FixtureOutcome {
-        id: spec.id,
-        command: spec.command,
-        validator: spec.validator,
-        screen_id: spec.screen_id,
-        offending_identity: spec.offending_identity,
-        expected_diagnostic: spec.expected_diagnostic,
-        exit_code: 3,
-        diagnostic: format!(
-            "fixture {} screen {} offending identity {}: {}",
-            spec.id, spec.screen_id, spec.offending_identity, error
-        ),
-    })
-}
-
-fn validate_surface_labels(labels: &[&str]) -> Result<(), String> {
-    if labels.is_empty() {
-        return Err("missing surface".to_owned());
-    }
-    let allowed = [
-        "conversation-shell",
-        "action-dock",
-        "contextual-inspector",
-        "temporary-detail-view",
-    ];
-    let mut seen = BTreeSet::new();
-    for label in labels {
-        if !allowed.contains(label) {
-            return Err(format!("unknown surface: {label}"));
-        }
-        if !seen.insert(*label) {
-            return Err(format!("duplicate surface: {label}"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_token_hex(token: ColorToken, value: &str) -> Result<(), String> {
-    if crate::chrome::tokens::palette(crate::chrome::tokens::Theme::Dark).hex(token) != value {
-        return Err(format!("token/hex mismatch: accent:{value}"));
-    }
-    Ok(())
-}
-
-fn validate_key_placement(key: &str, is_local: bool) -> Result<(), String> {
-    if !is_local {
-        return Err(format!("misplaced key: {key}"));
-    }
-    Ok(())
-}
-
-fn validate_status_copy(status_id: &str, text: &str) -> Result<(), String> {
-    if text.trim().is_empty() {
-        return Err(format!("color-only status: {status_id}"));
-    }
-    Ok(())
-}
-
-fn validate_text_safety(text: &str) -> Result<(), String> {
-    if text.chars().count() > 120 || text.chars().any(char::is_control) {
-        return Err("text width/control hazard: control-escape".to_owned());
-    }
-    Ok(())
-}
-
-fn validate_visible_text(text: &str) -> Result<(), String> {
-    if text.contains("fixture-secret-value") {
-        return Err("leaked secret: fixture-secret-value".to_owned());
-    }
-    Ok(())
-}
-
-fn validate_primary_actions(count: usize, automatic: bool) -> Result<(), String> {
-    if count == 0 {
-        return Err("hidden primary action: primary-action".to_owned());
-    }
-    if count > 1 {
-        return Err("duplicate primary action: primary-action".to_owned());
-    }
-    if automatic {
-        return Err(
-            "automatic wait exposes a primary action: action.recovery.retry-window".to_owned(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_alias(actual: &str, expected: &str) -> Result<(), String> {
-    if actual != expected {
-        return Err(format!("alias normalization mismatch: {actual}"));
-    }
-    Ok(())
-}
-
-fn validate_vision_hash(recorded: &str, current: &str) -> Result<(), String> {
-    if recorded != current {
-        return Err(format!("stale vision hash: {recorded}"));
-    }
-    Ok(())
+    Err(format!(
+        "fixture {} screen {} offending identity {}: {}",
+        spec.id, spec.screen_id, spec.offending_identity, error
+    ))
 }
 
 fn verify_fixture_manifest() -> Result<(), String> {

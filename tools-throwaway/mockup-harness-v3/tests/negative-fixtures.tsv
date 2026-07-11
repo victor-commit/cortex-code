@@ -1,0 +1,38 @@
+# id	public_surface	command	expected_exit	validator	screen	offending_identity	expected_diagnostic
+orphan-candidate	mockup-harness-v3	negative-fixture orphan-candidate	3	audit	permission-shell	candidate.orphan	semantic identity is not bound
+duplicate-candidate	mockup-harness-v3	negative-fixture duplicate-candidate	3	audit	permission-shell	candidate.surface.permission-shell	duplicate semantic candidate identity
+unknown-candidate	mockup-harness-v3	negative-fixture unknown-candidate	3	audit	permission-shell	candidate.unknown	unknown candidate
+orphan-event	mockup-harness-v3	negative-fixture orphan-event	3	audit	permission-shell	event.orphan	orphan semantic event
+duplicate-event	mockup-harness-v3	negative-fixture duplicate-event	3	audit	permission-shell	event.surface.permission-shell	duplicate semantic event identity
+unknown-event	mockup-harness-v3	negative-fixture unknown-event	3	audit	permission-shell	event.unknown	unknown semantic event
+missing-event	mockup-harness-v3	negative-fixture missing-event	3	audit	permission-shell	candidate.statusline.main	missing semantic event
+duplicate-activity-owner	mockup-harness-v3	negative-fixture duplicate-activity-owner	3	audit	permission-shell	owner.same	duplicate activity owner
+inaccessible-action	mockup-harness-v3	negative-fixture inaccessible-action	3	audit	permission-shell	action.permission.allow-once	inaccessible action
+unknown-action	mockup-harness-v3	negative-fixture unknown-action	3	audit	permission-shell	action.unknown	transition references an unknown action
+duplicate-action	mockup-harness-v3	negative-fixture duplicate-action	3	audit	permission-shell	action.permission.allow-once	duplicate action identity
+dead-end-transition	mockup-harness-v3	negative-fixture dead-end-transition	3	audit	permission-shell	action.permission.allow-once	transition reaches a dead end
+unknown-transition	mockup-harness-v3	negative-fixture unknown-transition	3	audit	permission-shell	not-a-screen	unknown transition
+missing-surface	mockup-harness-v3	negative-fixture missing-surface	3	surface	home	surface.missing	missing surface
+duplicate-surface	mockup-harness-v3	negative-fixture duplicate-surface	3	surface	home	conversation-shell	duplicate surface
+unknown-surface	mockup-harness-v3	negative-fixture unknown-surface	3	surface	home	floating-modal	unknown surface
+token-hex-mismatch	mockup-harness-v3	negative-fixture token-hex-mismatch	3	tokens	home	accent:#000000	token/hex mismatch
+misplaced-key	mockup-harness-v3	negative-fixture misplaced-key	3	key-placement	permission-shell	key.global-help	misplaced key
+color-only-status	mockup-harness-v3	negative-fixture color-only-status	3	status-copy	tool-calls	status.failed	color-only status
+decorative-glyph	mockup-harness-v3	negative-fixture decorative-glyph	3	glyph-policy	home	✦	unsupported glyph
+text-width-control-hazard	mockup-harness-v3	negative-fixture text-width-control-hazard	3	text-safety	home	control-escape	text width/control hazard
+raw-model-id	mockup-harness-v3	negative-fixture raw-model-id	3	statusline	home	anthropic/claude-opus	human-readable display name
+leaked-secret	mockup-harness-v3	negative-fixture leaked-secret	3	secret-scan	home	fixture-secret-value	leaked secret
+hidden-primary-action	mockup-harness-v3	negative-fixture hidden-primary-action	3	primary-action	permission-shell	primary-action	hidden primary action
+duplicate-primary-action	mockup-harness-v3	negative-fixture duplicate-primary-action	3	primary-action	permission-shell	primary-action	duplicate primary action
+automatic-wait-primary-action	mockup-harness-v3	negative-fixture automatic-wait-primary-action	3	primary-action	rate-limit	action.recovery.retry-window	automatic wait exposes a primary action
+inventory-without-renderer	mockup-harness-v3	negative-fixture inventory-without-renderer	3	renderer-map	home	home	implemented canonical ID lacks renderer
+renderer-outside-inventory	mockup-harness-v3	negative-fixture renderer-outside-inventory	3	renderer-map	home	outside-the-contract	renderer outside canonical inventory
+duplicate-canonical-id	mockup-harness-v3	negative-fixture duplicate-canonical-id	3	registry	home	home	duplicate canonical ID
+unknown-flow-id	mockup-harness-v3	negative-fixture unknown-flow-id	3	flow-manifest	daily-work	not-a-canonical-state	unknown canonical screen
+missing-flow-metadata	mockup-harness-v3	negative-fixture missing-flow-metadata	3	flow-manifest	daily-work	acceptance_checks	missing acceptance checks
+direct-edge-mismatch	mockup-harness-v3	negative-fixture direct-edge-mismatch	3	flow-manifest	daily-work	home	undeclared direct edge
+canonical-flow-membership-mismatch	mockup-harness-v3	negative-fixture canonical-flow-membership-mismatch	3	flow-manifest	daily-work	chat-turn	canonical/flow membership mismatch
+alias-normalization-mismatch	mockup-harness-v3	negative-fixture alias-normalization-mismatch	3	alias	home	Home	alias normalization mismatch
+stale-vision-hash	mockup-harness-v3	negative-fixture stale-vision-hash	3	vision-evidence	home	vision-hash-old	stale vision hash
+unsafe-cleanup	mockup-harness-v3	negative-fixture unsafe-cleanup	3	renderer-cleanup	home	outside-staging	unsafe renderer cleanup path
+publication-failure	mockup-harness-v3	negative-fixture publication-failure	3	renderer-publication	home	published	injected staged validation failure
