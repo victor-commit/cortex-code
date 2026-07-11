@@ -44,6 +44,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
         "tool-success" => render_tool_success(&mut canvas, screen_id, fixture_id)?,
+        "rich-response" => render_rich_response(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
     };
     canvas.write(
@@ -291,6 +292,12 @@ fn render_streaming(
     )
     .with_interrupt("Stop reply");
     write_component(canvas, 16, 4, &live)?;
+    canvas.write(
+        20,
+        4,
+        "When this reply is complete, Code will automatically search project files.",
+        TextStyle::muted(),
+    )?;
     composer(
         canvas,
         "Type a follow-up, it will wait until this reply finishes",
@@ -328,6 +335,19 @@ fn render_streaming(
         "summary",
         None,
     );
+    let tool_handoff = semantic(
+        screen_id,
+        fixture_id,
+        "automatic-transition",
+        "action.streaming.start-requested-tool",
+        reference(20, 4, 42),
+        "summary",
+        Some(action(
+            "action.streaming.start-requested-tool",
+            "Start requested tool",
+            true,
+        )),
+    );
     let status = semantic(
         screen_id,
         fixture_id,
@@ -337,7 +357,7 @@ fn render_streaming(
         "summary",
         None,
     );
-    let pairs = [partial_answer, live_state, queued_composer, status];
+    let pairs = [partial_answer, live_state, queued_composer, tool_handoff, status];
     Ok((
         pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
@@ -348,6 +368,13 @@ fn render_streaming(
                 "chat-turn",
                 "direct",
                 "stopping locally preserves the partial answer and queued follow-up",
+            ),
+            transition(
+                "action.streaming.start-requested-tool",
+                "streaming",
+                "tool-running",
+                "automatic",
+                "the reply automatically starts the requested project search in this same transcript",
             ),
         ],
     ))
@@ -665,6 +692,152 @@ fn render_tool_success(
             "rich-response",
             "direct",
             "the compact result continues into the completed answer in this same transcript",
+        )],
+    ))
+}
+
+fn render_rich_response(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Find where the server applies the rate limit.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "The shared request guard applies the limit before route work begins.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "Both login and API routes reuse it, so the same safety rule stays in place.",
+        TextStyle::text(),
+    )?;
+    canvas.write(14, 4, "Where                 How the guard applies it", TextStyle::bright())?;
+    canvas.write(
+        15,
+        4,
+        "Login route           Stops an invalid request before handler work.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "API routes            Reuses the same check for authenticated requests.",
+        TextStyle::text(),
+    )?;
+    canvas.write(19, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        20,
+        6,
+        "fn authorize_request(request: &Request) -> Result<Session, AuthError> {",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        21,
+        6,
+        "    let session = shared_guard(request)?;",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        22,
+        6,
+        "    apply_rate_limit(&session)?;",
+        TextStyle::text(),
+    )?;
+    canvas.write(23, 6, "    Ok(session)", TextStyle::text())?;
+    canvas.write(24, 6, "}", TextStyle::text())?;
+    canvas.write(26, 6, "[c] Copy code", TextStyle::accent())?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let prose = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "answer-prose",
+        reference(9, 4, 77),
+        "summary",
+        None,
+    );
+    let table = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "route-summary-table",
+        reference(14, 4, 55),
+        "focused",
+        None,
+    );
+    let code = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "shared-guard-code",
+        reference(20, 6, 84),
+        "focused",
+        None,
+    );
+    let copy = semantic(
+        screen_id,
+        fixture_id,
+        "content-action",
+        "action.rich-response.copy-code",
+        reference(26, 6, 19),
+        "focused",
+        Some(action(
+            "action.rich-response.copy-code",
+            "Copy code",
+            false,
+        )),
+    );
+    let composer = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.rich-response.continue",
+        reference(COMPOSER_TOP, 4, 29),
+        "summary",
+        Some(action(
+            "action.rich-response.continue",
+            "Send reply",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, prose, table, code, copy, composer, status];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.rich-response.continue",
+            "rich-response",
+            "chat-turn",
+            "direct",
+            "the completed answer keeps its composer available in the same conversation",
         )],
     ))
 }

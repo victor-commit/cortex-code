@@ -211,6 +211,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "streaming-interrupt" => streaming_interrupt(),
         "tool-running-interrupt" => tool_running_interrupt(),
         "tool-running-complete" => tool_running_complete(),
+        "tool-success-continue" => tool_success_continue(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let preserved_field_hashes = preserved_hashes(&before, &after);
@@ -612,6 +613,78 @@ fn tool_running_complete() -> (
         "tool-execution",
         "search-completed",
         "one search completion produced one terminal summary with three matches",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_success_continue() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-success",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "continue-response",
+        "composer",
+        None,
+        "return-to-same-turn",
+        0,
+    );
+    before.transcript =
+        "Checked session rules completed. Search project code completed with 3 matches in 400 files."
+            .to_owned();
+    before.queued_follow_up =
+        "Also list the tests that should cover the search. [attachment: rate-limit-notes.md]"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "rich-response",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "continue-response",
+        "composer",
+        None,
+        "return-to-same-turn",
+        1,
+    );
+    after.transcript =
+        "The shared request guard applies the limit before route work begins.".to_owned();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.tool-success.continue".to_owned(),
+        label: "Continue response".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the completed search expands into a readable answer in the same conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-success.continue.1".to_owned(),
+        owner_id: "turn.rate-limit-summary".to_owned(),
+        count: 1,
+        outcome: "completed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.reply.rich-response",
+        "response-completion",
+        "completed",
+        "one completed response added prose, a table, and code to the same turn",
     );
     (before, after, action, transition, attempt, effect)
 }

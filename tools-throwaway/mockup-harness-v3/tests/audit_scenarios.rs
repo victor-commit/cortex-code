@@ -156,12 +156,17 @@ fn conversation_pilot_screens_keep_the_transcript_and_one_clear_next_step() {
             .iter()
             .filter(|event| event.action.is_some())
             .count(),
-        1,
-        "only the local interrupt should be actionable while streaming"
+        2,
+        "only the local interrupt and automatic requested-tool handoff should be actionable while streaming"
     );
     assert!(streaming.transitions.iter().any(|transition| {
         transition.action_id == "action.streaming.interrupt"
             && transition.to_screen_id == "chat-turn"
+    }));
+    assert!(streaming.transitions.iter().any(|transition| {
+        transition.action_id == "action.streaming.start-requested-tool"
+            && transition.to_screen_id == "tool-running"
+            && transition.kind == "automatic"
     }));
 }
 

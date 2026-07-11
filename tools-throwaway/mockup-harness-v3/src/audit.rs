@@ -302,7 +302,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
 
     if matches!(
         screen_id,
-        "home" | "chat-turn" | "streaming" | "tool-running" | "tool-success"
+        "home" | "chat-turn" | "streaming" | "tool-running" | "tool-success" | "rich-response"
     ) {
         let document = crate::screens::conversation::render(screen_id, fixture_id)?;
         document.validate()?;

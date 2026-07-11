@@ -145,6 +145,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "streaming",
             "tool-running",
             "tool-success",
+            "rich-response",
         ]
         .contains(&screen.id)
         {

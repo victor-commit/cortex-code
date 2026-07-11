@@ -54,6 +54,7 @@ fn implemented_selector_publishes_only_the_conversation_pilot_artifacts() {
         "streaming",
         "tool-running",
         "tool-success",
+        "rich-response",
     ] {
         assert!(
             Path::new(&format!(
@@ -83,17 +84,12 @@ fn every_render_selector_preflights_missing_renderers_before_writing() {
     assert_registry_failure(&["--all"], "onboarding");
     assert_registry_failure(&["permission-shell"], "permission-shell");
     assert_registry_failure(&["input"], "slash-menu");
-    assert_registry_failure(&["--flow", "daily-work"], "rich-response");
 
-    for path in [
-        "/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt",
-        "/projects/cortex-code/plans/assets/mockups-v3-gates/daily-work/01-home.txt",
-    ] {
-        assert!(
-            !Path::new(path).exists(),
-            "preflight must finish before any artifact is written: {path}"
-        );
-    }
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt";
+    assert!(
+        !Path::new(path).exists(),
+        "preflight must finish before any artifact is written: {path}"
+    );
 }
 
 #[test]
@@ -105,6 +101,7 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         "streaming",
         "tool-running",
         "tool-success",
+        "rich-response",
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);

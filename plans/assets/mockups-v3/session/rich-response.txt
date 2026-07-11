@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Find where the server applies the rate limit.                                                                 
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The shared request guard applies the limit before route work begins.                                                
+                                                                                                                        
+    Both login and API routes reuse it, so the same safety rule stays in place.                                         
+                                                                                                                        
+                                                                                                                        
+    Where                 How the guard applies it                                                                      
+    Login route           Stops an invalid request before handler work.                                                 
+    API routes            Reuses the same check for authenticated requests.                                             
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+      fn authorize_request(request: &Request) -> Result<Session, AuthError> {                                           
+          let session = shared_guard(request)?;                                                                         
+          apply_rate_limit(&session)?;                                                                                  
+          Ok(session)                                                                                                   
+      }                                                                                                                 
+                                                                                                                        
+      [c] Copy code                                                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Reply to Code                                                                                                     
+                                                                                                                        
+                                                                                                                        
+    [enter] Send reply                                                                                                  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

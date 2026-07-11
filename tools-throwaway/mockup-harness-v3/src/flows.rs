@@ -131,9 +131,9 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         ),
                         step(
                             "streaming",
-                            "Run the requested tool",
-                            TransitionKind::Direct,
-                            "the inline activity becomes the one live tool row",
+                            "Wait while Code starts the requested tool",
+                            TransitionKind::Automatic,
+                            "the completed reply automatically becomes the one live tool row",
                             "tool-running",
                             "chat-turn",
                             "tool-running",
@@ -144,7 +144,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         step(
                             "tool-running",
                             "Wait for the active tool",
-                            TransitionKind::Direct,
+                            TransitionKind::Automatic,
                             "the active operation resolves inline",
                             "tool-success",
                             "chat-turn",

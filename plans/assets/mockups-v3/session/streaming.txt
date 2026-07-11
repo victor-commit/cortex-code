@@ -18,7 +18,7 @@
       24s elapsed · partial answer stays above                                                                          
       [s] Stop reply                                                                                                    
                                                                                                                         
-                                                                                                                        
+    When this reply is complete, Code will automatically search project files.                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
