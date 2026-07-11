@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Review the retry path before we merge.                                                                        
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    I can add a project file without changing the rest of your draft.                                                   
+                                                                                                                        
+                                                                                                                        
+    Paused draft · 3 authored lines                                                                                     
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+        wrap: include a concise test plan with the visible recovery behavior.                                           
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ @ files · project-relative paths · query: @retry · 3 matching project files                                      │  
+  │ › src/net/retry_policy.rs · project file · best match                                                            │  
+  │   src/net/retry_queue.rs · project file                                                                          │  
+  │   tests/net/retry_policy_test.rs · project file · test                                                           │  
+  │ › [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

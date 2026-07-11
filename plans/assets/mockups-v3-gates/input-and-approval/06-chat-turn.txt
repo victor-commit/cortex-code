@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the retry path in @src/net/retry_policy.rs before we merge.                                             
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    Applied 1 hunk to src/net/retry_policy.rs.                                                                          
+                                                                                                                        
+    hunk.retry-test remains pending and was not written.                                                                
+                                                                                                                        
+    The exact paused activity resumed with the same patch revision and session.                                         
+                                                                                                                        
+    Your submitted prompt is fixed in the transcript; a new draft stays separate.                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Reply to Code                                                                                                     
+                                                                                                                        
+                                                                                                                        
+    [enter] Send reply                                                                                                  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

@@ -8,9 +8,19 @@ use crate::audit::{
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
+const FLOW2_SESSION_ID: &str = "session.retry-review.18";
+const FLOW2_PAUSED_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
+const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
+Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
+Keep the summary short before we merge.";
+const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScenarioState {
     pub screen_id: String,
+    pub session_id: String,
+    pub submitted_prompt: Option<String>,
+    pub paused_activity_id: String,
     pub origin_stack: Vec<String>,
     pub draft: String,
     pub transcript: String,
@@ -145,6 +155,27 @@ impl CaseReplay {
         }
         if self.before.origin_stack != self.after.origin_stack {
             return Err("scenario transition did not preserve its origin stack".to_owned());
+        }
+        if self.before.session_id != self.after.session_id
+            || self.before.paused_activity_id != self.after.paused_activity_id
+            || (self.case_id != "flow2-submit-bridge"
+                && self.before.submitted_prompt != self.after.submitted_prompt)
+        {
+            return Err(
+                "scenario transition did not preserve its session, submitted prompt, or paused activity identity"
+                    .to_owned(),
+            );
+        }
+        for state in [&self.before, &self.after] {
+            if state
+                .submitted_prompt
+                .as_ref()
+                .is_some_and(|prompt| !state.transcript.contains(prompt))
+            {
+                return Err(
+                    "immutable submitted prompt is missing from transcript evidence".to_owned(),
+                );
+            }
         }
         if self.actions.len() != 1 || self.transitions.len() != 1 {
             return Err(
@@ -315,6 +346,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         return Err(format!("unknown virtual tick {tick} for case {case_id}"));
     }
     let (before, after, action, transition, attempt, effect) = match case_id {
+        "flow2-submit-bridge" => flow2_submit_bridge(),
         "permission-allow-once" => permission_allow_once(),
         "permission-shell-short" => permission_shell_short(),
         "permission-shell-long" => permission_shell_long(),
@@ -373,6 +405,72 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     Ok(replay)
 }
 
+fn flow2_submit_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let inserted_prompt = MULTILINE_DRAFT.replacen(MENTION_FRAGMENT, INSERTED_FILE, 1);
+    debug_assert_eq!(inserted_prompt, FLOW2_SUBMITTED_PROMPT);
+    let mut before = state(
+        "file-mention",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        &inserted_prompt,
+        "turn-18",
+        "src/net/retry_policy.rs",
+        "selected-file",
+        Some("mention.query.retry"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.session_id = FLOW2_SESSION_ID.to_owned();
+    before.paused_activity_id = FLOW2_PAUSED_ACTIVITY_ID.to_owned();
+    before.transcript =
+        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let after = flow2_state(
+        "permission-shell",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        "turn-18",
+        "allow-once",
+        "permission-choice",
+        Some("pending.shell.project-check"),
+        "return-to-paused-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.file-mention.submit-prepared-prompt".to_owned(),
+        label: "Submit prepared prompt".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "one explicit submit fixes the prepared prompt in the transcript and pauses the same session activity for permission"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.prompt.submit.1".to_owned(),
+        owner_id: FLOW2_PAUSED_ACTIVITY_ID.to_owned(),
+        count: 1,
+        outcome: "submitted-once".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.prompt.submit",
+        "prompt-submission",
+        "submitted-once",
+        "the selected file was inserted into one immutable transcript prompt without running the command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn permission_allow_once() -> (
     ScenarioState,
     ScenarioState,
@@ -381,10 +479,9 @@ fn permission_allow_once() -> (
     AttemptEvidence,
     SideEffectEvidence,
 ) {
-    let before = state(
+    let before = flow2_state(
         "permission-shell",
         vec!["chat-turn", "permission-shell"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "allow-once",
         "permission-choice",
@@ -392,10 +489,9 @@ fn permission_allow_once() -> (
         "return-to-paused-turn",
         0,
     );
-    let after = state(
+    let after = flow2_state(
         "diff-edit",
         vec!["chat-turn", "permission-shell"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "allow-once",
         "pending-edit",
@@ -1353,10 +1449,9 @@ fn diff_review() -> (
     AttemptEvidence,
     SideEffectEvidence,
 ) {
-    let before = state(
+    let before = flow2_state(
         "diff-edit",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "review-changes",
         "pending-edit",
@@ -1364,10 +1459,9 @@ fn diff_review() -> (
         "return-to-paused-turn",
         0,
     );
-    let after = state(
+    let after = flow2_state(
         "diff-viewer-staging",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "hunk.retry-test",
         "staging-detail",
@@ -1413,10 +1507,9 @@ fn diff_apply_all() -> (
     SideEffectEvidence,
 ) {
     let before = diff_pending_state("apply-all", 0);
-    let after = state(
+    let after = flow2_state(
         "chat-turn",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "apply-all",
         "composer",
@@ -1451,10 +1544,9 @@ fn diff_cancel() -> (
     SideEffectEvidence,
 ) {
     let before = diff_pending_state("cancel", 0);
-    let after = state(
+    let after = flow2_state(
         "chat-turn",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "cancel",
         "composer",
@@ -1539,10 +1631,9 @@ fn staging_finish() -> (
     SideEffectEvidence,
 ) {
     let before = staging_state("finish", 0);
-    let after = state(
+    let after = flow2_state(
         "chat-turn",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         "finish",
         "composer",
@@ -1597,10 +1688,9 @@ fn staging_cancel() -> (
 }
 
 fn diff_pending_state(selection: &str, tick: u32) -> ScenarioState {
-    state(
+    flow2_state(
         "diff-edit",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         selection,
         "pending-edit",
@@ -1611,10 +1701,9 @@ fn diff_pending_state(selection: &str, tick: u32) -> ScenarioState {
 }
 
 fn staging_state(selection: &str, tick: u32) -> ScenarioState {
-    state(
+    flow2_state(
         "diff-viewer-staging",
         vec!["chat-turn", "permission-shell", "diff-edit"],
-        "Check the project files\nthen summarize the result.",
         "turn-18",
         selection,
         "staging-detail",
@@ -1695,6 +1784,36 @@ fn staging_toggle(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn flow2_state(
+    screen_id: &str,
+    origin_stack: Vec<&str>,
+    scroll_anchor: &str,
+    selection: &str,
+    focus: &str,
+    pending_action: Option<&str>,
+    return_policy: &str,
+    virtual_tick: u32,
+) -> ScenarioState {
+    let mut state = state(
+        screen_id,
+        origin_stack,
+        FLOW2_LATER_DRAFT,
+        scroll_anchor,
+        selection,
+        focus,
+        pending_action,
+        return_policy,
+        virtual_tick,
+    );
+    state.session_id = FLOW2_SESSION_ID.to_owned();
+    state.submitted_prompt = Some(FLOW2_SUBMITTED_PROMPT.to_owned());
+    state.paused_activity_id = FLOW2_PAUSED_ACTIVITY_ID.to_owned();
+    state.transcript = format!("You · {FLOW2_SUBMITTED_PROMPT}");
+    state.state_hash = state_hash(&state);
+    state
+}
+
+#[allow(clippy::too_many_arguments)]
 fn state(
     screen_id: &str,
     origin_stack: Vec<&str>,
@@ -1708,6 +1827,9 @@ fn state(
 ) -> ScenarioState {
     let mut state = ScenarioState {
         screen_id: screen_id.to_owned(),
+        session_id: "session.daily-work.1".to_owned(),
+        submitted_prompt: None,
+        paused_activity_id: "activity.current-turn".to_owned(),
         origin_stack: origin_stack.into_iter().map(str::to_owned).collect(),
         draft: draft.to_owned(),
         transcript: "The current conversation remains available.".to_owned(),
@@ -1727,6 +1849,8 @@ fn state(
 
 fn validate_state(state: &ScenarioState) -> Result<(), String> {
     if state.screen_id.trim().is_empty()
+        || state.session_id.trim().is_empty()
+        || state.paused_activity_id.trim().is_empty()
         || state.origin_stack.is_empty()
         || state.draft.is_empty()
         || state.scroll_anchor.is_empty()
@@ -1789,8 +1913,11 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\ntick={}",
+            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\ntick={}",
             state.screen_id,
+            state.session_id,
+            state.submitted_prompt.as_deref().unwrap_or(""),
+            state.paused_activity_id,
             state.origin_stack.join(">"),
             state.draft,
             state.transcript,
@@ -1813,6 +1940,21 @@ fn preserved_hashes(
 ) -> BTreeMap<String, PreservedFieldHash> {
     let mut hashes = BTreeMap::new();
     for (name, first, second) in [
+        (
+            "session_id",
+            before.session_id.as_str(),
+            after.session_id.as_str(),
+        ),
+        (
+            "submitted_prompt",
+            before.submitted_prompt.as_deref().unwrap_or(""),
+            after.submitted_prompt.as_deref().unwrap_or(""),
+        ),
+        (
+            "paused_activity_id",
+            before.paused_activity_id.as_str(),
+            after.paused_activity_id.as_str(),
+        ),
         ("draft", before.draft.as_str(), after.draft.as_str()),
         (
             "transcript",
@@ -2210,6 +2352,13 @@ fn string_array(output: &mut String, name: &str, values: &[String]) {
 fn state_json(output: &mut String, state: &ScenarioState) {
     output.push('{');
     raw_field(output, "screen_id", &state.screen_id);
+    field(output, "session_id", &state.session_id);
+    output.push_str(",\"submitted_prompt\":");
+    match &state.submitted_prompt {
+        Some(prompt) => quote(output, prompt),
+        None => output.push_str("null"),
+    }
+    field(output, "paused_activity_id", &state.paused_activity_id);
     output.push_str(",\"origin_stack\":[");
     for (index, origin) in state.origin_stack.iter().enumerate() {
         if index > 0 {

@@ -711,7 +711,7 @@ fn render_permission_shell(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Allow once · run this command once; save no permission",
+        "› [enter] Allow once · run once, then open the pending edit",
         TextStyle::accent(),
     )?;
     dock_line(
@@ -874,9 +874,9 @@ fn render_permission_shell(
             transition(
                 "action.permission.allow-once",
                 "permission-shell",
-                "chat-turn",
+                "diff-edit",
                 "direct",
-                "allow once runs only the disclosed command and resumes the paused transcript",
+                "allow once runs only the disclosed command and opens its pending edit in the paused activity",
             ),
             transition(
                 "action.permission.allow-persistent",
@@ -1507,15 +1507,28 @@ fn render_file_mention(
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "[tab] Insert file  [esc] Dismiss  [↑↓] Choose",
+            "› [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose",
             TextStyle::bright(),
         )?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
             "primary-action",
+            "action.file-mention.submit-prepared-prompt",
+            reference(DOCK_TOP + 5, 4, 36),
+            "focused",
+            Some(action(
+                "action.file-mention.submit-prepared-prompt",
+                "Submit prepared prompt",
+                false,
+            )),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
             "action.file-mention.insert-selected",
-            reference(DOCK_TOP + 5, 4, 21),
+            reference(DOCK_TOP + 5, 38, 55),
             "summary",
             Some(action(
                 "action.file-mention.insert-selected",
@@ -1528,7 +1541,7 @@ fn render_file_mention(
             fixture_id,
             "secondary-action",
             "action.file-mention.dismiss",
-            reference(DOCK_TOP + 5, 23, 38),
+            reference(DOCK_TOP + 5, 57, 70),
             "summary",
             Some(action("action.file-mention.dismiss", "Dismiss", false)),
         ));
@@ -1543,7 +1556,7 @@ fn render_file_mention(
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "[tab] Insert file  [esc] Dismiss  [↑↓] Choose",
+            "› [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose",
             TextStyle::bright(),
         )?;
     }
@@ -1569,6 +1582,13 @@ fn render_file_mention(
         )]
     } else {
         vec![
+            transition(
+                "action.file-mention.submit-prepared-prompt",
+                "file-mention",
+                "permission-shell",
+                "direct",
+                "submission inserts the selected file into one immutable transcript prompt and pauses the same activity for permission",
+            ),
             transition(
                 "action.file-mention.insert-selected",
                 "file-mention",

@@ -95,6 +95,39 @@ const TRANSITION_CHECK: &[&str] = &["screen-is-canonical", "next-frame-is-declar
 const RETURN_CHECK: &[&str] = &["screen-is-canonical", "return-path-is-preserved"];
 const RECOVERY_CHECK: &[&str] = &["screen-is-canonical", "work-is-preserved"];
 const MISSION_CHECK: &[&str] = &["screen-is-canonical", "mission-origin-is-preserved"];
+const FLOW2_COMPOSER_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "origin-is-preserved",
+    "multiline-draft-is-preserved",
+];
+const FLOW2_SUBMIT_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "next-frame-is-declared",
+    "explicit-submit-is-visible",
+    "submitted-prompt-is-immutable",
+];
+const FLOW2_PERMISSION_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "next-frame-is-declared",
+    "paused-activity-is-preserved",
+];
+const FLOW2_PENDING_EDIT_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "next-frame-is-declared",
+    "pending-edit-is-read-only",
+];
+const FLOW2_STAGING_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "return-path-is-preserved",
+    "included-hunks-apply-once",
+    "paused-activity-is-preserved",
+];
+const FLOW2_RESUME_CHECKS: &[&str] = &[
+    "screen-is-canonical",
+    "return-path-is-preserved",
+    "submitted-prompt-is-immutable",
+    "exact-paused-activity-resumes",
+];
 
 /// Returns all six manifests in their public, stable review order.
 pub fn flow_manifests() -> &'static [FlowManifest] {
@@ -192,7 +225,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "file-mention",
                             "chat-turn",
                             None,
-                            ENTRY_CHECK,
+                            FLOW2_COMPOSER_CHECKS,
                         ),
                         step(
                             "file-mention",
@@ -204,7 +237,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "permission-shell",
                             "composer-multiline",
                             None,
-                            TRANSITION_CHECK,
+                            FLOW2_SUBMIT_CHECKS,
                         ),
                         step(
                             "permission-shell",
@@ -216,7 +249,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "diff-edit",
                             "chat-turn",
                             None,
-                            TRANSITION_CHECK,
+                            FLOW2_PERMISSION_CHECKS,
                         ),
                         step(
                             "diff-edit",
@@ -228,7 +261,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "diff-viewer-staging",
                             "chat-turn",
                             None,
-                            TRANSITION_CHECK,
+                            FLOW2_PENDING_EDIT_CHECKS,
                         ),
                         step(
                             "diff-viewer-staging",
@@ -240,7 +273,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "chat-turn",
                             "diff-edit",
                             Some("chat-turn"),
-                            RETURN_CHECK,
+                            FLOW2_STAGING_CHECKS,
                         ),
                         step(
                             "chat-turn",
@@ -252,7 +285,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "chat-turn",
                             "chat-turn",
                             Some("chat-turn"),
-                            RETURN_CHECK,
+                            FLOW2_RESUME_CHECKS,
                         ),
                     ],
                 },

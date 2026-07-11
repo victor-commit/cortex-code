@@ -34,7 +34,7 @@
   │ › src/net/retry_policy.rs · project file · best match                                                            │  
   │   src/net/retry_queue.rs · project file                                                                          │  
   │   tests/net/retry_policy_test.rs · project file · test                                                           │  
-  │ [tab] Insert file  [esc] Dismiss  [↑↓] Choose                                                                    │  
+  │ › [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

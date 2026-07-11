@@ -2,18 +2,18 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Why are stale sessions rejected after a password change?                                                      
+    You · Check the retry path in @src/net/retry_policy.rs before we merge.                                             
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    A password change invalidates tokens issued before the change.                                                      
+    Applied 1 hunk to src/net/retry_policy.rs.                                                                          
                                                                                                                         
-    The next request sees the newer session version and asks the person to sign in again.                               
+    hunk.retry-test remains pending and was not written.                                                                
                                                                                                                         
+    The exact paused activity resumed with the same patch revision and session.                                         
                                                                                                                         
-    That keeps an older browser session from continuing after credentials changed.                                      
-                                                                                                                        
+    Your submitted prompt is fixed in the transcript; a new draft stays separate.                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         

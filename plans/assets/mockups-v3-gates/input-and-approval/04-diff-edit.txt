@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the project files before summarizing the retry result.                                                  
+                                                                                                                        
+                                                                                                                        
+    Code · Pending edit                                                                                                 
+                                                                                                                        
+    Pending edit · nothing has been written.                                                                            
+                                                                                                                        
+    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
+    Patch summary +4 -3 · 2 hunks                                                                                       
+    Hunk @@ -42,2 +42,3                                                                                                 
+      42  42  -    return retry_after                                                                                   
+      43  43  -    backoff = backoff + 1                                                                                
+          42  +    return retry_after + jitter                                                                          
+          43  +    backoff = backoff + jitter                                                                           
+          44  +    log_retry_window(jitter)                                                                             
+                                                                                                                        
+    Hunk @@ -88,2 +88,2                                                                                                 
+      88  88  -assert_eq!(wait, 4)                                                                                      
+          89  +assert_eq!(wait, 5)                                                                                      
+                                                                                                                        
+    Why this change: keep retry timing from repeating the same failed window.                                           
+                                                                                                                        
+    The paused conversation and your draft stay unchanged until you decide.                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Pending edit · choose one next step                                                                              │  
+  │ › [enter] Review changes · open read-only staging detail                                                         │  
+  │   [a] Apply all · write this exact patch and resume the paused turn                                              │  
+  │   [esc] Cancel · write nothing and return to the paused conversation                                             │  
+  │ Review is read-only · editing is available inside staging detail                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

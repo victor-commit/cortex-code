@@ -31,7 +31,7 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Permission choices · purpose and effect are shown above                                                          │  
-  │ › [enter] Allow once · run this command once; save no permission                                                 │  
+  │ › [enter] Allow once · run once, then open the pending edit                                                      │  
   │   [p] Allow for this project · save the exact scope shown above                                                  │  
   │   [d] Deny · do not run it                                                                                       │  
   │ [esc] Cancel · keep request pending                                                                              │  

@@ -58,6 +58,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "chat-turn" if fixture_id.starts_with("case.diff-cancel") => {
             render_diff_cancel_turn(&mut canvas, screen_id, fixture_id)?
         }
+        "chat-turn" if fixture_id == "conversation-completed" => {
+            render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" => render_chat_turn(&mut canvas, screen_id, fixture_id)?,
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
@@ -553,27 +556,33 @@ fn render_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Why are stale sessions rejected after a password change?",
+        "You · Check the retry path in @src/net/retry_policy.rs before we merge.",
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
         4,
-        "A password change invalidates tokens issued before the change.",
+        "Applied 1 hunk to src/net/retry_policy.rs.",
         TextStyle::text(),
     )?;
     canvas.write(
         11,
         4,
-        "The next request sees the newer session version and asks the person to sign in again.",
+        "hunk.retry-test remains pending and was not written.",
         TextStyle::text(),
     )?;
     canvas.write(
-        14,
+        13,
         4,
-        "That keeps an older browser session from continuing after credentials changed.",
-        TextStyle::text(),
+        "The exact paused activity resumed with the same patch revision and session.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Your submitted prompt is fixed in the transcript; a new draft stays separate.",
+        TextStyle::muted(),
     )?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
 
@@ -582,7 +591,7 @@ fn render_chat_turn(
         fixture_id,
         "transcript",
         "user-request",
-        reference(4, 4, 69),
+        reference(4, 4, 75),
         "summary",
         None,
     );
@@ -590,17 +599,21 @@ fn render_chat_turn(
         screen_id,
         fixture_id,
         "resume",
-        "current-conversation",
-        reference(4, 4, 69),
-        "summary",
-        None,
+        "activity.retry-policy-edit.18",
+        reference(13, 4, 77),
+        "focused",
+        Some(action(
+            "action.chat-turn.resume-paused-activity",
+            "Paused activity resumed",
+            true,
+        )),
     );
     let answer = semantic(
         screen_id,
         fixture_id,
         "transcript",
-        "completed-answer",
-        reference(9, 4, 67),
+        "applied-hunk-result",
+        reference(9, 4, 53),
         "summary",
         None,
     );
@@ -637,6 +650,116 @@ fn render_chat_turn(
             .iter()
             .map(|(candidate, _)| candidate.clone())
             .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.chat-turn.send-reply",
+                "chat-turn",
+                "streaming",
+                "direct",
+                "the next reply begins inline in this same transcript",
+            ),
+            transition(
+                "action.chat-turn.resume-paused-activity",
+                "chat-turn",
+                "chat-turn",
+                "summarized",
+                "the applied edit is summarized inline while the exact paused activity remains current",
+            ),
+        ],
+    ))
+}
+
+fn render_daily_chat_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Why are stale sessions rejected after a password change?",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "A password change invalidates tokens issued before the change.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "The next request sees the newer session version and asks the person to sign in again.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "That keeps an older browser session from continuing after credentials changed.",
+        TextStyle::text(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "user-request",
+            reference(4, 4, 69),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "resume",
+            "current-conversation",
+            reference(4, 4, 69),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "completed-answer",
+            reference(9, 4, 67),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "focus",
+            "conversation-input",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
