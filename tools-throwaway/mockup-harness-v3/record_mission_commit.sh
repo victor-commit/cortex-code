@@ -25,11 +25,18 @@ commit="$1"
     echo "record_mission_commit.sh: missing mission commit ledger" >&2
     exit 2
 }
-if ! mkdir -m 700 "$LOCK_DIR"; then
-    echo "record_mission_commit.sh: mission commit ledger is locked or unavailable" >&2
-    exit 2
+if [[ "${MISSION_COMMIT_LOCK_HELD:-}" == 1 ]]; then
+    [[ -d "$LOCK_DIR" && ! -L "$LOCK_DIR" ]] || {
+        echo "record_mission_commit.sh: caller does not hold the mission commit lock" >&2
+        exit 2
+    }
+else
+    if ! mkdir -m 700 "$LOCK_DIR"; then
+        echo "record_mission_commit.sh: mission commit ledger is locked or unavailable" >&2
+        exit 2
+    fi
+    trap 'rmdir "$LOCK_DIR"' EXIT
 fi
-trap 'rmdir "$LOCK_DIR"' EXIT
 
 canonical="$(git -C "$REPO_ROOT" rev-parse --verify "${commit}^{commit}" 2>/dev/null)" || {
     echo "record_mission_commit.sh: commit $commit is unreachable" >&2
@@ -57,6 +64,8 @@ grep -Fqx -- "$commit" "$LEDGER" || {
     exit 2
 }
 
-trap - EXIT
-rmdir "$LOCK_DIR"
+if [[ "${MISSION_COMMIT_LOCK_HELD:-}" != 1 ]]; then
+    trap - EXIT
+    rmdir "$LOCK_DIR"
+fi
 printf 'record_mission_commit.sh: ledgered %s\n' "$commit"

@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -198,6 +199,19 @@ impl Fixture {
             .to_owned()
     }
 
+    fn head_parent_commit(&self) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD^"])
+            .current_dir(&self.root)
+            .output()
+            .expect("parent lookup must start");
+        assert_success(output.clone(), "parent lookup");
+        String::from_utf8(output.stdout)
+            .expect("parent output must be UTF-8")
+            .trim()
+            .to_owned()
+    }
+
     fn record_head_commit(&self) {
         let head = self.head_commit();
         assert_success(self.run_ledger_append(&head), "mission ledger append");
@@ -210,6 +224,17 @@ impl Fixture {
             .current_dir(&self.harness)
             .output()
             .expect("mission commit helper must start")
+    }
+
+    fn run_mission_commit_with_after_commit_hook(&self, message: &str, hook: &Path) -> Output {
+        Command::new("bash")
+            .arg(self.harness.join("commit_mission_change.sh"))
+            .args(["-m", message])
+            .env("COMMIT_MISSION_CHANGE_TEST_AFTER_COMMIT", hook)
+            .env("FIXTURE_ROOT", &self.root)
+            .current_dir(&self.harness)
+            .output()
+            .expect("mission commit helper with hook must start")
     }
 }
 
@@ -435,6 +460,61 @@ fn commit_helper_appends_the_exact_new_commit_sha() {
         fixture.run_handoff_audit(&head),
         "ledgered mission handoff audit",
     );
+}
+
+#[test]
+fn commit_helper_ledger_preserves_mission_sha_across_interleaved_user_commit() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/ledgered-before-user.txt");
+    fs::write(&allowed, "mission commit before user commit\n")
+        .expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/ledgered-before-user.txt",
+        ],
+    );
+
+    let hook = fixture.root.join("concurrent-user-commit.sh");
+    fs::write(
+        &hook,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         printf '%s\\n' 'user commit landed after mission commit' > \"$FIXTURE_ROOT/protected.txt\"\n\
+         git -C \"$FIXTURE_ROOT\" commit --quiet --only protected.txt -m 'interleaved user commit'\n",
+    )
+    .expect("concurrent user hook must be written");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700))
+        .expect("concurrent user hook must be executable");
+
+    assert_success(
+        fixture.run_mission_commit_with_after_commit_hook(
+            "mission commit with interleaved user commit",
+            &hook,
+        ),
+        "mission commit helper with interleaved user commit",
+    );
+
+    let user_commit = fixture.head_commit();
+    let mission_commit = fixture.head_parent_commit();
+    assert_ne!(
+        mission_commit, user_commit,
+        "the hook must create a distinct user commit after the mission commit"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.ledger_path()).expect("ledger must be readable"),
+        format!("{mission_commit}\n"),
+        "the ledger must contain the mission commit, not the later user commit"
+    );
+    assert_success(
+        fixture.run_handoff_audit(&mission_commit),
+        "interleaved mission commit handoff audit",
+    );
+    assert_success(fixture.run_audit(), "interleaved mission commit audit");
 }
 
 #[test]
