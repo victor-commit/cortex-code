@@ -34,6 +34,7 @@ const MAX_RESULTS: usize = 10;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const DEFAULT_CONTEXT_MAX_CHARACTERS: usize = 10_000;
 const MAX_CONTEXT_MAX_CHARACTERS: usize = 200_000;
+const MAX_REDIRECTS: usize = 5;
 const BRAVE_DEFAULT_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const DUCKDUCKGO_DEFAULT_ENDPOINT: &str = "https://api.duckduckgo.com/";
 
@@ -373,11 +374,18 @@ fn validate_http_endpoint(endpoint: &str) -> Result<(), String> {
     let url = Url::parse(endpoint)
         .map_err(|err| format!("websearch endpoint `{endpoint}` is invalid: {err}"))?;
     match url.scheme() {
+        "http" | "https" if has_embedded_credentials(&url) => {
+            Err("websearch endpoint embedded credentials are not permitted".to_owned())
+        }
         "http" | "https" => Ok(()),
         scheme => Err(format!(
             "websearch endpoint `{endpoint}` uses unsupported scheme `{scheme}` (expected http or https)"
         )),
     }
+}
+
+fn has_embedded_credentials(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
 }
 
 /// Search the web and return bounded result entries.
@@ -570,6 +578,16 @@ async fn search(
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if has_embedded_credentials(attempt.url()) {
+                // Stop before reqwest can derive Basic authentication from redirect userinfo.
+                attempt.stop()
+            } else if attempt.previous().len() > MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
         .connect_timeout(options.timeout.min(Duration::from_secs(3)))
         .timeout(options.timeout)
         .user_agent(concat!(
@@ -739,6 +757,13 @@ async fn send_json(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_owned();
+    if status.is_redirection() {
+        record_network(audit, final_url.as_str(), Some(status), "blocked");
+        return Err(format!(
+            "websearch: refusing redirect with embedded credentials from {}",
+            safe_url(&final_url)
+        ));
+    }
     let body = match collect_body(response, timeout).await {
         Ok(body) => body,
         Err(message) => {
@@ -775,6 +800,13 @@ async fn send_json(
     }
 }
 
+fn safe_url(url: &Url) -> String {
+    let mut sanitized = url.clone();
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
+    redaction::redact(sanitized.as_str())
+}
+
 fn record_network(
     audit: Option<&audit::AuditSink>,
     endpoint: &str,
@@ -782,14 +814,17 @@ fn record_network(
     outcome: &str,
 ) {
     if let Some(audit) = audit {
-        let host = audit::host_from_endpoint(endpoint).unwrap_or_default();
+        let endpoint = Url::parse(endpoint)
+            .map(|url| safe_url(&url))
+            .unwrap_or_else(|_| redaction::redact(endpoint));
+        let host = audit::host_from_endpoint(&endpoint).unwrap_or_default();
         audit.record_network_call(
             "websearch",
             None,
             None,
             "GET",
             &host,
-            endpoint,
+            &endpoint,
             status.map(|status| status.as_u16()),
             outcome,
         );
@@ -1210,7 +1245,10 @@ mod tests {
         .expect_err("bad provider should fail");
         let rendered = err.to_string();
         assert!(rendered.contains("websearch.provider"), "{rendered}");
-        assert!(rendered.contains("duckduckgo") && rendered.contains("brave"), "{rendered}");
+        assert!(
+            rendered.contains("duckduckgo") && rendered.contains("brave"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -1324,6 +1362,30 @@ mod tests {
                 && record["host"] == "api.duckduckgo.com"
                 && record["status"] == 200
         }));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn network_audit_redacts_endpoint_credentials() {
+        let path = temp_log("credential-redaction");
+        let sink = audit::AuditSink::new(&path, "ses_websearch");
+
+        record_network(
+            Some(&sink),
+            "https://user:fixture-password@example.test/search?q=Rust",
+            Some(StatusCode::FOUND),
+            "blocked",
+        );
+
+        let records = audit::read_jsonl(&path).expect("audit records");
+        let record = records.last().expect("network record");
+        let rendered = record.to_string();
+        assert_eq!(
+            record["endpoint"], "https://example.test/search?q=Rust",
+            "{record}"
+        );
+        assert!(!rendered.contains("user"));
+        assert!(!rendered.contains("fixture-password"));
         let _ = std::fs::remove_file(path);
     }
 }
