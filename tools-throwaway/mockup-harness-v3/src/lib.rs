@@ -40,9 +40,14 @@ pub fn verify_frozen_references(repository: &Path) -> Result<(), String> {
     run_check(repository, "check_v2_immutable.sh")
 }
 
-/// Proves all non-v3 paths retain the status present when v3 began.
+/// Proves forbidden paths retain the state captured at this worker-session start.
 pub fn verify_forbidden_paths(repository: &Path) -> Result<(), String> {
     run_check(repository, "check_forbidden_paths.sh")
+}
+
+/// Audits mission-authored commits from the active worker-session head.
+pub fn verify_mission_commit_paths(repository: &Path) -> Result<(), String> {
+    run_check(repository, "audit_mission_commits.sh")
 }
 
 /// Validates the public inventory and journey manifests before any renderer

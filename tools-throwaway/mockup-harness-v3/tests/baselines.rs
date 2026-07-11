@@ -9,9 +9,9 @@ fn frozen_v1_v2_references_match_the_recorded_manifest() {
 }
 
 #[test]
-fn forbidden_paths_match_the_recorded_status_baseline() {
+fn mission_commits_stay_within_approved_paths() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-    mockup_harness_v3::verify_forbidden_paths(&repository)
-        .expect("off-limits paths must match the status baseline");
+    mockup_harness_v3::verify_mission_commit_paths(&repository)
+        .expect("mission-authored commits must stay within approved paths");
 }

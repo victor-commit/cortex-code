@@ -15,43 +15,22 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        Self::with_dirty_index_and_deletion(false, false)
-    }
-
-    fn with_dirty_index(dirty_index: bool) -> Self {
-        Self::with_dirty_index_and_deletion(dirty_index, false)
-    }
-
-    fn with_staged_deletion() -> Self {
-        Self::with_dirty_index_and_deletion(false, true)
-    }
-
-    fn with_dirty_index_and_deletion(dirty_index: bool, staged_deletion: bool) -> Self {
         let sequence = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = env::temp_dir().join(format!(
-            "mockup-harness-v3-forbidden-paths-{}-{sequence}",
+            "mockup-harness-v3-session-snapshot-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&root).expect("fixture root must be created");
+        fs::create_dir_all(root.join("tools-throwaway/mockup-harness-v3"))
+            .expect("fixture root must be created");
 
         let harness = root.join("tools-throwaway/mockup-harness-v3");
-        fs::create_dir_all(harness.join("baselines")).expect("fixture harness must be created");
-        for frozen_root in [
-            "tools-throwaway/mockup-harness",
-            "plans/assets/mockups-v2",
-            "plans/assets/mockups",
-        ] {
-            let directory = root.join(frozen_root);
-            fs::create_dir_all(&directory).expect("frozen reference directory must be created");
-            fs::write(directory.join("reference.txt"), "frozen reference\n")
-                .expect("frozen reference must be written");
-        }
-
         let source_harness = Path::new(env!("CARGO_MANIFEST_DIR"));
         for script in [
-            "record_baseline.sh",
+            "start_session_snapshot.sh",
             "check_forbidden_paths.sh",
-            "forbidden_path_baseline.py",
+            "isolation_snapshot.py",
+            "audit_mission_commits.sh",
+            "audit_mission_commits.py",
         ] {
             fs::copy(source_harness.join(script), harness.join(script))
                 .expect("fixture script must be copied");
@@ -66,26 +45,25 @@ impl Fixture {
 
         let tracked = root.join("protected.txt");
         fs::write(&tracked, "committed\n").expect("tracked fixture must be written");
-        run(&root, ["git", "add", "."]);
+        let untracked = root.join("user-owned.txt");
+        fs::write(&untracked, "opaque user content\n").expect("untracked fixture must be written");
+        fs::create_dir_all(root.join("tools-throwaway/mockup-harness-v3"))
+            .expect("allowed root must exist");
+        run(
+            &root,
+            [
+                "git",
+                "add",
+                "protected.txt",
+                "tools-throwaway/mockup-harness-v3",
+            ],
+        );
         run(
             &root,
             ["git", "commit", "--quiet", "-m", "fixture baseline"],
         );
-
-        if staged_deletion {
-            run(&root, ["git", "rm", "--quiet", "protected.txt"]);
-        } else if dirty_index {
-            fs::write(&tracked, "pre-existing dirty index\n")
-                .expect("dirty index fixture must be written");
-            run(&root, ["git", "add", "protected.txt"]);
-        }
-        if !staged_deletion {
-            fs::write(&tracked, "pre-existing dirty worktree\n")
-                .expect("dirty tracked fixture must be written");
-        }
-        let untracked = root.join("user-owned.txt");
-        fs::write(&untracked, "untracked content must remain opaque\n")
-            .expect("untracked fixture must be written");
+        fs::write(&untracked, "opaque user content after commit\n")
+            .expect("untracked fixture must be restored");
 
         let fixture = Self {
             root,
@@ -93,33 +71,33 @@ impl Fixture {
             tracked,
             untracked,
         };
-        fixture.record_baseline();
+        fixture.start_snapshot();
         fixture.check_passes();
         fixture
     }
 
-    fn record_baseline(&self) {
+    fn start_snapshot(&self) {
         let output = Command::new("bash")
-            .arg(self.harness.join("record_baseline.sh"))
+            .arg(self.harness.join("start_session_snapshot.sh"))
             .current_dir(&self.harness)
             .output()
-            .expect("baseline recorder must start");
-        assert_success(output, "baseline recorder");
+            .expect("session snapshot script must start");
+        assert_success(output, "session snapshot");
     }
 
     fn check_passes(&self) {
-        let output = self.run_checker();
-        assert_success(output, "forbidden-path checker");
+        assert_success(self.run_checker(), "forbidden-path checker");
     }
 
-    fn check_fails(&self) {
+    fn check_fails(&self) -> Output {
         let output = self.run_checker();
         assert!(
             !output.status.success(),
-            "forbidden-path checker unexpectedly accepted a changed baseline\nstdout:\n{}\nstderr:\n{}",
+            "forbidden-path checker unexpectedly accepted a changed session\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+        output
     }
 
     fn run_checker(&self) -> Output {
@@ -130,33 +108,12 @@ impl Fixture {
             .expect("forbidden-path checker must start")
     }
 
-    fn baseline(&self) -> String {
-        fs::read_to_string(self.harness.join("baselines/forbidden-status.json"))
-            .expect("forbidden status baseline must be readable")
-    }
-
-    fn porcelain(&self) -> String {
-        let output = Command::new("git")
-            .args(["status", "--porcelain=v1"])
-            .current_dir(&self.root)
+    fn run_audit(&self) -> Output {
+        Command::new("bash")
+            .arg(self.harness.join("audit_mission_commits.sh"))
+            .current_dir(&self.harness)
             .output()
-            .expect("fixture status must start");
-        assert!(
-            output.status.success(),
-            "fixture status failed with {}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let status = String::from_utf8(output.stdout).expect("fixture status must be UTF-8");
-        let entries = status
-            .lines()
-            .filter(|line| !line.contains("tools-throwaway/mockup-harness-v3/"))
-            .collect::<Vec<_>>();
-        if entries.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", entries.join("\n"))
-        }
+            .expect("mission commit audit must start")
     }
 }
 
@@ -178,6 +135,19 @@ fn run<const N: usize>(root: &Path, arguments: [&str; N]) {
     assert_success(output, "fixture command");
 }
 
+fn run_with_identity(root: &Path, name: &str, email: &str, message: &str) {
+    let output = Command::new("git")
+        .args(["commit", "--quiet", "-m", message])
+        .env("GIT_AUTHOR_NAME", name)
+        .env("GIT_AUTHOR_EMAIL", email)
+        .env("GIT_COMMITTER_NAME", name)
+        .env("GIT_COMMITTER_EMAIL", email)
+        .current_dir(root)
+        .output()
+        .expect("identity commit must start");
+    assert_success(output, "identity commit");
+}
+
 fn assert_success(output: Output, purpose: &str) {
     assert!(
         output.status.success(),
@@ -188,149 +158,147 @@ fn assert_success(output: Output, purpose: &str) {
     );
 }
 
-fn baseline_entry<'a>(baseline: &'a str, path: &str) -> &'a str {
-    let marker = format!("\"path\": \"{path}\"");
-    let end = baseline
-        .find(&marker)
-        .unwrap_or_else(|| panic!("baseline must include {path:?}"));
-    let start = baseline[..end]
-        .rfind("    {")
-        .expect("entry must begin with an object");
-    let remainder = &baseline[end..];
-    let entry_end = remainder
-        .find("\n    }")
-        .expect("entry must end with an object");
-    &baseline[start..end + entry_end + "\n    }".len()]
-}
-
 #[test]
-fn dirty_tracked_content_changes_that_keep_porcelain_fail() {
+fn in_session_tracked_forbidden_edit_fails() {
     let fixture = Fixture::new();
-    assert_eq!(fixture.porcelain(), " M protected.txt\n?? user-owned.txt\n");
-
-    fs::write(&fixture.tracked, "same porcelain, different content\n")
+    fs::write(&fixture.tracked, "changed during worker session\n")
         .expect("tracked fixture content must change");
-    assert_eq!(fixture.porcelain(), " M protected.txt\n?? user-owned.txt\n");
-
     fixture.check_fails();
 }
 
 #[test]
-fn dirty_tracked_mode_changes_that_keep_porcelain_fail() {
+fn user_changes_between_sessions_are_absorbed_by_refresh() {
     let fixture = Fixture::new();
-    assert_eq!(fixture.porcelain(), " M protected.txt\n?? user-owned.txt\n");
-    let mut permissions = fs::metadata(&fixture.tracked)
-        .expect("tracked fixture metadata must be readable")
-        .permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        permissions.set_mode(0o755);
-    }
-    fs::set_permissions(&fixture.tracked, permissions).expect("tracked fixture mode must change");
-    assert_eq!(fixture.porcelain(), " M protected.txt\n?? user-owned.txt\n");
-
+    fs::write(&fixture.tracked, "user commit between worker sessions\n")
+        .expect("user fixture content must change");
+    run(&fixture.root, ["git", "add", "protected.txt"]);
+    run_with_identity(
+        &fixture.root,
+        "user",
+        "user@example.invalid",
+        "user change between sessions",
+    );
     fixture.check_fails();
-}
 
-#[test]
-fn dirty_tracked_index_changes_that_keep_porcelain_fail() {
-    let index = Fixture::with_dirty_index(true);
-    assert_eq!(index.porcelain(), "MM protected.txt\n?? user-owned.txt\n");
-    fs::write(&index.tracked, "different staged bytes\n")
-        .expect("index fixture content must change");
-    run(&index.root, ["git", "add", "protected.txt"]);
-    fs::write(&index.tracked, "pre-existing dirty worktree\n")
-        .expect("worktree fixture must be restored");
-    assert_eq!(index.porcelain(), "MM protected.txt\n?? user-owned.txt\n");
-    index.check_fails();
-}
-
-#[test]
-fn dirty_tracked_deletion_type_path_rename_and_status_changes_fail() {
-    let deletion = Fixture::new();
-    fs::remove_file(&deletion.tracked).expect("tracked fixture must be deleted");
-    deletion.check_fails();
-
-    let type_change = Fixture::new();
-    fs::remove_file(&type_change.tracked).expect("tracked fixture must be replaced");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink("other-target", &type_change.tracked)
-        .expect("tracked fixture must become a symlink");
-    type_change.check_fails();
-
-    let path_change = Fixture::new();
-    run(
-        &path_change.root,
-        ["git", "mv", "protected.txt", "renamed.txt"],
-    );
-    path_change.check_fails();
-
-    let status_change = Fixture::new();
-    run(
-        &status_change.root,
-        ["git", "checkout", "--", "protected.txt"],
-    );
-    status_change.check_fails();
-}
-
-#[test]
-fn dirty_tracked_staged_deletion_is_fingerprinted_and_unchanged_baseline_passes() {
-    let fixture = Fixture::with_staged_deletion();
-    assert_eq!(fixture.porcelain(), "D  protected.txt\n?? user-owned.txt\n");
-    let baseline = fixture.baseline();
-    let tracked = baseline_entry(&baseline, "protected.txt");
-    assert!(tracked.contains("\"worktree_sha256\""));
-    assert!(tracked.contains("\"index_sha256\""));
-
+    fixture.start_snapshot();
     fixture.check_passes();
 }
 
 #[test]
-fn only_dirty_tracked_paths_have_fingerprints_and_untracked_contents_are_opaque() {
+fn untracked_user_owned_contents_are_never_read_or_hashed() {
     let fixture = Fixture::new();
-    let baseline = fixture.baseline();
-
-    assert!(baseline.contains("\"schema_version\": 2"));
-    let tracked = baseline_entry(&baseline, "protected.txt");
-    assert!(tracked.contains("\"worktree_sha256\""));
-    assert!(tracked.contains("\"index_sha256\""));
-
-    let untracked = baseline_entry(&baseline, "user-owned.txt");
-    assert!(!untracked.contains("sha256"));
-    assert!(!untracked.contains("fingerprints"));
+    let snapshot = fs::read_to_string(fixture.harness.join(".isolation-session/active.json"))
+        .expect("active snapshot must be readable");
+    assert!(!snapshot.contains("opaque user content"));
+    let start = snapshot
+        .find("\"path\": \"user-owned.txt\"")
+        .expect("untracked entry metadata must remain visible");
+    let entry = &snapshot[start..start + snapshot[start..].find("\n    }").unwrap()];
+    assert!(!entry.contains("fingerprints"));
 
     fs::write(
         &fixture.untracked,
-        "different untracked content must not affect verification\n",
+        "changed opaque bytes must remain unread and unhashed\n",
     )
     .expect("untracked fixture content must change");
     fixture.check_passes();
 }
 
 #[test]
-fn verifier_rejects_a_fingerprint_declared_for_an_untracked_path() {
+fn forbidden_to_allowed_rename_fails() {
     let fixture = Fixture::new();
-    let invalid = fixture.baseline().replace(
-        r#"    {
-      "path": "user-owned.txt",
-      "status": "??"
-    }"#,
-        r#"    {
-      "fingerprints": {
-        "index_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "worktree_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-      },
-      "path": "user-owned.txt",
-      "status": "??"
-    }"#,
+    run(
+        &fixture.root,
+        [
+            "git",
+            "mv",
+            "protected.txt",
+            "tools-throwaway/mockup-harness-v3/allowed.txt",
+        ],
     );
-    fs::write(
-        fixture.harness.join("baselines/forbidden-status.json"),
-        invalid,
-    )
-    .expect("invalid fixture baseline must be written");
+    let output = fixture.check_fails();
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("protected.txt"),
+        "rename failure should identify the forbidden source"
+    );
+}
 
+#[test]
+fn allowed_echobt_commit_passes_and_audit_ignores_interleaved_user_commit() {
+    let fixture = Fixture::new();
+    let allowed = fixture
+        .root
+        .join("tools-throwaway/mockup-harness-v3/fixture.txt");
+    fs::write(&allowed, "mission-owned\n").expect("allowed fixture must be written");
+    run(
+        &fixture.root,
+        [
+            "git",
+            "add",
+            "tools-throwaway/mockup-harness-v3/fixture.txt",
+        ],
+    );
+    run_with_identity(
+        &fixture.root,
+        "echobt",
+        "154886644+echobt@users.noreply.github.com",
+        "mission allowed change",
+    );
+
+    fs::write(&fixture.untracked, "user-owned interleaved bytes\n")
+        .expect("user-owned fixture must change");
+    run(&fixture.root, ["git", "add", "user-owned.txt"]);
+    run_with_identity(
+        &fixture.root,
+        "user",
+        "user@example.invalid",
+        "interleaved user commit",
+    );
+
+    assert_success(fixture.run_audit(), "mission commit audit");
     fixture.check_fails();
+}
+
+#[test]
+fn out_of_scope_echobt_commit_fails_the_commit_audit() {
+    let fixture = Fixture::new();
+    fs::write(&fixture.tracked, "mission must not write here\n")
+        .expect("tracked fixture content must change");
+    run(&fixture.root, ["git", "add", "protected.txt"]);
+    let output = Command::new("git")
+        .args(["commit", "--quiet", "-m", "out of scope mission change"])
+        .env("GIT_AUTHOR_NAME", "echobt")
+        .env(
+            "GIT_AUTHOR_EMAIL",
+            "154886644+echobt@users.noreply.github.com",
+        )
+        .env("GIT_COMMITTER_NAME", "echobt")
+        .env(
+            "GIT_COMMITTER_EMAIL",
+            "154886644+echobt@users.noreply.github.com",
+        )
+        .current_dir(&fixture.root)
+        .output()
+        .expect("out-of-scope commit must start");
+    assert_success(output, "out-of-scope commit");
+
+    let audit = fixture.run_audit();
+    assert!(!audit.status.success(), "out-of-scope audit must fail");
+    assert!(String::from_utf8_lossy(&audit.stderr).contains("protected.txt"));
+}
+
+#[test]
+fn missing_or_malformed_active_snapshot_fails_closed() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.harness.join(".isolation-session/active.json"))
+        .expect("active snapshot must be removed");
+    assert!(!fixture.run_checker().status.success());
+
+    fixture.start_snapshot();
+    fs::write(
+        fixture.harness.join(".isolation-session/active.json"),
+        "{\"schema_version\": 999}\n",
+    )
+    .expect("malformed active snapshot must be written");
+    assert!(!fixture.run_checker().status.success());
 }

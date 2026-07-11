@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create the one-time immutable comparison baseline for the v3 design mission.
+# Create the one-time immutable v1/v2 comparison baseline for the v3 mission.
 set -euo pipefail
 
 LC_ALL=C
@@ -10,9 +10,8 @@ REPO_ROOT="$(cd "$HARNESS_DIR/../.." && pwd)"
 BASELINES_DIR="$HARNESS_DIR/baselines"
 MANIFEST="$BASELINES_DIR/frozen-references.sha256"
 METADATA="$BASELINES_DIR/frozen-references.json"
-FORBIDDEN_STATUS="$BASELINES_DIR/forbidden-status.json"
 
-for baseline in "$MANIFEST" "$METADATA" "$FORBIDDEN_STATUS"; do
+for baseline in "$MANIFEST" "$METADATA"; do
     if [[ -e "$baseline" ]]; then
         echo "record_baseline.sh: refusing to overwrite $baseline" >&2
         exit 2
@@ -22,8 +21,7 @@ done
 mkdir -p "$BASELINES_DIR"
 manifest_tmp="$(mktemp "$BASELINES_DIR/.frozen-references.XXXXXX")"
 metadata_tmp="$(mktemp "$BASELINES_DIR/.frozen-references.XXXXXX")"
-status_tmp="$(mktemp "$BASELINES_DIR/.forbidden-status.XXXXXX")"
-trap 'rm -f "$manifest_tmp" "$metadata_tmp" "$status_tmp"' EXIT
+trap 'rm -f "$manifest_tmp" "$metadata_tmp"' EXIT
 
 (
     cd "$REPO_ROOT"
@@ -72,14 +70,8 @@ json.dump(
 sys.stdout.write("\n")
 PY
 
-python3 "$HARNESS_DIR/forbidden_path_baseline.py" \
-    record "$REPO_ROOT" "$head_commit" >"$status_tmp"
-
 mv "$manifest_tmp" "$MANIFEST"
 mv "$metadata_tmp" "$METADATA"
-mv "$status_tmp" "$FORBIDDEN_STATUS"
 trap - EXIT
 
-printf 'record_baseline.sh: recorded %s frozen tracked files and %s forbidden status entries\n' \
-    "$file_count" \
-    "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["entries"]))' "$FORBIDDEN_STATUS")"
+printf 'record_baseline.sh: recorded %s frozen tracked files\n' "$file_count"
