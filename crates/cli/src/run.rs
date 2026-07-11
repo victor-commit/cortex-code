@@ -1912,7 +1912,7 @@ async fn stream_text(
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
 
     let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
-        publish_runner_event(&bus, &event);
+        publish_runner_event(&bus, session_id, turn_message_id, &event);
         let _ = lifecycle.observe(&event);
         if let RunnerEvent::TextDelta { text } = &event {
             if !text.is_empty() {
@@ -2022,7 +2022,7 @@ async fn stream_jsonl(
     }
 
     let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
-        publish_runner_event(&bus, &event);
+        publish_runner_event(&bus, session_id, turn_message_id, &event);
         for part_event in lifecycle.observe(&event) {
             if let Ok(line) = render_part_lifecycle_line(&part_event) {
                 write_jsonl_line(&mut handle, styler, &line, &mut event_count);
@@ -2209,7 +2209,7 @@ async fn emit_json(
     let mut runner_events: Vec<RunnerEvent> = Vec::new();
     let mut lifecycle = PartLifecycleTracker::new(turn_message_id, model_id);
     let result = run_turn(provider, turn, dispatcher, lifecycle_signal, |event| {
-        publish_runner_event(&bus, &event);
+        publish_runner_event(&bus, session_id, turn_message_id, &event);
         let _ = lifecycle.observe(&event);
         if let RunnerEvent::ToolResult {
             id,
@@ -2472,13 +2472,15 @@ fn render_part_lifecycle_line(event: &PartLifecycleEvent) -> Result<String, serd
 
 /// Publish runner tool events onto the typed event bus so plugin `event` hooks and future audit
 /// sinks observe the same concrete lifecycle as machine-output consumers.
-fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
+fn publish_runner_event(bus: &EventBus, session_id: &str, message_id: &str, event: &RunnerEvent) {
     match event {
         RunnerEvent::ToolCall {
             id,
             name,
             arguments,
-        } => bus.publish(&Event::tool_call(
+        } => bus.publish(&Event::tool_call_for_turn(
+            session_id,
+            message_id,
             id.clone(),
             name.clone(),
             arguments.clone(),
@@ -2489,7 +2491,9 @@ fn publish_runner_event(bus: &EventBus, event: &RunnerEvent) {
             parts,
             mcp_result,
             is_error,
-        } => bus.publish(&Event::tool_result_with_parts(
+        } => bus.publish(&Event::tool_result_for_turn_with_parts(
+            session_id,
+            message_id,
             id.clone(),
             name.clone(),
             parts.clone(),
@@ -3077,6 +3081,29 @@ mod tests {
     /// Write an arbitrary project `cortex.toml` body into the given directory.
     fn write_config(dir: &Path, body: &str) {
         std::fs::write(dir.join("cortex.toml"), body).expect("write cortex.toml");
+    }
+
+    #[test]
+    fn runner_tool_events_include_turn_correlation() {
+        let bus = EventBus::new();
+        let mut received = bus.subscribe_stream();
+        let runner_event = RunnerEvent::ToolCall {
+            id: "call_plugin_echo".to_owned(),
+            name: "cortex_echo".to_owned(),
+            arguments: r#"{"text":"proof"}"#.to_owned(),
+        };
+
+        publish_runner_event(&bus, "ses_plugin_proof", "msg_plugin_proof", &runner_event);
+
+        match received.try_recv().expect("tool call event") {
+            Event::ToolCall(event) => {
+                assert_eq!(event.session_id.as_deref(), Some("ses_plugin_proof"));
+                assert_eq!(event.message_id.as_deref(), Some("msg_plugin_proof"));
+                assert_eq!(event.id, "call_plugin_echo");
+                assert_eq!(event.name, "cortex_echo");
+            }
+            other => panic!("expected a tool-call event, got {other:?}"),
+        }
     }
 
     // With no `--agent` flag the run uses the default agent; an explicit valid name resolves to
