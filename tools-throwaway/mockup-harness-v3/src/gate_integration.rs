@@ -54,6 +54,10 @@ pub struct PilotGateBridge {
     pub expected_after: &'static str,
     pub expected_kind: &'static str,
     pub expected_action: &'static str,
+    pub evidence_txt: Option<&'static str>,
+    pub evidence_png: Option<&'static str>,
+    pub audit_json: Option<&'static str>,
+    pub vision_evidence: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +90,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "rich-response",
             expected_kind: "direct",
             expected_action: "action.tool-success.continue",
+            evidence_txt: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.txt"),
+            evidence_png: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.png"),
+            audit_json: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.json"),
+            vision_evidence: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1-vision.md"),
         },
         PilotGateBridge {
             flow: "daily-work",
@@ -95,6 +103,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.streaming.interrupt",
+            evidence_txt: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.txt"),
+            evidence_png: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.png"),
+            audit_json: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.json"),
+            vision_evidence: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1-vision.md"),
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -104,6 +116,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "permission-shell",
             expected_kind: "direct",
             expected_action: "action.file-mention.submit-prepared-prompt",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -113,6 +129,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "diff-edit",
             expected_kind: "direct",
             expected_action: "action.permission.allow-once",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -122,6 +142,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "diff-viewer-staging",
             expected_kind: "direct",
             expected_action: "action.diff-edit.review-changes",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -131,6 +155,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.staging.finish",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -140,6 +168,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "cancel",
             expected_action: "action.model-picker.cancel",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -149,6 +181,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "mode-switch",
             expected_kind: "direct",
             expected_action: "action.agent-picker.review-access",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -158,6 +194,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.mode-switch.confirm",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -167,6 +207,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "mode-switch-refused",
             expected_kind: "direct",
             expected_action: "action.mode-switch-refused.choose-safer",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -176,6 +220,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "session-picker",
             expected_kind: "cancel",
             expected_action: "action.timeline.back",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -185,6 +233,10 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.session-picker.resume",
+            evidence_txt: None,
+            evidence_png: None,
+            audit_json: None,
+            vision_evidence: None,
         },
     ]
 }
@@ -261,7 +313,7 @@ pub fn validate_pilot_gate_integration(
     for flow in &pilot_manifests {
         validate_manifest_steps(flow)?;
     }
-    validate_bridges()?;
+    validate_bridges(mission_directory)?;
 
     let artifacts = pilot_gate_artifacts();
     validate_artifacts(repository, &artifacts)?;
@@ -298,9 +350,27 @@ fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
         }
         let audit = audit_screen(
             step.screen_id,
-            &format!("gate-integration.{}.{}", flow.name, index + 1),
+            step.fixture_id,
         )?;
         audit.validate()?;
+        if flow.name == "daily-work" {
+            let identity = audit.conversation.as_ref().ok_or_else(|| {
+                format!("{} step {} lacks conversation identity", flow.name, index + 1)
+            })?;
+            let expected = crate::audit::ConversationIdentity {
+                conversation_id: step.conversation_id.to_owned(),
+                transcript_id: step.transcript_id.to_owned(),
+                session_id: step.session_id.to_owned(),
+                turn_id: step.turn_id.to_owned(),
+                user_task: step.user_task.to_owned(),
+                visible_origin: step.visible_origin.to_owned(),
+            };
+            crate::audit::validate_conversation_identity(
+                identity,
+                &expected,
+                &audit.render_txt(),
+            )?;
+        }
         if step.transition_kind == TransitionKind::Direct {
             let expected_kind = "direct";
             if !audit.transitions.iter().any(|transition| {
@@ -328,7 +398,7 @@ fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_bridges() -> Result<(), String> {
+fn validate_bridges(mission_directory: &str) -> Result<(), String> {
     let canonical_ids = canonical_inventory()
         .iter()
         .map(|screen| screen.id)
@@ -345,6 +415,58 @@ fn validate_bridges() -> Result<(), String> {
                 "bridge case {} does not match its declared contract",
                 bridge.case_id
             ));
+        }
+        if let (Some(txt), Some(png), Some(audit), Some(vision)) = (
+            bridge.evidence_txt,
+            bridge.evidence_png,
+            bridge.audit_json,
+            bridge.vision_evidence,
+        ) {
+            let evidence_root = Path::new(mission_directory);
+            let txt_path = evidence_root.join(txt);
+            let png_path = evidence_root.join(png);
+            let audit_path = evidence_root.join(audit);
+            let vision_path = evidence_root.join(vision);
+            let txt_bytes = fs::read(&txt_path)
+                .map_err(|error| format!("missing bridge TXT {}: {error}", txt_path.display()))?;
+            let txt = std::str::from_utf8(&txt_bytes)
+                .map_err(|error| format!("bridge TXT is not UTF-8: {error}"))?;
+            if txt.lines().count() != 40
+                || !txt.ends_with('\n')
+                || txt.lines().any(|line| line.chars().count() != 120)
+            {
+                return Err(format!("invalid bridge TXT dimensions: {}", txt_path.display()));
+            }
+            let png_bytes = fs::read(&png_path)
+                .map_err(|error| format!("missing bridge PNG {}: {error}", png_path.display()))?;
+            let png_hash = sha256_hex(&png_bytes);
+            let audit = fs::read_to_string(&audit_path).map_err(|error| {
+                format!("missing bridge audit {}: {error}", audit_path.display())
+            })?;
+            if !audit.contains(bridge.case_id)
+                || !audit.contains(bridge.expected_action)
+                || !audit.contains(&format!("\"virtual_tick\":{}", bridge.tick))
+                || !audit.contains(bridge.expected_before)
+                || !audit.contains(bridge.expected_after)
+            {
+                return Err(format!(
+                    "bridge audit does not bind case, action, tick, and states: {}",
+                    audit_path.display()
+                ));
+            }
+            let vision = fs::read_to_string(&vision_path).map_err(|error| {
+                format!("missing bridge vision evidence {}: {error}", vision_path.display())
+            })?;
+            if !vision.contains("anthropic/claude-opus-4.8-fast")
+                || !vision.contains(&png_path.display().to_string())
+                || !vision.contains(&png_hash)
+                || !vision.contains("Role:")
+            {
+                return Err(format!(
+                    "bridge vision evidence is not hash/path/model bound: {}",
+                    vision_path.display()
+                ));
+            }
         }
         for screen_id in [&replay.before.screen_id, &replay.after.screen_id] {
             if !canonical_ids.contains(screen_id.as_str()) {

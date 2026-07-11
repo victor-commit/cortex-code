@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
+    Daily work · current conversation                                                                                   
+    Find where the server applies the rate limit and explain the safe path.                                             
                                                                                                                         
                                                                                                                         
     Recent work                                                                                                         

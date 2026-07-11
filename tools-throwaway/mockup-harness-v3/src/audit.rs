@@ -76,6 +76,16 @@ pub struct WorkStyleEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationIdentity {
+    pub conversation_id: String,
+    pub transcript_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub user_task: String,
+    pub visible_origin: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransitionTrace {
     pub action_id: String,
     pub from_screen_id: String,
@@ -93,6 +103,7 @@ pub struct AuditDocument {
     pub events: Vec<SemanticEvent>,
     pub transitions: Vec<TransitionTrace>,
     pub work_style: Option<WorkStyleEvidence>,
+    pub conversation: Option<ConversationIdentity>,
 }
 
 impl AuditDocument {
@@ -272,6 +283,20 @@ impl AuditDocument {
                     None => output.push_str("null"),
                 }
                 field(&mut output, "access_scope", &work_style.access_scope);
+                output.push('}');
+            }
+            None => output.push_str("null"),
+        }
+        output.push_str(",\"conversation\":");
+        match &self.conversation {
+            Some(identity) => {
+                output.push('{');
+                raw_field(&mut output, "conversation_id", &identity.conversation_id);
+                field(&mut output, "transcript_id", &identity.transcript_id);
+                field(&mut output, "session_id", &identity.session_id);
+                field(&mut output, "turn_id", &identity.turn_id);
+                field(&mut output, "user_task", &identity.user_task);
+                field(&mut output, "visible_origin", &identity.visible_origin);
                 output.push('}');
             }
             None => output.push_str("null"),
@@ -501,6 +526,15 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         })
         .collect::<Vec<_>>();
 
+    let conversation = (screen.flow.as_str() == "daily-work").then(|| ConversationIdentity {
+        conversation_id: "conversation.daily-work".to_owned(),
+        transcript_id: "transcript.daily-work".to_owned(),
+        session_id: "session.daily-work.1".to_owned(),
+        turn_id: "turn.daily-work.18".to_owned(),
+        user_task: "Find where the server applies the rate limit and explain the safe path."
+            .to_owned(),
+        visible_origin: "Daily work · current conversation".to_owned(),
+    });
     let document = AuditDocument {
         screen_id: screen_id.to_owned(),
         fixture_id: fixture_id.to_owned(),
@@ -509,6 +543,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         events,
         transitions: vec![transition],
         work_style: None,
+        conversation,
     };
     document.validate()?;
     let render_hash = sha256_hex(document.render_txt().as_bytes());
@@ -730,6 +765,35 @@ impl Canvas {
 pub fn validate_visible_text(text: &str) -> Result<(), String> {
     if text.contains("fixture-secret-value") {
         return Err("leaked secret: fixture-secret-value".to_owned());
+    }
+    Ok(())
+}
+
+pub fn validate_conversation_identity(
+    identity: &ConversationIdentity,
+    expected: &ConversationIdentity,
+    rendered_text: &str,
+) -> Result<(), String> {
+    if identity != expected {
+        return Err("conversation identity changed across storyboard frames".to_owned());
+    }
+    for (name, value) in [
+        ("conversation_id", identity.conversation_id.as_str()),
+        ("transcript_id", identity.transcript_id.as_str()),
+        ("session_id", identity.session_id.as_str()),
+        ("turn_id", identity.turn_id.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("{name} is missing from conversation identity"));
+        }
+    }
+    for (name, value) in [
+        ("user_task", identity.user_task.as_str()),
+        ("visible_origin", identity.visible_origin.as_str()),
+    ] {
+        if value.trim().is_empty() || !rendered_text.contains(value) {
+            return Err(format!("{name} is not visible in the rendered conversation"));
+        }
     }
     Ok(())
 }

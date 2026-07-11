@@ -22,6 +22,9 @@ const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
 const COMPOSER_TOP: u16 = 32;
 const COMPOSER_BOTTOM: u16 = 37;
+const DAILY_WORK_TASK: &str =
+    "Find where the server applies the rate limit and explain the safe path.";
+const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -32,6 +35,8 @@ type ScreenEvidence = (
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let mut canvas = Canvas::new();
+    canvas.write(2, 4, DAILY_WORK_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, DAILY_WORK_TASK, TextStyle::bright())?;
     let (candidates, events, transitions) = match screen_id {
         "home" => render_home(&mut canvas, screen_id, fixture_id)?,
         "chat-turn" if fixture_id.starts_with("case.tool-running-interrupt") => {
@@ -91,6 +96,15 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 pending: None,
                 access_scope: access_scope.to_owned(),
             }
+        }),
+        conversation: Some(crate::audit::ConversationIdentity {
+            conversation_id: "conversation.daily-work".to_owned(),
+            transcript_id: "transcript.daily-work".to_owned(),
+            session_id: "session.daily-work.1".to_owned(),
+            turn_id: "turn.daily-work.18".to_owned(),
+            user_task: "Find where the server applies the rate limit and explain the safe path."
+                .to_owned(),
+            visible_origin: "Daily work · current conversation".to_owned(),
         }),
     })
 }
@@ -565,7 +579,7 @@ fn render_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Check retry_policy.rs before we merge.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -795,7 +809,7 @@ fn render_daily_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Why are stale sessions rejected after a password change?",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -899,7 +913,7 @@ fn render_streaming(
     canvas.write(
         4,
         4,
-        "You · Summarize the auth refactor and why it is safer.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1024,7 +1038,7 @@ fn render_interrupted_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Summarize the auth refactor and why it is safer.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1151,7 +1165,7 @@ fn render_tool_running(
     canvas.write(
         4,
         4,
-        "You · Find where the server applies the rate limit.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1287,7 +1301,7 @@ fn render_tool_success(
     canvas.write(
         4,
         4,
-        "You · Find where the server applies the rate limit.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1381,7 +1395,7 @@ fn render_rich_response(
     canvas.write(
         4,
         4,
-        "You · Find where the server applies the rate limit.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1522,7 +1536,7 @@ fn render_tool_interrupted_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Find where the server applies the rate limit.",
+        daily_user_request(fixture_id),
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1624,6 +1638,16 @@ fn render_tool_interrupted_chat_turn(
             "the same turn resumes with its preserved completed activity and draft",
         )],
     ))
+}
+
+fn daily_user_request(fixture_id: &str) -> &'static str {
+    if fixture_id == "canonical.chat-turn" {
+        "You · Check retry_policy.rs before we merge."
+    } else if fixture_id == "conversation-completed" {
+        "You · Why are stale sessions rejected after a password change?"
+    } else {
+        "You · Find where the server applies the rate limit and explain the safe path."
+    }
 }
 
 fn composer(

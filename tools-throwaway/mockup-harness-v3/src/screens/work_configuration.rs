@@ -80,6 +80,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }),
             _ => None,
         },
+        conversation: None,
     })
 }
 

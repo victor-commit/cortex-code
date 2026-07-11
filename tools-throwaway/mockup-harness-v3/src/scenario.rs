@@ -18,6 +18,11 @@ const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScenarioState {
     pub screen_id: String,
+    pub conversation_id: String,
+    pub transcript_id: String,
+    pub turn_id: String,
+    pub user_task: String,
+    pub visible_origin: String,
     pub session_id: String,
     pub submitted_prompt: Option<String>,
     pub paused_activity_id: String,
@@ -172,6 +177,28 @@ impl CaseReplay {
                 "scenario transition did not preserve its session, submitted prompt, or paused activity identity"
                     .to_owned(),
             );
+        }
+        if matches!(
+            self.case_id.as_str(),
+            "streaming-interrupt"
+                | "tool-running-interrupt"
+                | "tool-running-complete"
+                | "tool-success-continue"
+        ) {
+            for (name, before, after) in [
+                ("conversation_id", &self.before.conversation_id, &self.after.conversation_id),
+                ("transcript_id", &self.before.transcript_id, &self.after.transcript_id),
+                ("session_id", &self.before.session_id, &self.after.session_id),
+                ("turn_id", &self.before.turn_id, &self.after.turn_id),
+                ("user_task", &self.before.user_task, &self.after.user_task),
+                ("visible_origin", &self.before.visible_origin, &self.after.visible_origin),
+            ] {
+                if before != after {
+                    return Err(format!(
+                        "Flow 1 identity changed without a declared bridge: {name}"
+                    ));
+                }
+            }
         }
         if self.case_id.starts_with("work-style-") && self.audit.work_style.is_none() {
             return Err("work-style scenario must emit one work_style audit object".to_owned());
@@ -3067,7 +3094,13 @@ fn state(
 ) -> ScenarioState {
     let mut state = ScenarioState {
         screen_id: screen_id.to_owned(),
+        conversation_id: "conversation.daily-work".to_owned(),
+        transcript_id: "transcript.daily-work".to_owned(),
         session_id: "session.daily-work.1".to_owned(),
+        turn_id: "turn.daily-work.18".to_owned(),
+        user_task: "Find where the server applies the rate limit and explain the safe path."
+            .to_owned(),
+        visible_origin: "Daily work · current conversation".to_owned(),
         submitted_prompt: None,
         paused_activity_id: "activity.current-turn".to_owned(),
         origin_stack: origin_stack.into_iter().map(str::to_owned).collect(),
@@ -3095,7 +3128,12 @@ fn state(
 
 fn validate_state(state: &ScenarioState) -> Result<(), String> {
     if state.screen_id.trim().is_empty()
+        || state.conversation_id.trim().is_empty()
+        || state.transcript_id.trim().is_empty()
         || state.session_id.trim().is_empty()
+        || state.turn_id.trim().is_empty()
+        || state.user_task.trim().is_empty()
+        || state.visible_origin.trim().is_empty()
         || state.paused_activity_id.trim().is_empty()
         || state.origin_stack.is_empty()
         || state.draft.is_empty()
@@ -3162,9 +3200,14 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\nsession={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\nattachment={}\ntranscript={}\npartial_response={}\nqueue={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\nwork_style={}\npending_work_style={}\naccess_scope={}\ntick={}",
+            "screen={}\nconversation={}\ntranscript_id={}\nsession={}\nturn={}\ntask={}\norigin={}\nsubmitted_prompt={}\npaused_activity={}\norigins={}\ndraft={}\nattachment={}\ntranscript={}\npartial_response={}\nqueue={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\nwork_style={}\npending_work_style={}\naccess_scope={}\ntick={}",
             state.screen_id,
+            state.conversation_id,
+            state.transcript_id,
             state.session_id,
+            state.turn_id,
+            state.user_task,
+            state.visible_origin,
             state.submitted_prompt.as_deref().unwrap_or(""),
             state.paused_activity_id,
             state.origin_stack.join(">"),
@@ -3196,9 +3239,26 @@ fn preserved_hashes(
     let mut hashes = BTreeMap::new();
     for (name, first, second) in [
         (
+            "conversation_id",
+            before.conversation_id.as_str(),
+            after.conversation_id.as_str(),
+        ),
+        (
+            "transcript_id",
+            before.transcript_id.as_str(),
+            after.transcript_id.as_str(),
+        ),
+        (
             "session_id",
             before.session_id.as_str(),
             after.session_id.as_str(),
+        ),
+        ("turn_id", before.turn_id.as_str(), after.turn_id.as_str()),
+        ("user_task", before.user_task.as_str(), after.user_task.as_str()),
+        (
+            "visible_origin",
+            before.visible_origin.as_str(),
+            after.visible_origin.as_str(),
         ),
         (
             "submitted_prompt",
@@ -3631,7 +3691,12 @@ fn string_array(output: &mut String, name: &str, values: &[String]) {
 fn state_json(output: &mut String, state: &ScenarioState) {
     output.push('{');
     raw_field(output, "screen_id", &state.screen_id);
+    field(output, "conversation_id", &state.conversation_id);
+    field(output, "transcript_id", &state.transcript_id);
     field(output, "session_id", &state.session_id);
+    field(output, "turn_id", &state.turn_id);
+    field(output, "user_task", &state.user_task);
+    field(output, "visible_origin", &state.visible_origin);
     output.push_str(",\"submitted_prompt\":");
     match &state.submitted_prompt {
         Some(prompt) => quote(output, prompt),

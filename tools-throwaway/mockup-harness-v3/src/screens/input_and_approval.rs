@@ -7,15 +7,15 @@
 //! newline the person entered.
 
 use crate::{
+    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
-    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -89,6 +89,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
         work_style: None,
+        conversation: None,
     })
 }
 
@@ -116,24 +117,9 @@ fn render_diff_edit(
         "File: src/net/retry_policy.rs · revision: patch-retry-18",
         TextStyle::text(),
     )?;
-    canvas.write(
-        12,
-        4,
-        "Patch summary +4 -3 · 2 hunks",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "Hunk @@ -42,2 +42,3",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        14,
-        6,
-        "42  42  -    return retry_after",
-        TextStyle::text(),
-    )?;
+    canvas.write(12, 4, "Patch summary +4 -3 · 2 hunks", TextStyle::text())?;
+    canvas.write(13, 4, "Hunk @@ -42,2 +42,3", TextStyle::text())?;
+    canvas.write(14, 6, "42  42  -    return retry_after", TextStyle::text())?;
     canvas.write(
         15,
         6,
@@ -158,24 +144,9 @@ fn render_diff_edit(
         "    44  +    log_retry_window(jitter)",
         TextStyle::text(),
     )?;
-    canvas.write(
-        20,
-        4,
-        "Hunk @@ -88,2 +88,2",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        21,
-        6,
-        "88  88  -assert_eq!(wait, 4)",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        22,
-        6,
-        "    89  +assert_eq!(wait, 5)",
-        TextStyle::text(),
-    )?;
+    canvas.write(20, 4, "Hunk @@ -88,2 +88,2", TextStyle::text())?;
+    canvas.write(21, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
+    canvas.write(22, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
     canvas.write(
         24,
         4,
@@ -345,7 +316,12 @@ fn render_diff_staging(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(3, 4, "Review changes · temporary detail", TextStyle::bright())?;
+    canvas.write(
+        3,
+        4,
+        "Review changes · temporary detail",
+        TextStyle::bright(),
+    )?;
     canvas.write(
         4,
         4,
@@ -401,18 +377,8 @@ fn render_diff_staging(
         "○ Pending · hunk.retry-test · old 88-89 · new 88-89",
         TextStyle::text(),
     )?;
-    canvas.write(
-        17,
-        6,
-        "88  88  -assert_eq!(wait, 4)",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        18,
-        6,
-        "    89  +assert_eq!(wait, 5)",
-        TextStyle::text(),
-    )?;
+    canvas.write(17, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
+    canvas.write(18, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
     canvas.write(
         20,
         4,
@@ -1180,7 +1146,10 @@ fn render_permission_deny_reason(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
@@ -1785,9 +1754,11 @@ mod tests {
         let matches = fuzzy_file_matches("@retry");
         assert_eq!(matches.len(), 3);
         assert_eq!(matches[0].path, "src/net/retry_policy.rs");
-        assert!(matches
-            .iter()
-            .all(|candidate| fuzzy_subsequence(candidate.path, "retry")));
+        assert!(
+            matches
+                .iter()
+                .all(|candidate| fuzzy_subsequence(candidate.path, "retry"))
+        );
         assert!(fuzzy_file_matches("@zzq").is_empty());
     }
 }

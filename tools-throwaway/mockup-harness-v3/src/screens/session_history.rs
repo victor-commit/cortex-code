@@ -54,6 +54,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             pending: None,
             access_scope: "asks before editing project files".to_owned(),
         }),
+        conversation: None,
     })
 }
 

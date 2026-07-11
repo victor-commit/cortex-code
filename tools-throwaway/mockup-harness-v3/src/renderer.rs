@@ -337,6 +337,21 @@ pub fn flow_manifest_json(flow: &FlowManifest) -> String {
         output.push_str("{\"index\":");
         output.push_str(&(index + 1).to_string());
         json_field(&mut output, "screen_id", step.screen_id);
+        json_field(&mut output, "fixture_id", step.fixture_id);
+        json_field(&mut output, "conversation_id", step.conversation_id);
+        json_field(&mut output, "transcript_id", step.transcript_id);
+        json_field(&mut output, "session_id", step.session_id);
+        json_field(&mut output, "turn_id", step.turn_id);
+        json_field(&mut output, "user_task", step.user_task);
+        json_field(&mut output, "visible_origin", step.visible_origin);
+        output.push_str(",\"preservation_fields\":[");
+        for (field_index, field) in step.preservation_fields.iter().enumerate() {
+            if field_index > 0 {
+                output.push(',');
+            }
+            output.push_str(&json_string(field));
+        }
+        output.push(']');
         json_field(&mut output, "action", step.user_action);
         json_field(
             &mut output,
@@ -630,7 +645,19 @@ fn require_selected_implemented(screens: &[&ScreenSpec]) -> Result<(), String> {
 fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> {
     let mut canonical = BTreeMap::new();
     for screen in &plan.canonical {
-        let audit = audit_screen(screen.id, &format!("canonical.{}", screen.id))
+        let fixture_id = if screen.flow.as_str() == "daily-work" {
+            "flow1.daily-work.stable"
+        } else {
+            // Canonical artifacts outside the repaired storyboard retain their
+            // category-local fixture identity.
+            ""
+        };
+        let fixture_id = if fixture_id.is_empty() {
+            format!("canonical.{}", screen.id)
+        } else {
+            fixture_id.to_owned()
+        };
+        let audit = audit_screen(screen.id, &fixture_id)
             .map_err(RenderFailure::validation)?;
         insert_audit_artifacts(
             &mut canonical,
@@ -652,7 +679,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
         for (index, step) in flow.steps.iter().enumerate() {
             let audit = audit_screen(
                 step.screen_id,
-                &format!("canonical.{}", step.screen_id),
+                step.fixture_id,
             )
             .map_err(RenderFailure::validation)?;
             insert_audit_artifacts(

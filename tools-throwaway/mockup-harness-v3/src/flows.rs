@@ -16,6 +16,14 @@ pub enum TransitionKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowStep {
     pub screen_id: &'static str,
+    pub fixture_id: &'static str,
+    pub conversation_id: &'static str,
+    pub transcript_id: &'static str,
+    pub session_id: &'static str,
+    pub turn_id: &'static str,
+    pub user_task: &'static str,
+    pub visible_origin: &'static str,
+    pub preservation_fields: &'static [&'static str],
     pub user_action: &'static str,
     pub transition_kind: TransitionKind,
     pub transition_path: &'static str,
@@ -144,7 +152,8 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
     static MANIFESTS: OnceLock<Vec<FlowManifest>> = OnceLock::new();
     MANIFESTS
         .get_or_init(|| {
-            vec![
+            {
+                let mut manifests = vec![
                 FlowManifest {
                     name: "daily-work",
                     steps: vec![
@@ -595,7 +604,23 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         ),
                     ],
                 },
-            ]
+                ];
+                for manifest in &mut manifests {
+                    let (fixture_id, conversation_id, transcript_id, session_id, turn_id, user_task, visible_origin, preservation_fields) =
+                        storyboard_identity(manifest.name);
+                    for step in &mut manifest.steps {
+                        step.fixture_id = fixture_id;
+                        step.conversation_id = conversation_id;
+                        step.transcript_id = transcript_id;
+                        step.session_id = session_id;
+                        step.turn_id = turn_id;
+                        step.user_task = user_task;
+                        step.visible_origin = visible_origin;
+                        step.preservation_fields = preservation_fields;
+                    }
+                }
+                manifests
+            }
         })
         .as_slice()
 }
@@ -642,6 +667,13 @@ pub fn validate_flow_manifests(
                 return Err(format!("unknown canonical screen: {}", step.screen_id));
             }
             for (name, value) in [
+                ("fixture_id", step.fixture_id),
+                ("conversation_id", step.conversation_id),
+                ("transcript_id", step.transcript_id),
+                ("session_id", step.session_id),
+                ("turn_id", step.turn_id),
+                ("user_task", step.user_task),
+                ("visible_origin", step.visible_origin),
                 ("user_action", step.user_action),
                 ("transition_path", step.transition_path),
                 ("expected_next_frame", step.expected_next_frame),
@@ -681,6 +713,32 @@ pub fn validate_flow_manifests(
                     .any(|check| check.trim().is_empty())
             {
                 return Err(format!("missing acceptance checks for {}", step.screen_id));
+            }
+            if step.preservation_fields.is_empty()
+                || step
+                    .preservation_fields
+                    .iter()
+                    .any(|field| field.trim().is_empty())
+            {
+                return Err(format!(
+                    "missing preservation fields for {}",
+                    step.screen_id
+                ));
+            }
+            if manifest.name == "daily-work"
+                && (step.fixture_id != "flow1.daily-work.stable"
+                    || step.conversation_id != "conversation.daily-work"
+                    || step.transcript_id != "transcript.daily-work"
+                    || step.session_id != "session.daily-work.1"
+                    || step.turn_id != "turn.daily-work.18"
+                    || step.user_task
+                        != "Find where the server applies the rate limit and explain the safe path."
+                    || step.visible_origin != "Daily work · current conversation")
+            {
+                return Err(format!(
+                    "daily-work identity continuity mismatch for {}",
+                    step.screen_id
+                ));
             }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
@@ -751,6 +809,14 @@ fn step(
 ) -> FlowStep {
     FlowStep {
         screen_id,
+        fixture_id: "",
+        conversation_id: "",
+        transcript_id: "",
+        session_id: "",
+        turn_id: "",
+        user_task: "",
+        visible_origin: "",
+        preservation_fields: &[],
         user_action,
         transition_kind,
         transition_path,
@@ -760,6 +826,96 @@ fn step(
         cancel_return,
         terminal_return,
         acceptance_checks,
+    }
+}
+
+const DAILY_WORK_TASK: &str =
+    "Find where the server applies the rate limit and explain the safe path.";
+const DAILY_WORK_FIELDS: &[&str] = &[
+    "conversation_id",
+    "transcript_id",
+    "session_id",
+    "turn_id",
+    "user_task",
+    "visible_origin",
+    "draft",
+    "scroll_anchor",
+];
+
+fn storyboard_identity(
+    name: &str,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+) {
+    match name {
+        "daily-work" => (
+            "flow1.daily-work.stable",
+            "conversation.daily-work",
+            "transcript.daily-work",
+            "session.daily-work.1",
+            "turn.daily-work.18",
+            DAILY_WORK_TASK,
+            "Daily work · current conversation",
+            DAILY_WORK_FIELDS,
+        ),
+        "input-and-approval" => (
+            "flow2.input-and-approval.stable",
+            "conversation.retry-review",
+            "transcript.retry-review",
+            "session.retry-review.18",
+            "turn.retry-review.18",
+            "Check the retry path before we merge.",
+            "Input and approval · paused conversation",
+            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+        ),
+        "work-configuration" => (
+            "flow3.work-configuration.stable",
+            "conversation.configuration",
+            "transcript.configuration",
+            "session.configuration.1",
+            "turn.configuration.1",
+            "Choose a model and how Code should work.",
+            "Work configuration · current conversation",
+            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+        ),
+        "provider-and-mcp-connection" => (
+            "flow4.provider-and-mcp.stable",
+            "conversation.provider-connection",
+            "transcript.provider-connection",
+            "session.provider-connection.1",
+            "turn.provider-connection.1",
+            "Connect the model needed for this conversation.",
+            "Provider connection · blocked model action",
+            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+        ),
+        "recovery" => (
+            "flow5.recovery.stable",
+            "conversation.recovery",
+            "transcript.recovery",
+            "session.recovery.1",
+            "turn.recovery.1",
+            "Finish the release notes without losing the current work.",
+            "Recovery · paused conversation",
+            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+        ),
+        "mission" => (
+            "flow6.mission.stable",
+            "conversation.mission",
+            "transcript.mission",
+            "session.mission.1",
+            "turn.mission.1",
+            "Prepare the release safely and review the result.",
+            "Mission · current conversation",
+            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+        ),
+        _ => unreachable!("flow names are validated before identity binding"),
     }
 }
 
