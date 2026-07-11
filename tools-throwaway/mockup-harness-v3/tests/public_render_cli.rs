@@ -48,7 +48,13 @@ fn implemented_selector_publishes_only_the_conversation_pilot_artifacts() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    for screen in ["home", "chat-turn", "streaming"] {
+    for screen in [
+        "home",
+        "chat-turn",
+        "streaming",
+        "tool-running",
+        "tool-success",
+    ] {
         assert!(
             Path::new(&format!(
                 "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.txt"
@@ -77,7 +83,7 @@ fn every_render_selector_preflights_missing_renderers_before_writing() {
     assert_registry_failure(&["--all"], "onboarding");
     assert_registry_failure(&["permission-shell"], "permission-shell");
     assert_registry_failure(&["input"], "slash-menu");
-    assert_registry_failure(&["--flow", "daily-work"], "tool-running");
+    assert_registry_failure(&["--flow", "daily-work"], "rich-response");
 
     for path in [
         "/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt",
@@ -93,7 +99,13 @@ fn every_render_selector_preflights_missing_renderers_before_writing() {
 #[test]
 fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
     let _test_lock = renderer_test_lock();
-    for screen in ["home", "chat-turn", "streaming"] {
+    for screen in [
+        "home",
+        "chat-turn",
+        "streaming",
+        "tool-running",
+        "tool-success",
+    ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);
         assert!(output.stdout.is_empty());

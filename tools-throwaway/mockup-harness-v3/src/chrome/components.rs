@@ -96,6 +96,7 @@ pub struct ActivityRow {
     detail: String,
     elapsed: Option<String>,
     interrupt: Option<String>,
+    compact: bool,
 }
 
 impl ActivityRow {
@@ -106,6 +107,7 @@ impl ActivityRow {
             detail: detail.to_owned(),
             elapsed: None,
             interrupt: None,
+            compact: false,
         }
     }
 
@@ -117,6 +119,12 @@ impl ActivityRow {
     /// The interrupt control is local to the live activity, never a global hint.
     pub fn with_interrupt(mut self, action: &str) -> Self {
         self.interrupt = Some(action.to_owned());
+        self
+    }
+
+    /// Keeps a tool's status, progress, and scoped control in one inline row.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 }
@@ -132,17 +140,39 @@ impl Component for ActivityRow {
         if let Some(elapsed) = &self.elapsed {
             summary.push_str(&format!(" · {elapsed}"));
         }
-        let mut lines = vec![
-            ComponentLine::new(summary, TextStyle::text()),
-            ComponentLine::new(format!("  {}", self.detail), TextStyle::muted()),
-        ];
-        if let Some(action) = &self.interrupt {
-            lines.push(ComponentLine::new(
-                format!("  [s] {action}"),
-                TextStyle::bright(),
-            ));
+        if !self.compact {
+            let mut lines = vec![
+                ComponentLine::new(summary, TextStyle::text()),
+                ComponentLine::new(format!("  {}", self.detail), TextStyle::muted()),
+            ];
+            if let Some(action) = &self.interrupt {
+                lines.push(ComponentLine::new(
+                    format!("  [s] {action}"),
+                    TextStyle::bright(),
+                ));
+            }
+            return lines;
         }
-        lines
+
+        summary.push_str(&format!(" · {}", self.detail));
+        if let Some(action) = &self.interrupt {
+            summary.push_str(&format!(" · [s] {action}"));
+        }
+        let style = match self.state {
+            ActivityState::Running => TextStyle::bright(),
+            ActivityState::Succeeded => TextStyle {
+                foreground: ColorToken::Ok,
+                background: None,
+                bold: false,
+            },
+            ActivityState::Failed => TextStyle {
+                foreground: ColorToken::Bad,
+                background: None,
+                bold: false,
+            },
+            _ => TextStyle::text(),
+        };
+        vec![ComponentLine::new(summary, style)]
     }
 
     fn anatomy(&self) -> ComponentAnatomy {

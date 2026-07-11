@@ -300,7 +300,10 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         palette(Theme::Dark).hex(ColorToken::Accent),
     )?;
 
-    if matches!(screen_id, "home" | "chat-turn" | "streaming") {
+    if matches!(
+        screen_id,
+        "home" | "chat-turn" | "streaming" | "tool-running" | "tool-success"
+    ) {
         let document = crate::screens::conversation::render(screen_id, fixture_id)?;
         document.validate()?;
         let render_hash = sha256_hex(document.render_txt().as_bytes());

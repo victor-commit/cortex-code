@@ -34,11 +34,16 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let mut canvas = Canvas::new();
     let (candidates, events, transitions) = match screen_id {
         "home" => render_home(&mut canvas, screen_id, fixture_id)?,
+        "chat-turn" if fixture_id.starts_with("case.tool-running-interrupt") => {
+            render_tool_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" if fixture_id.starts_with("case.streaming-interrupt") => {
             render_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
         "chat-turn" => render_chat_turn(&mut canvas, screen_id, fixture_id)?,
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
+        "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
+        "tool-success" => render_tool_success(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
     };
     canvas.write(
@@ -436,6 +441,343 @@ fn render_interrupted_chat_turn(
             "streaming",
             "direct",
             "the saved conversation can continue with the restored composer",
+        )],
+    ))
+}
+
+fn render_tool_running(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Find where the server applies the rate limit.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I checked the session guard first. It stays complete while the search continues.",
+        TextStyle::text(),
+    )?;
+    let completed = ActivityRow::new(
+        "Checked session rules",
+        ActivityState::Succeeded,
+        "found the shared guard",
+    )
+    .with_elapsed("0.2s")
+    .compact();
+    write_component(canvas, 12, 4, &completed)?;
+    let active = ActivityRow::new(
+        "Search project code",
+        ActivityState::Running,
+        "128 of 400 files · 3 matches so far",
+    )
+    .with_elapsed("4s elapsed")
+    .with_interrupt("Stop search")
+    .compact();
+    write_component(canvas, 15, 4, &active)?;
+    composer(
+        canvas,
+        "Type a follow-up, it will wait until this search finishes",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let completed_activity = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "completed-session-check",
+        reference(12, 4, 75),
+        "summary",
+        None,
+    );
+    let active_activity = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-search",
+        reference(15, 4, 109),
+        "summary",
+        Some(action(
+            "action.tool-running.interrupt",
+            "Stop search",
+            false,
+        )),
+    );
+    let queued_composer = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "follow-up",
+        reference(COMPOSER_TOP, 4, 67),
+        "summary",
+        None,
+    );
+    let automatic_completion = semantic(
+        screen_id,
+        fixture_id,
+        "completion",
+        "tool-search",
+        reference(15, 4, 109),
+        "summary",
+        Some(action(
+            "action.tool-running.complete",
+            "Search completed",
+            true,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [
+        request,
+        completed_activity,
+        active_activity,
+        queued_composer,
+        automatic_completion,
+        status,
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.tool-running.interrupt",
+                "tool-running",
+                "chat-turn",
+                "direct",
+                "stopping this search preserves the completed check and queued follow-up",
+            ),
+            transition(
+                "action.tool-running.complete",
+                "tool-running",
+                "tool-success",
+                "automatic",
+                "the one active search replaces its running row with one terminal result",
+            ),
+        ],
+    ))
+}
+
+fn render_tool_success(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Find where the server applies the rate limit.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "The result shows the shared guard applied by both login and API routes.",
+        TextStyle::text(),
+    )?;
+    let success = ActivityRow::new(
+        "Search project code",
+        ActivityState::Succeeded,
+        "3 matches in 400 files",
+    )
+    .with_elapsed("0.4s")
+    .compact();
+    write_component(canvas, 12, 4, &success)?;
+    composer(canvas, "Reply to Code", Some("Continue response"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let result = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-search",
+        reference(12, 4, 83),
+        "summary",
+        None,
+    );
+    let summary = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "result-summary",
+        reference(9, 4, 76),
+        "summary",
+        None,
+    );
+    let composer = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.tool-success.continue",
+        reference(COMPOSER_TOP, 4, 33),
+        "summary",
+        Some(action(
+            "action.tool-success.continue",
+            "Continue response",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, result, summary, composer, status];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.tool-success.continue",
+            "tool-success",
+            "rich-response",
+            "direct",
+            "the compact result continues into the completed answer in this same transcript",
+        )],
+    ))
+}
+
+fn render_tool_interrupted_chat_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Find where the server applies the rate limit.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    let completed = ActivityRow::new(
+        "Checked session rules",
+        ActivityState::Succeeded,
+        "found the shared guard",
+    )
+    .with_elapsed("0.2s")
+    .compact();
+    write_component(canvas, 10, 4, &completed)?;
+    canvas.write(
+        13,
+        4,
+        "● Search stopped safely. Previous result and draft are saved.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "Queued follow-up: Also list the tests that should cover the search.",
+        TextStyle::text(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let completed_activity = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "completed-session-check",
+        reference(10, 4, 75),
+        "summary",
+        None,
+    );
+    let interrupted = semantic(
+        screen_id,
+        fixture_id,
+        "recovery",
+        "stopped-tool-search",
+        reference(13, 4, 66),
+        "summary",
+        None,
+    );
+    let queued_follow_up = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "follow-up",
+        reference(16, 4, 72),
+        "summary",
+        None,
+    );
+    let composer = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.chat-turn.send-reply",
+        reference(COMPOSER_TOP, 4, 30),
+        "summary",
+        Some(action(
+            "action.chat-turn.send-reply",
+            "Send reply",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [
+        request,
+        completed_activity,
+        interrupted,
+        queued_follow_up,
+        composer,
+        status,
+    ];
+    Ok((
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the same turn resumes with its preserved completed activity and draft",
         )],
     ))
 }

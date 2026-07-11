@@ -209,6 +209,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "permission-cancel" => permission_cancel(),
         "automatic-retry" => automatic_retry(),
         "streaming-interrupt" => streaming_interrupt(),
+        "tool-running-interrupt" => tool_running_interrupt(),
+        "tool-running-complete" => tool_running_complete(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let preserved_field_hashes = preserved_hashes(&before, &after);
@@ -469,6 +471,147 @@ fn streaming_interrupt() -> (
         "generation",
         "generation-stopped",
         "the active reply stopped once without altering the saved transcript or queued follow-up",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_running_interrupt() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-running",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "stop-search",
+        "tool-running-interrupt",
+        Some("activity.tool.search"),
+        "return-to-same-turn",
+        0,
+    );
+    before.transcript =
+        "Checked session rules completed. Search project code is running.".to_owned();
+    before.queued_follow_up =
+        "Also list the tests that should cover the search. [attachment: rate-limit-notes.md]"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "chat-turn",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "composer",
+        "composer",
+        None,
+        "return-to-same-turn",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.tool-running.interrupt".to_owned(),
+        label: "Stop search".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "only the active search stops; the completed check, queued follow-up, and same turn remain"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool.search.interrupt.1".to_owned(),
+        owner_id: "activity.tool.search".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool.search",
+        "tool-execution",
+        "search-stopped",
+        "the selected search stopped once without changing the completed session check",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_running_complete() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-running",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "search-completion",
+        "tool-running",
+        Some("activity.tool.search"),
+        "return-to-same-turn",
+        0,
+    );
+    before.transcript =
+        "Checked session rules completed. Search project code is running.".to_owned();
+    before.queued_follow_up =
+        "Also list the tests that should cover the search. [attachment: rate-limit-notes.md]"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-success",
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "search-completion",
+        "composer",
+        None,
+        "return-to-same-turn",
+        1,
+    );
+    after.transcript = "Checked session rules completed. Search project code completed with 3 matches in 400 files."
+        .to_owned();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.tool-running.complete".to_owned(),
+        label: "Search completed".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "the active search resolves once by replacing its live row with one compact terminal result"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool.search.complete.1".to_owned(),
+        owner_id: "activity.tool.search".to_owned(),
+        count: 1,
+        outcome: "succeeded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool.search",
+        "tool-execution",
+        "search-completed",
+        "one search completion produced one terminal summary with three matches",
     );
     (before, after, action, transition, attempt, effect)
 }

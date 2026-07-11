@@ -139,7 +139,15 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
         assert_eq!(ids_in(*category), *expected_ids);
     }
     for screen in canonical_inventory() {
-        let expected_status = if ["home", "chat-turn", "streaming"].contains(&screen.id) {
+        let expected_status = if [
+            "home",
+            "chat-turn",
+            "streaming",
+            "tool-running",
+            "tool-success",
+        ]
+        .contains(&screen.id)
+        {
             ImplementationStatus::Implemented
         } else {
             ImplementationStatus::Unimplemented

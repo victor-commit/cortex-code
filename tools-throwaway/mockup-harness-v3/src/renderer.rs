@@ -37,7 +37,13 @@ const GATE_STATIC_FILES: &[&str] = &[".gitkeep"];
 // Screen workers add an ID here only when the inventory marks that same ID as
 // implemented. Keeping this map independent from the canonical inventory makes
 // partial milestones fail closed instead of silently emitting placeholders.
-const IMPLEMENTED_RENDERERS: &[&str] = &["home", "chat-turn", "streaming"];
+const IMPLEMENTED_RENDERERS: &[&str] = &[
+    "home",
+    "chat-turn",
+    "streaming",
+    "tool-running",
+    "tool-success",
+];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -1242,7 +1248,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 3);
+        assert_eq!(implemented.canonical_ids().count(), 5);
         assert!(preflight_render(&PublicSelector::All)
             .expect_err("full render must reject missing renderers")
             .contains("onboarding"));

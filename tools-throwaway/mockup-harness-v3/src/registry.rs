@@ -203,14 +203,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-success",
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-success-expanded",
