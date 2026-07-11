@@ -141,6 +141,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
     for screen in canonical_inventory() {
         let expected_status = if [
             "home",
+            "onboarding",
             "chat-turn",
             "streaming",
             "tool-running",
@@ -148,6 +149,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "rich-response",
             "file-mention",
             "composer-multiline",
+            "model-picker",
             "permission-shell",
             "permission-deny-reason",
             "diff-edit",

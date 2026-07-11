@@ -147,7 +147,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "chat-turn",
@@ -315,7 +315,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "attachment-picker",

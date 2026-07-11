@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::audit::{
-    action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
-    AuditDocument, TransitionTrace,
+    ActionEvidence, AuditDocument, TransitionTrace, action_json, audit_screen, field, quote,
+    sha256_hex, transition_json,
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
@@ -373,9 +373,26 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "staging-include-all" => staging_include_all(),
         "staging-finish" => staging_finish(),
         "staging-cancel" | "staging-back" => staging_cancel(),
+        "onboarding-complete" => onboarding_complete(),
+        "onboarding-skip" => onboarding_skip(),
+        "onboarding-back" => onboarding_back(),
+        "onboarding-existing-cancel" => onboarding_existing_cancel(),
+        "onboarding-unusable-model" => onboarding_unusable_model(),
+        "model-picker-apply" => model_picker_apply(),
+        "model-picker-cancel" => model_picker_cancel(),
+        "model-picker-connect" => model_picker_connect(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
+    if matches!(case_id, "onboarding-complete" | "onboarding-skip") {
+        preserved_field_hashes.insert(
+            "pending_configuration".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(before.selection.as_bytes()),
+                after: sha256_hex(before.selection.as_bytes()),
+            },
+        );
+    }
     if case_id == "file-mention-insert" {
         preserved_field_hashes.insert(
             "draft_surrounding".to_owned(),
@@ -467,6 +484,448 @@ fn flow2_submit_bridge() -> (
         "prompt-submission",
         "submitted-once",
         "the selected file was inserted into one immutable transcript prompt without running the command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn onboarding_complete() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "onboarding",
+        vec!["onboarding"],
+        "Start with a safe model.",
+        "first-run",
+        "recommended-claude-sonnet-4-5",
+        "onboarding-default",
+        Some("pending.model-choice"),
+        "return-to-onboarding",
+        0,
+    );
+    let mut after = state(
+        "empty",
+        vec!["onboarding"],
+        "",
+        "first-run",
+        "recommended-claude-sonnet-4-5",
+        "composer",
+        None,
+        "return-to-onboarding",
+        1,
+    );
+    after.draft = "Ask Code to start".to_owned();
+    after.transcript = "Setup complete with a safe default. Start a new conversation.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.onboarding.apply-default".to_owned(),
+        label: "Use Claude Sonnet 4.5".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the recommended model is applied before entering the usable empty conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.onboarding.apply-default.1".to_owned(),
+        owner_id: "pending.model-choice".to_owned(),
+        count: 1,
+        outcome: "applied-safe-default".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.onboarding.apply-default",
+        "configuration",
+        "safe-default-applied",
+        "the recommended model was applied once before entering empty",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn onboarding_skip() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (before, mut after, _, _, _, _) = onboarding_complete();
+    after.transcript =
+        "Setup skipped. A safe default is ready for your first conversation.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.onboarding.skip".to_owned(),
+        label: "Skip with this safe default".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "skip chooses the safe default and enters the usable empty conversation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.onboarding.skip.1".to_owned(),
+        owner_id: "pending.model-choice".to_owned(),
+        count: 1,
+        outcome: "skipped-with-safe-default".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.onboarding.skip",
+        "configuration",
+        "safe-default-applied",
+        "skip applied the safe default once",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn onboarding_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "onboarding",
+        vec!["onboarding"],
+        "Start with a safe model.",
+        "first-run",
+        "recommended-claude-sonnet-4-5",
+        "onboarding-default",
+        Some("pending.model-choice"),
+        "return-to-onboarding",
+        0,
+    );
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.onboarding.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "first-run back remains at the preceding onboarding step and applies nothing"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.onboarding.back.1".to_owned(),
+        owner_id: "pending.model-choice".to_owned(),
+        count: 0,
+        outcome: "returned-to-onboarding".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.onboarding.back",
+        "configuration",
+        "no-change",
+        "first-run back applied no model",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn onboarding_existing_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "onboarding",
+        vec!["chat-turn", "onboarding"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "recommended-claude-sonnet-4-5",
+        "onboarding-default",
+        Some("pending.model-choice"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.onboarding.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the existing conversation without applying pending setup".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.onboarding.cancel.1".to_owned(),
+        owner_id: "pending.model-choice".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-change".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.onboarding.cancel",
+        "configuration",
+        "no-change",
+        "existing-origin onboarding cancellation changed no applied configuration",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn onboarding_unusable_model() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "model-picker",
+        vec!["onboarding", "model-picker"],
+        "Start with a safe model.",
+        "first-run",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-onboarding",
+        0,
+    );
+    let after = state(
+        "connect-provider",
+        vec!["onboarding", "model-picker"],
+        "Start with a safe model.",
+        "first-run",
+        "gpt-5-2-codex",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.model-picker.connect".to_owned(),
+        label: "Connect provider".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the unavailable onboarding choice opens connection without losing setup state"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.onboarding.connect.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "connection-requested".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.onboarding.connect",
+        "provider-connection",
+        "no-model-switch",
+        "onboarding connection requested without applying the unavailable model",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_picker_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "composer",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.model-picker.apply".to_owned(),
+        label: "Apply model".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the selected model applies once and restores the exact conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.apply.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 1,
+        outcome: "applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.apply",
+        "configuration",
+        "model-applied",
+        "the selected model was applied once without changing the draft or conversation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_picker_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-sonnet-4-5",
+        "composer",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.model-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel discards the pending model and restores the exact conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.cancel.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-change".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.cancel",
+        "configuration",
+        "no-change",
+        "model cancellation changed no applied configuration",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_picker_connect() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        0,
+    );
+    let after = state(
+        "connect-provider",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "gpt-5-2-codex",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.model-picker.connect".to_owned(),
+        label: "Connect provider".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the unavailable model opens connection while retaining the pending model and draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.connect.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "connection-requested".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.connect",
+        "provider-connection",
+        "no-model-switch",
+        "connection was requested without applying the unavailable model",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -1767,13 +2226,12 @@ fn staging_toggle(
         &before,
         &after,
         "direct",
-        &format!("{} changes only the focused hunk {focused_hunk} and writes nothing", label),
+        &format!(
+            "{} changes only the focused hunk {focused_hunk} and writes nothing",
+            label
+        ),
     );
-    let attempt = diff_attempt(
-        &format!("attempt.staging.{name}.1"),
-        "selection-updated",
-        0,
-    );
+    let attempt = diff_attempt(&format!("attempt.staging.{name}.1"), "selection-updated", 0);
     let effect = simulated_effect(
         &format!("effect.staging.{name}"),
         "hunk-selection",
@@ -1880,13 +2338,16 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
                 || !matches!(hunk.state.as_str(), "Included" | "Excluded" | "Pending")
                 || hunk.content_hash.len() != 64
         })
-        || diff.included_count != diff
-            .hunks
-            .iter()
-            .filter(|hunk| hunk.state == "Included")
-            .count()
+        || diff.included_count
+            != diff
+                .hunks
+                .iter()
+                .filter(|hunk| hunk.state == "Included")
+                .count()
     {
-        return Err("diff evidence has incomplete identity, state, or index preservation".to_owned());
+        return Err(
+            "diff evidence has incomplete identity, state, or index preservation".to_owned(),
+        );
     }
     if diff.applied_hunks.iter().any(|hunk| {
         !diff
@@ -1987,11 +2448,7 @@ fn preserved_hashes(
             after.selection.as_str(),
         ),
         ("focus", before.focus.as_str(), after.focus.as_str()),
-        (
-            "patch_revision",
-            "patch-retry-18",
-            "patch-retry-18",
-        ),
+        ("patch_revision", "patch-retry-18", "patch-retry-18"),
         (
             "composer_height",
             before.composer_height.as_str(),
@@ -2019,7 +2476,9 @@ fn diff_hunks(states: [&str; 2]) -> Vec<DiffHunkEvidence> {
             new_start: 42,
             new_lines: 3,
             state: states[0].to_owned(),
-            content_hash: sha256_hex(b"hunk.retry-guard\n-    return retry_after\n+    return retry_after + jitter"),
+            content_hash: sha256_hex(
+                b"hunk.retry-guard\n-    return retry_after\n+    return retry_after + jitter",
+            ),
         },
         DiffHunkEvidence {
             hunk_id: "hunk.retry-test".to_owned(),
@@ -2029,7 +2488,9 @@ fn diff_hunks(states: [&str; 2]) -> Vec<DiffHunkEvidence> {
             new_start: 88,
             new_lines: 2,
             state: states[1].to_owned(),
-            content_hash: sha256_hex(b"hunk.retry-test\n-assert_eq!(wait, 4)\n+assert_eq!(wait, 5)"),
+            content_hash: sha256_hex(
+                b"hunk.retry-test\n-assert_eq!(wait, 4)\n+assert_eq!(wait, 5)",
+            ),
         },
     ]
 }

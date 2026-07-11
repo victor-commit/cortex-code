@@ -2,3 +2,4 @@
 
 pub mod conversation;
 pub mod input_and_approval;
+pub mod work_configuration;
