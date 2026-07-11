@@ -4,7 +4,7 @@
 //! locations. Every candidate has exactly one event, every event has visible
 //! cell references, and interactive evidence uses stable action identities.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::chrome::tokens::{validate_glyphs, ColorToken, TextStyle, CANVAS_COLUMNS, CANVAS_ROWS};
@@ -84,23 +84,39 @@ impl AuditDocument {
         }
         validate_styled_cells(&self.styled_cells)?;
 
-        let candidate_ids = self
-            .candidates
-            .iter()
-            .map(|candidate| {
-                validate_identity(&candidate.identity, &self.screen_id, &self.fixture_id)?;
-                Ok(candidate.identity.candidate_id.clone())
-            })
-            .collect::<Result<BTreeSet<_>, String>>()?;
-        if candidate_ids.len() != self.candidates.len() {
-            return Err("duplicate semantic candidate identity".to_owned());
+        let mut candidates_by_id = BTreeMap::new();
+        for candidate in &self.candidates {
+            validate_identity(&candidate.identity, &self.screen_id, &self.fixture_id)?;
+            if candidates_by_id
+                .insert(candidate.identity.candidate_id.clone(), &candidate.identity)
+                .is_some()
+            {
+                return Err(format!(
+                    "duplicate semantic candidate identity: {}",
+                    candidate.identity.candidate_id
+                ));
+            }
         }
+        let candidate_ids = candidates_by_id.keys().cloned().collect::<BTreeSet<_>>();
 
         let mut event_ids = BTreeSet::new();
         let mut event_candidates = BTreeSet::new();
         let mut action_ids = BTreeSet::new();
+        let mut activity_owners = BTreeSet::new();
         for event in &self.events {
             validate_identity(&event.identity, &self.screen_id, &self.fixture_id)?;
+            let Some(candidate) = candidates_by_id.get(&event.identity.candidate_id) else {
+                return Err(format!(
+                    "orphan semantic event: {} references unknown candidate: {}",
+                    event.identity.event_id, event.identity.candidate_id
+                ));
+            };
+            if event.identity.event_id != candidate.event_id {
+                return Err(format!(
+                    "unknown semantic event: {}",
+                    event.identity.event_id
+                ));
+            }
             if !event_ids.insert(event.identity.event_id.clone()) {
                 return Err(format!(
                     "duplicate semantic event identity: {}",
@@ -113,6 +129,14 @@ impl AuditDocument {
                     event.identity.candidate_id
                 ));
             }
+            if event.identity.family == "activity"
+                && !activity_owners.insert(event.identity.subject_id.clone())
+            {
+                return Err(format!(
+                    "duplicate activity owner: {}",
+                    event.identity.subject_id
+                ));
+            }
             if let Some(action) = &event.action {
                 validate_action(action)?;
                 if !action_ids.insert(action.action_id.clone()) {
@@ -120,8 +144,12 @@ impl AuditDocument {
                 }
             }
         }
-        if candidate_ids != event_candidates {
-            return Err("every candidate must map to exactly one semantic event".to_owned());
+        for candidate_id in candidate_ids {
+            if !event_candidates.contains(&candidate_id) {
+                return Err(format!(
+                    "missing semantic event for candidate: {candidate_id}"
+                ));
+            }
         }
 
         let mut transition_actions = BTreeSet::new();
@@ -137,6 +165,25 @@ impl AuditDocument {
             if !action_ids.contains(&transition.action_id) {
                 return Err(format!(
                     "transition references an unknown action: {}",
+                    transition.action_id
+                ));
+            }
+            if transition.from_screen_id != self.screen_id
+                || !canonical_inventory()
+                    .iter()
+                    .any(|screen| screen.id == transition.from_screen_id)
+                || !canonical_inventory()
+                    .iter()
+                    .any(|screen| screen.id == transition.to_screen_id)
+            {
+                return Err(format!(
+                    "unknown transition: {} -> {}",
+                    transition.from_screen_id, transition.to_screen_id
+                ));
+            }
+            if transition.kind == "dead-end" {
+                return Err(format!(
+                    "transition reaches a dead end: {}",
                     transition.action_id
                 ));
             }

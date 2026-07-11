@@ -433,6 +433,96 @@ fn validate_renderer_map(inventory: &[ScreenSpec], renderer_ids: &[&str]) -> Res
     Ok(())
 }
 
+/// Fixture-only access to renderer map preflight, kept deterministic so the
+/// negative suite can prove inventory ownership bypasses fail before I/O.
+pub fn validate_renderer_map_fixture(
+    inventory: &[ScreenSpec],
+    renderer_ids: &[&str],
+) -> Result<(), String> {
+    validate_renderer_map(inventory, renderer_ids)
+}
+
+/// Rejects cleanup paths that do not belong to the same renderer-owned parent
+/// and staging namespace as the output root. This predicate runs before any
+/// fixture cleanup can remove a temporary directory.
+pub fn validate_cleanup_paths(output_root: &Path, staging_root: &Path) -> Result<(), String> {
+    let output_parent = output_root.parent().ok_or_else(|| {
+        format!(
+            "output root has no cleanup parent: {}",
+            output_root.display()
+        )
+    })?;
+    let staging_parent = staging_root.parent().ok_or_else(|| {
+        format!(
+            "staging root has no cleanup parent: {}",
+            staging_root.display()
+        )
+    })?;
+    let output_name = output_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("output root has no cleanup name: {}", output_root.display()))?;
+    let staging_name = staging_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "staging root has no cleanup name: {}",
+                staging_root.display()
+            )
+        })?;
+    if output_parent != staging_parent
+        || !staging_name.starts_with(&format!(".{output_name}.render-staging-"))
+    {
+        return Err(format!(
+            "unsafe renderer cleanup path: {}",
+            staging_root.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Exercises the staged-failure cleanup path inside a caller-owned temporary
+/// root and deliberately returns the validation error that blocks publication.
+pub fn publication_failure_fixture(root: &Path) -> Result<(), String> {
+    let output = root.join("published");
+    let stage = root.join(".published.render-staging-fixture");
+    fs::create_dir_all(&output)
+        .map_err(|error| format!("could not create fixture publication root: {error}"))?;
+    fs::write(output.join("previous.txt"), b"previous complete gallery\n")
+        .map_err(|error| format!("could not write fixture publication baseline: {error}"))?;
+    fs::create_dir(&stage)
+        .map_err(|error| format!("could not create fixture staging root: {error}"))?;
+    fs::write(stage.join("candidate.txt"), b"incomplete staged gallery\n")
+        .map_err(|error| format!("could not write fixture staging artifact: {error}"))?;
+    validate_cleanup_paths(&output, &stage)?;
+    let previous = fs::read(output.join("previous.txt"))
+        .map_err(|error| format!("could not read fixture publication baseline: {error}"))?;
+    cleanup_stages(&[StagedRoot {
+        root: output.clone(),
+        stage: stage.clone(),
+    }]);
+    if fs::read(output.join("previous.txt"))
+        .map_err(|error| format!("could not verify fixture publication baseline: {error}"))?
+        != previous
+        || stage.exists()
+    {
+        return Err(
+            "publication failure fixture did not preserve the prior complete root".to_owned(),
+        );
+    }
+    Err("injected staged validation failure before publication".to_owned())
+}
+
+/// Runs the production cleanup guard for a fixture-owned staging path. Unsafe
+/// paths remain untouched, so a sentinel can prove fail-closed cleanup.
+pub fn cleanup_fixture_staging(output_root: &Path, staging_root: &Path) {
+    cleanup_stages(&[StagedRoot {
+        root: output_root.to_path_buf(),
+        stage: staging_root.to_path_buf(),
+    }]);
+}
+
 fn require_implemented(inventory: &[ScreenSpec]) -> Result<(), String> {
     for screen in inventory {
         if screen.status != ImplementationStatus::Implemented
@@ -709,7 +799,9 @@ fn stage_root(prepared: &PreparedRoot) -> Result<StagedRoot, RenderFailure> {
     })();
 
     if let Err(error) = result {
-        let _ = fs::remove_dir_all(&stage);
+        if validate_cleanup_paths(&root, &stage).is_ok() {
+            let _ = fs::remove_dir_all(&stage);
+        }
         return Err(error);
     }
     Ok(StagedRoot { root, stage })
@@ -973,7 +1065,9 @@ fn exchange_root(root: &Path, stage: &Path) -> io::Result<()> {
 
 fn cleanup_stages(staged: &[StagedRoot]) {
     for stage in staged {
-        let _ = fs::remove_dir_all(&stage.stage);
+        if validate_cleanup_paths(&stage.root, &stage.stage).is_ok() {
+            let _ = fs::remove_dir_all(&stage.stage);
+        }
     }
 }
 

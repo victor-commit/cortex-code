@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod chrome;
+pub mod negative_fixtures;
 pub mod renderer;
 pub mod scenario;
 use std::path::Path;

@@ -660,7 +660,7 @@ pub fn validate_flow_manifests(
             .collect::<Vec<_>>();
         if actual_screens != expected_screens {
             return Err(format!(
-                "ordered frames mismatch for flow {}: expected {:?}, got {:?}",
+                "canonical/flow membership mismatch for flow {}: expected {:?}, got {:?}",
                 manifest.name, expected_screens, actual_screens
             ));
         }
