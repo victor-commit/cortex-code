@@ -99,6 +99,26 @@ fn run(mut command: Command, timeout: Duration) -> Output {
     }
 }
 
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn assert_runtime_reaped(pid: u64) {
+    let process_path = PathBuf::from(format!("/proc/{pid}"));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !process_path.exists(),
+        "plugin runtime child PID {pid} must be reaped after cortex exits"
+    );
+}
+
 fn skip_without_runtime() -> bool {
     if plugins::detect_runtime().is_none() {
         eprintln!("skipping plugin CLI proof: no Bun, Node, or Deno on PATH");
@@ -181,6 +201,180 @@ export default async function plugin(input, options) {
     assert!(
         marker_json["pid"].as_u64().is_some_and(|pid| pid > 0),
         "runtime pid recorded: {marker_json}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cortex_run_uses_bun_then_node_deterministically_and_reaps_each_runtime() {
+    let Some(bun) = executable_on_path("bun") else {
+        eprintln!("skipping runtime precedence proof: Bun is unavailable");
+        return;
+    };
+    let Some(node) = executable_on_path("node") else {
+        eprintln!("skipping runtime precedence proof: Node is unavailable");
+        return;
+    };
+
+    let sandbox = Sandbox::new("runtime-precedence");
+    let runtime_bin = sandbox.home.join("runtime-bin");
+    std::fs::create_dir_all(&runtime_bin).expect("create controlled runtime path");
+    std::os::unix::fs::symlink(&bun, runtime_bin.join("bun")).expect("link Bun");
+    std::os::unix::fs::symlink(&node, runtime_bin.join("node")).expect("link Node");
+
+    let marker = sandbox.project.join("runtime.json");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        &format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+
+export default async function plugin() {{
+  return {{
+    async event() {{
+      const runtime = globalThis.Bun ? "bun" : "node";
+      await writeFile("{}", JSON.stringify({{ runtime, pid: process.pid }}));
+    }}
+  }};
+}}
+"#,
+            marker.display()
+        ),
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
+    )
+    .expect("write config");
+
+    for expected_runtime in ["bun", "bun"] {
+        let mut command = cortex(
+            &sandbox,
+            &["run", "--command", "echo", "--command-arg", "runtime proof"],
+        );
+        command.env("PATH", &runtime_bin);
+        let output = run(command, Duration::from_secs(30));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "cortex run should succeed: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).expect("runtime marker"))
+                .expect("runtime marker is JSON");
+        assert_eq!(
+            payload["runtime"], expected_runtime,
+            "Bun must win deterministically while both runtimes are present"
+        );
+        assert_runtime_reaped(payload["pid"].as_u64().expect("runtime PID"));
+    }
+
+    std::fs::remove_file(runtime_bin.join("bun")).expect("remove top-precedence runtime");
+    std::fs::remove_file(&marker).expect("clear Bun marker");
+
+    let mut command = cortex(
+        &sandbox,
+        &[
+            "run",
+            "--command",
+            "echo",
+            "--command-arg",
+            "Node fallback proof",
+        ],
+    );
+    command.env("PATH", &runtime_bin);
+    let output = run(command, Duration::from_secs(30));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "cortex run should fall through to Node: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&marker).expect("Node marker"))
+            .expect("Node marker is JSON");
+    assert_eq!(
+        payload["runtime"], "node",
+        "removing Bun must deterministically select Node"
+    );
+    assert_runtime_reaped(payload["pid"].as_u64().expect("runtime PID"));
+}
+
+#[test]
+fn cortex_run_stops_loading_a_removed_plugin_config_entry() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("config-removal");
+    let marker = sandbox.project.join("plugin.marker");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        &format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+
+export default async function plugin() {{
+  return {{
+    async event() {{
+      await writeFile("{}", "plugin-only effect");
+    }}
+  }};
+}}
+"#,
+            marker.display()
+        ),
+    );
+    let config = sandbox.project.join("cortex.toml");
+    std::fs::write(&config, "plugin = [\"./plugin.mjs\"]\n").expect("write config");
+
+    let loaded = run(
+        cortex(
+            &sandbox,
+            &[
+                "run",
+                "--command",
+                "echo",
+                "--command-arg",
+                "plugin configured",
+            ],
+        ),
+        Duration::from_secs(30),
+    );
+    assert_eq!(loaded.status.code(), Some(0));
+    assert!(
+        marker.exists(),
+        "configured plugin must cause its own effect"
+    );
+
+    std::fs::remove_file(&marker).expect("remove plugin marker");
+    std::fs::remove_file(config).expect("remove plugin config");
+    let empty_path = sandbox.home.join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("create empty runtime path");
+    let mut without_plugin = cortex(
+        &sandbox,
+        &[
+            "run",
+            "--command",
+            "echo",
+            "--command-arg",
+            "plugin removed",
+        ],
+    );
+    without_plugin.env("PATH", empty_path);
+    let removed = run(without_plugin, Duration::from_secs(10));
+    assert_eq!(
+        removed.status.code(),
+        Some(0),
+        "no configured plugin must not require a JavaScript runtime: stderr={}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "removing the config entry must remove the plugin-only effect"
     );
 }
 
