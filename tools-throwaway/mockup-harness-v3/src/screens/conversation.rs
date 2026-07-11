@@ -319,10 +319,7 @@ fn render_home(
     );
     let pairs = [surface, recent_work, branding, composer, status];
     Ok((
-        pairs
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect(),
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.home.start-request",
@@ -387,10 +384,7 @@ fn render_permission_persistent_turn(
         ),
     ];
     Ok((
-        pairs
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect(),
+        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -571,34 +565,55 @@ fn render_chat_turn(
     canvas.write(
         4,
         4,
-        "You · Check the retry path in @src/net/retry_policy.rs before we merge.",
+        "You · Check retry_policy.rs before we merge.",
         TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
-    canvas.write(
-        9,
-        4,
-        "Applied 1 hunk to src/net/retry_policy.rs.",
-        TextStyle::text(),
-    )?;
+    canvas.write(9, 4, "Updated retry_policy.rs.", TextStyle::text())?;
     canvas.write(
         11,
         4,
-        "hunk.retry-test remains pending and was not written.",
+        "The retry check now verifies the current session before continuing.",
         TextStyle::text(),
     )?;
     canvas.write(
         13,
         4,
-        "The exact paused activity resumed with the same patch revision and session.",
-        TextStyle::muted(),
+        "Older sessions are asked to sign in again after credentials change.",
+        TextStyle::text(),
     )?;
     canvas.write(
         15,
         4,
-        "Your submitted prompt is fixed in the transcript; a new draft stays separate.",
+        "The request is complete; a new draft stays separate.",
         TextStyle::muted(),
     )?;
+    canvas.write(18, 4, "Result", TextStyle::bright())?;
+    canvas.write(
+        20,
+        4,
+        "retry_policy.rs now protects the current session without changing your draft.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "No files outside this check were changed.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "You can ask a follow-up without reopening the completed request.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        26,
+        4,
+        "Checked  ·  retry_policy.rs  ·  current session",
+        TextStyle::text(),
+    )?;
+    canvas.write(28, 4, "Ready for your next question.", TextStyle::muted())?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
 
     let request = semantic(
@@ -606,7 +621,7 @@ fn render_chat_turn(
         fixture_id,
         "transcript",
         "user-request",
-        reference(4, 4, 75),
+        reference(4, 4, 50),
         "summary",
         None,
     );
@@ -614,12 +629,12 @@ fn render_chat_turn(
         screen_id,
         fixture_id,
         "resume",
-        "activity.retry-policy-edit.18",
-        reference(13, 4, 77),
+        "request-complete",
+        reference(15, 4, 53),
         "focused",
         Some(action(
-            "action.chat-turn.resume-paused-activity",
-            "Paused activity resumed",
+            "action.chat-turn.resume-request",
+            "Request complete",
             true,
         )),
     );
@@ -627,8 +642,80 @@ fn render_chat_turn(
         screen_id,
         fixture_id,
         "transcript",
-        "applied-hunk-result",
-        reference(9, 4, 53),
+        "retry-policy-result",
+        reference(9, 4, 26),
+        "summary",
+        None,
+    );
+    let session_check = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "session-check-explanation",
+        reference(11, 4, 69),
+        "summary",
+        None,
+    );
+    let session_expiry = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "session-expiry-explanation",
+        reference(13, 4, 70),
+        "summary",
+        None,
+    );
+    let continuation = semantic(
+        screen_id,
+        fixture_id,
+        "continuation",
+        "completed-request",
+        reference(15, 4, 53),
+        "summary",
+        None,
+    );
+    let result_summary = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "result-summary",
+        reference(20, 4, 82),
+        "focused",
+        None,
+    );
+    let scope = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "change-scope",
+        reference(22, 4, 38),
+        "summary",
+        None,
+    );
+    let follow_up = semantic(
+        screen_id,
+        fixture_id,
+        "continuation",
+        "follow-up-ready",
+        reference(24, 4, 67),
+        "summary",
+        None,
+    );
+    let checked = semantic(
+        screen_id,
+        fixture_id,
+        "content",
+        "checked-file-scope",
+        reference(26, 4, 48),
+        "summary",
+        None,
+    );
+    let ready = semantic(
+        screen_id,
+        fixture_id,
+        "continuation",
+        "ready-for-follow-up",
+        reference(28, 4, 28),
         "summary",
         None,
     );
@@ -659,7 +746,22 @@ fn render_chat_turn(
         "summary",
         None,
     );
-    let pairs = [request, resume, answer, composer, focus, status];
+    let pairs = [
+        request,
+        resume,
+        answer,
+        session_check,
+        session_expiry,
+        continuation,
+        result_summary,
+        scope,
+        follow_up,
+        checked,
+        ready,
+        composer,
+        focus,
+        status,
+    ];
     Ok((
         pairs
             .iter()
@@ -675,11 +777,11 @@ fn render_chat_turn(
                 "the next reply begins inline in this same transcript",
             ),
             transition(
-                "action.chat-turn.resume-paused-activity",
+                "action.chat-turn.resume-request",
                 "chat-turn",
                 "chat-turn",
                 "summarized",
-                "the applied edit is summarized inline while the exact paused activity remains current",
+                "the completed request remains inline while the conversation stays ready",
             ),
         ],
     ))
@@ -774,7 +876,10 @@ fn render_daily_chat_turn(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -892,7 +997,10 @@ fn render_streaming(
         status,
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(

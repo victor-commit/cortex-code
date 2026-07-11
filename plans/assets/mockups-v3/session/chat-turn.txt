@@ -2,31 +2,31 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Check the retry path in @src/net/retry_policy.rs before we merge.                                             
+    You · Check retry_policy.rs before we merge.                                                                        
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    Applied 1 hunk to src/net/retry_policy.rs.                                                                          
+    Updated retry_policy.rs.                                                                                            
                                                                                                                         
-    hunk.retry-test remains pending and was not written.                                                                
+    The retry check now verifies the current session before continuing.                                                 
                                                                                                                         
-    The exact paused activity resumed with the same patch revision and session.                                         
+    Older sessions are asked to sign in again after credentials change.                                                 
                                                                                                                         
-    Your submitted prompt is fixed in the transcript; a new draft stays separate.                                       
-                                                                                                                        
-                                                                                                                        
+    The request is complete; a new draft stays separate.                                                                
                                                                                                                         
                                                                                                                         
+    Result                                                                                                              
                                                                                                                         
+    retry_policy.rs now protects the current session without changing your draft.                                       
                                                                                                                         
+    No files outside this check were changed.                                                                           
                                                                                                                         
+    You can ask a follow-up without reopening the completed request.                                                    
                                                                                                                         
+    Checked  ·  retry_policy.rs  ·  current session                                                                     
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    Ready for your next question.                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         

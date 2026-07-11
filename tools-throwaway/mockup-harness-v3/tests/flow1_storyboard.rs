@@ -43,14 +43,17 @@ fn rich_response_keeps_prose_table_code_and_actions_in_the_conversation() {
         })
         .expect("copy must be a local semantic action");
     assert!(
-        local_copy.identity.render_refs.iter().all(|reference| reference.row < 30),
+        local_copy
+            .identity
+            .render_refs
+            .iter()
+            .all(|reference| reference.row < 30),
         "copy must stay beside the code rather than in global chrome"
     );
     assert!(
         audit.events.iter().any(|event| {
             event.action.as_ref().is_some_and(|action| {
-                action.action_id == "action.rich-response.continue"
-                    && action.label == "Send reply"
+                action.action_id == "action.rich-response.continue" && action.label == "Send reply"
             })
         }),
         "continuing the conversation must remain the primary composer action"
@@ -173,10 +176,7 @@ fn tool_success_continuation_preserves_the_daily_work_origin() {
         .expect("the continuation trace must have exact typed evidence");
     assert_eq!(replay.before.screen_id, "tool-success");
     assert_eq!(replay.after.screen_id, "rich-response");
-    assert_eq!(
-        replay.actions[0].action_id,
-        "action.tool-success.continue"
-    );
+    assert_eq!(replay.actions[0].action_id, "action.tool-success.continue");
     assert_eq!(replay.transitions[0].to_screen_id, "rich-response");
     for field in ["draft", "queued_follow_up", "scroll_anchor", "origin_stack"] {
         let hashes = replay
@@ -189,4 +189,55 @@ fn tool_success_continuation_preserves_the_daily_work_origin() {
         );
     }
     assert!(replay.audit.render_txt().contains("fn authorize_request"));
+}
+
+#[test]
+fn chat_turn_uses_plain_file_copy_and_fills_the_transcript_measure() {
+    let audit = audit_screen("chat-turn", "canonical.chat-turn")
+        .expect("the canonical chat turn must render typed evidence");
+    audit
+        .validate()
+        .expect("the canonical chat turn must remain semantically bijective");
+
+    let text = audit.render_txt();
+    assert!(text.contains("retry_policy.rs"));
+    assert!(text.matches("retry_policy.rs").count() >= 2);
+    assert!(!text.contains("src/net/retry_policy.rs"));
+    assert!(!text.contains("hunk"));
+    assert!(!text.contains("patch revision"));
+    assert!(text.contains("Updated retry_policy.rs."));
+    assert!(text.contains("The retry check now verifies the current session before continuing."));
+    assert!(text.contains("The request is complete; a new draft stays separate."));
+    assert!(text.contains("Reply to Code"));
+}
+
+#[cfg(feature = "png")]
+#[test]
+fn chat_turn_png_raster_keeps_filename_underscores_at_the_baseline() {
+    let audit = audit_screen("chat-turn", "canonical.chat-turn")
+        .expect("the canonical chat turn must render typed evidence");
+    let png = mockup_harness_v3::scenario::render_audit_png(&audit)
+        .expect("the canonical chat turn must rasterize");
+    let image = image::load_from_memory(&png)
+        .expect("the canonical chat turn PNG must decode")
+        .to_rgb8();
+    let background = image.get_pixel(0, 0).0;
+    let underscores = audit
+        .styled_cells
+        .iter()
+        .filter(|cell| cell.glyph == '_')
+        .collect::<Vec<_>>();
+    assert_eq!(underscores.len(), 4);
+    for cell in underscores {
+        let x = u32::from(cell.column) * 10;
+        let y = u32::from(cell.row) * 21;
+        assert!(
+            (y + 17..=y + 18).any(|row| {
+                (x + 1..x + 9).any(|column| image.get_pixel(column, row).0 != background)
+            }),
+            "underscore at row {}, column {} must render on the baseline",
+            cell.row,
+            cell.column
+        );
+    }
 }

@@ -2,31 +2,31 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Why are stale sessions rejected after a password change?                                                      
+    You · Check retry_policy.rs before we merge.                                                                        
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    A password change invalidates tokens issued before the change.                                                      
+    Updated retry_policy.rs.                                                                                            
                                                                                                                         
-    The next request sees the newer session version and asks the person to sign in again.                               
+    The retry check now verifies the current session before continuing.                                                 
                                                                                                                         
+    Older sessions are asked to sign in again after credentials change.                                                 
                                                                                                                         
-    That keeps an older browser session from continuing after credentials changed.                                      
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    The request is complete; a new draft stays separate.                                                                
                                                                                                                         
                                                                                                                         
+    Result                                                                                                              
                                                                                                                         
+    retry_policy.rs now protects the current session without changing your draft.                                       
                                                                                                                         
+    No files outside this check were changed.                                                                           
                                                                                                                         
+    You can ask a follow-up without reopening the completed request.                                                    
                                                                                                                         
+    Checked  ·  retry_policy.rs  ·  current session                                                                     
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    Ready for your next question.                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         

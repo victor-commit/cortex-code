@@ -3697,6 +3697,15 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
             );
             continue;
         }
+        if audit.screen_id == "chat-turn" && cell.glyph == '_' {
+            draw_underscore(
+                &mut image,
+                cell_x,
+                cell_y,
+                Pixel([foreground.red, foreground.green, foreground.blue]),
+            );
+            continue;
+        }
         let font = if cell.style.bold { &bold } else { &regular };
         let (metrics, bitmap) = font.rasterize(cell.glyph, 16.0);
         let base_x = cell.column as i32 * 10 + (10 - metrics.width as i32) / 2;
@@ -3733,6 +3742,21 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
         .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
         .map_err(|error| format!("could not encode scenario PNG: {error}"))?;
     Ok(bytes)
+}
+
+#[cfg(feature = "png")]
+fn draw_underscore(
+    image: &mut image::RgbImage,
+    cell_x: u32,
+    cell_y: u32,
+    foreground: image::Rgb<u8>,
+) {
+    let y = cell_y + 17;
+    for x in cell_x + 1..cell_x + 9 {
+        if x < image.width() && y < image.height() {
+            image.put_pixel(x, y, foreground);
+        }
+    }
 }
 
 /// Draws the approved U+23BF result elbow without consulting a system font.

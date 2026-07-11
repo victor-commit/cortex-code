@@ -56,13 +56,11 @@ fn first_three_manifests_join_to_the_published_gate_contract() {
     assert!(report.programmatic_checks_before_vision);
     assert_eq!(report.vision_findings.len(), 18);
     assert!(
-        report
-            .vision_findings
-            .iter()
-            .filter(|finding| !finding.evidence_contains_current_hash)
-            .count()
-            == 2,
-        "the known user-edited pilot frames must be the only stale vision findings"
+        report.vision_findings.iter().all(|finding| {
+            finding.gate_png != "daily-work/02-chat-turn.png"
+                || finding.evidence_contains_current_hash
+        }),
+        "the revised Flow 1 chat-turn frame must not retain stale vision evidence"
     );
     assert!(
         report.required_pilot_iteration,

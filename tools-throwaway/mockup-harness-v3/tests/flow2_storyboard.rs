@@ -1,10 +1,10 @@
 use std::{fs, path::Path, process::Command};
 
 use mockup_harness_v3::{
-    TransitionKind,
     audit::{audit_screen, sha256_hex},
     flow_manifests,
     scenario::replay_case,
+    TransitionKind,
 };
 
 const SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
@@ -108,11 +108,9 @@ fn input_and_approval_storyboard_declares_every_ordered_edge_and_return() {
 
     let mention = audit_screen("file-mention", "flow2-storyboard.submit")
         .expect("file mention must expose the submit bridge");
-    assert!(
-        mention
-            .render_txt()
-            .contains("[enter] Submit prepared prompt")
-    );
+    assert!(mention
+        .render_txt()
+        .contains("[enter] Submit prepared prompt"));
     assert!(mention.transitions.iter().any(|transition| {
         transition.action_id == "action.file-mention.submit-prepared-prompt"
             && transition.to_screen_id == "permission-shell"
@@ -121,8 +119,8 @@ fn input_and_approval_storyboard_declares_every_ordered_edge_and_return() {
     let resumed = audit_screen("chat-turn", "flow2-storyboard.resumed")
         .expect("the final chat turn must render");
     let resumed_text = resumed.render_txt();
-    assert!(resumed_text.contains("Applied 1 hunk to src/net/retry_policy.rs."));
-    assert!(resumed_text.contains("same patch revision"));
+    assert!(resumed_text.contains("Updated retry_policy.rs."));
+    assert!(resumed_text.contains("The request is complete; a new draft stays separate."));
 }
 
 #[test]
