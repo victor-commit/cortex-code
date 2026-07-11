@@ -35,6 +35,14 @@ fn typed_audit_is_stable_bijective_and_includes_styled_cells() {
         .action
         .as_ref()
         .is_some_and(|action| !action.action_id.is_empty())));
+    assert!(
+        first
+            .render_txt()
+            .lines()
+            .nth(33)
+            .is_some_and(|line| line.contains("[enter] Allow once")),
+        "permission rendering must use the mandatory bottom DecisionDock"
+    );
     assert_eq!(first.to_json(), second.to_json());
 }
 
@@ -193,6 +201,53 @@ fn case_png_rejects_canonical_and_gate_destinations_without_writing() {
         assert!(!path.exists());
         assert!(String::from_utf8_lossy(&output.stderr).contains("temporary"));
     }
+}
+
+#[cfg(feature = "png")]
+#[test]
+fn synthetic_elbow_rasterization_is_stable_and_non_empty_at_txt_and_png_scales() {
+    let mut audit = audit_screen("permission-shell", "synthetic-elbow")
+        .expect("the elbow fixture must produce a valid canonical audit");
+    let cell = audit
+        .styled_cells
+        .iter_mut()
+        .find(|cell| cell.row == 12 && cell.column == 10)
+        .expect("the canonical audit must have a target cell");
+    cell.glyph = '⎿';
+    audit
+        .validate()
+        .expect("the approved elbow glyph must remain valid audit content");
+
+    let text = audit.render_txt();
+    let rows = text.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 40);
+    assert!(rows.iter().all(|row| row.chars().count() == 120));
+    assert_eq!(rows[12].chars().nth(10), Some('⎿'));
+
+    let first = mockup_harness_v3::scenario::render_audit_png(&audit)
+        .expect("the synthetic elbow must rasterize for canonical PNG output");
+    let second = mockup_harness_v3::scenario::render_audit_png(&audit)
+        .expect("the synthetic elbow must rasterize deterministically");
+    assert_eq!(first, second);
+
+    let png = image::load_from_memory(&first)
+        .expect("the elbow raster must encode as a valid PNG")
+        .to_rgb8();
+    assert_eq!(png.dimensions(), (1200, 840));
+    let canvas = png.get_pixel(0, 0);
+    let non_canvas_pixels = (12 * 21 + 1..=12 * 21 + 14)
+        .flat_map(|y| (10 * 10 + 4..=10 * 10 + 5).map(move |x| (x, y)))
+        .chain((10 * 10 + 4..10 * 10 + 10).flat_map(|x| {
+            [12 * 21 + 13, 12 * 21 + 14]
+                .into_iter()
+                .map(move |y| (x, y))
+        }))
+        .filter(|(x, y)| png.get_pixel(*x, *y) != canvas)
+        .count();
+    assert!(
+        non_canvas_pixels > 0,
+        "the deterministic synthetic elbow must write visible non-canvas pixels"
+    );
 }
 
 #[test]

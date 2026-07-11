@@ -7,8 +7,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::chrome::tokens::{validate_glyphs, ColorToken, TextStyle, CANVAS_COLUMNS, CANVAS_ROWS};
 use crate::registry::canonical_inventory;
+use crate::{
+    chrome::{
+        components::DecisionDock,
+        layout::{ScreenComposition, StatusLine, SurfaceLayout},
+        tokens::{validate_glyphs, ColorToken, TextStyle, CANVAS_COLUMNS, CANVAS_ROWS},
+    },
+    Surface,
+};
 
 pub const CANVAS_CELL_COUNT: usize = CANVAS_COLUMNS as usize * CANVAS_ROWS as usize;
 
@@ -278,43 +285,54 @@ impl AuditDocument {
 
 /// Creates stable evidence for a canonical state without writing an artifact.
 pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
-    if !canonical_inventory()
+    let screen = canonical_inventory()
         .iter()
-        .any(|screen| screen.id == screen_id)
-    {
-        return Err(format!("unknown canonical screen: {screen_id}"));
-    }
+        .find(|screen| screen.id == screen_id)
+        .ok_or_else(|| format!("unknown canonical screen: {screen_id}"))?;
     if fixture_id.trim().is_empty() {
         return Err("fixture identity must not be empty".to_owned());
     }
 
     let (action, transition) = screen_action(screen_id);
+    let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;
+    ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
+    let action_row = if screen.surface == Surface::ActionDock {
+        SurfaceLayout::for_surface(Surface::ActionDock)
+            .action_dock()
+            .expect("the action dock surface has one dock region")
+            .y
+    } else {
+        8
+    };
     let mut canvas = Canvas::new();
     canvas.write(1, 2, "Cortex Code", TextStyle::bright())?;
     canvas.write(3, 2, title_for_screen(screen_id), TextStyle::bright())?;
     canvas.write(5, 2, description_for_screen(screen_id), TextStyle::text())?;
-    canvas.write(
-        8,
-        2,
-        &format!("[enter] {}", action.label),
-        TextStyle::accent(),
-    )?;
+    if screen.surface == Surface::ActionDock {
+        let dock = DecisionDock::new(
+            Surface::ActionDock,
+            title_for_screen(screen_id),
+            description_for_screen(screen_id),
+            &action.label,
+        )?;
+        for (offset, line) in dock.render()?.into_iter().enumerate() {
+            canvas.write(action_row + offset as u16, 2, &line.text, line.style)?;
+        }
+    } else {
+        canvas.write(
+            action_row,
+            2,
+            &format!("[enter] {}", action.label),
+            TextStyle::accent(),
+        )?;
+    }
     canvas.write(
         10,
         2,
         "Your draft and conversation stay available.",
         TextStyle::muted(),
     )?;
-    canvas.write(
-        CANVAS_ROWS - 1,
-        2,
-        "~/project · main · Claude Opus 4.8",
-        TextStyle {
-            foreground: ColorToken::Muted,
-            background: Some(ColorToken::Canvas),
-            bold: false,
-        },
-    )?;
+    canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
 
     let candidates = vec![
         candidate(
@@ -345,7 +363,12 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             "primary-action",
             &action.action_id,
             RenderRef {
-                row: 8,
+                row: action_row
+                    + if screen.surface == Surface::ActionDock {
+                        2
+                    } else {
+                        0
+                    },
                 start: 2,
                 end: 2 + 8 + action.label.chars().count() as u16,
             },

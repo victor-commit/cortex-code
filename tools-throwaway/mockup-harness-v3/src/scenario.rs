@@ -587,6 +587,19 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
             continue;
         }
         let foreground = palette.color(cell.style.foreground);
+        let cell_x = cell.column as u32 * 10;
+        let cell_y = cell.row as u32 * 21;
+        if crate::chrome::tokens::glyph_rendering(cell.glyph)
+            == Some(crate::chrome::tokens::GlyphRendering::SyntheticElbow)
+        {
+            draw_synthetic_elbow(
+                &mut image,
+                cell_x,
+                cell_y,
+                Pixel([foreground.red, foreground.green, foreground.blue]),
+            );
+            continue;
+        }
         let font = if cell.style.bold { &bold } else { &regular };
         let (metrics, bitmap) = font.rasterize(cell.glyph, 16.0);
         let base_x = cell.column as i32 * 10 + (10 - metrics.width as i32) / 2;
@@ -623,6 +636,31 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
         .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
         .map_err(|error| format!("could not encode scenario PNG: {error}"))?;
     Ok(bytes)
+}
+
+/// Draws the approved U+23BF result elbow without consulting a system font.
+/// The fixed two-pixel strokes match the 10-by-21 terminal cell geometry.
+#[cfg(feature = "png")]
+fn draw_synthetic_elbow(
+    image: &mut image::RgbImage,
+    cell_x: u32,
+    cell_y: u32,
+    foreground: image::Rgb<u8>,
+) {
+    let put = |image: &mut image::RgbImage, x: u32, y: u32| {
+        if x < image.width() && y < image.height() {
+            image.put_pixel(x, y, foreground);
+        }
+    };
+    let corner_y = cell_y + 13;
+    for y in cell_y + 1..=corner_y {
+        put(image, cell_x + 4, y);
+        put(image, cell_x + 5, y);
+    }
+    for x in cell_x + 4..cell_x + 10 {
+        put(image, x, corner_y);
+        put(image, x, corner_y + 1);
+    }
 }
 
 #[cfg(feature = "png")]

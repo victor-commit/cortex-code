@@ -253,6 +253,12 @@ pub struct StatusLine {
 
 impl StatusLine {
     pub fn new(path: &str, branch: &str, model: &str) -> Result<Self, String> {
+        if [path, branch, model]
+            .iter()
+            .any(|field| field.chars().any(char::is_control))
+        {
+            return Err("statusline fields must not contain control characters".to_owned());
+        }
         if !path.starts_with("~/") || path.contains('·') || path.trim().is_empty() {
             return Err("statusline path must be a local ~/ path".to_owned());
         }
@@ -271,6 +277,9 @@ impl StatusLine {
         }
         let text = format!("{path} · {branch} · {model}");
         validate_glyphs(&text)?;
+        if text.chars().count() > CANVAS_COLUMNS as usize {
+            return Err("statusline must fit one 120-column canvas row".to_owned());
+        }
         Ok(Self {
             text,
             style: TextStyle {

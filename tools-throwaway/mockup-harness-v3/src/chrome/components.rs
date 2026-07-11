@@ -4,7 +4,10 @@
 //! focus, and a single primary action. Screens compose them instead of
 //! hand-rolling detached pickers, recovery cards, or mission dashboards.
 
-use crate::chrome::tokens::{ColorToken, TextStyle, ACCENT_USE_BUDGET};
+use crate::{
+    chrome::tokens::{ColorToken, TextStyle, ACCENT_USE_BUDGET},
+    Surface,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentLine {
@@ -296,6 +299,7 @@ impl Component for SelectionDock {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecisionDock {
+    surface: Surface,
     title: String,
     effect: String,
     primary_action: String,
@@ -303,33 +307,56 @@ pub struct DecisionDock {
 }
 
 impl DecisionDock {
-    pub fn new(title: &str, effect: &str, primary_action: &str) -> Self {
-        Self {
+    pub fn new(
+        surface: Surface,
+        title: &str,
+        effect: &str,
+        primary_action: &str,
+    ) -> Result<Self, String> {
+        if surface != Surface::ActionDock {
+            return Err("decision dock must render on the action dock surface".to_owned());
+        }
+        if primary_action.trim().is_empty() {
+            return Err("decision dock requires one primary action".to_owned());
+        }
+        Ok(Self {
+            surface,
             title: title.to_owned(),
             effect: effect.to_owned(),
             primary_action: primary_action.to_owned(),
             secondary_actions: Vec::new(),
+        })
+    }
+
+    pub fn with_secondary(mut self, action: &str) -> Result<Self, String> {
+        if self.secondary_actions.len() == 2 {
+            return Err("decision dock allows at most two secondary actions".to_owned());
         }
-    }
-
-    pub fn with_secondary(mut self, action: &str) -> Self {
         self.secondary_actions.push(action.to_owned());
-        self
+        Ok(self)
     }
 
-    pub fn validate(self) -> Result<Self, String> {
+    fn validate(&self) -> Result<(), String> {
+        if self.surface != Surface::ActionDock {
+            return Err("decision dock must render on the action dock surface".to_owned());
+        }
         if self.primary_action.trim().is_empty() {
             return Err("decision dock requires one primary action".to_owned());
         }
         if self.secondary_actions.len() > 2 {
             return Err("decision dock allows at most two secondary actions".to_owned());
         }
-        Ok(self)
+        Ok(())
     }
-}
 
-impl Component for DecisionDock {
-    fn lines(&self) -> Vec<ComponentLine> {
+    /// Emits dock lines only after enforcing the central action hierarchy and
+    /// bottom-dock placement contract.
+    pub fn render(&self) -> Result<Vec<ComponentLine>, String> {
+        self.validate()?;
+        Ok(self.render_lines())
+    }
+
+    fn render_lines(&self) -> Vec<ComponentLine> {
         let mut lines = vec![
             ComponentLine::new(self.title.clone(), TextStyle::bright()),
             ComponentLine::new(self.effect.clone(), TextStyle::text()),
@@ -346,6 +373,13 @@ impl Component for DecisionDock {
             ));
         }
         lines
+    }
+}
+
+impl Component for DecisionDock {
+    fn lines(&self) -> Vec<ComponentLine> {
+        self.render()
+            .expect("DecisionDock construction enforces render invariants")
     }
 
     fn anatomy(&self) -> ComponentAnatomy {

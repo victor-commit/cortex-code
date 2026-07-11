@@ -140,6 +140,29 @@ fn statusline_and_surface_declaration_are_centralized() {
 }
 
 #[test]
+fn statusline_rejects_control_characters_and_over_width_rows() {
+    for (path, branch, model) in [
+        ("~/code\nhidden", "main", "Claude Opus 4.8"),
+        ("~/code", "main\tbranch", "Claude Opus 4.8"),
+        ("~/code", "main", "\u{1b}[31mClaude Opus 4.8"),
+    ] {
+        assert_eq!(
+            StatusLine::new(path, branch, model).expect_err("control characters must fail closed"),
+            "statusline fields must not contain control characters"
+        );
+    }
+
+    let exact_boundary = StatusLine::new("~/", "m", &"M".repeat(111))
+        .expect("exactly one 120-column statusline row must remain valid");
+    assert_eq!(exact_boundary.text().chars().count(), 120);
+    assert_eq!(
+        StatusLine::new("~/", "m", &"M".repeat(112))
+            .expect_err("over-width statusline rows must fail closed"),
+        "statusline must fit one 120-column canvas row"
+    );
+}
+
+#[test]
 fn shared_components_encode_focus_local_keys_and_primary_actions() {
     let activity = ActivityRow::new(
         "Check changed files",
@@ -180,17 +203,62 @@ fn shared_components_encode_focus_local_keys_and_primary_actions() {
         .iter()
         .any(|line| line.text.starts_with('›')));
 
+    assert_eq!(
+        DecisionDock::new(
+            Surface::ActionDock,
+            "Allow this command?",
+            "It will check the project files.",
+            "",
+        )
+        .expect_err("an empty primary action must fail at construction"),
+        "decision dock requires one primary action"
+    );
+    assert_eq!(
+        DecisionDock::new(
+            Surface::ConversationShell,
+            "Allow this command?",
+            "It will check the project files.",
+            "Allow once",
+        )
+        .expect_err("a decision dock outside the bottom dock must fail at construction"),
+        "decision dock must render on the action dock surface"
+    );
+
     let decision = DecisionDock::new(
+        Surface::ActionDock,
         "Allow this command?",
         "It will check the project files.",
         "Allow once",
     )
+    .expect("a valid decision must require the bottom action dock")
     .with_secondary("Deny")
+    .expect("one secondary action must be valid")
     .with_secondary("Cancel")
-    .validate()
-    .expect("a decision supports at most two secondary actions");
+    .expect("two secondary actions must be valid");
     assert_eq!(decision.anatomy().primary_action_count, 1);
     assert!(decision.anatomy().has_local_keys);
+    assert!(decision
+        .render()
+        .expect("a valid dock must render after mandatory validation")
+        .iter()
+        .any(|line| line.text.contains("Allow once")));
+
+    assert_eq!(
+        DecisionDock::new(
+            Surface::ActionDock,
+            "Allow this command?",
+            "It will check the project files.",
+            "Allow once",
+        )
+        .expect("a valid decision dock must construct")
+        .with_secondary("Deny")
+        .expect("one secondary action must be valid")
+        .with_secondary("Cancel")
+        .expect("two secondary actions must be valid")
+        .with_secondary("Ask later")
+        .expect_err("a third secondary action must fail immediately"),
+        "decision dock allows at most two secondary actions"
+    );
 
     let connection = ConnectionRow::new("Project search", ConnectionState::NeedsSignIn, "Sign in");
     assert_eq!(connection.anatomy().primary_action_count, 1);
