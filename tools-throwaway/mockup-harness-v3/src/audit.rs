@@ -300,6 +300,14 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         palette(Theme::Dark).hex(ColorToken::Accent),
     )?;
 
+    if matches!(screen_id, "home" | "chat-turn" | "streaming") {
+        let document = crate::screens::conversation::render(screen_id, fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
+
     let (action, transition) = screen_action(screen_id);
     let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;
     ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
@@ -568,12 +576,12 @@ fn validate_styled_cells(cells: &[StyledCell]) -> Result<(), String> {
 }
 
 #[derive(Clone, Debug)]
-struct Canvas {
+pub(crate) struct Canvas {
     cells: Vec<StyledCell>,
 }
 
 impl Canvas {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let style = TextStyle {
             foreground: ColorToken::Text,
             background: Some(ColorToken::Canvas),
@@ -593,7 +601,13 @@ impl Canvas {
         Self { cells }
     }
 
-    fn write(&mut self, row: u16, column: u16, text: &str, style: TextStyle) -> Result<(), String> {
+    pub(crate) fn write(
+        &mut self,
+        row: u16,
+        column: u16,
+        text: &str,
+        style: TextStyle,
+    ) -> Result<(), String> {
         validate_glyphs(text)?;
         validate_text_safety(text)?;
         let width = text.chars().count() as u16;
@@ -610,6 +624,10 @@ impl Canvas {
                 };
         }
         Ok(())
+    }
+
+    pub(crate) fn into_cells(self) -> Vec<StyledCell> {
+        self.cells
     }
 }
 

@@ -1,15 +1,25 @@
-use std::path::Path;
+use std::{
+    fs::{self, OpenOptions},
+    path::Path,
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 use std::process::{Command, Output};
+
+static RENDER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
 }
 
+fn renderer_test_lock() -> MutexGuard<'static, ()> {
+    RENDER_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("public renderer test lock must not be poisoned")
+}
+
 fn run(arguments: &[&str]) -> Output {
-    harness()
-        .args(arguments)
-        .output()
-        .expect("the public renderer CLI must run")
+    harness().args(arguments).output().expect("the public renderer CLI must run")
 }
 
 fn assert_registry_failure(arguments: &[&str], expected_identity: &str) {
@@ -31,12 +41,29 @@ fn assert_registry_failure(arguments: &[&str], expected_identity: &str) {
 }
 
 #[test]
-fn implemented_selector_succeeds_without_placeholder_artifacts() {
+fn implemented_selector_publishes_only_the_conversation_pilot_artifacts() {
+    let _test_lock = renderer_test_lock();
     let output = run(&["--implemented"]);
 
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+    for screen in ["home", "chat-turn", "streaming"] {
+        assert!(
+            Path::new(&format!(
+                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.txt"
+            ))
+            .is_file(),
+            "each implemented conversation state must publish canonical TXT"
+        );
+        assert!(
+            Path::new(&format!(
+                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.png"
+            ))
+            .is_file(),
+            "each implemented conversation state must publish canonical PNG"
+        );
+    }
     assert!(
         !Path::new("/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt")
             .exists(),
@@ -46,13 +73,13 @@ fn implemented_selector_succeeds_without_placeholder_artifacts() {
 
 #[test]
 fn every_render_selector_preflights_missing_renderers_before_writing() {
-    assert_registry_failure(&["--all"], "home");
+    let _test_lock = renderer_test_lock();
+    assert_registry_failure(&["--all"], "onboarding");
     assert_registry_failure(&["permission-shell"], "permission-shell");
     assert_registry_failure(&["input"], "slash-menu");
-    assert_registry_failure(&["--flow", "daily-work"], "home");
+    assert_registry_failure(&["--flow", "daily-work"], "tool-running");
 
     for path in [
-        "/projects/cortex-code/plans/assets/mockups-v3/session/home.txt",
         "/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt",
         "/projects/cortex-code/plans/assets/mockups-v3-gates/daily-work/01-home.txt",
     ] {
@@ -64,7 +91,88 @@ fn every_render_selector_preflights_missing_renderers_before_writing() {
 }
 
 #[test]
+fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
+    let _test_lock = renderer_test_lock();
+    for screen in ["home", "chat-turn", "streaming"] {
+        let output = run(&[screen]);
+        assert!(output.status.success(), "{screen}: {:?}", output);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(
+            Path::new(&format!(
+                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.txt"
+            ))
+            .is_file()
+        );
+        assert!(
+            Path::new(&format!(
+                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.png"
+            ))
+            .is_file()
+        );
+    }
+}
+
+#[test]
+fn busy_public_renderer_exits_75_without_replacing_the_canonical_gallery() {
+    let _test_lock = renderer_test_lock();
+    let output_root = Path::new("/projects/cortex-code/plans/assets/mockups-v3");
+    let lock = output_root
+        .parent()
+        .expect("canonical root has a parent")
+        .join(".mockups-v3.render.lock");
+    let prior_manifest = fs::read(output_root.join(".renderer-manifest-v1"))
+        .expect("the implemented gallery must already have an ownership manifest");
+    let lock_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .expect("test must own the coordinator lock");
+    let output = run(&["--implemented"]);
+    drop(lock_file);
+    fs::remove_file(&lock).expect("test must remove its coordinator lock");
+
+    assert_eq!(output.status.code(), Some(75));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("render coordinator busy")
+    );
+    assert_eq!(
+        fs::read(output_root.join(".renderer-manifest-v1"))
+            .expect("busy exit must preserve the canonical ownership manifest"),
+        prior_manifest,
+        "busy exit must publish nothing"
+    );
+}
+
+#[test]
+fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
+    let _test_lock = renderer_test_lock();
+    let output_root = Path::new("/projects/cortex-code/plans/assets/mockups-v3");
+    let initial = run(&["--implemented"]);
+    assert!(initial.status.success());
+    let prior_manifest = fs::read(output_root.join(".renderer-manifest-v1"))
+        .expect("the successful implementation set must publish a manifest");
+
+    let rejected = run(&["--all"]);
+
+    assert_eq!(rejected.status.code(), Some(3));
+    assert!(rejected.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("canonical ID has no implemented renderer: onboarding")
+    );
+    assert_eq!(
+        fs::read(output_root.join(".renderer-manifest-v1"))
+            .expect("a rejected selector must retain the complete gallery"),
+        prior_manifest,
+        "preflight failure must not replace a complete published root"
+    );
+}
+
+#[test]
 fn unknown_selectors_are_usage_errors_without_writes() {
+    let _test_lock = renderer_test_lock();
     for arguments in [
         vec!["not-a-screen"],
         vec!["--flow", "not-a-flow"],
@@ -87,6 +195,7 @@ fn unknown_selectors_are_usage_errors_without_writes() {
 
 #[test]
 fn audit_selectors_emit_json_only_on_stdout() {
+    let _test_lock = renderer_test_lock();
     let single = run(&["--audit-json", "permission-shell"]);
     assert!(single.status.success());
     assert!(single.stderr.is_empty());

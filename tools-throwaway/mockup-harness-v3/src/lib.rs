@@ -5,6 +5,7 @@ pub mod chrome;
 pub mod negative_fixtures;
 pub mod renderer;
 pub mod scenario;
+pub mod screens;
 use std::path::Path;
 use std::process::Command;
 

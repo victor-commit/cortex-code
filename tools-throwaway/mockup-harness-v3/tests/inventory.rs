@@ -138,9 +138,18 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
     for (category, expected_ids) in expected {
         assert_eq!(ids_in(*category), *expected_ids);
     }
-    assert!(canonical_inventory()
-        .iter()
-        .all(|screen| screen.status == ImplementationStatus::Unimplemented));
+    for screen in canonical_inventory() {
+        let expected_status = if ["home", "chat-turn", "streaming"].contains(&screen.id) {
+            ImplementationStatus::Implemented
+        } else {
+            ImplementationStatus::Unimplemented
+        };
+        assert_eq!(
+            screen.status, expected_status,
+            "{} must report its milestone implementation status",
+            screen.id
+        );
+    }
     assert!(canonical_inventory().iter().all(|screen| matches!(
         screen.surface,
         Surface::ConversationShell

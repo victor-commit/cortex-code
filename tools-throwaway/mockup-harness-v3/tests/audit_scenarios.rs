@@ -98,6 +98,100 @@ fn automatic_case_uses_a_stable_automatic_action_and_single_attempt() {
 }
 
 #[test]
+fn conversation_pilot_screens_keep_the_transcript_and_one_clear_next_step() {
+    let home = audit_screen("home", "conversation-home")
+        .expect("the home conversation shell must produce typed evidence");
+    let completed = audit_screen("chat-turn", "conversation-completed")
+        .expect("the completed conversation must produce typed evidence");
+    let streaming = audit_screen("streaming", "conversation-streaming")
+        .expect("the live conversation must produce typed evidence");
+
+    for audit in [&home, &completed, &streaming] {
+        audit
+            .validate()
+            .expect("each conversation screen must remain semantically bijective");
+        let rendered = audit.render_txt();
+        let rows = rendered.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 40);
+        assert!(
+            rows[39].contains("~/project · main · Claude Opus 4.8"),
+            "the shared minimal statusline must stay on the canvas"
+        );
+    }
+
+    let home_text = home.render_txt();
+    assert!(home_text.contains("Recent work"));
+    assert!(home_text.contains("Ask Code to continue"));
+    assert_eq!(
+        home.transitions[0].to_screen_id, "chat-turn",
+        "home must begin the resumed conversation"
+    );
+
+    let completed_text = completed.render_txt();
+    let request = completed_text
+        .find("Why are stale sessions rejected")
+        .expect("the existing request must remain visible");
+    let answer = completed_text
+        .find("A password change invalidates")
+        .expect("the completed answer must remain visible");
+    assert!(request < answer, "the request must precede the readable answer");
+    assert!(completed_text.contains("Reply to Code"));
+    assert_eq!(completed.transitions[0].to_screen_id, "streaming");
+
+    let streaming_text = streaming.render_txt();
+    assert!(streaming_text.contains("The answer is still being written"));
+    assert!(streaming_text.contains("will wait until this reply finishes"));
+    assert_eq!(
+        streaming
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "live-state")
+            .count(),
+        1,
+        "a live response must have exactly one semantic owner"
+    );
+    assert_eq!(
+        streaming
+            .events
+            .iter()
+            .filter(|event| event.action.is_some())
+            .count(),
+        1,
+        "only the local interrupt should be actionable while streaming"
+    );
+    assert!(streaming.transitions.iter().any(|transition| {
+        transition.action_id == "action.streaming.interrupt"
+            && transition.to_screen_id == "chat-turn"
+    }));
+}
+
+#[test]
+fn streaming_interrupt_preserves_partial_answer_and_queued_follow_up() {
+    let replay = replay_case("streaming-interrupt", 1)
+        .expect("the local streaming interrupt case must replay");
+
+    replay
+        .validate()
+        .expect("the interrupt must be one stable, reversible transition");
+    assert_eq!(replay.before.screen_id, "streaming");
+    assert_eq!(replay.after.screen_id, "chat-turn");
+    assert_eq!(replay.actions[0].action_id, "action.streaming.interrupt");
+    assert_eq!(replay.attempts[0].count, 1);
+    assert_eq!(replay.side_effects[0].status, "generation-stopped");
+    for field in ["draft", "transcript", "queued_follow_up"] {
+        let hashes = replay
+            .preserved_field_hashes
+            .get(field)
+            .unwrap_or_else(|| panic!("{field} preservation must be recorded"));
+        assert_eq!(hashes.before, hashes.after, "{field} must survive interruption");
+    }
+    assert!(replay.audit.render_txt().contains("Reply to Code"));
+    let interrupted = replay.audit.render_txt();
+    assert!(interrupted.contains("It keeps sign-in, refresh, and sign-out on the same safety rule."));
+    assert!(interrupted.contains("Reply stopped safely. Partial answer and draft are saved."));
+}
+
+#[test]
 fn audit_json_is_json_only_on_stdout() {
     let output = harness()
         .arg("--audit-json")

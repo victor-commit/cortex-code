@@ -12,6 +12,8 @@ pub struct ScenarioState {
     pub screen_id: String,
     pub origin_stack: Vec<String>,
     pub draft: String,
+    pub transcript: String,
+    pub queued_follow_up: String,
     pub scroll_anchor: String,
     pub selection: String,
     pub focus: String,
@@ -206,6 +208,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "permission-allow-once" => permission_allow_once(),
         "permission-cancel" => permission_cancel(),
         "automatic-retry" => automatic_retry(),
+        "streaming-interrupt" => streaming_interrupt(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let preserved_field_hashes = preserved_hashes(&before, &after);
@@ -401,6 +404,75 @@ fn automatic_retry() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn streaming_interrupt() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "streaming",
+        vec!["home", "chat-turn", "streaming"],
+        "Also list the tests that should cover the change.",
+        "assistant-partial-auth-refactor",
+        "stop-reply",
+        "streaming-interrupt",
+        Some("active.reply.auth-refactor"),
+        "return-to-paused-turn",
+        0,
+    );
+    before.transcript = "The refactor moves token checks into one shared session guard.".to_owned();
+    before.queued_follow_up =
+        "Also list the tests that should cover the change. [attachment: auth-notes.md]"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "chat-turn",
+        vec!["home", "chat-turn", "streaming"],
+        "Also list the tests that should cover the change.",
+        "assistant-partial-auth-refactor",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.streaming.interrupt".to_owned(),
+        label: "Stop reply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "local interruption saves the partial reply and restores the queued follow-up"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.streaming.interrupt.1".to_owned(),
+        owner_id: "active.reply.auth-refactor".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.streaming.reply",
+        "generation",
+        "generation-stopped",
+        "the active reply stopped once without altering the saved transcript or queued follow-up",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn state(
     screen_id: &str,
@@ -417,6 +489,8 @@ fn state(
         screen_id: screen_id.to_owned(),
         origin_stack: origin_stack.into_iter().map(str::to_owned).collect(),
         draft: draft.to_owned(),
+        transcript: "The current conversation remains available.".to_owned(),
+        queued_follow_up: String::new(),
         scroll_anchor: scroll_anchor.to_owned(),
         selection: selection.to_owned(),
         focus: focus.to_owned(),
@@ -450,10 +524,12 @@ fn validate_state(state: &ScenarioState) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\norigins={}\ndraft={}\nscroll={}\nselection={}\nfocus={}\npending={}\nreturn={}\ntick={}",
+            "screen={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\npending={}\nreturn={}\ntick={}",
             state.screen_id,
             state.origin_stack.join(">"),
             state.draft,
+            state.transcript,
+            state.queued_follow_up,
             state.scroll_anchor,
             state.selection,
             state.focus,
@@ -472,6 +548,16 @@ fn preserved_hashes(
     let mut hashes = BTreeMap::new();
     for (name, first, second) in [
         ("draft", before.draft.as_str(), after.draft.as_str()),
+        (
+            "transcript",
+            before.transcript.as_str(),
+            after.transcript.as_str(),
+        ),
+        (
+            "queued_follow_up",
+            before.queued_follow_up.as_str(),
+            after.queued_follow_up.as_str(),
+        ),
         (
             "scroll_anchor",
             before.scroll_anchor.as_str(),
@@ -521,6 +607,8 @@ fn state_json(output: &mut String, state: &ScenarioState) {
     }
     output.push(']');
     field(output, "draft", &state.draft);
+    field(output, "transcript", &state.transcript);
+    field(output, "queued_follow_up", &state.queued_follow_up);
     field(output, "scroll_anchor", &state.scroll_anchor);
     field(output, "selection", &state.selection);
     field(output, "focus", &state.focus);

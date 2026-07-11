@@ -131,6 +131,7 @@ pub struct ScreenSpec {
     pub status: ImplementationStatus,
 }
 
+const IMPLEMENTED: ImplementationStatus = ImplementationStatus::Implemented;
 const UNIMPLEMENTED: ImplementationStatus = ImplementationStatus::Unimplemented;
 
 const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
@@ -139,7 +140,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "onboarding",
@@ -153,7 +154,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "chat-long-scroll",
@@ -167,7 +168,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "reasoning",
