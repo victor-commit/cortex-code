@@ -130,6 +130,24 @@ impl PluginState {
         self.audit.lock().ok().and_then(|slot| slot.clone())
     }
 
+    fn record_runtime_hook_error(
+        &self,
+        loaded: &LoadedPlugin,
+        hook: &str,
+        error: &PluginRuntimeError,
+    ) {
+        eprintln!("cortex plugin {hook}: {error}");
+        if let Some(audit) = self.audit_sink() {
+            audit.record_plugin_hook(
+                loaded.spec.raw_spec(),
+                hook,
+                "runtime_error",
+                "error",
+                Some(&error.to_string()),
+            );
+        }
+    }
+
     /// Record the already-completed plugin load reports in the attached audit sink.
     pub(crate) fn audit_loaded_plugins(&self) {
         let Some(audit) = self.audit_sink() else {
@@ -505,7 +523,7 @@ impl PluginState {
                         );
                     }
                 }
-                Err(err) => eprintln!("cortex plugin shell.env: {err}"),
+                Err(err) => self.record_runtime_hook_error(loaded, "shell.env", &err),
             }
         }
         env
@@ -580,7 +598,9 @@ impl PluginState {
                     }
                     command = command_from_output(command, value);
                 }
-                Err(err) => eprintln!("cortex plugin command.execute.before: {err}"),
+                Err(err) => {
+                    self.record_runtime_hook_error(loaded, "command.execute.before", &err);
+                }
             }
         }
         CommandBeforeOutcome::Run(command)
@@ -622,7 +642,9 @@ impl PluginState {
                         overridden = Some(decision);
                     }
                 }
-                Err(err) => eprintln!("cortex plugin permission.ask: {err}"),
+                Err(err) => {
+                    self.record_runtime_hook_error(loaded, "permission.ask", &err);
+                }
             }
         }
         overridden
@@ -660,7 +682,9 @@ impl PluginState {
                     }
                     current = tool_call_from_output(current, value);
                 }
-                Err(err) => eprintln!("cortex plugin tool.execute.before: {err}"),
+                Err(err) => {
+                    self.record_runtime_hook_error(loaded, "tool.execute.before", &err);
+                }
             }
         }
         (current, None)
@@ -691,7 +715,9 @@ impl PluginState {
                         result = tool_result_from_output(result, value);
                     }
                 }
-                Err(err) => eprintln!("cortex plugin tool.execute.after: {err}"),
+                Err(err) => {
+                    self.record_runtime_hook_error(loaded, "tool.execute.after", &err);
+                }
             }
         }
         result
@@ -943,6 +969,7 @@ impl PluginState {
                     host: self.host.clone(),
                     loaded: self.loaded.clone(),
                     surface: self.surface.clone(),
+                    audit: self.audit_sink(),
                 }) as Arc<dyn Subscriber>
             })
     }
@@ -1956,6 +1983,7 @@ struct PluginEventSubscriber {
     host: RuntimeHost,
     loaded: Vec<LoadedPlugin>,
     surface: Arc<str>,
+    audit: Option<Arc<audit::AuditSink>>,
 }
 
 impl Subscriber for PluginEventSubscriber {
@@ -1983,11 +2011,33 @@ impl Subscriber for PluginEventSubscriber {
             if !loaded.report.hooks.iter().any(|hook| hook == "event") {
                 continue;
             }
-            if let Err(err) = self
+            match self
                 .host
                 .invoke_event(&loaded.spec, JsonValue::Object(value.clone()))
             {
-                eprintln!("cortex plugin event: {err}");
+                Ok(_) => {
+                    if let Some(audit) = &self.audit {
+                        audit.record_plugin_hook(
+                            loaded.spec.raw_spec(),
+                            "event",
+                            "dispatch",
+                            "success",
+                            Some(event.kind()),
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!("cortex plugin event: {err}");
+                    if let Some(audit) = &self.audit {
+                        audit.record_plugin_hook(
+                            loaded.spec.raw_spec(),
+                            "event",
+                            "runtime_error",
+                            "error",
+                            Some(&err.to_string()),
+                        );
+                    }
+                }
             }
         }
     }

@@ -55,10 +55,23 @@ struct ToolCallProvider {
     port: u16,
     child: Option<Child>,
     listener_pid: u32,
+    directory: PathBuf,
 }
 
 impl ToolCallProvider {
     fn spawn() -> Self {
+        Self::spawn_with_script(TOOL_CALL_SERVER)
+    }
+
+    fn spawn_with_script(server_script: &str) -> Self {
+        Self::spawn_with_script_args(server_script, &[])
+    }
+
+    fn spawn_with_scenario(scenario: &str) -> Self {
+        Self::spawn_with_script_args(SCENARIO_TOOL_CALL_SERVER, &[scenario])
+    }
+
+    fn spawn_with_script_args(server_script: &str, extra_args: &[&str]) -> Self {
         let port = free_port();
         let dir = std::env::temp_dir().join(format!(
             "cortex-plugin-toolcall-server-{}-{port}",
@@ -66,10 +79,11 @@ impl ToolCallProvider {
         ));
         let _ = std::fs::create_dir_all(&dir);
         let script = dir.join("server.py");
-        std::fs::write(&script, TOOL_CALL_SERVER).expect("write tool-call server");
+        std::fs::write(&script, server_script).expect("write tool-call server");
         let child = Command::new("python3")
             .arg(&script)
             .arg(port.to_string())
+            .args(extra_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -81,6 +95,7 @@ impl ToolCallProvider {
             port,
             child: Some(child),
             listener_pid,
+            directory: dir,
         }
     }
 
@@ -94,6 +109,7 @@ impl ToolCallProvider {
             let _ = child.wait();
         }
         wait_for_port_released(self.port);
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -103,6 +119,7 @@ impl Drop for ToolCallProvider {
             kill_listener(self.listener_pid);
             let _ = child.wait();
         }
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -188,6 +205,193 @@ fn command_execute_before_can_veto_transform_and_dispose_runs_on_exit() {
     );
 }
 
+#[test]
+fn permission_ask_overrides_allow_and_deny_without_a_prompt() {
+    let deny_provider = ToolCallProvider::spawn_with_scenario("permission-deny");
+    let deny = Scratch::new("permission-deny");
+    write_permission_plugin(&deny.project);
+    std::fs::write(
+        deny.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n\
+         [[permission]]\n\
+         tool = \"write\"\n\
+         pattern = \"*\"\n\
+         action = \"allow\"\n",
+    )
+    .expect("write allow config");
+
+    let denied = run(cortex_in(
+        &deny,
+        Some(&deny_provider),
+        &["run", "--format", "json", "write the requested file"],
+    ));
+    assert_success(&denied);
+    assert!(
+        !deny.project.join("force-deny.txt").exists(),
+        "a plugin deny must block an otherwise allowed write"
+    );
+    let deny_audit = std::fs::read_to_string(&deny.audit).expect("permission deny audit");
+    assert!(
+        deny_audit.contains("\"hook\":\"permission.ask\"")
+            && deny_audit.contains("\"outcome\":\"deny\""),
+        "the forced permission deny is attributed to the hook: {deny_audit}"
+    );
+    deny_provider.shutdown_and_assert_released();
+
+    let allow_provider = ToolCallProvider::spawn_with_scenario("permission-allow");
+    let allow = Scratch::new("permission-allow");
+    write_permission_plugin(&allow.project);
+    std::fs::write(
+        allow.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n\
+         [[permission]]\n\
+         tool = \"write\"\n\
+         pattern = \"*\"\n\
+         action = \"deny\"\n",
+    )
+    .expect("write deny config");
+
+    let allowed = run(cortex_in(
+        &allow,
+        Some(&allow_provider),
+        &["run", "--format", "json", "write the requested file"],
+    ));
+    assert_success(&allowed);
+    assert_eq!(
+        std::fs::read_to_string(allow.project.join("force-allow.txt"))
+            .expect("plugin-allowed write"),
+        "ALLOW\n"
+    );
+    let allow_audit = std::fs::read_to_string(&allow.audit).expect("permission allow audit");
+    assert!(
+        allow_audit.contains("\"hook\":\"permission.ask\"")
+            && allow_audit.contains("\"outcome\":\"allow\""),
+        "the forced permission allow is attributed to the hook: {allow_audit}"
+    );
+    allow_provider.shutdown_and_assert_released();
+}
+
+#[test]
+fn tool_transform_after_and_shell_env_reach_the_turn() {
+    let provider = ToolCallProvider::spawn_with_scenario("transform-after-env");
+    let scratch = Scratch::new("tool-transform-after-env");
+    write_transform_and_env_plugin(&scratch.project);
+
+    let out = run(cortex_in(
+        &scratch,
+        Some(&provider),
+        &["run", "--format", "json", "follow the requested tool calls"],
+    ));
+    assert_success(&out);
+
+    assert!(
+        !scratch.project.join("a.txt").exists(),
+        "the original write argument must not take effect"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.project.join("b.txt")).expect("rewritten write target"),
+        "rewritten\n"
+    );
+
+    let document: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("machine output is JSON");
+    let tool_results = document["tool_results"]
+        .as_array()
+        .expect("machine output carries tool results");
+    let read_result = tool_results
+        .iter()
+        .find(|result| result["name"] == "read")
+        .expect("read result");
+    assert!(
+        read_result.to_string().contains("[via-plugin]"),
+        "tool.execute.after result reaches the turn: {read_result}"
+    );
+    let bash_result = tool_results
+        .iter()
+        .find(|result| result["name"] == "bash")
+        .expect("bash result");
+    assert!(
+        bash_result.to_string().contains("on"),
+        "shell.env value is visible to the bash child: {bash_result}"
+    );
+    provider.shutdown_and_assert_released();
+
+    let no_plugin_provider = ToolCallProvider::spawn_with_scenario("shell-env-absent");
+    let no_plugin = Scratch::new("shell-env-absent");
+    let absent = run(cortex_in(
+        &no_plugin,
+        Some(&no_plugin_provider),
+        &["run", "--format", "json", "run the requested shell command"],
+    ));
+    assert_success(&absent);
+    let absent_document: serde_json::Value =
+        serde_json::from_slice(&absent.stdout).expect("machine output is JSON");
+    let absent_bash = absent_document["tool_results"]
+        .as_array()
+        .and_then(|results| results.iter().find(|result| result["name"] == "bash"))
+        .expect("bash result without plugin");
+    assert!(
+        !absent_bash.to_string().contains("\"on\""),
+        "the plugin environment must be absent without the plugin: {absent_bash}"
+    );
+    no_plugin_provider.shutdown_and_assert_released();
+}
+
+#[test]
+fn runtime_hook_throw_is_attributed_while_later_hook_and_turn_survive() {
+    let provider = ToolCallProvider::spawn_with_scenario("runtime-throw");
+    let scratch = Scratch::new("runtime-throw");
+    write_runtime_throw_plugins(&scratch.project);
+
+    let out = run(cortex_in(
+        &scratch,
+        Some(&provider),
+        &["run", "--format", "json", "write the requested file"],
+    ));
+    assert_success(&out);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("thrower.mjs")
+            && stderr.contains("tool.execute.before")
+            && stderr.contains("hook-boom"),
+        "runtime error must be attributed to its plugin and hook: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked at") && !stderr.contains("RUST_BACKTRACE"),
+        "an isolated hook throw must not panic: {stderr}"
+    );
+    assert!(
+        scratch.project.join("survivor.marker").exists(),
+        "the later plugin hook must still run"
+    );
+    assert!(
+        !scratch.project.join("original.txt").exists(),
+        "the later hook must transform the tool call"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.project.join("after-throw.txt"))
+            .expect("later hook transformed write"),
+        "survived\n"
+    );
+
+    let records = audit::read_jsonl(&scratch.audit).expect("runtime error audit");
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_hook"
+                && record["plugin"] == "./thrower.mjs"
+                && record["hook"] == "tool.execute.before"
+                && record["action"] == "runtime_error"
+                && record["outcome"] == "error"
+                && record["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("hook-boom"))
+        }),
+        "the runtime error must be durably attributed: {records:#?}"
+    );
+    provider.shutdown_and_assert_released();
+}
+
 fn write_tool_veto_plugin(project: &Path) {
     std::fs::write(
         project.join("plugin.mjs"),
@@ -236,6 +440,92 @@ export default async function plugin(input) {
     .expect("write plugin");
     std::fs::write(project.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
         .expect("write config");
+}
+
+fn write_permission_plugin(project: &Path) {
+    std::fs::write(
+        project.join("plugin.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    "permission.ask": async (request) => {
+      if (request.subject === "force-deny.txt") return "deny";
+      if (request.subject === "force-allow.txt") return "allow";
+      return request.decision;
+    }
+  };
+}
+"#,
+    )
+    .expect("write permission plugin");
+}
+
+fn write_transform_and_env_plugin(project: &Path) {
+    std::fs::write(
+        project.join("plugin.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    "tool.execute.before": async (call) => {
+      if (call.name === "write" && call.arguments?.path === "a.txt") {
+        return { ...call, arguments: { ...call.arguments, path: "b.txt" } };
+      }
+      return call;
+    },
+    "tool.execute.after": async (result) => {
+      if (result.name === "read") {
+        return { ...result, content: `${result.content}\n[via-plugin]` };
+      }
+      return result;
+    },
+    "shell.env": async () => ({ CORTEX_PLUGIN_ENV: "on" })
+  };
+}
+"#,
+    )
+    .expect("write transform/env plugin");
+    std::fs::write(project.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
+        .expect("write config");
+}
+
+fn write_runtime_throw_plugins(project: &Path) {
+    std::fs::write(
+        project.join("thrower.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    "tool.execute.before": async () => {
+      throw new Error("hook-boom");
+    }
+  };
+}
+"#,
+    )
+    .expect("write throwing plugin");
+    std::fs::write(
+        project.join("survivor.mjs"),
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(input) {
+  return {
+    "tool.execute.before": async (call) => {
+      if (call.name === "write") {
+        await writeFile(`${input.directory}/survivor.marker`, "later hook fired");
+        return { ...call, arguments: { ...call.arguments, path: "after-throw.txt" } };
+      }
+      return call;
+    }
+  };
+}
+"#,
+    )
+    .expect("write surviving plugin");
+    std::fs::write(
+        project.join("cortex.toml"),
+        "plugin = [\"./thrower.mjs\", \"./survivor.mjs\"]\n",
+    )
+    .expect("write config");
 }
 
 fn cortex_in(scratch: &Scratch, provider: Option<&ToolCallProvider>, args: &[&str]) -> Command {
@@ -410,6 +700,88 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        return
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"#;
+
+const SCENARIO_TOOL_CALL_SERVER: &str = r#"
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port = int(sys.argv[1])
+scenario = sys.argv[2]
+request_count = 0
+
+def tool_call(name, arguments):
+    return {
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": f"call_{name}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments, separators=(",", ":"))
+                    }
+                }]
+            },
+            "finish_reason": None
+        }]
+    }
+
+def tool_done():
+    return {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+
+def text_done(text):
+    return {"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]}
+
+plans = {
+    "permission-deny": [
+        [tool_call("write", {"path": "force-deny.txt", "content": "DENY\n"}), tool_done()],
+        [text_done("permission deny hook completed")]
+    ],
+    "permission-allow": [
+        [tool_call("write", {"path": "force-allow.txt", "content": "ALLOW\n"}), tool_done()],
+        [text_done("permission allow hook completed")]
+    ],
+    "transform-after-env": [
+        [tool_call("write", {"path": "a.txt", "content": "rewritten\n"}), tool_done()],
+        [tool_call("read", {"path": "b.txt"}), tool_done()],
+        [tool_call("bash", {"command": "printenv CORTEX_PLUGIN_ENV"}), tool_done()],
+        [text_done("tool hooks completed")]
+    ],
+    "shell-env-absent": [
+        [tool_call("bash", {"command": "printenv CORTEX_PLUGIN_ENV"}), tool_done()],
+        [text_done("no plugin environment was present")]
+    ],
+    "runtime-throw": [
+        [tool_call("write", {"path": "original.txt", "content": "survived\n"}), tool_done()],
+        [text_done("runtime hook error was isolated")]
+    ]
+}
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        global request_count
+        request_count += 1
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        events = plans[scenario][min(request_count - 1, len(plans[scenario]) - 1)]
+        payload = "".join(f"data: {json.dumps(event, separators=(',', ':'))}\n\n" for event in events)
+        payload += "data: [DONE]\n\n"
+        body = payload.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):
         return
