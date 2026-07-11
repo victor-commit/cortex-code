@@ -652,7 +652,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
         for (index, step) in flow.steps.iter().enumerate() {
             let audit = audit_screen(
                 step.screen_id,
-                &format!("gate.{}.{:02}", flow.name, index + 1),
+                &format!("canonical.{}", step.screen_id),
             )
             .map_err(RenderFailure::validation)?;
             insert_audit_artifacts(
@@ -876,8 +876,8 @@ fn stage_root(prepared: &PreparedRoot) -> Result<StagedRoot, RenderFailure> {
         if root.exists() {
             copy_static_files(prepared.kind, &root, &stage)?;
         }
-        let mut owned = if root.exists() && prepared.kind == RootKind::Gate {
-            copy_existing_gate_artifacts(&root, &stage, &prepared.artifacts)?
+        let mut owned = if root.exists() {
+            copy_existing_artifacts(prepared.kind, &root, &stage, &prepared.artifacts)?
         } else {
             BTreeMap::new()
         };
@@ -908,22 +908,27 @@ fn stage_root(prepared: &PreparedRoot) -> Result<StagedRoot, RenderFailure> {
     Ok(StagedRoot { root, stage })
 }
 
-fn copy_existing_gate_artifacts(
+fn copy_existing_artifacts(
+    kind: RootKind,
     source: &Path,
     destination: &Path,
     replacements: &BTreeMap<String, Vec<u8>>,
 ) -> Result<BTreeMap<String, String>, RenderFailure> {
-    let existing = parse_manifest(RootKind::Gate, source).map_err(RenderFailure::validation)?;
+    let existing = parse_manifest(kind, source).map_err(RenderFailure::validation)?;
     let replaced_flows = replacements
         .keys()
         .filter_map(|relative| relative.split_once('/').map(|(flow, _)| flow))
         .collect::<BTreeSet<_>>();
     let mut retained = BTreeMap::new();
     for (relative, hash) in existing {
-        if replaced_flows
-            .iter()
-            .any(|flow| relative.starts_with(&format!("{flow}/")))
-        {
+        let replaced = if kind == RootKind::Gate {
+            replaced_flows
+                .iter()
+                .any(|flow| relative.starts_with(&format!("{flow}/")))
+        } else {
+            replacements.contains_key(&relative)
+        };
+        if replaced {
             continue;
         }
         let source_path = source.join(&relative);

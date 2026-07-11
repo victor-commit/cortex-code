@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 pub mod flows;
+pub mod gate_integration;
 pub mod registry;
 
 pub use flows::{
