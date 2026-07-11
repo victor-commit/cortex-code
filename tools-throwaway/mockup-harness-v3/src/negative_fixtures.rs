@@ -423,9 +423,10 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         }),
         "duplicate-activity-owner" => audit_rejection(add_duplicate_activity_owner),
         "inaccessible-action" => audit_rejection(|document| {
-            document.events[2]
-                .action
-                .as_mut()
+            document
+                .events
+                .iter_mut()
+                .find_map(|event| event.action.as_mut())
                 .expect("fixture action must exist")
                 .enabled = false;
         }),
@@ -433,7 +434,17 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
             document.transitions[0].action_id = "action.unknown".to_owned();
         }),
         "duplicate-action" => audit_rejection(|document| {
-            document.events[0].action = document.events[2].action.clone();
+            let action = document
+                .events
+                .iter()
+                .find_map(|event| event.action.clone())
+                .expect("fixture action must exist");
+            document
+                .events
+                .iter_mut()
+                .find(|event| event.action.is_none())
+                .expect("fixture target event must exist")
+                .action = Some(action);
         }),
         "dead-end-transition" => audit_rejection(|document| {
             document.transitions[0].kind = "dead-end".to_owned();
@@ -456,7 +467,9 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         "hidden-primary-action" => validate_primary_actions(0, false),
         "duplicate-primary-action" => validate_primary_actions(2, false),
         "automatic-wait-primary-action" => validate_primary_actions(1, true),
-        "inventory-without-renderer" | "renderer-outside-inventory" | "unsafe-cleanup"
+        "inventory-without-renderer"
+        | "renderer-outside-inventory"
+        | "unsafe-cleanup"
         | "publication-failure" => run_renderer_negative_fixture(spec.id, root),
         "duplicate-canonical-id" => {
             let mut inventory = canonical_inventory().to_vec();
@@ -525,10 +538,7 @@ fn add_duplicate_activity_owner(document: &mut AuditDocument) {
     document.events.extend([first_event, second_event]);
 }
 
-fn rejected_fixture(
-    spec: &FixtureSpec,
-    rejected: Result<(), String>,
-) -> Result<(), String> {
+fn rejected_fixture(spec: &FixtureSpec, rejected: Result<(), String>) -> Result<(), String> {
     let error = rejected.err().ok_or_else(|| {
         format!(
             "fixture {} unexpectedly accepted its invalid input",

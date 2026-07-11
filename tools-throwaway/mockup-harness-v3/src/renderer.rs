@@ -46,6 +46,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "rich-response",
     "file-mention",
     "composer-multiline",
+    "permission-shell",
+    "permission-deny-reason",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -534,7 +536,9 @@ fn fixture_publication_failure(root: &Path) -> Result<(), String> {
         .expect_err("injected validation failure must stop production publication");
     let after = fixture_tree_manifest(&output)?;
     if before != after {
-        return Err("publication failure fixture did not preserve the prior complete root".to_owned());
+        return Err(
+            "publication failure fixture did not preserve the prior complete root".to_owned(),
+        );
     }
     let prefix = ".published.render-staging-";
     let stale_stage = fs::read_dir(root)
@@ -549,7 +553,10 @@ fn fixture_publication_failure(root: &Path) -> Result<(), String> {
 
 fn fixture_prepared_root(root: &Path, contents: &str) -> PreparedRoot {
     let mut artifacts = BTreeMap::new();
-    artifacts.insert("session/fixture.txt".to_owned(), fixture_txt(contents).into_bytes());
+    artifacts.insert(
+        "session/fixture.txt".to_owned(),
+        fixture_txt(contents).into_bytes(),
+    );
     PreparedRoot {
         kind: RootKind::Canonical,
         root: root.to_path_buf(),
@@ -1251,7 +1258,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 8);
+        assert_eq!(implemented.canonical_ids().count(), 10);
         assert!(preflight_render(&PublicSelector::All)
             .expect_err("full render must reject missing renderers")
             .contains("onboarding"));
@@ -1364,7 +1371,10 @@ mod tests {
             fs::read_to_string(stage.join("previous.txt")).unwrap(),
             "previous complete gallery\n"
         );
-        assert!(stage.exists(), "the failed cleanup must leave a named stale root");
+        assert!(
+            stage.exists(),
+            "the failed cleanup must leave a named stale root"
+        );
 
         cleanup_stages(&roots).expect("the test cleanup should remove the stale root");
         fs::remove_dir_all(parent).unwrap();

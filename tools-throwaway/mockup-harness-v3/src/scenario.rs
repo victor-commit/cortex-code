@@ -49,6 +49,39 @@ pub struct SideEffectEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistentPermissionScope {
+    pub matcher: String,
+    pub duration: String,
+    pub project_root: String,
+    pub work_style: String,
+    pub child_inheritance: String,
+    pub child_cap: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PermissionEvidence {
+    pub execution_bytes: Vec<u8>,
+    pub display_notation: String,
+    pub command_sha256: String,
+    pub byte_offset: usize,
+    pub visible_total_length: usize,
+    pub previous_offset: Option<usize>,
+    pub next_offset: Option<usize>,
+    pub at_boundary: bool,
+    pub execution_working_directory: String,
+    pub invocation_count: u32,
+    pub persisted_rule_count: u32,
+    pub verdict: String,
+    pub persistent_scope: Option<PersistentPermissionScope>,
+}
+
+impl PermissionEvidence {
+    pub fn reconstructed_bytes(&self) -> Vec<u8> {
+        decode_escaped_bytes(&self.display_notation)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaseReplay {
     pub case_id: String,
     pub requested_tick: u32,
@@ -60,6 +93,7 @@ pub struct CaseReplay {
     pub preserved_field_hashes: BTreeMap<String, PreservedFieldHash>,
     pub attempts: Vec<AttemptEvidence>,
     pub side_effects: Vec<SideEffectEvidence>,
+    pub permission: Option<PermissionEvidence>,
     pub audit: AuditDocument,
 }
 
@@ -110,7 +144,8 @@ impl CaseReplay {
             return Err("case replay needs complete SHA-256 preservation evidence".to_owned());
         }
         if self.attempts.len() != 1
-            || self.attempts[0].count != 1
+            || (self.attempts[0].count != 1
+                && !(self.permission.is_some() && self.attempts[0].count == 0))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -125,6 +160,36 @@ impl CaseReplay {
         self.audit.validate()?;
         if self.audit.screen_id != self.after.screen_id {
             return Err("case audit must describe the resulting rendered state".to_owned());
+        }
+        if let Some(permission) = &self.permission {
+            if permission.command_sha256 != sha256_hex(&permission.execution_bytes)
+                || permission.reconstructed_bytes() != permission.execution_bytes
+            {
+                return Err(
+                    "permission evidence does not reconstruct exact execution bytes".to_owned(),
+                );
+            }
+            if permission.execution_working_directory != "~/project" {
+                return Err(
+                    "permission evidence must name the canonical working directory".to_owned(),
+                );
+            }
+            if permission.invocation_count > 1 || permission.persisted_rule_count > 1 {
+                return Err(
+                    "permission evidence exceeds single invocation or rule bounds".to_owned(),
+                );
+            }
+            if permission.byte_offset > permission.visible_total_length
+                || permission.visible_total_length != permission.execution_bytes.len()
+                || permission.at_boundary
+                    != (permission.byte_offset == 0
+                        || permission.byte_offset == permission.visible_total_length)
+            {
+                return Err("permission page boundary evidence is inconsistent".to_owned());
+            }
+            if permission.verdict == "denied" && permission.invocation_count != 0 {
+                return Err("denied permission evidence contains an invocation".to_owned());
+            }
         }
         Ok(())
     }
@@ -194,7 +259,12 @@ impl CaseReplay {
             field(&mut output, "effect_hash", &effect.effect_hash);
             output.push('}');
         }
-        output.push_str("],\"audit\":");
+        output.push_str("],\"permission\":");
+        match &self.permission {
+            Some(permission) => permission_json(&mut output, permission),
+            None => output.push_str("null"),
+        }
+        output.push_str(",\"audit\":");
         output.push_str(&self.audit.to_json());
         output.push('}');
         output
@@ -208,6 +278,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     }
     let (before, after, action, transition, attempt, effect) = match case_id {
         "permission-allow-once" => permission_allow_once(),
+        "permission-shell-short" => permission_shell_short(),
+        "permission-shell-long" => permission_shell_long(),
+        "permission-shell-long-page-0" => permission_shell_long(),
+        "permission-shell-long-page-44" => permission_shell_long(),
+        "permission-persistent-scope" => permission_persistent_scope(),
+        "permission-persistent-scope-outside" => permission_persistent_scope_outside(),
+        "permission-shell-unsafe-byte" => permission_shell_unsafe_byte(),
+        "permission-deny" => permission_deny(),
         "permission-cancel" => permission_cancel(),
         "automatic-retry" => automatic_retry(),
         "streaming-interrupt" => streaming_interrupt(),
@@ -224,18 +302,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         preserved_field_hashes.insert(
             "draft_surrounding".to_owned(),
             PreservedFieldHash {
-                before: sha256_hex(
-                    before
-                        .draft
-                        .replacen(MENTION_FRAGMENT, "", 1)
-                        .as_bytes(),
-                ),
-                after: sha256_hex(
-                    after
-                        .draft
-                        .replacen(INSERTED_FILE, "", 1)
-                        .as_bytes(),
-                ),
+                before: sha256_hex(before.draft.replacen(MENTION_FRAGMENT, "", 1).as_bytes()),
+                after: sha256_hex(after.draft.replacen(INSERTED_FILE, "", 1).as_bytes()),
             },
         );
     }
@@ -251,6 +319,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         preserved_field_hashes,
         attempts: vec![attempt],
         side_effects: vec![effect],
+        permission: permission_evidence(case_id),
         audit,
     };
     replay.validate()?;
@@ -298,7 +367,8 @@ fn permission_allow_once() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "direct".to_owned(),
-        path: "approval opens a read-only pending edit".to_owned(),
+        path: "allow once runs the disclosed command once and resumes the paused transcript in the pending edit state"
+            .to_owned(),
     };
     let attempt = AttemptEvidence {
         attempt_id: "attempt.permission.allow-once.1".to_owned(),
@@ -309,8 +379,318 @@ fn permission_allow_once() -> (
     let effect = simulated_effect(
         "effect.shell.pending",
         "permission-decision",
-        "approved-without-execution",
-        "permission allow-once opened the pending edit",
+        "executed-once",
+        "permission allow-once executed the disclosed command once and resumed the paused turn",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_shell_short() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "permission-shell",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "short-command",
+        "permission-choice",
+        Some("pending.shell.project-check"),
+        "return-to-paused-turn",
+        0,
+    );
+    let after = before.clone();
+    let mut after = after;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.inspect-command".to_owned(),
+        label: "Inspect command".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "short command stays inline while permission focus remains unchanged".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.short.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 0,
+        outcome: "inspected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.short",
+        "permission-disclosure",
+        "no-execution",
+        "short command disclosure did not execute the command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_shell_long() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (mut before, _, _, _, _, _) = permission_shell_short();
+    before.selection = "long-command-page-0".to_owned();
+    before.focus = "command-detail".to_owned();
+    before.pending_action = Some("pending.shell.project-check".to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.command-next".to_owned(),
+        label: "Next page".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "command detail advances by the fixed byte page without changing execution bytes"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.long-page.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 1,
+        outcome: "page-inspected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.long-page",
+        "permission-disclosure",
+        "no-execution",
+        "long command page navigation did not execute the command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_persistent_scope() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "permission-shell",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "persistent-scope",
+        "permission-choice",
+        Some("pending.shell.project-check"),
+        "return-to-paused-turn",
+        0,
+    );
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "persistent-scope",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.permission.allow-persistent".to_owned(),
+        label: "Allow for this project".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the disclosed project-session scope is stored once before the command resumes"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.persistent.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 1,
+        outcome: "approved-with-scoped-rule".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.persistent",
+        "permission-decision",
+        "executed-once",
+        "the command ran once and stored one bounded project-session rule",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_persistent_scope_outside() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (before, after, _, _, _, _) = permission_persistent_scope();
+    let action = ActionEvidence {
+        action_id: "action.permission.scope-outside".to_owned(),
+        label: "Request permission again".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "a command outside the matcher, root, work style, child cap, or duration requests permission again"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.scope-outside.1".to_owned(),
+        owner_id: "pending.shell.outside-scope".to_owned(),
+        count: 0,
+        outcome: "permission-requested".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.scope-outside",
+        "permission-decision",
+        "no-execution",
+        "out-of-scope command requested a fresh permission decision",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_shell_unsafe_byte() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "permission-shell",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "unsafe-byte",
+        "permission-choice",
+        Some("pending.shell.unsafe-check"),
+        "return-to-paused-turn",
+        0,
+    );
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "unsafe-byte",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.permission.allow-once".to_owned(),
+        label: "Allow once".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "escaped unsafe bytes execute exactly once after explicit approval".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.unsafe-byte.1".to_owned(),
+        owner_id: "pending.shell.unsafe-check".to_owned(),
+        count: 1,
+        outcome: "approved".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.unsafe-byte",
+        "permission-decision",
+        "executed-once",
+        "escaped command bytes executed once",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_deny() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "permission-shell",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "deny",
+        "permission-choice",
+        Some("pending.shell.project-check"),
+        "return-to-paused-turn",
+        0,
+    );
+    let after = state(
+        "permission-deny-reason",
+        vec!["chat-turn", "permission-shell"],
+        "Check the project files\nthen summarize the result.",
+        "turn-18",
+        "deny",
+        "reason-input",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.permission.deny".to_owned(),
+        label: "Deny".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "denial records a visible denied verdict and opens the optional reason dock"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.deny.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 0,
+        outcome: "denied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.denied",
+        "permission-decision",
+        "no-execution",
+        "denial performed zero command invocations",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -361,7 +741,7 @@ fn permission_cancel() -> (
     let attempt = AttemptEvidence {
         attempt_id: "attempt.permission.cancel.1".to_owned(),
         owner_id: "pending.shell.project-check".to_owned(),
-        count: 1,
+        count: 0,
         outcome: "cancelled".to_owned(),
     };
     let effect = simulated_effect(
@@ -452,8 +832,7 @@ fn streaming_interrupt() -> (
     );
     before.transcript = "The refactor moves token checks into one shared session guard.".to_owned();
     before.queued_follow_up =
-        "Also list the tests that should cover the change. [attachment: auth-notes.md]"
-            .to_owned();
+        "Also list the tests that should cover the change. [attachment: auth-notes.md]".to_owned();
     before.state_hash = state_hash(&before);
 
     let mut after = state(
@@ -900,8 +1279,9 @@ fn file_mention_no_results() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "direct".to_owned(),
-        path: "typing keeps the literal @zzq query visible while the focused list reports no matches"
-            .to_owned(),
+        path:
+            "typing keeps the literal @zzq query visible while the focused list reports no matches"
+                .to_owned(),
     };
     let attempt = AttemptEvidence {
         attempt_id: "attempt.file-mention.filter.1".to_owned(),
@@ -1052,6 +1432,177 @@ fn simulated_effect(effect_id: &str, kind: &str, status: &str, detail: &str) -> 
         simulated: true,
         effect_hash: sha256_hex(detail.as_bytes()),
     }
+}
+
+fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
+    use crate::screens::input_and_approval::{
+        LONG_SHELL_COMMAND, SHORT_SHELL_COMMAND, UNSAFE_SHELL_COMMAND,
+    };
+    let (execution_bytes, display_notation) = if case_id.contains("unsafe-byte") {
+        (
+            UNSAFE_SHELL_COMMAND.to_vec(),
+            command_notation(UNSAFE_SHELL_COMMAND, true),
+        )
+    } else if case_id.contains("long") {
+        (
+            LONG_SHELL_COMMAND.to_vec(),
+            command_notation(LONG_SHELL_COMMAND, false),
+        )
+    } else {
+        (
+            SHORT_SHELL_COMMAND.to_vec(),
+            command_notation(SHORT_SHELL_COMMAND, false),
+        )
+    };
+    let persistent_scope =
+        case_id
+            .starts_with("permission-persistent-scope")
+            .then(|| PersistentPermissionScope {
+                matcher: "git diff -- src/net/*".to_owned(),
+                duration: "this session".to_owned(),
+                project_root: "~/project".to_owned(),
+                work_style: "Careful edits".to_owned(),
+                child_inheritance: "children inherit only read-only checks".to_owned(),
+                child_cap: "read-only, same project root, same session".to_owned(),
+            });
+    let visible_total_length = execution_bytes.len();
+    Some(PermissionEvidence {
+        command_sha256: sha256_hex(&execution_bytes),
+        execution_bytes,
+        display_notation,
+        byte_offset: if case_id.contains("page-44") { 44 } else { 0 },
+        visible_total_length,
+        previous_offset: if case_id.contains("page-44") {
+            Some(0)
+        } else {
+            None
+        },
+        next_offset: if case_id.contains("long") && !case_id.contains("page-44") {
+            Some(44)
+        } else {
+            None
+        },
+        at_boundary: !case_id.contains("page-44"),
+        execution_working_directory: "~/project".to_owned(),
+        invocation_count: if case_id == "permission-allow-once"
+            || case_id == "permission-persistent-scope"
+            || case_id.contains("unsafe-byte")
+        {
+            1
+        } else {
+            0
+        },
+        persisted_rule_count: u32::from(case_id == "permission-persistent-scope"),
+        verdict: if case_id == "permission-deny" {
+            "denied"
+        } else if case_id == "permission-cancel" {
+            "pending"
+        } else {
+            "approved"
+        }
+        .to_owned(),
+        persistent_scope,
+    })
+}
+
+fn command_notation(bytes: &[u8], escape_unsafe: bool) -> String {
+    bytes
+        .iter()
+        .map(|byte| {
+            if escape_unsafe && (*byte < 0x20 || *byte == 0x7f) {
+                format!("\\x{byte:02x}")
+            } else {
+                char::from(*byte).to_string()
+            }
+        })
+        .collect()
+}
+
+fn decode_escaped_bytes(notation: &str) -> Vec<u8> {
+    let mut output = Vec::with_capacity(notation.len());
+    let bytes = notation.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped =
+            if index + 3 < bytes.len() && bytes[index] == b'\\' && bytes[index + 1] == b'x' {
+                u8::from_str_radix(
+                    std::str::from_utf8(&bytes[index + 2..index + 4]).unwrap_or(""),
+                    16,
+                )
+                .ok()
+            } else {
+                None
+            };
+        if let Some(value) = escaped {
+            output.push(value);
+            index += 4;
+        } else {
+            let character = notation[index..].chars().next().unwrap_or_default();
+            let mut encoded = [0; 4];
+            output.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+            index += character.len_utf8();
+        }
+    }
+    output
+}
+
+fn permission_json(output: &mut String, permission: &PermissionEvidence) {
+    output.push('{');
+    output.push_str("\"execution_bytes\":[");
+    for (index, byte) in permission.execution_bytes.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(&byte.to_string());
+    }
+    output.push(']');
+    field(output, "display_notation", &permission.display_notation);
+    field(output, "command_sha256", &permission.command_sha256);
+    output.push_str(",\"byte_offset\":");
+    output.push_str(&permission.byte_offset.to_string());
+    output.push_str(",\"visible_total_length\":");
+    output.push_str(&permission.visible_total_length.to_string());
+    output.push_str(",\"previous_offset\":");
+    match permission.previous_offset {
+        Some(offset) => output.push_str(&offset.to_string()),
+        None => output.push_str("null"),
+    }
+    output.push_str(",\"next_offset\":");
+    match permission.next_offset {
+        Some(offset) => output.push_str(&offset.to_string()),
+        None => output.push_str("null"),
+    }
+    output.push_str(",\"at_boundary\":");
+    output.push_str(if permission.at_boundary {
+        "true"
+    } else {
+        "false"
+    });
+    field(
+        output,
+        "execution_working_directory",
+        &permission.execution_working_directory,
+    );
+    output.push_str(",\"invocation_count\":");
+    output.push_str(&permission.invocation_count.to_string());
+    output.push_str(",\"persisted_rule_count\":");
+    output.push_str(&permission.persisted_rule_count.to_string());
+    field(output, "verdict", &permission.verdict);
+    output.push_str(",\"persistent_scope\":");
+    match &permission.persistent_scope {
+        Some(scope) => {
+            output.push('{');
+            field(output, "matcher", &scope.matcher);
+            field(output, "duration", &scope.duration);
+            field(output, "project_root", &scope.project_root);
+            field(output, "work_style", &scope.work_style);
+            field(output, "child_inheritance", &scope.child_inheritance);
+            field(output, "child_cap", &scope.child_cap);
+            output.push('}');
+        }
+        None => output.push_str("null"),
+    }
+    output.push('}');
 }
 
 fn state_json(output: &mut String, state: &ScenarioState) {

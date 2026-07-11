@@ -1,9 +1,9 @@
+use std::process::{Command, Output};
 use std::{
     fs::{self, OpenOptions},
     path::Path,
     sync::{Mutex, MutexGuard, OnceLock},
 };
-use std::process::{Command, Output};
 
 static RENDER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -19,7 +19,10 @@ fn renderer_test_lock() -> MutexGuard<'static, ()> {
 }
 
 fn run(arguments: &[&str]) -> Output {
-    harness().args(arguments).output().expect("the public renderer CLI must run")
+    harness()
+        .args(arguments)
+        .output()
+        .expect("the public renderer CLI must run")
 }
 
 fn assert_registry_failure(arguments: &[&str], expected_identity: &str) {
@@ -57,6 +60,8 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("session", "rich-response"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
+        ("input", "permission-shell"),
+        ("input", "permission-deny-reason"),
     ] {
         assert!(
             Path::new(&format!(
@@ -74,9 +79,9 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         );
     }
     assert!(
-        !Path::new("/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt")
-            .exists(),
-        "an unimplemented screen must never receive a placeholder artifact"
+        Path::new("/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt")
+            .is_file(),
+        "the shell permission pilot must publish its canonical artifact"
     );
 }
 
@@ -84,10 +89,9 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
     assert_registry_failure(&["--all"], "onboarding");
-    assert_registry_failure(&["permission-shell"], "permission-shell");
     assert_registry_failure(&["input"], "slash-menu");
 
-    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/permission-shell.txt";
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/slash-menu.txt";
     assert!(
         !Path::new(path).exists(),
         "preflight must finish before any artifact is written: {path}"
@@ -106,23 +110,21 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("session", "rich-response"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
+        ("input", "permission-shell"),
+        ("input", "permission-deny-reason"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
-        assert!(
-            Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.txt"
-            ))
-            .is_file()
-        );
-        assert!(
-            Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.png"
-            ))
-            .is_file()
-        );
+        assert!(Path::new(&format!(
+            "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.txt"
+        ))
+        .is_file());
+        assert!(Path::new(&format!(
+            "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.png"
+        ))
+        .is_file());
     }
 }
 
@@ -147,9 +149,7 @@ fn busy_public_renderer_exits_75_without_replacing_the_canonical_gallery() {
 
     assert_eq!(output.status.code(), Some(75));
     assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("render coordinator busy")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("render coordinator busy"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("busy exit must preserve the canonical ownership manifest"),
@@ -171,10 +171,8 @@ fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
 
     assert_eq!(rejected.status.code(), Some(3));
     assert!(rejected.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr)
-            .contains("canonical ID has no implemented renderer: onboarding")
-    );
+    assert!(String::from_utf8_lossy(&rejected.stderr)
+        .contains("canonical ID has no implemented renderer: onboarding"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("a rejected selector must retain the complete gallery"),

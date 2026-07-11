@@ -40,6 +40,15 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "chat-turn" if fixture_id.starts_with("case.streaming-interrupt") => {
             render_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
+        "chat-turn" if fixture_id.starts_with("case.permission-persistent-scope") => {
+            render_permission_persistent_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if fixture_id.starts_with("case.permission-shell-unsafe-byte") => {
+            render_permission_unsafe_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if fixture_id.starts_with("case.permission-cancel") => {
+            render_permission_cancel_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" => render_chat_turn(&mut canvas, screen_id, fixture_id)?,
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
@@ -47,12 +56,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "rich-response" => render_rich_response(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
     };
-    canvas.write(
-        CANVAS_ROWS - 1,
-        2,
-        statusline.text(),
-        statusline.style(),
-    )?;
+    canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
 
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
@@ -82,11 +86,7 @@ fn render_home(
         "The session check is ready to continue from here.",
         TextStyle::muted(),
     )?;
-    composer(
-        canvas,
-        "Ask Code to continue",
-        None,
-    )?;
+    composer(canvas, "Ask Code to continue", None)?;
 
     let surface = semantic(
         screen_id,
@@ -139,7 +139,10 @@ fn render_home(
     );
     let pairs = [surface, recent_work, branding, composer, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.home.start-request",
@@ -149,6 +152,235 @@ fn render_home(
             "submitting the composer resumes the current conversation",
         )],
     ))
+}
+
+fn render_permission_persistent_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    permission_outcome_transcript(
+        canvas,
+        "Permission saved for this project",
+        "The command ran once, then saved one bounded rule for this session.",
+        "Matcher: git diff -- src/net/* · duration: this session",
+        "Project root: ~/project · work style: Careful edits",
+        "Children inherit only read-only checks · cap: same project root",
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "permission-persistent-result",
+            reference(9, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "persistent-scope",
+            "exact-project-session-scope",
+            reference(13, 4, 78),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the scoped permission result returns to the same conversation",
+        )],
+    ))
+}
+
+fn render_permission_unsafe_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    permission_outcome_transcript(
+        canvas,
+        "Allowed once · unsafe bytes were escaped",
+        "The exact escaped command ran one time; no reusable rule was saved.",
+        "Command bytes: printf 'retry\\x00'\\x0a\\x1b[31m",
+        "Working directory: ~/project · scope: this command only",
+        "SHA-256: 000b9fc6d315b99043535ebc08b2c29dc3596f7583ef7ed8b1c8a4afd13a09fb",
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "unsafe-command-result",
+            reference(9, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "escaped-command",
+            "unsafe-byte-notation",
+            reference(13, 4, 72),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the escaped command result returns to the same conversation",
+        )],
+    ))
+}
+
+fn render_permission_cancel_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    permission_outcome_transcript(
+        canvas,
+        "Permission request still pending",
+        "Cancel kept the request open. The command was not run and nothing was denied.",
+        "Return to the paused turn when you are ready to choose.",
+        "Working directory: ~/project · scope: this command only",
+        "Draft and transcript are unchanged",
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "cancel-result",
+            reference(9, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-permission",
+            "request-remains-pending",
+            reference(11, 4, 74),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the unchanged paused turn can continue after the pending permission choice",
+        )],
+    ))
+}
+
+fn permission_outcome_transcript(
+    canvas: &mut Canvas,
+    heading: &str,
+    result: &str,
+    detail_one: &str,
+    detail_two: &str,
+    detail_three: &str,
+    composer_label: &str,
+) -> Result<(), String> {
+    canvas.write(
+        4,
+        4,
+        "You · Check the project files before summarizing the retry result.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, heading, TextStyle::text())?;
+    canvas.write(11, 4, result, TextStyle::text())?;
+    canvas.write(13, 4, detail_one, TextStyle::muted())?;
+    canvas.write(15, 4, detail_two, TextStyle::muted())?;
+    canvas.write(17, 4, detail_three, TextStyle::muted())?;
+    composer(canvas, composer_label, Some("Send reply"))?;
+    Ok(())
 }
 
 fn render_chat_turn(
@@ -217,11 +449,7 @@ fn render_chat_turn(
         "action.chat-turn.send-reply",
         reference(COMPOSER_TOP, 4, 30),
         "summary",
-        Some(action(
-            "action.chat-turn.send-reply",
-            "Send reply",
-            false,
-        )),
+        Some(action("action.chat-turn.send-reply", "Send reply", false)),
     );
     let focus = semantic(
         screen_id,
@@ -243,7 +471,10 @@ fn render_chat_turn(
     );
     let pairs = [request, resume, answer, composer, focus, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -320,11 +551,7 @@ fn render_streaming(
         "active-response",
         reference(16, 4, 41),
         "summary",
-        Some(action(
-            "action.streaming.interrupt",
-            "Stop reply",
-            false,
-        )),
+        Some(action("action.streaming.interrupt", "Stop reply", false)),
     );
     let queued_composer = semantic(
         screen_id,
@@ -357,7 +584,13 @@ fn render_streaming(
         "summary",
         None,
     );
-    let pairs = [partial_answer, live_state, queued_composer, tool_handoff, status];
+    let pairs = [
+        partial_answer,
+        live_state,
+        queued_composer,
+        tool_handoff,
+        status,
+    ];
     Ok((
         pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
@@ -443,11 +676,7 @@ fn render_interrupted_chat_turn(
         "action.chat-turn.send-reply",
         reference(COMPOSER_TOP, 4, 30),
         "summary",
-        Some(action(
-            "action.chat-turn.send-reply",
-            "Send reply",
-            false,
-        )),
+        Some(action("action.chat-turn.send-reply", "Send reply", false)),
     );
     let status = semantic(
         screen_id,
@@ -460,7 +689,10 @@ fn render_interrupted_chat_turn(
     );
     let pairs = [partial_answer, queued_follow_up, composer, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -584,7 +816,10 @@ fn render_tool_running(
         status,
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
@@ -684,7 +919,10 @@ fn render_tool_success(
     );
     let pairs = [request, result, summary, composer, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.tool-success.continue",
@@ -720,7 +958,12 @@ fn render_rich_response(
         "Both login and API routes reuse it, so the same safety rule stays in place.",
         TextStyle::text(),
     )?;
-    canvas.write(14, 4, "Where                 How the guard applies it", TextStyle::bright())?;
+    canvas.write(
+        14,
+        4,
+        "Where                 How the guard applies it",
+        TextStyle::bright(),
+    )?;
     canvas.write(
         15,
         4,
@@ -746,12 +989,7 @@ fn render_rich_response(
         "    let session = shared_guard(request)?;",
         TextStyle::text(),
     )?;
-    canvas.write(
-        22,
-        6,
-        "    apply_rate_limit(&session)?;",
-        TextStyle::text(),
-    )?;
+    canvas.write(22, 6, "    apply_rate_limit(&session)?;", TextStyle::text())?;
     canvas.write(23, 6, "    Ok(session)", TextStyle::text())?;
     canvas.write(24, 6, "}", TextStyle::text())?;
     canvas.write(26, 6, "[c] Copy code", TextStyle::accent())?;
@@ -800,11 +1038,7 @@ fn render_rich_response(
         "action.rich-response.copy-code",
         reference(26, 6, 19),
         "focused",
-        Some(action(
-            "action.rich-response.copy-code",
-            "Copy code",
-            false,
-        )),
+        Some(action("action.rich-response.copy-code", "Copy code", false)),
     );
     let composer = semantic(
         screen_id,
@@ -813,11 +1047,7 @@ fn render_rich_response(
         "action.rich-response.continue",
         reference(COMPOSER_TOP, 4, 29),
         "summary",
-        Some(action(
-            "action.rich-response.continue",
-            "Send reply",
-            false,
-        )),
+        Some(action("action.rich-response.continue", "Send reply", false)),
     );
     let status = semantic(
         screen_id,
@@ -830,7 +1060,10 @@ fn render_rich_response(
     );
     let pairs = [request, prose, table, code, copy, composer, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.rich-response.continue",
@@ -919,11 +1152,7 @@ fn render_tool_interrupted_chat_turn(
         "action.chat-turn.send-reply",
         reference(COMPOSER_TOP, 4, 30),
         "summary",
-        Some(action(
-            "action.chat-turn.send-reply",
-            "Send reply",
-            false,
-        )),
+        Some(action("action.chat-turn.send-reply", "Send reply", false)),
     );
     let status = semantic(
         screen_id,
@@ -943,7 +1172,10 @@ fn render_tool_interrupted_chat_turn(
         status,
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",

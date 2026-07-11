@@ -148,6 +148,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "rich-response",
             "file-mention",
             "composer-multiline",
+            "permission-shell",
+            "permission-deny-reason",
         ]
         .contains(&screen.id)
         {

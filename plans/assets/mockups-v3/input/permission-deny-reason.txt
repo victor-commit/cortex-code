@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the project files before summarizing the retry result.                                                  
+                                                                                                                        
+                                                                                                                        
+    Code paused · Shell command needs your approval                                                                     
+                                                                                                                        
+    Why Code needs it: to confirm the retry changes before continuing this turn.                                        
+                                                                                                                        
+    What running it will do: inspect the retry diff and keep the result in this turn.                                   
+                                                                                                                        
+    Denied · command was not run                                                                                        
+                                                                                                                        
+    Denied command: printf '%s\n' "retry check"                                                                         
+                                                                                                                        
+    Optional reason · this will be sent to Code with the denied activity                                                
+    › Type one short reason here                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ The original Allow and Deny choices are closed                                                                   │  
+  │ › [enter] Send reason · add it to the denied activity                                                            │  
+  │   [s] Skip · return without adding a reason                                                                      │  
+                                                                                                                        
+  │ [esc] Cancel · keep the denied activity unchanged                                                                │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

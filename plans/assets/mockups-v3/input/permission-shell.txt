@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the project files before summarizing the retry result.                                                  
+                                                                                                                        
+                                                                                                                        
+    Code paused · Shell command needs your approval                                                                     
+                                                                                                                        
+    Why Code needs it: to confirm the retry changes before continuing this turn.                                        
+                                                                                                                        
+    What running it will do: inspect the retry diff and keep the result in this turn.                                   
+                                                                                                                        
+    Command (case-sensitive)                                                                                            
+      printf '%s\n' "retry check"                                                                                       
+    Working directory: ~/project · Scope: this command only                                                             
+    Execution bytes 0..27 of 27 · SHA-256: 0288fda0b61bcc47559760d0bad1771116bd52a93ff57aa77da264f27df6c5e0             
+                                                                                                                        
+                                                                                                                        
+    Persistent scope · matcher: git diff -- src/net/* · duration: this session                                          
+    Project root: ~/project · work style: Careful edits                                                                 
+    Child actions: inherit only read-only checks · cap: same project root                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Permission choices · purpose and effect are shown above                                                          │  
+  │ › [enter] Allow once · run this command once; save no permission                                                 │  
+  │   [p] Allow for this project · save the exact scope shown above                                                  │  
+  │   [d] Deny · do not run it                                                                                       │  
+  │ [esc] Cancel · keep request pending                                                                              │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    
