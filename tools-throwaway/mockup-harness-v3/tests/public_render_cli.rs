@@ -41,34 +41,36 @@ fn assert_registry_failure(arguments: &[&str], expected_identity: &str) {
 }
 
 #[test]
-fn implemented_selector_publishes_only_the_conversation_pilot_artifacts() {
+fn implemented_selector_publishes_all_current_pilot_artifacts() {
     let _test_lock = renderer_test_lock();
     let output = run(&["--implemented"]);
 
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    for screen in [
-        "home",
-        "chat-turn",
-        "streaming",
-        "tool-running",
-        "tool-success",
-        "rich-response",
+    for (category, screen) in [
+        ("session", "home"),
+        ("session", "chat-turn"),
+        ("session", "streaming"),
+        ("session", "tool-running"),
+        ("session", "tool-success"),
+        ("session", "rich-response"),
+        ("input", "file-mention"),
+        ("input", "composer-multiline"),
     ] {
         assert!(
             Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.txt"
+                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.txt"
             ))
             .is_file(),
-            "each implemented conversation state must publish canonical TXT"
+            "each implemented pilot state must publish canonical TXT"
         );
         assert!(
             Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.png"
+                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.png"
             ))
             .is_file(),
-            "each implemented conversation state must publish canonical PNG"
+            "each implemented pilot state must publish canonical PNG"
         );
     }
     assert!(
@@ -95,13 +97,15 @@ fn every_render_selector_preflights_missing_renderers_before_writing() {
 #[test]
 fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
     let _test_lock = renderer_test_lock();
-    for screen in [
-        "home",
-        "chat-turn",
-        "streaming",
-        "tool-running",
-        "tool-success",
-        "rich-response",
+    for (category, screen) in [
+        ("session", "home"),
+        ("session", "chat-turn"),
+        ("session", "streaming"),
+        ("session", "tool-running"),
+        ("session", "tool-success"),
+        ("session", "rich-response"),
+        ("input", "file-mention"),
+        ("input", "composer-multiline"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);
@@ -109,13 +113,13 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         assert!(output.stderr.is_empty());
         assert!(
             Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.txt"
+                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.txt"
             ))
             .is_file()
         );
         assert!(
             Path::new(&format!(
-                "/projects/cortex-code/plans/assets/mockups-v3/session/{screen}.png"
+                "/projects/cortex-code/plans/assets/mockups-v3/{category}/{screen}.png"
             ))
             .is_file()
         );

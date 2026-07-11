@@ -6,6 +6,7 @@ use crate::audit::{
     action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
     AuditDocument, TransitionTrace,
 };
+use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScenarioState {
@@ -17,6 +18,7 @@ pub struct ScenarioState {
     pub scroll_anchor: String,
     pub selection: String,
     pub focus: String,
+    pub composer_height: String,
     pub pending_action: Option<String>,
     pub return_policy: String,
     pub virtual_tick: u32,
@@ -212,9 +214,31 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "tool-running-interrupt" => tool_running_interrupt(),
         "tool-running-complete" => tool_running_complete(),
         "tool-success-continue" => tool_success_continue(),
+        "file-mention-insert" => file_mention_insert(),
+        "file-mention-dismiss" => file_mention_dismiss(),
+        "file-mention-no-results" => file_mention_no_results(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
-    let preserved_field_hashes = preserved_hashes(&before, &after);
+    let mut preserved_field_hashes = preserved_hashes(&before, &after);
+    if case_id == "file-mention-insert" {
+        preserved_field_hashes.insert(
+            "draft_surrounding".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(
+                    before
+                        .draft
+                        .replacen(MENTION_FRAGMENT, "", 1)
+                        .as_bytes(),
+                ),
+                after: sha256_hex(
+                    after
+                        .draft
+                        .replacen(INSERTED_FILE, "", 1)
+                        .as_bytes(),
+                ),
+            },
+        );
+    }
     let audit = audit_screen(&after.screen_id, &format!("case.{case_id}.tick.{tick}"))?;
     let replay = CaseReplay {
         case_id: case_id.to_owned(),
@@ -689,6 +713,211 @@ fn tool_success_continue() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn file_mention_insert() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let inserted_draft = MULTILINE_DRAFT.replacen(MENTION_FRAGMENT, INSERTED_FILE, 1);
+    let mut before = state(
+        "file-mention",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        MULTILINE_DRAFT,
+        "turn-retry-review",
+        "active-mention-span-24..30",
+        "draft-cursor-30",
+        Some("mention.query.retry"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.queued_follow_up =
+        "After this review, summarize the result. [attachment: retry-notes.md]".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        &inserted_draft,
+        "turn-retry-review",
+        "no-selection",
+        "draft-cursor-48",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.file-mention.insert-selected".to_owned(),
+        label: "Insert file".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "only the active @retry span became @src/net/retry_policy.rs; surrounding authored lines remain byte-for-byte stable"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.file-mention.insert.1".to_owned(),
+        owner_id: "mention.span.24..30".to_owned(),
+        count: 1,
+        outcome: "inserted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-mention.insert",
+        "draft-edit",
+        "simulated-span-replacement",
+        "one selected project-relative file replaced only the active mention span",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn file_mention_dismiss() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "file-mention",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        MULTILINE_DRAFT,
+        "turn-retry-review",
+        "active-mention-span-24..30",
+        "draft-cursor-30",
+        Some("mention.query.retry"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.queued_follow_up =
+        "After this review, summarize the result. [attachment: retry-notes.md]".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        MULTILINE_DRAFT,
+        "turn-retry-review",
+        "active-mention-span-24..30",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queued_follow_up = before.queued_follow_up.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.file-mention.dismiss".to_owned(),
+        label: "Dismiss".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "dismissal restores the literal @retry fragment at the original cursor".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.file-mention.dismiss.1".to_owned(),
+        owner_id: "mention.span.24..30".to_owned(),
+        count: 1,
+        outcome: "dismissed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-mention.dismiss",
+        "draft-edit",
+        "simulated-no-change",
+        "dismissal leaves the exact multiline draft untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn file_mention_no_results() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let no_result_draft = MULTILINE_DRAFT.replacen(MENTION_FRAGMENT, "@zzq", 1);
+    let mut before = state(
+        "file-mention",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        MULTILINE_DRAFT,
+        "turn-retry-review",
+        "active-mention-span-24..30",
+        "draft-cursor-30",
+        Some("mention.query.retry"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "file-mention",
+        vec!["chat-turn", "composer-multiline", "file-mention"],
+        &no_result_draft,
+        "turn-retry-review",
+        "no-result",
+        "draft-cursor-28",
+        Some("mention.query.zzq"),
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.file-mention.filter-no-results".to_owned(),
+        label: "Filter project files".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "typing keeps the literal @zzq query visible while the focused list reports no matches"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.file-mention.filter.1".to_owned(),
+        owner_id: "mention.span.24..28".to_owned(),
+        count: 1,
+        outcome: "no-results".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-mention.filter",
+        "filter",
+        "simulated-no-results",
+        "the visible @zzq query produced zero project-file rows without discarding the draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn state(
     screen_id: &str,
@@ -710,6 +939,7 @@ fn state(
         scroll_anchor: scroll_anchor.to_owned(),
         selection: selection.to_owned(),
         focus: focus.to_owned(),
+        composer_height: "5-visual-rows".to_owned(),
         pending_action: pending_action.map(str::to_owned),
         return_policy: return_policy.to_owned(),
         virtual_tick,
@@ -726,6 +956,7 @@ fn validate_state(state: &ScenarioState) -> Result<(), String> {
         || state.scroll_anchor.is_empty()
         || state.selection.is_empty()
         || state.focus.is_empty()
+        || state.composer_height.is_empty()
         || state.return_policy.is_empty()
         || state.state_hash.len() != 64
     {
@@ -740,7 +971,7 @@ fn validate_state(state: &ScenarioState) -> Result<(), String> {
 fn state_hash(state: &ScenarioState) -> String {
     sha256_hex(
         format!(
-            "screen={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\npending={}\nreturn={}\ntick={}",
+            "screen={}\norigins={}\ndraft={}\ntranscript={}\nqueued_follow_up={}\nscroll={}\nselection={}\nfocus={}\ncomposer_height={}\npending={}\nreturn={}\ntick={}",
             state.screen_id,
             state.origin_stack.join(">"),
             state.draft,
@@ -749,6 +980,7 @@ fn state_hash(state: &ScenarioState) -> String {
             state.scroll_anchor,
             state.selection,
             state.focus,
+            state.composer_height,
             state.pending_action.as_deref().unwrap_or(""),
             state.return_policy,
             state.virtual_tick,
@@ -789,6 +1021,17 @@ fn preserved_hashes(
             before.return_policy.as_str(),
             after.return_policy.as_str(),
         ),
+        (
+            "selection",
+            before.selection.as_str(),
+            after.selection.as_str(),
+        ),
+        ("focus", before.focus.as_str(), after.focus.as_str()),
+        (
+            "composer_height",
+            before.composer_height.as_str(),
+            after.composer_height.as_str(),
+        ),
     ] {
         hashes.insert(
             name.to_owned(),
@@ -828,6 +1071,7 @@ fn state_json(output: &mut String, state: &ScenarioState) {
     field(output, "scroll_anchor", &state.scroll_anchor);
     field(output, "selection", &state.selection);
     field(output, "focus", &state.focus);
+    field(output, "composer_height", &state.composer_height);
     output.push_str(",\"pending_action\":");
     match &state.pending_action {
         Some(action) => quote(output, action),

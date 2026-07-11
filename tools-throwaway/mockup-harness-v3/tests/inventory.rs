@@ -146,6 +146,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "tool-running",
             "tool-success",
             "rich-response",
+            "file-mention",
+            "composer-multiline",
         ]
         .contains(&screen.id)
         {

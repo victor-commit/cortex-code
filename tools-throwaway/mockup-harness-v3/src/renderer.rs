@@ -44,6 +44,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "tool-running",
     "tool-success",
     "rich-response",
+    "file-mention",
+    "composer-multiline",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -1249,7 +1251,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 6);
+        assert_eq!(implemented.canonical_ids().count(), 8);
         assert!(preflight_render(&PublicSelector::All)
             .expect_err("full render must reject missing renderers")
             .contains("onboarding"));
