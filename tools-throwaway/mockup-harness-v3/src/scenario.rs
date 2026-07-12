@@ -844,7 +844,12 @@ impl CaseReplay {
             || (self.attempts[0].count != 1
                 && !((self.permission.is_some() || self.diff.is_some())
                     && self.attempts[0].count == 0)
-                && !(self.case_id.starts_with("session-") && self.attempts[0].count == 0))
+                && !(self.case_id.starts_with("session-") && self.attempts[0].count == 0)
+                && !(self.case_id.starts_with("network-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "exhausted"
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled")))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -1075,6 +1080,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "connect-method-back" => connect_method_back(),
         "connect-connected-return" => connect_connected_return(),
         "mcp-return" => mcp_return(),
+        "turn-error-retry" => turn_error_retry(),
+        "turn-error-cancel" => turn_error_cancel(),
+        "network-offline-review-setting" => network_offline_review_setting(),
+        "network-offline-resume" => network_offline_resume(),
+        "network-backoff-cancel" => network_backoff_cancel(),
+        "network-backoff-exhaust" => network_backoff_exhaust(),
+        "network-backoff-race-retry-wins" => network_backoff_race_retry_wins(),
+        "network-backoff-race-cancel-wins" => network_backoff_race_cancel_wins(),
+        "network-check-connection" => network_check_connection(),
+        "network-check-connection-return" => network_check_connection_return(),
+        "network-backoff-snapshot" => network_backoff_snapshot(),
+        "network-evidence-snapshot" => network_evidence_snapshot(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1165,6 +1182,44 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "model-picker" => "gate.work-configuration.model-picker".to_owned(),
             "chat-turn" => "flow1.daily-work.stable".to_owned(),
             other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if matches!(
+        case_id,
+        "turn-error-retry"
+            | "turn-error-cancel"
+            | "network-offline-review-setting"
+            | "network-offline-resume"
+            | "network-backoff-cancel"
+            | "network-backoff-exhaust"
+            | "network-backoff-race-retry-wins"
+            | "network-backoff-race-cancel-wins"
+            | "network-check-connection"
+            | "network-check-connection-return"
+            | "network-backoff-snapshot"
+            | "network-evidence-snapshot"
+    ) {
+        match (case_id, after.screen_id.as_str()) {
+            ("turn-error-retry", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("turn-error-cancel", "turn-error") => "gate.recovery.turn-error".to_owned(),
+            ("network-offline-review-setting", "connect-provider") => {
+                "gate.provider-and-mcp.connect-provider".to_owned()
+            }
+            ("network-offline-resume", "error-network") => "error-network.offline".to_owned(),
+            ("network-backoff-cancel", "error-network") => "error-network.exhausted".to_owned(),
+            ("network-backoff-exhaust", "error-network") => "error-network.exhausted".to_owned(),
+            ("network-backoff-race-retry-wins", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("network-backoff-race-cancel-wins", "error-network") => {
+                "error-network.exhausted".to_owned()
+            }
+            ("network-check-connection", "connect-provider") => {
+                "gate.provider-and-mcp.connect-provider".to_owned()
+            }
+            ("network-check-connection-return", "error-network") => {
+                "canonical.error-network".to_owned()
+            }
+            ("network-backoff-snapshot", "error-network") => "error-network.backoff".to_owned(),
+            ("network-evidence-snapshot", "error-network") => "error-network.evidence".to_owned(),
+            (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else {
         format!("case.{case_id}.tick.{tick}")
@@ -1686,6 +1741,800 @@ fn apply_flow4_mcp_identity(state: &mut ScenarioState) {
     state.draft = "Continue the paused conversation.".to_owned();
     state.transcript = "The conversation is waiting for MCP capabilities.".to_owned();
     state.state_hash = state_hash(state);
+}
+
+const FLOW5_TASK: &str = "Finish the release notes without losing the current work.";
+const FLOW5_ORIGIN: &str = "Recovery · paused conversation";
+const FLOW5_PARTIAL: &str =
+    "The release notes cover the auth race fix, the retry window change, and one open risk…";
+const FLOW5_DRAFT: &str = "Keep the risk note short before we publish.";
+const FLOW5_PENDING: &str = "pending.network.release-notes";
+const FLOW5_TIMER_OWNER: &str = "timer.network.backoff";
+
+fn apply_flow5_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.recovery".to_owned();
+    state.transcript_id = "transcript.recovery".to_owned();
+    state.session_id = "session.recovery.1".to_owned();
+    state.turn_id = "turn.recovery.1".to_owned();
+    state.user_task = FLOW5_TASK.to_owned();
+    state.visible_origin = FLOW5_ORIGIN.to_owned();
+    state.draft = FLOW5_DRAFT.to_owned();
+    state.transcript = format!(
+        "You · Summarize the remaining release notes and the still-open risks.\n{FLOW5_PARTIAL}"
+    );
+    state.partial_response = FLOW5_PARTIAL.to_owned();
+    state.paused_activity_id = FLOW5_PENDING.to_owned();
+    state.submitted_prompt =
+        Some("Summarize the remaining release notes and the still-open risks.".to_owned());
+    state.state_hash = state_hash(state);
+}
+
+fn copy_flow5_identity(from: &ScenarioState, to: &mut ScenarioState) {
+    to.conversation_id = from.conversation_id.clone();
+    to.transcript_id = from.transcript_id.clone();
+    to.session_id = from.session_id.clone();
+    to.turn_id = from.turn_id.clone();
+    to.user_task = from.user_task.clone();
+    to.visible_origin = from.visible_origin.clone();
+    to.draft = from.draft.clone();
+    to.transcript = from.transcript.clone();
+    to.partial_response = from.partial_response.clone();
+    to.paused_activity_id = from.paused_activity_id.clone();
+    to.submitted_prompt = from.submitted_prompt.clone();
+    to.selection = from.selection.clone();
+    to.pending_action = from.pending_action.clone();
+    to.return_policy = from.return_policy.clone();
+    to.state_hash = state_hash(to);
+}
+
+fn turn_error_retry() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "turn-error",
+        vec!["chat-turn", "turn-error"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "retry-reply",
+        "turn-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "turn-error"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = None;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.turn-error.retry".to_owned(),
+        label: "Retry reply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "successful turn retry restores the same conversation with a new reply".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.turn.retry.1".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.turn.retry",
+        "turn-recovery",
+        "simulated-success",
+        "one manual turn retry restored the conversation shell",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn turn_error_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "turn-error",
+        vec!["chat-turn", "turn-error"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "cancel-keep-failure",
+        "turn-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "turn-recovery".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.turn-error.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel keeps the partial reply and failure record in place".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.turn.cancel.1".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.turn.cancel",
+        "turn-recovery",
+        "cancelled-without-retry",
+        "cancel preserved the interrupted turn without a second request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_offline_review_setting() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "error-network", "connect-provider"];
+    let mut before = state(
+        "error-network",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "network-offline",
+        "review-setting",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.selection = "offline".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        FLOW5_DRAFT,
+        "network-offline",
+        "openai",
+        "provider-catalogue",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "provider-catalogue".to_owned();
+    after.selection = "openai".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.review-setting".to_owned(),
+        label: "Review network setting".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "offline recovery opens connection review with the paused model action as origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.offline.0".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.offline.review",
+        "connection-inspection",
+        "no-submit",
+        "review network setting opened without a provider attempt",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_offline_resume() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "error-network", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "network-offline",
+        "openai",
+        "provider-catalogue",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "error-network",
+        origin,
+        FLOW5_DRAFT,
+        "network-offline",
+        "offline",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "network-recovery".to_owned();
+    after.selection = "offline".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "provider resume policy returns to the exact offline recovery origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.offline.resume.0".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.offline.resume",
+        "connection-inspection",
+        "no-submit",
+        "return restored offline recovery without submitting the paused request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_backoff_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "automatic-backoff",
+        "recovery-wait",
+        Some(FLOW5_TIMER_OWNER),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_TIMER_OWNER.to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "manual-retry",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = Some(FLOW5_PENDING.to_owned());
+    after.focus = "network-recovery".to_owned();
+    after.selection = "manual-retry".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.cancel-backoff".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel stops the single backoff owner and returns a stable preserved origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.backoff.cancel".to_owned(),
+        owner_id: FLOW5_TIMER_OWNER.to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.backoff.cancel",
+        "provider-attempt",
+        "cancelled",
+        "cancel stopped future automatic network attempts",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_backoff_exhaust() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "automatic-backoff",
+        "recovery-wait",
+        Some(FLOW5_TIMER_OWNER),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_TIMER_OWNER.to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "manual-retry",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = Some(FLOW5_PENDING.to_owned());
+    after.focus = "network-recovery".to_owned();
+    after.selection = "manual-retry".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.backoff-tick".to_owned(),
+        label: "Automatic backoff".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "the single backoff owner reaches the declared attempt limit and stabilizes"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.backoff.3".to_owned(),
+        owner_id: FLOW5_TIMER_OWNER.to_owned(),
+        count: 3,
+        outcome: "exhausted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.backoff.exhaust",
+        "provider-attempt",
+        "exhausted",
+        "bounded network backoff exhausted without further automatic activity",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_backoff_race_retry_wins() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "automatic-backoff",
+        "recovery-wait",
+        Some(FLOW5_TIMER_OWNER),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_TIMER_OWNER.to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = None;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.retry-now".to_owned(),
+        label: "Retry now".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "same-tick retry-now wins once; timer expiry becomes inert".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.race.retry".to_owned(),
+        owner_id: FLOW5_TIMER_OWNER.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.race.retry",
+        "provider-attempt",
+        "one-winner",
+        "retry-now and timer expiry raced; only retry-now produced a successor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_backoff_race_cancel_wins() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "automatic-backoff",
+        "recovery-wait",
+        Some(FLOW5_TIMER_OWNER),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_TIMER_OWNER.to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "manual-retry",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = Some(FLOW5_PENDING.to_owned());
+    after.focus = "network-recovery".to_owned();
+    after.selection = "manual-retry".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.cancel-backoff".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "same-tick cancel wins once; timer expiry becomes inert".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.race.cancel".to_owned(),
+        owner_id: FLOW5_TIMER_OWNER.to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.race.cancel",
+        "provider-attempt",
+        "one-winner",
+        "cancel and timer expiry raced; only cancel produced a successor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_backoff_snapshot() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Stable snapshot of automatic backoff for visual/case evidence (self-loop tick).
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-backoff",
+        "automatic-backoff",
+        "recovery-wait",
+        Some(FLOW5_TIMER_OWNER),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_TIMER_OWNER.to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.backoff-tick".to_owned(),
+        label: "Automatic backoff".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "the single backoff owner remains active within the attempt limit".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.backoff.2".to_owned(),
+        owner_id: FLOW5_TIMER_OWNER.to_owned(),
+        count: 1,
+        outcome: "waiting".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.backoff.snapshot",
+        "provider-attempt",
+        "waiting",
+        "deterministic backoff snapshot without side-effect mutation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_evidence_snapshot() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "error-network"],
+        FLOW5_DRAFT,
+        "network-evidence",
+        "evidence",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "evidence".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.show-evidence".to_owned(),
+        label: "Show evidence".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "evidence discloses attempts and endpoint detail on request".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.evidence.0".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.evidence.snapshot",
+        "disclosure",
+        "expanded",
+        "technical evidence disclosed without resubmitting the paused request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_check_connection() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "error-network", "connect-provider"];
+    let mut before = state(
+        "error-network",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "network-check",
+        "check-connection",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        FLOW5_DRAFT,
+        "network-check",
+        "openai",
+        "provider-catalogue",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "provider-catalogue".to_owned();
+    after.selection = "openai".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-network.check-connection".to_owned(),
+        label: "Check connection".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "connection inspection opens with the failed model action as origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.check.0".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.check-connection",
+        "connection-inspection",
+        "no-submit",
+        "check connection did not submit the paused request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn network_check_connection_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "error-network", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "network-check",
+        "openai",
+        "provider-catalogue",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "error-network",
+        origin,
+        FLOW5_DRAFT,
+        "network-check",
+        "check-connection",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "network-recovery".to_owned();
+    after.selection = "check-connection".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "connection inspection returns to the same paused network recovery without resubmit"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.network.check.return.0".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.network.check-connection.return",
+        "connection-inspection",
+        "no-submit",
+        "return restored network recovery without submitting the paused request",
+    );
+    (before, after, action, transition, attempt, effect)
 }
 
 fn login_cancel() -> (

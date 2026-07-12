@@ -165,6 +165,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "connect-oauth",
             "connect-connected",
             "mcp",
+            "turn-error",
+            "error-network",
         ]
         .contains(&screen.id)
         {

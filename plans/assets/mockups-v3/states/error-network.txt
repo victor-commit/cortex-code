@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✗ Cortex could not reach the provider                                                                               
+    Your work and partial output are saved.                                                                             
+    Transcript, draft, and completed work stay readable.                                                                
+                                                                                                                        
+    › Evidence  [enter] Expand technical details                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Network recovery                                                                                                 │  
+  │ Retry the paused request or inspect the connection.                                                              │  
+  │ › [enter] Retry request                                                                                          │  
+  │   [d] Check connection                                                                                           │  
+  │   [esc] Cancel · keep paused request                                                                             │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

@@ -266,7 +266,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "todo-list",
@@ -595,7 +595,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "error-context",

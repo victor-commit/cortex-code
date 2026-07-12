@@ -613,6 +613,8 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             flow3_fixture(step.screen_id)
                         } else if manifest.name == "provider-and-mcp-connection" {
                             flow4_fixture(step.screen_id)
+                        } else if manifest.name == "recovery" {
+                            flow5_fixture(step.screen_id)
                         } else {
                             fixture_id
                         };
@@ -993,6 +995,17 @@ fn flow4_fixture(screen_id: &str) -> &'static str {
         "connect-connected" => "gate.provider-and-mcp.connect-connected",
         "mcp" => "gate.provider-and-mcp.mcp",
         _ => unreachable!("provider-and-mcp-connection contains only its six canonical frames"),
+    }
+}
+
+fn flow5_fixture(screen_id: &str) -> &'static str {
+    match screen_id {
+        "turn-error" => "gate.recovery.turn-error",
+        "error-network" => "gate.recovery.error-network",
+        "rate-limit" => "gate.recovery.rate-limit",
+        "chat-turn" => "gate.recovery.chat-turn",
+        "checkpoint-undo" => "gate.recovery.checkpoint-undo",
+        _ => unreachable!("recovery contains only its five canonical frames"),
     }
 }
 
