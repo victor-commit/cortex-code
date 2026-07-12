@@ -266,7 +266,8 @@ fn render_turn_error(
             fixture_id,
             "secondary-action",
             "action.turn-error.inspect-connection",
-            reference(17, 4, 58),
+            // Visible inspect-copy lives on canvas row 18 (row 17 is draft preservation).
+            reference(18, 4, 58),
             "summary",
             Some(action(
                 "action.turn-error.inspect-connection",
