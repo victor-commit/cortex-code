@@ -181,6 +181,48 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
         },
         PilotGateBridge {
             flow: "work-configuration",
+            case_id: "onboarding-unusable-model",
+            tick: 1,
+            expected_before: "model-picker",
+            expected_after: "connect-provider",
+            expected_kind: "direct",
+            expected_action: "action.model-picker.connect",
+            evidence_txt: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.txt",
+            ),
+            evidence_png: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.png",
+            ),
+            audit_json: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.json",
+            ),
+            vision_evidence: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/vision-evidence.md",
+            ),
+        },
+        PilotGateBridge {
+            flow: "work-configuration",
+            case_id: "model-picker-connect",
+            tick: 1,
+            expected_before: "model-picker",
+            expected_after: "connect-provider",
+            expected_kind: "direct",
+            expected_action: "action.model-picker.connect",
+            evidence_txt: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.txt",
+            ),
+            evidence_png: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.png",
+            ),
+            audit_json: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.json",
+            ),
+            vision_evidence: Some(
+                "evidence/v3-fix-flow3-onboarding-origin-recovery/vision-evidence.md",
+            ),
+        },
+        PilotGateBridge {
+            flow: "work-configuration",
             case_id: "model-picker-cancel",
             tick: 1,
             expected_before: "model-picker",

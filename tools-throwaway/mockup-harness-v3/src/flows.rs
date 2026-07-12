@@ -609,14 +609,26 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                     let (fixture_id, conversation_id, transcript_id, session_id, turn_id, user_task, visible_origin, preservation_fields) =
                         storyboard_identity(manifest.name);
                     for step in &mut manifest.steps {
-                        step.fixture_id = fixture_id;
+                        step.fixture_id = if manifest.name == "work-configuration" {
+                            flow3_fixture(step.screen_id)
+                        } else {
+                            fixture_id
+                        };
                         step.conversation_id = conversation_id;
                         step.transcript_id = transcript_id;
                         step.session_id = session_id;
                         step.turn_id = turn_id;
                         step.user_task = user_task;
-                        step.visible_origin = visible_origin;
-                        step.preservation_fields = preservation_fields;
+                        step.visible_origin = if manifest.name == "work-configuration" {
+                            "Work configuration · onboarding"
+                        } else {
+                            visible_origin
+                        };
+                        step.preservation_fields = if manifest.name == "work-configuration" {
+                            WORK_CONFIGURATION_FIELDS
+                        } else {
+                            preservation_fields
+                        };
                     }
                 }
                 manifests
@@ -768,6 +780,18 @@ pub fn validate_flow_manifests(
                     step.screen_id
                 ));
             }
+            if manifest.name == "work-configuration"
+                && (step.fixture_id != flow3_fixture(step.screen_id)
+                    || step.visible_origin != "Work configuration · onboarding"
+                    || !WORK_CONFIGURATION_FIELDS
+                        .iter()
+                        .all(|field| step.preservation_fields.contains(field)))
+            {
+                return Err(format!(
+                    "work-configuration fixture or origin continuity mismatch for {}",
+                    step.screen_id
+                ));
+            }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
                     if step.expected_next_frame != next_step.screen_id {
@@ -869,6 +893,29 @@ const DAILY_WORK_FIELDS: &[&str] = &[
     "draft",
     "scroll_anchor",
 ];
+const WORK_CONFIGURATION_FIELDS: &[&str] = &[
+    "conversation_id",
+    "transcript_id",
+    "session_id",
+    "turn_id",
+    "user_task",
+    "visible_origin",
+    "model_choice",
+    "pending_action",
+    "return_policy",
+];
+
+fn flow3_fixture(screen_id: &str) -> &'static str {
+    match screen_id {
+        "onboarding" => "gate.work-configuration.onboarding",
+        "model-picker" => "gate.work-configuration.model-picker",
+        "agent-picker" => "gate.work-configuration.agent-picker",
+        "mode-switch" => "gate.work-configuration.mode-switch",
+        "session-picker" => "gate.work-configuration.session-picker",
+        "timeline" => "gate.work-configuration.timeline",
+        _ => unreachable!("work-configuration contains only its six canonical frames"),
+    }
+}
 
 fn storyboard_identity(
     name: &str,

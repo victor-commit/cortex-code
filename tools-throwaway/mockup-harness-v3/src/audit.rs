@@ -76,6 +76,15 @@ pub struct WorkStyleEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelChoiceEvidence {
+    pub applied: String,
+    pub pending: Option<String>,
+    pub origin: String,
+    pub pending_action: Option<String>,
+    pub return_policy: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConversationIdentity {
     pub conversation_id: String,
     pub transcript_id: String,
@@ -106,6 +115,7 @@ pub struct AuditDocument {
     pub events: Vec<SemanticEvent>,
     pub transitions: Vec<TransitionTrace>,
     pub work_style: Option<WorkStyleEvidence>,
+    pub model_choice: Option<ModelChoiceEvidence>,
     pub conversation: Option<ConversationIdentity>,
 }
 
@@ -247,6 +257,25 @@ impl AuditDocument {
                 return Err("pending work-style evidence must be readable".to_owned());
             }
         }
+        if let Some(model_choice) = &self.model_choice {
+            if model_choice.applied.trim().is_empty()
+                || model_choice.origin.trim().is_empty()
+                || model_choice.return_policy.trim().is_empty()
+                || model_choice
+                    .pending
+                    .as_deref()
+                    .is_some_and(|pending| pending.trim().is_empty())
+                || model_choice
+                    .pending_action
+                    .as_deref()
+                    .is_some_and(|action| action.trim().is_empty())
+            {
+                return Err(
+                    "model-choice evidence needs an applied value, origin, action, and return policy"
+                        .to_owned(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -286,6 +315,27 @@ impl AuditDocument {
                     None => output.push_str("null"),
                 }
                 field(&mut output, "access_scope", &work_style.access_scope);
+                output.push('}');
+            }
+            None => output.push_str("null"),
+        }
+        output.push_str(",\"model_choice\":");
+        match &self.model_choice {
+            Some(model_choice) => {
+                output.push('{');
+                raw_field(&mut output, "applied", &model_choice.applied);
+                output.push_str(",\"pending\":");
+                match &model_choice.pending {
+                    Some(pending) => quote(&mut output, pending),
+                    None => output.push_str("null"),
+                }
+                field(&mut output, "origin", &model_choice.origin);
+                optional_field(
+                    &mut output,
+                    "pending_action",
+                    model_choice.pending_action.as_deref(),
+                );
+                field(&mut output, "return_policy", &model_choice.return_policy);
                 output.push('}');
             }
             None => output.push_str("null"),
@@ -560,11 +610,148 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         events,
         transitions: vec![transition],
         work_style: None,
+        model_choice: None,
         conversation,
     };
     document.validate()?;
     let render_hash = sha256_hex(document.render_txt().as_bytes());
     validate_vision_hash(&render_hash, &render_hash)?;
+    Ok(document)
+}
+
+pub(crate) fn blocked_model_recovery_audit(
+    fixture_id: &str,
+    visible_origin: &str,
+    origin: &str,
+    return_policy: &str,
+) -> Result<AuditDocument, String> {
+    let screen_id = "connect-provider";
+    let statusline = StatusLine::new("~/project", "main", "Claude Sonnet 4.5")?;
+    ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
+    let layout = SurfaceLayout::for_surface(Surface::ActionDock);
+    let dock_row = layout
+        .action_dock()
+        .expect("connect-provider uses the action dock")
+        .y;
+    let mut canvas = Canvas::new();
+    canvas.write(3, 4, visible_origin, TextStyle::muted())?;
+    canvas.write(
+        5,
+        4,
+        "GPT-5.2 Codex needs a provider connection.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        7,
+        4,
+        "Your pending model choice and draft are preserved.",
+        TextStyle::text(),
+    )?;
+    let dock = DecisionDock::new(
+        Surface::ActionDock,
+        "Connect this model provider?",
+        "Connection setup returns to the same model choice.",
+        "Connect provider",
+    )?;
+    for (offset, line) in dock.render()?.into_iter().enumerate() {
+        canvas.write(dock_row + offset as u16, 2, &line.text, line.style)?;
+    }
+    canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.start".to_owned(),
+        label: "Connect provider".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let candidates = vec![
+        candidate(
+            screen_id,
+            fixture_id,
+            "origin",
+            "blocked-model-origin",
+            RenderRef {
+                row: 3,
+                start: 4,
+                end: 4 + visible_origin.chars().count() as u16,
+            },
+        ),
+        candidate(
+            screen_id,
+            fixture_id,
+            "blocker",
+            "gpt-5-2-codex-needs-provider",
+            RenderRef {
+                row: 5,
+                start: 4,
+                end: 48,
+            },
+        ),
+        candidate(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "pending-model-and-draft",
+            RenderRef {
+                row: 7,
+                start: 4,
+                end: 54,
+            },
+        ),
+        candidate(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.connect-provider.start",
+            RenderRef {
+                row: dock_row + 2,
+                start: 2,
+                end: 42,
+            },
+        ),
+        candidate(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "main",
+            RenderRef {
+                row: CANVAS_ROWS - 1,
+                start: 2,
+                end: 41,
+            },
+        ),
+    ];
+    let events = candidates
+        .iter()
+        .map(|candidate| SemanticEvent {
+            identity: candidate.identity.clone(),
+            action: (candidate.identity.family == "primary-action").then(|| action.clone()),
+        })
+        .collect();
+    let document = AuditDocument {
+        screen_id: screen_id.to_owned(),
+        fixture_id: fixture_id.to_owned(),
+        styled_cells: canvas.into_cells(),
+        candidates,
+        events,
+        transitions: vec![TransitionTrace {
+            action_id: action.action_id,
+            from_screen_id: screen_id.to_owned(),
+            to_screen_id: "connect-method".to_owned(),
+            kind: "direct".to_owned(),
+            path: "provider setup starts while preserving the blocked model origin".to_owned(),
+        }],
+        work_style: None,
+        model_choice: Some(ModelChoiceEvidence {
+            applied: "Claude Sonnet 4.5".to_owned(),
+            pending: Some("GPT-5.2 Codex".to_owned()),
+            origin: origin.to_owned(),
+            pending_action: Some("Connect provider".to_owned()),
+            return_policy: return_policy.to_owned(),
+        }),
+        conversation: None,
+    };
+    document.validate()?;
     Ok(document)
 }
 

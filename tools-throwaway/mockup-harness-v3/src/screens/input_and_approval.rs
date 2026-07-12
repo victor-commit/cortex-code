@@ -101,6 +101,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
         work_style: None,
+        model_choice: None,
         conversation: (fixture_id == FLOW2_FIXTURE).then(|| crate::audit::ConversationIdentity {
             conversation_id: "conversation.retry-review".to_owned(),
             transcript_id: "transcript.retry-review".to_owned(),

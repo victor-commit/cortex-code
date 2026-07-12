@@ -183,9 +183,42 @@ fn onboarding_scenarios_preserve_origin_and_route_blocked_choices_safely() {
     assert_eq!(blocked.actions[0].action_id, "action.model-picker.connect");
     assert_eq!(blocked.before.draft, blocked.after.draft);
     assert_eq!(
+        blocked.after.pending_action.as_deref(),
+        Some("pending.model.gpt-5-2-codex")
+    );
+    assert_eq!(blocked.after.return_policy, "return-to-model-picker");
+    assert_eq!(
         blocked.before.queued_follow_up,
         blocked.after.queued_follow_up
     );
+    let recovery_action = blocked
+        .audit
+        .events
+        .iter()
+        .filter_map(|event| event.action.as_ref())
+        .find(|action| action.label == "Connect provider")
+        .expect("the resulting blocked-model frame must expose Connect provider");
+    assert_eq!(recovery_action.action_id, "action.connect-provider.start");
+    assert!(
+        blocked.audit.transitions.iter().any(|transition| {
+            transition.action_id == recovery_action.action_id
+                && transition.from_screen_id == "connect-provider"
+                && transition.to_screen_id == "connect-method"
+        }),
+        "the visible recovery must begin provider connection without losing its origin"
+    );
+    let continuation = blocked
+        .audit
+        .model_choice
+        .as_ref()
+        .expect("the recovery frame must retain model-choice continuation metadata");
+    assert_eq!(continuation.pending.as_deref(), Some("GPT-5.2 Codex"));
+    assert_eq!(continuation.origin, "Current conversation");
+    assert_eq!(
+        continuation.pending_action.as_deref(),
+        Some("Connect provider")
+    );
+    assert_eq!(continuation.return_policy, "Return to model choices");
 
     let first_run_back =
         replay_case("onboarding-back", 1).expect("first-run Back must replay safely");
@@ -200,4 +233,19 @@ fn onboarding_scenarios_preserve_origin_and_route_blocked_choices_safely() {
         replay_case("onboarding-unusable-model", 1).expect("unusable model bridge must replay");
     assert_eq!(unusable.after.screen_id, "connect-provider");
     assert_eq!(unusable.before.draft, unusable.after.draft);
+    assert_eq!(
+        unusable.before.visible_origin,
+        "Work configuration · onboarding"
+    );
+    assert_eq!(
+        unusable.after.visible_origin,
+        "Work configuration · onboarding"
+    );
+    let continuation = unusable
+        .audit
+        .model_choice
+        .as_ref()
+        .expect("the onboarding recovery frame must retain its model choice");
+    assert_eq!(continuation.origin, "Onboarding");
+    assert_eq!(continuation.pending.as_deref(), Some("GPT-5.2 Codex"));
 }

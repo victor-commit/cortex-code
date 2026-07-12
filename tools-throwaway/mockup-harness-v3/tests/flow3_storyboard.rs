@@ -1,9 +1,5 @@
 use mockup_harness_v3::{
-    audit::audit_screen,
-    flow_manifests,
-    scenario::replay_case,
-    FlowManifest,
-    TransitionKind,
+    audit::audit_screen, flow_manifests, scenario::replay_case, FlowManifest, TransitionKind,
 };
 
 fn work_configuration() -> &'static FlowManifest {
@@ -39,7 +35,10 @@ fn work_configuration_storyboard_declares_truthful_edges_and_returns() {
             .iter()
             .map(|step| step.screen_id)
             .collect::<Vec<_>>(),
-        expected.iter().map(|(screen, _, _)| *screen).collect::<Vec<_>>()
+        expected
+            .iter()
+            .map(|(screen, _, _)| *screen)
+            .collect::<Vec<_>>()
     );
 
     for (step, (screen_id, next_frame, kind)) in flow.steps.iter().zip(expected) {
@@ -53,7 +52,7 @@ fn work_configuration_storyboard_declares_truthful_edges_and_returns() {
         assert!(!step.cancel_return.is_empty());
         assert!(!step.acceptance_checks.is_empty());
 
-        let audit = audit_screen(screen_id, &format!("gate.work-configuration.{screen_id}"))
+        let audit = audit_screen(screen_id, step.fixture_id)
             .unwrap_or_else(|error| panic!("{screen_id} must render: {error}"));
         audit
             .validate()
@@ -79,8 +78,7 @@ fn work_configuration_storyboard_declares_truthful_edges_and_returns() {
         } else {
             assert!(
                 audit.transitions.iter().any(|transition| {
-                    transition.kind == "cancel"
-                        || transition.to_screen_id == step.success_return
+                    transition.kind == "cancel" || transition.to_screen_id == step.success_return
                 }),
                 "{screen_id} illustrative detour must expose its return path"
             );
@@ -89,16 +87,82 @@ fn work_configuration_storyboard_declares_truthful_edges_and_returns() {
 }
 
 #[test]
+fn published_onboarding_and_model_frames_bind_the_declared_origin_and_continuation() {
+    let flow = work_configuration();
+    let onboarding = &flow.steps[0];
+    let model_picker = &flow.steps[1];
+
+    assert_eq!(onboarding.fixture_id, "gate.work-configuration.onboarding");
+    assert_eq!(
+        model_picker.fixture_id,
+        "gate.work-configuration.model-picker"
+    );
+    assert_eq!(onboarding.visible_origin, "Work configuration · onboarding");
+    assert_eq!(
+        model_picker.visible_origin,
+        "Work configuration · onboarding"
+    );
+    for field in [
+        "visible_origin",
+        "model_choice",
+        "pending_action",
+        "return_policy",
+    ] {
+        assert!(
+            onboarding.preservation_fields.contains(&field),
+            "onboarding must preserve {field}"
+        );
+        assert!(
+            model_picker.preservation_fields.contains(&field),
+            "model-picker must preserve {field}"
+        );
+    }
+
+    let onboarding_audit = audit_screen(onboarding.screen_id, onboarding.fixture_id)
+        .expect("declared onboarding fixture must render");
+    assert!(onboarding_audit.transitions.iter().any(|transition| {
+        transition.action_id == "action.onboarding.review-models"
+            && transition.to_screen_id == "model-picker"
+            && transition.kind == "direct"
+    }));
+    let onboarding_choice = onboarding_audit
+        .model_choice
+        .as_ref()
+        .expect("onboarding must expose the recommended model continuation");
+    assert_eq!(onboarding_choice.applied, "Claude Sonnet 4.5");
+    assert_eq!(onboarding_choice.pending, None);
+    assert_eq!(onboarding_choice.origin, "Onboarding");
+    assert_eq!(
+        onboarding_choice.pending_action.as_deref(),
+        Some("Review model choices")
+    );
+    assert_eq!(onboarding_choice.return_policy, "Return to onboarding");
+
+    let model_audit = audit_screen(model_picker.screen_id, model_picker.fixture_id)
+        .expect("declared model-picker fixture must render");
+    let model_text = model_audit.render_txt();
+    assert!(model_text.contains("Work configuration · onboarding"));
+    assert!(model_text.contains("Your first conversation is waiting for this choice."));
+    assert!(!model_text.contains("Continue the paused conversation."));
+    let model_choice = model_audit
+        .model_choice
+        .as_ref()
+        .expect("model-picker must expose its pending continuation");
+    assert_eq!(model_choice.applied, "Claude Sonnet 4.5");
+    assert_eq!(model_choice.pending.as_deref(), Some("Claude Opus 4.8"));
+    assert_eq!(model_choice.origin, "Onboarding");
+    assert_eq!(model_choice.pending_action.as_deref(), Some("Apply model"));
+    assert_eq!(model_choice.return_policy, "Return to onboarding");
+}
+
+#[test]
 fn work_configuration_gate_reconciles_one_applied_work_style() {
     let flow = work_configuration();
     let mut applied: Option<String> = None;
 
     for step in &flow.steps {
-        let audit = audit_screen(
-            step.screen_id,
-            &format!("gate.work-configuration.{}", step.screen_id),
-        )
-        .expect("every storyboard frame must produce typed audit evidence");
+        let audit = audit_screen(step.screen_id, step.fixture_id)
+            .expect("every storyboard frame must produce typed audit evidence");
         let work_style = audit
             .work_style
             .as_ref()
@@ -112,17 +176,11 @@ fn work_configuration_gate_reconciles_one_applied_work_style() {
 
         match step.screen_id {
             "agent-picker" | "mode-switch" => {
-                assert_eq!(
-                    work_style.pending.as_deref(),
-                    Some("Autonomous changes")
-                );
+                assert_eq!(work_style.pending.as_deref(), Some("Autonomous changes"));
             }
             _ => assert_eq!(work_style.pending, None),
         }
-        assert_eq!(
-            work_style.access_scope,
-            "asks before editing project files"
-        );
+        assert_eq!(work_style.access_scope, "asks before editing project files");
     }
 }
 
@@ -159,13 +217,9 @@ fn work_configuration_bridges_and_returns_preserve_the_same_origin() {
         replay_case("session-timeline-back", 1).expect("timeline Back must be replayable");
     assert_eq!(timeline_back.before.screen_id, "timeline");
     assert_eq!(timeline_back.after.screen_id, "session-picker");
-    assert_eq!(
-        timeline_back.before.draft,
-        timeline_back.after.draft
-    );
+    assert_eq!(timeline_back.before.draft, timeline_back.after.draft);
 
-    let resume =
-        replay_case("session-resume-latest", 1).expect("latest resume must be replayable");
+    let resume = replay_case("session-resume-latest", 1).expect("latest resume must be replayable");
     assert_eq!(resume.before.screen_id, "session-picker");
     assert_eq!(resume.after.screen_id, "chat-turn");
     assert_eq!(resume.after.work_style, "Careful edits");

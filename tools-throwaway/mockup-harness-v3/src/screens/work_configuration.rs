@@ -5,15 +5,15 @@
 //! human-readable choices, then adds detail only for the focused pending row.
 
 use crate::{
-    Surface,
     audit::{
-        ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
-        SemanticEvent, TransitionTrace, WorkStyleEvidence,
+        ActionEvidence, AuditDocument, Canvas, Identity, ModelChoiceEvidence, RenderRef,
+        SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
         tokens::TextStyle,
     },
+    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -80,6 +80,43 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }),
             _ => None,
         },
+        model_choice: match screen_id {
+            "onboarding" => Some(ModelChoiceEvidence {
+                applied: "Claude Sonnet 4.5".to_owned(),
+                pending: None,
+                origin: "Onboarding".to_owned(),
+                pending_action: Some(if is_gate_fixture(fixture_id) {
+                    "Review model choices".to_owned()
+                } else {
+                    "Continue".to_owned()
+                }),
+                return_policy: "Return to onboarding".to_owned(),
+            }),
+            "model-picker" => Some(ModelChoiceEvidence {
+                applied: "Claude Sonnet 4.5".to_owned(),
+                pending: Some(if fixture_id.contains("blocked") {
+                    "GPT-5.2 Codex".to_owned()
+                } else {
+                    "Claude Opus 4.8".to_owned()
+                }),
+                origin: if is_onboarding_origin(fixture_id) {
+                    "Onboarding".to_owned()
+                } else {
+                    "Current conversation".to_owned()
+                },
+                pending_action: Some(if fixture_id.contains("blocked") {
+                    "Connect provider".to_owned()
+                } else {
+                    "Apply model".to_owned()
+                }),
+                return_policy: if is_onboarding_origin(fixture_id) {
+                    "Return to onboarding".to_owned()
+                } else {
+                    "Return to conversation".to_owned()
+                },
+            }),
+            _ => None,
+        },
         conversation: None,
     })
 }
@@ -89,7 +126,7 @@ fn render_onboarding(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    let gate_origin = fixture_id.starts_with("gate.work-configuration");
+    let gate_origin = is_gate_fixture(fixture_id);
     for (offset, line) in CODE_BANNER.iter().enumerate() {
         canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
     }
@@ -356,13 +393,23 @@ fn render_model_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let blocked = fixture_id.contains("blocked");
-    let gate_origin = fixture_id.starts_with("gate.work-configuration");
-    canvas.write(
-        4,
-        4,
-        "You · Continue the paused conversation.",
-        TextStyle::bright(),
-    )?;
+    let gate_origin = is_onboarding_origin(fixture_id);
+    if gate_origin {
+        canvas.write(3, 4, "Work configuration · onboarding", TextStyle::muted())?;
+        canvas.write(
+            4,
+            4,
+            "Your first conversation is waiting for this choice.",
+            TextStyle::bright(),
+        )?;
+    } else {
+        canvas.write(
+            4,
+            4,
+            "You · Continue the paused conversation.",
+            TextStyle::bright(),
+        )?;
+    }
     canvas.write(7, 4, "Choose a model", TextStyle::bright())?;
     canvas.write(
         9,
@@ -622,7 +669,7 @@ fn render_agent_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let unchanged = fixture_id.contains("unchanged");
-    let gate_origin = fixture_id.starts_with("gate.work-configuration");
+    let gate_origin = is_gate_fixture(fixture_id);
     let selected = if unchanged {
         "Quick implementation"
     } else {
@@ -1214,6 +1261,14 @@ fn render_mode_switch_refused(
             ),
         ],
     ))
+}
+
+fn is_gate_fixture(fixture_id: &str) -> bool {
+    fixture_id.starts_with("gate.work-configuration.")
+}
+
+fn is_onboarding_origin(fixture_id: &str) -> bool {
+    is_gate_fixture(fixture_id) || fixture_id.starts_with("case.onboarding-unusable-model.")
 }
 
 fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {

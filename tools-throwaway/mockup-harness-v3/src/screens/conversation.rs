@@ -114,6 +114,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 access_scope: access_scope.to_owned(),
             }
         }),
+        model_choice: None,
         conversation: Some(if flow2_storyboard {
             crate::audit::ConversationIdentity {
                 conversation_id: "conversation.retry-review".to_owned(),

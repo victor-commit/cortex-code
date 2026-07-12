@@ -5,15 +5,15 @@
 //! temporary detail view that always returns to that exact preview.
 
 use crate::{
-    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
         tokens::TextStyle,
     },
+    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -54,6 +54,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             pending: None,
             access_scope: "asks before editing project files".to_owned(),
         }),
+        model_choice: None,
         conversation: None,
     })
 }

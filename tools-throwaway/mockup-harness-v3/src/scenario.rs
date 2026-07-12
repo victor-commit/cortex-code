@@ -609,7 +609,15 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     } else {
         audit_fixture
     };
-    let audit = audit_screen(&after.screen_id, &audit_fixture)?;
+    let audit = if after.screen_id == "connect-provider"
+        && matches!(
+            case_id,
+            "model-picker-connect" | "onboarding-unusable-model"
+        ) {
+        blocked_model_recovery_audit(case_id, &after)?
+    } else {
+        audit_screen(&after.screen_id, &audit_fixture)?
+    };
     let diff = diff_evidence(case_id, &after);
     let replay = CaseReplay {
         case_id: case_id.to_owned(),
@@ -911,7 +919,7 @@ fn onboarding_unusable_model() -> (
     AttemptEvidence,
     SideEffectEvidence,
 ) {
-    let before = state(
+    let mut before = state(
         "model-picker",
         vec!["onboarding", "model-picker"],
         "Start with a safe model.",
@@ -922,7 +930,8 @@ fn onboarding_unusable_model() -> (
         "return-to-onboarding",
         0,
     );
-    let after = state(
+    apply_flow3_onboarding_identity(&mut before);
+    let mut after = state(
         "connect-provider",
         vec!["onboarding", "model-picker"],
         "Start with a safe model.",
@@ -933,6 +942,7 @@ fn onboarding_unusable_model() -> (
         "return-to-model-picker",
         1,
     );
+    apply_flow3_onboarding_identity(&mut after);
     let action = ActionEvidence {
         action_id: "action.model-picker.connect".to_owned(),
         label: "Connect provider".to_owned(),
@@ -1137,6 +1147,29 @@ fn model_picker_connect() -> (
         "connection was requested without applying the unavailable model",
     );
     (before, after, action, transition, attempt, effect)
+}
+
+fn blocked_model_recovery_audit(
+    case_id: &str,
+    state: &ScenarioState,
+) -> Result<AuditDocument, String> {
+    let fixture_id = format!("case.{case_id}.tick.{}", state.virtual_tick);
+    let origin = if case_id == "onboarding-unusable-model" {
+        "Onboarding"
+    } else {
+        "Current conversation"
+    };
+    let return_policy = if case_id == "onboarding-unusable-model" {
+        "Return to onboarding"
+    } else {
+        "Return to model choices"
+    };
+    crate::audit::blocked_model_recovery_audit(
+        &fixture_id,
+        &state.visible_origin,
+        origin,
+        return_policy,
+    )
 }
 
 fn work_style_unchanged() -> (
@@ -3323,6 +3356,16 @@ fn apply_flow2_identity(state: &mut ScenarioState) {
     state.turn_id = "turn.retry-review.18".to_owned();
     state.user_task = "Check the retry path before we merge.".to_owned();
     state.visible_origin = "Input and approval · paused conversation".to_owned();
+}
+
+fn apply_flow3_onboarding_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.configuration".to_owned();
+    state.transcript_id = "transcript.configuration".to_owned();
+    state.session_id = "session.configuration.1".to_owned();
+    state.turn_id = "turn.configuration.1".to_owned();
+    state.user_task = "Choose a model and how Code should work.".to_owned();
+    state.visible_origin = "Work configuration · onboarding".to_owned();
+    state.state_hash = state_hash(state);
 }
 
 #[allow(clippy::too_many_arguments)]
