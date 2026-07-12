@@ -4,9 +4,9 @@
 //! deterministic bridge replays, published aliases, and the pilot vision
 //! records. It intentionally does not render or mutate any canonical screen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::audit::{audit_screen, sha256_hex};
 use crate::flows::{flow_manifests, FlowManifest, FlowStep, TransitionKind};
@@ -95,6 +95,112 @@ pub struct PilotGateReport {
 
 const INTEGRATION_REPORT_RELATIVE_PATH: &str =
     "evidence/v3-gate-flows-1-3-integration/integration-report.md";
+const REVIEW_MODEL: &str = "anthropic/claude-opus-4.8-fast";
+const FACTORY_SESSION_ROOT: &str = "/root/.factory/sessions/-projects-cortex-code";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReviewProvenance {
+    tool_use_id: String,
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::{read_review_record, source_session_provenance, validate_review_provenance};
+    use std::path::Path;
+
+    #[test]
+    fn source_provenance_recomputes_a_real_review_result() {
+        let record = read_review_record(Path::new(
+            "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/01-daily-work-home.vision.txt",
+        ))
+        .expect("real review record");
+        assert!(source_session_provenance(&record).is_ok());
+    }
+
+    #[test]
+    fn source_provenance_rejects_forged_response_digest() {
+        let mut record = read_review_record(Path::new(
+            "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/01-daily-work-home.vision.txt",
+        ))
+        .expect("real review record");
+        record.insert("response_sha256".to_owned(), "0".repeat(64));
+        assert!(source_session_provenance(&record)
+            .expect_err("forged response digest must fail")
+            .contains("does not match"));
+    }
+
+    #[test]
+    fn source_provenance_rejects_wrong_response_anchor_and_tool_use_id() {
+        let mut record = read_review_record(Path::new(
+            "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/02-daily-work-chat-turn.vision.txt",
+        ))
+        .expect("real review record");
+        record.insert(
+            "response_path".to_owned(),
+            "/root/.factory/sessions/-projects-cortex-code/7060a79b-ccfb-445c-9e82-ee4504b320dc.jsonl#1243"
+                .to_owned(),
+        );
+        assert!(validate_review_provenance(&record)
+            .expect_err("wrong response anchor must fail")
+            .contains("response_path"));
+
+        let mut record = read_review_record(Path::new(
+            "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/02-daily-work-chat-turn.vision.txt",
+        ))
+        .expect("real review record");
+        record.insert("tool_use_id".to_owned(), "call-forged".to_owned());
+        assert!(validate_review_provenance(&record)
+            .expect_err("mismatched tool-use ID must fail")
+            .contains("tool-use ID"));
+    }
+
+    #[test]
+    fn source_provenance_rejects_unbacked_identity_bad_model_path_and_traversal() {
+        let base = read_review_record(Path::new(
+            "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/01-daily-work-home.vision.txt",
+        ))
+        .expect("real review record");
+        let mut record = base.clone();
+        record.insert(
+            "review_session_id".to_owned(),
+            "00000000-0000-4000-8000-000000000000".to_owned(),
+        );
+        assert!(validate_review_provenance(&record)
+            .expect_err("unbacked session must fail")
+            .contains("unavailable"));
+
+        let mut record = base.clone();
+        record.insert("response_sha256".to_owned(), "not-a-hash".to_owned());
+        assert!(validate_review_provenance(&record)
+            .expect_err("malformed response digest must fail")
+            .contains("64-character"));
+
+        let mut record = base.clone();
+        record.insert("model".to_owned(), "forged/model".to_owned());
+        assert!(validate_review_provenance(&record)
+            .expect_err("wrong model must fail")
+            .contains("matching"));
+
+        let mut record = base.clone();
+        record.insert(
+            "artifact_path".to_owned(),
+            "/projects/cortex-code/plans/assets/mockups-v3-gates/daily-work/other.png"
+                .to_owned(),
+        );
+        assert!(validate_review_provenance(&record)
+            .expect_err("wrong artifact path must fail")
+            .contains("matching"));
+
+        let mut record = base;
+        record.insert(
+            "artifact_path".to_owned(),
+            "/projects/cortex-code/plans/assets/mockups-v3-gates/../secret.png".to_owned(),
+        );
+        assert!(validate_review_provenance(&record)
+            .expect_err("path traversal must fail")
+            .contains("artifact path"));
+    }
+}
 
 pub fn validate_review_session_id(session_id: &str) -> Result<(), String> {
     let value = session_id.trim();
@@ -118,6 +224,438 @@ pub fn validate_review_session_id(session_id: &str) -> Result<(), String> {
         return Err("review session ID must be a UUID".to_owned());
     }
     Ok(())
+}
+
+fn validate_response_sha256(value: &str) -> Result<(), String> {
+    if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err("response_sha256 must be a 64-character hexadecimal digest".to_owned());
+    }
+    Ok(())
+}
+
+fn review_session_path(session_id: &str) -> Result<PathBuf, String> {
+    validate_review_session_id(session_id)?;
+    let root = Path::new(FACTORY_SESSION_ROOT);
+    let path = root.join(format!("{session_id}.jsonl"));
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+        || path.parent() != Some(root)
+    {
+        return Err("review session path escapes the Factory session root".to_owned());
+    }
+    Ok(path)
+}
+
+fn json_string_field<'a>(
+    value: &'a std::collections::BTreeMap<String, String>,
+    field: &str,
+) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .map(String::as_str)
+        .ok_or_else(|| format!("review record is missing {field}"))
+}
+
+pub fn validate_review_provenance(
+    review: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    source_session_provenance(review).map(|_| ())
+}
+
+fn source_session_provenance(
+    review: &std::collections::BTreeMap<String, String>,
+) -> Result<ReviewProvenance, String> {
+    let session_id = json_string_field(review, "review_session_id")?;
+    let session_path = review_session_path(session_id)?;
+    let source = fs::read_to_string(&session_path).map_err(|error| {
+        format!(
+            "review source session is unavailable at {}: {error}",
+            session_path.display()
+        )
+    })?;
+    let artifact_path = json_string_field(review, "artifact_path")?;
+    let artifact = Path::new(artifact_path);
+    if !artifact.is_absolute()
+        || artifact
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("artifact path must be absolute and cannot contain traversal".to_owned());
+    }
+    let model = json_string_field(review, "model")?;
+    let expected_response_hash = json_string_field(review, "response_sha256")?;
+    validate_response_sha256(expected_response_hash)?;
+
+    let mut session_start_id = None;
+    let mut invocations = Vec::new();
+    let mut results = Vec::new();
+    for (line_number, line) in source.lines().enumerate() {
+        let record = parse_source_json(line).map_err(|error| {
+            format!(
+                "invalid Factory source session JSON at {} line {}: {error}",
+                session_path.display(),
+                line_number + 1
+            )
+        })?;
+        if let Some(object) = record.as_object() {
+            if object
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|kind| kind == "session_start")
+            {
+                session_start_id = object
+                    .get("id")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned);
+            }
+        }
+        collect_source_records(
+            &record,
+            line_number + 1,
+            &mut invocations,
+            &mut results,
+        );
+    }
+    if session_start_id.as_deref() != Some(session_id) {
+        return Err(format!(
+            "Factory source session ID does not match review_session_id: expected {session_id}, got {}",
+            session_start_id.as_deref().unwrap_or("<missing>")
+        ));
+    }
+    let mut matches = Vec::new();
+    for invocation in invocations {
+        if invocation.name != "openrouter-multimodal___analyze_image"
+            || invocation.image_path != artifact_path
+            || invocation.model != model
+            || invocation.model != REVIEW_MODEL
+        {
+            continue;
+        }
+        for result in &results {
+            if result.tool_use_id == invocation.tool_use_id
+                && !result.is_error
+                && result.content.is_some()
+            {
+                matches.push((
+                    invocation.tool_use_id.clone(),
+                    result.content.clone().unwrap(),
+                    result.source_line,
+                ));
+            }
+        }
+    }
+    if matches.len() != 1 {
+        return Err(format!(
+            "review provenance requires exactly one matching analyze_image invocation/result pair, found {}",
+            matches.len()
+        ));
+    }
+    let (tool_use_id, response, result_line) = matches.remove(0);
+    let actual_response_hash = sha256_hex(response.as_bytes());
+    if actual_response_hash != expected_response_hash {
+        return Err(format!(
+            "response_sha256 does not match the exact source result content: expected {expected_response_hash}, got {actual_response_hash}"
+        ));
+    }
+    if let Some(expected_tool_use_id) = review.get("tool_use_id") {
+        if expected_tool_use_id != &tool_use_id {
+            return Err(format!(
+                "tool-use ID mismatch: expected {expected_tool_use_id}, got {tool_use_id}"
+            ));
+        }
+    }
+    if let Some(response_path) = review.get("response_path") {
+        let (path, line) = response_path
+            .rsplit_once('#')
+            .ok_or_else(|| "response_path must use <session.jsonl>#<line>".to_owned())?;
+        let line = line
+            .parse::<usize>()
+            .map_err(|_| "response_path line must be a positive integer".to_owned())?;
+        if line == 0 || Path::new(path) != session_path || line != result_line {
+            return Err(format!(
+                "response_path does not identify the matching source result: expected {}#{result_line}, got {response_path}",
+                session_path.display()
+            ));
+        }
+    }
+    Ok(ReviewProvenance { tool_use_id })
+}
+
+#[derive(Clone, Debug)]
+struct SourceInvocation {
+    tool_use_id: String,
+    name: String,
+    image_path: String,
+    model: String,
+}
+
+#[derive(Clone, Debug)]
+struct SourceResult {
+    tool_use_id: String,
+    is_error: bool,
+    content: Option<String>,
+    source_line: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum JsonValue {
+    Object(BTreeMap<String, JsonValue>),
+    Array(Vec<JsonValue>),
+    String(String),
+    Bool(bool),
+    Number,
+    Null,
+}
+
+impl JsonValue {
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_object(&self) -> Option<&BTreeMap<String, JsonValue>> {
+        match self {
+            Self::Object(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+fn parse_source_json(line: &str) -> Result<JsonValue, String> {
+    let mut parser = JsonParser {
+        bytes: line.as_bytes(),
+        position: 0,
+    };
+    let value = parser.parse_value()?;
+    parser.skip_whitespace();
+    if parser.position != parser.bytes.len() {
+        return Err("trailing JSON content".to_owned());
+    }
+    Ok(value)
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl JsonParser<'_> {
+    fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.skip_whitespace();
+        match self.bytes.get(self.position).copied() {
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b'"') => self.parse_string().map(JsonValue::String),
+            Some(b't') => self.parse_literal(b"true", JsonValue::Bool(true)),
+            Some(b'f') => self.parse_literal(b"false", JsonValue::Bool(false)),
+            Some(b'n') => self.parse_literal(b"null", JsonValue::Null),
+            Some(character) if character == b'-' || character.is_ascii_digit() => {
+                self.parse_number()
+            }
+            Some(character) => Err(format!("unexpected JSON byte {character:?}")),
+            None => Err("unexpected end of JSON".to_owned()),
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, String> {
+        self.position += 1;
+        let mut object = BTreeMap::new();
+        loop {
+            self.skip_whitespace();
+            if self.bytes.get(self.position) == Some(&b'}') {
+                self.position += 1;
+                return Ok(JsonValue::Object(object));
+            }
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.expect(b':')?;
+            let value = self.parse_value()?;
+            if object.insert(key.clone(), value).is_some() {
+                return Err(format!("duplicate JSON object key {key}"));
+            }
+            self.skip_whitespace();
+            match self.bytes.get(self.position) {
+                Some(b',') => self.position += 1,
+                Some(b'}') => {
+                    self.position += 1;
+                    return Ok(JsonValue::Object(object));
+                }
+                _ => return Err("expected ',' or '}' in JSON object".to_owned()),
+            }
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, String> {
+        self.position += 1;
+        let mut array = Vec::new();
+        loop {
+            self.skip_whitespace();
+            if self.bytes.get(self.position) == Some(&b']') {
+                self.position += 1;
+                return Ok(JsonValue::Array(array));
+            }
+            array.push(self.parse_value()?);
+            self.skip_whitespace();
+            match self.bytes.get(self.position) {
+                Some(b',') => self.position += 1,
+                Some(b']') => {
+                    self.position += 1;
+                    return Ok(JsonValue::Array(array));
+                }
+                _ => return Err("expected ',' or ']' in JSON array".to_owned()),
+            }
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect(b'"')?;
+        let mut output = Vec::new();
+        while let Some(character) = self.bytes.get(self.position).copied() {
+            self.position += 1;
+            match character {
+                b'"' => {
+                    return String::from_utf8(output)
+                        .map_err(|_| "invalid UTF-8 in JSON string".to_owned())
+                }
+                b'\\' => {
+                    let escaped = self
+                        .bytes
+                        .get(self.position)
+                        .copied()
+                        .ok_or_else(|| "unterminated JSON escape".to_owned())?;
+                    self.position += 1;
+                    match escaped {
+                        b'"' => output.push(b'"'),
+                        b'\\' => output.push(b'\\'),
+                        b'/' => output.push(b'/'),
+                        b'b' => output.push(0x08),
+                        b'f' => output.push(0x0c),
+                        b'n' => output.push(b'\n'),
+                        b'r' => output.push(b'\r'),
+                        b't' => output.push(b'\t'),
+                        b'u' => {
+                            let character = self.parse_unicode_escape()?;
+                            let mut encoded = [0; 4];
+                            output.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+                        }
+                        _ => return Err("invalid JSON escape".to_owned()),
+                    }
+                }
+                character if character < 0x20 => {
+                    return Err("control character in JSON string".to_owned())
+                }
+                character => output.push(character),
+            }
+        }
+        Err("unterminated JSON string".to_owned())
+    }
+
+    fn parse_unicode_escape(&mut self) -> Result<char, String> {
+        let end = self.position.saturating_add(4);
+        let digits = self
+            .bytes
+            .get(self.position..end)
+            .ok_or_else(|| "short JSON unicode escape".to_owned())?;
+        self.position = end;
+        let value = digits.iter().try_fold(0u32, |value, digit| {
+            Some(value * 16 + (*digit as char).to_digit(16)?)
+        });
+        char::from_u32(value.ok_or_else(|| "invalid JSON unicode escape".to_owned())?)
+            .ok_or_else(|| "invalid JSON unicode scalar".to_owned())
+    }
+
+    fn parse_literal(&mut self, literal: &[u8], value: JsonValue) -> Result<JsonValue, String> {
+        if self.bytes.get(self.position..self.position + literal.len()) != Some(literal) {
+            return Err("invalid JSON literal".to_owned());
+        }
+        self.position += literal.len();
+        Ok(value)
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue, String> {
+        let start = self.position;
+        while self
+            .bytes
+            .get(self.position)
+            .is_some_and(|character| b"-+.eE0123456789".contains(character))
+        {
+            self.position += 1;
+        }
+        if self.position == start {
+            return Err("invalid JSON number".to_owned());
+        }
+        Ok(JsonValue::Number)
+    }
+
+    fn expect(&mut self, expected: u8) -> Result<(), String> {
+        if self.bytes.get(self.position) == Some(&expected) {
+            self.position += 1;
+            Ok(())
+        } else {
+            Err(format!("expected JSON byte {expected:?}"))
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .bytes
+            .get(self.position)
+            .is_some_and(|character| character.is_ascii_whitespace())
+        {
+            self.position += 1;
+        }
+    }
+}
+
+fn collect_source_records(
+    record: &JsonValue,
+    source_line: usize,
+    invocations: &mut Vec<SourceInvocation>,
+    results: &mut Vec<SourceResult>,
+) {
+    if let Some(object) = record.as_object() {
+        if object.get("type").and_then(JsonValue::as_str) == Some("tool_use") {
+            if let (Some(tool_use_id), Some(name), Some(input)) = (
+                object.get("id").and_then(JsonValue::as_str),
+                object.get("name").and_then(JsonValue::as_str),
+                object.get("input").and_then(JsonValue::as_object),
+            ) {
+                let image_path = input.get("image_path").and_then(JsonValue::as_str);
+                let model = input.get("model").and_then(JsonValue::as_str);
+                if let (Some(image_path), Some(model)) = (image_path, model) {
+                    invocations.push(SourceInvocation {
+                        tool_use_id: tool_use_id.to_owned(),
+                        name: name.to_owned(),
+                        image_path: image_path.to_owned(),
+                        model: model.to_owned(),
+                    });
+                }
+            }
+        }
+        if object.get("type").and_then(JsonValue::as_str) == Some("tool_result") {
+            if let Some(tool_use_id) = object.get("tool_use_id").and_then(JsonValue::as_str) {
+                results.push(SourceResult {
+                    tool_use_id: tool_use_id.to_owned(),
+                    is_error: matches!(object.get("is_error"), Some(JsonValue::Bool(true))),
+                    content: object
+                        .get("content")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_owned),
+                    source_line,
+                });
+            }
+        }
+        for value in object.values() {
+            collect_source_records(value, source_line, invocations, results);
+        }
+    } else if let JsonValue::Array(values) = record {
+        for value in values {
+            collect_source_records(value, source_line, invocations, results);
+        }
+    }
 }
 
 pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
@@ -429,7 +967,8 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
-                            fixture_id: step.fixture_id,
+                            fixture_id: crate::renderer::canonical_publication_fixture(step.screen_id)
+                                .unwrap_or(step.fixture_id),
                             canonical_relative: format!("{category}/{}.txt", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.txt",
@@ -443,7 +982,8 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
-                            fixture_id: step.fixture_id,
+                            fixture_id: crate::renderer::canonical_publication_fixture(step.screen_id)
+                                .unwrap_or(step.fixture_id),
                             canonical_relative: format!("{category}/{}.png", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.png",
@@ -677,10 +1217,21 @@ fn validate_destination(
         "terminal_return" => "direct",
         _ => unreachable!(),
     };
-    if target == step.origin && step.origin == step.cancel_return {
-        return Ok(());
-    }
     let declared_action = declared_destination_action(flow, step.screen_id, field);
+    if target == step.origin {
+        if let Some(action) = declared_action {
+            if audit
+                .events
+                .iter()
+                .any(|event| event.action.as_ref().is_some_and(|value| value.action_id == action))
+            {
+                return Ok(());
+            }
+        }
+        return Err(format!(
+            "{flow} step {step_index} {field} {target} has no declared origin-return action"
+        ));
+    }
     let exact_transition = audit.transitions.iter().any(|transition| {
         transition.from_screen_id == step.screen_id
             && transition.to_screen_id == target
@@ -803,7 +1354,7 @@ fn declared_destination_action(flow: &str, screen: &str, field: &str) -> Option<
         ("work-configuration", "session-picker", "terminal_return") => {
             Some("action.session-picker.resume")
         }
-        _ => declared_action_id(flow, screen).into(),
+        _ => Some(declared_action_id(flow, screen)),
     }
 }
 
@@ -884,25 +1435,12 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
         require_review_field(&review, "case_id", bridge.case_id)?;
         require_review_field(&review, "tick", &bridge.tick.to_string())?;
         require_review_field(&review, "verdict", "pass")?;
-        if review
-            .get("review_session_id")
-            .ok_or_else(|| {
-                format!(
-                    "bridge review lacks review session binding: {}",
-                    vision_path.display()
-                )
-            })
-            .and_then(|value| validate_review_session_id(value))
-            .is_err()
-            || review
-                .get("response_sha256")
-                .is_none_or(|value| value.len() != 64)
-        {
-            return Err(format!(
-                "bridge review lacks exact review session/response binding: {}",
+        source_session_provenance(&review).map_err(|error| {
+            format!(
+                "bridge review lacks exact Factory source provenance {}: {error}",
                 vision_path.display()
-            ));
-        }
+            )
+        })?;
         for screen_id in [&replay.before.screen_id, &replay.after.screen_id] {
             if !canonical_ids.contains(screen_id.as_str()) {
                 return Err(format!(
@@ -1013,16 +1551,7 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
                 return Err("PNG feature is required for gate integration validation".to_owned());
             }
         };
-        let has_fixture_variants = flow_manifests()
-            .iter()
-            .take(3)
-            .flat_map(|flow| flow.steps.iter())
-            .filter(|step| step.screen_id == artifact.screen_id)
-            .map(|step| step.fixture_id)
-            .collect::<BTreeSet<_>>()
-            .len()
-            > 1;
-        if canonical_bytes != gate_bytes && !has_fixture_variants {
+        if canonical_bytes != gate_bytes {
             return Err(format!(
                 "canonical and gate alias bytes differ: {}",
                 artifact.gate_relative
@@ -1101,12 +1630,7 @@ fn collect_vision_findings(
                     })
                     .and_then(|_| require_review_field(&review, "verdict", "pass"))
                     .is_ok()
-                    && review
-                        .get("review_session_id")
-                        .is_some_and(|value| validate_review_session_id(value).is_ok())
-                    && review
-                        .get("response_sha256")
-                        .is_some_and(|value| value.len() == 64);
+                    && source_session_provenance(&review).is_ok();
             Ok(VisionFinding {
                 flow: artifact.flow,
                 gate_png: artifact.gate_relative.clone(),

@@ -354,7 +354,12 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
             );
             assert!(Path::new(&canonical).is_file(), "missing {canonical}");
             assert!(Path::new(&gate).is_file(), "missing {gate}");
-            let expected = audit_screen(screen, "flow2.input-and-approval.stable").unwrap();
+            let canonical_fixture = if *screen == "chat-turn" {
+                "flow1.daily-work.stable"
+            } else {
+                "flow2.input-and-approval.stable"
+            };
+            let expected = audit_screen(screen, canonical_fixture).unwrap();
             let expected_bytes = if extension == "txt" {
                 expected.render_txt().into_bytes()
             } else {

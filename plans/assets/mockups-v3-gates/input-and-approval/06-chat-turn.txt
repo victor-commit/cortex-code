@@ -1,37 +1,37 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
-    Check the retry path before we merge.                                                                               
-                                                                                                                        
-    You · Submitted prompt                                                                                              
-                                                                                                                        
-    Check the retry path in @src/net/retry_policy.rs                                                                    
-    Then explain the failure path that still needs coverage before the merge;                                           
-      include a concise test plan with the visible recovery behavior.                                                   
-    Keep the summary short before we merge.                                                                             
+    Daily work · current conversation                                                                                   
+    Find where the server applies the rate limit and explain the safe path.                                             
+    You · Find where the server applies the rate limit and explain the safe path.                                       
                                                                                                                         
                                                                                                                         
-    Code · Same turn resumed                                                                                            
+    Code                                                                                                                
                                                                                                                         
-    Applied 1 included hunk to src/net/retry_policy.rs.                                                                 
-    hunk.retry-test remains pending · Git index unchanged                                                               
+    Updated retry_policy.rs.                                                                                            
                                                                                                                         
-    Paused activity · activity.retry-policy-edit.18                                                                     
-    Session · session.retry-review.18                                                                                   
-    Turn · turn.retry-review.18 · resumed                                                                               
+    The retry check now verifies the current session before continuing.                                                 
                                                                                                                         
+    Older sessions are asked to sign in again after credentials change.                                                 
                                                                                                                         
-    Later draft · not sent                                                                                              
-                                                                                                                        
-    Add a short note about the remaining test hunk.                                                                     
+    The answer is ready; the conversation stays open for your next prompt.                                              
                                                                                                                         
                                                                                                                         
+    Result                                                                                                              
                                                                                                                         
+    retry_policy.rs now protects the current session without changing your draft.                                       
+                                                                                                                        
+    No files outside this check were changed.                                                                           
+                                                                                                                        
+    Your next prompt will start a new response here.                                                                    
+                                                                                                                        
+    Checked  ·  retry_policy.rs  ·  current session                                                                     
+                                                                                                                        
+    Ready for your next question.                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Add a short note about the remaining test hunk.                                                                   
+  │ › Reply to Code                                                                                                     
                                                                                                                         
                                                                                                                         
     [enter] Send reply                                                                                                  

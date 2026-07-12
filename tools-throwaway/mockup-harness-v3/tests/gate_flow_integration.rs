@@ -161,6 +161,23 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
 }
 
 #[test]
+fn every_gate_alias_is_byte_identical_to_its_declared_canonical_artifact() {
+    ensure_published();
+    for artifact in pilot_gate_artifacts() {
+        let canonical = fs::read(Path::new(CANONICAL_ROOT).join(&artifact.canonical_relative))
+            .expect("declared canonical artifact must be readable");
+        let gate = fs::read(Path::new(GATE_ROOT).join(&artifact.gate_relative))
+            .expect("declared gate alias must be readable");
+        assert_eq!(
+            canonical,
+            gate,
+            "every gate alias must be a byte-identical canonical alias: {}",
+            artifact.gate_relative
+        );
+    }
+}
+
+#[test]
 fn model_picker_canonical_and_gate_alias_compare_actual_on_disk_bytes() {
     ensure_published();
     for extension in ["txt", "png"] {

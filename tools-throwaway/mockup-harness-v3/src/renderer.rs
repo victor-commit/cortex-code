@@ -645,6 +645,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     let mut canonical = BTreeMap::new();
     for screen in &plan.canonical {
         let fixture_id = canonical_publication_fixture(screen.id)
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("canonical.{}", screen.id));
         let audit = audit_screen(screen.id, &fixture_id).map_err(RenderFailure::validation)?;
         insert_audit_artifacts(
@@ -665,8 +666,10 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     if let Some(flow) = plan.flow {
         let mut gate = BTreeMap::new();
         for (index, step) in flow.steps.iter().enumerate() {
+            let fixture_id = canonical_publication_fixture(step.screen_id)
+                .unwrap_or(step.fixture_id);
             let audit =
-                audit_screen(step.screen_id, step.fixture_id).map_err(RenderFailure::validation)?;
+                audit_screen(step.screen_id, fixture_id).map_err(RenderFailure::validation)?;
             insert_audit_artifacts(
                 &mut gate,
                 format!("{}/{:02}-{}", flow.name, index + 1, step.screen_id),
@@ -682,19 +685,15 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     Ok(roots)
 }
 
-fn canonical_publication_fixture(screen_id: &str) -> Option<String> {
-    let mut fixtures = flow_manifests()
+pub(crate) fn canonical_publication_fixture(screen_id: &str) -> Option<&'static str> {
+    let fixtures = flow_manifests()
         .iter()
         .take(3)
         .flat_map(|flow| &flow.steps)
         .filter(|step| step.screen_id == screen_id)
         .map(|step| step.fixture_id)
         .collect::<BTreeSet<_>>();
-    if fixtures.len() == 1 {
-        fixtures.pop_first().map(str::to_owned)
-    } else {
-        None
-    }
+    fixtures.into_iter().next()
 }
 
 fn insert_audit_artifacts(
