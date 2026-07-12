@@ -159,13 +159,23 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
         .expect("connected audit must remain bijective");
 
     let text = audit.render_txt();
+    assert!(text.contains("Provider connection · blocked model action"));
     assert!(text.contains("OpenAI is connected"));
     assert!(text.contains("✓ Connected"));
     assert!(text.contains("GPT-5.2 Codex can use this provider now."));
+    assert!(text.contains("GPT-5.2 Codex"));
     assert!(text.contains("› [enter] Return to model choices"));
     assert!(
-        !text.to_lowercase().contains("mcp"),
-        "provider success must not present MCP as the next step"
+        text.contains("ordered capability branch")
+            || text.contains("separate ordered branch")
+            || text.contains("own ordered path"),
+        "connected must name the capability branch as a separate ordered path, not invent it as this return"
+    );
+    assert!(
+        !text.contains("next step is MCP")
+            && !text.contains("Continue to MCP")
+            && !text.contains("Open MCP now"),
+        "provider success must not present MCP as the live primary next step"
     );
     assert!(audit.transitions.iter().any(|transition| {
         transition.action_id == "action.connect-connected.return"
@@ -179,6 +189,33 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
             .any(|transition| transition.to_screen_id == "mcp" && transition.kind == "direct"),
         "provider success must never own a direct edge into MCP"
     );
+    // Named illustrative adjacency for the ordered storyboard (audit-visible, not a live direct edge).
+    assert!(audit.transitions.iter().any(|transition| {
+        transition.action_id == "action.storyboard.open-mcp-after-provider"
+            && transition.to_screen_id == "mcp"
+            && (transition.kind == "illustrative" || transition.kind == "illustrative_detour")
+    }));
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .map(|conversation| conversation.visible_origin.as_str()),
+        Some("Provider connection · blocked model action")
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .map(|conversation| conversation.user_task.as_str()),
+        Some("Connect the model needed for this conversation.")
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .and_then(|conversation| conversation.paused_activity_id.as_deref()),
+        Some("pending.model.gpt-5-2-codex")
+    );
 }
 
 #[test]
@@ -187,8 +224,11 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     audit.validate().expect("mcp audit must remain bijective");
 
     let text = audit.render_txt();
+    assert!(text.contains("MCP · conversation capabilities"));
+    assert!(text.contains("Illustrative detour"));
+    assert!(text.contains("separate capability branch"));
+    assert!(text.contains("Fix the capabilities this conversation needs."));
     assert!(text.contains("MCP capabilities"));
-    assert!(text.contains("Conversation · current work"));
     assert!(text.contains("Browser automation"));
     assert!(text.contains("Needs setup"));
     assert!(text.contains("Project docs"));
@@ -198,6 +238,14 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     assert!(text.contains("1 ready connection collapsed"));
     assert!(text.contains("› [enter] Fix setup"));
     assert!(text.contains("[esc] Return to conversation"));
+    assert!(
+        !text.contains("Provider connection · blocked model action"),
+        "MCP detour must not pretend the blocked-model provider origin still owns this frame"
+    );
+    assert!(
+        !text.contains("Connect the model needed for this conversation."),
+        "MCP must not silently keep the provider user task as same-turn continuity"
+    );
     assert!(!text.contains("stdio"));
     assert!(!text.contains("http"));
     assert!(!text.contains("transport"));
@@ -217,6 +265,111 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
             .iter()
             .any(|transition| transition.from_screen_id == "connect-connected"),
         "MCP must not inherit the provider success edge"
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .map(|conversation| conversation.visible_origin.as_str()),
+        Some("MCP · conversation capabilities")
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .map(|conversation| conversation.user_task.as_str()),
+        Some("Fix the capabilities this conversation needs.")
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .map(|conversation| conversation.session_id.as_str()),
+        Some("session.mcp-capabilities.1")
+    );
+}
+
+#[test]
+fn flow4_ordered_mcp_detour_rewrites_identity_openly() {
+    let flow = provider_and_mcp();
+    let connected = flow
+        .steps
+        .iter()
+        .find(|step| step.screen_id == "connect-connected")
+        .expect("connected step");
+    let mcp = flow
+        .steps
+        .iter()
+        .find(|step| step.screen_id == "mcp")
+        .expect("mcp step");
+
+    assert_eq!(connected.transition_kind, TransitionKind::IllustrativeDetour);
+    assert_eq!(connected.expected_next_frame, "mcp");
+    assert_eq!(
+        connected.visible_origin,
+        "Provider connection · blocked model action"
+    );
+    assert_eq!(
+        connected.user_task,
+        "Connect the model needed for this conversation."
+    );
+    assert_eq!(mcp.visible_origin, "MCP · conversation capabilities");
+    assert_eq!(
+        mcp.user_task,
+        "Fix the capabilities this conversation needs."
+    );
+    assert_ne!(connected.conversation_id, mcp.conversation_id);
+    assert_ne!(connected.session_id, mcp.session_id);
+    assert_ne!(connected.user_task, mcp.user_task);
+    assert_ne!(connected.visible_origin, mcp.visible_origin);
+
+    let connected_audit = audit_screen(connected.screen_id, connected.fixture_id)
+        .expect("connected must render");
+    let mcp_audit = audit_screen(mcp.screen_id, mcp.fixture_id).expect("mcp must render");
+    let connected_text = connected_audit.render_txt();
+    let mcp_text = mcp_audit.render_txt();
+
+    assert!(connected_text.contains("Provider connection · blocked model action"));
+    assert!(connected_text.contains("GPT-5.2 Codex"));
+    assert!(mcp_text.contains("Illustrative detour"));
+    assert!(mcp_text.contains("MCP · conversation capabilities"));
+    assert!(mcp_text.contains("Fix the capabilities this conversation needs."));
+
+    let bridge = replay_case("provider-to-mcp-bridge", 1).expect("ordered detour bridge must replay");
+    assert_eq!(bridge.before.screen_id, "connect-connected");
+    assert_eq!(bridge.after.screen_id, "mcp");
+    assert_eq!(
+        bridge.actions[0].action_id,
+        "action.storyboard.open-mcp-after-provider"
+    );
+    assert!(
+        bridge
+            .transitions
+            .iter()
+            .any(|transition| transition.kind == "illustrative_detour"
+                && transition.to_screen_id == "mcp"),
+        "ordered detour bridge must expose illustrative_detour into mcp"
+    );
+    assert_eq!(
+        bridge.before.visible_origin,
+        "Provider connection · blocked model action"
+    );
+    assert_eq!(
+        bridge.before.user_task,
+        "Connect the model needed for this conversation."
+    );
+    assert_eq!(
+        bridge.after.visible_origin,
+        "MCP · conversation capabilities"
+    );
+    assert_eq!(
+        bridge.after.user_task,
+        "Fix the capabilities this conversation needs."
+    );
+    assert_eq!(bridge.after.session_id, "session.mcp-capabilities.1");
+    assert_eq!(
+        bridge.after.conversation_id,
+        "conversation.mcp-capabilities"
     );
 }
 

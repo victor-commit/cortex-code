@@ -702,9 +702,13 @@ impl CaseReplay {
         if self.before.origin_stack != self.after.origin_stack {
             return Err("scenario transition did not preserve its origin stack".to_owned());
         }
+        // provider-to-mcp-bridge is an ordered illustrative detour that openly
+        // rebinds conversation/session/task from provider identity to MCP.
+        // session-resume-latest rebinds to the selected timeline session.
         if ((self.before.session_id != self.after.session_id
             || self.before.paused_activity_id != self.after.paused_activity_id)
-            && self.case_id != "session-resume-latest")
+            && self.case_id != "session-resume-latest"
+            && self.case_id != "provider-to-mcp-bridge")
             || (self.case_id != "flow2-submit-bridge"
                 && self.before.submitted_prompt != self.after.submitted_prompt)
         {
@@ -1972,6 +1976,8 @@ fn apply_flow4_mcp_identity(state: &mut ScenarioState) {
     state.visible_origin = "MCP · conversation capabilities".to_owned();
     state.draft = "Continue the paused conversation.".to_owned();
     state.transcript = "The conversation is waiting for MCP capabilities.".to_owned();
+    // Separate capability branch: no pending model apply activity from provider.
+    state.paused_activity_id = "pending.capability.browser-automation".to_owned();
     state.state_hash = state_hash(state);
 }
 
@@ -9119,9 +9125,10 @@ fn provider_to_mcp_bridge() -> (
     after.screen_id = "mcp".to_owned();
     after.selection = "browser-automation".to_owned();
     after.focus = "capability-list".to_owned();
-    after.paused_activity_id = before.paused_activity_id.clone();
     after.return_policy = "return-to-chat-turn".to_owned();
     after.virtual_tick = 1;
+    // Ordered detour rebinds MCP identity openly; it does not continue the provider task.
+    apply_flow4_mcp_identity(&mut after);
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.storyboard.open-mcp-after-provider".to_owned(),
@@ -9141,13 +9148,13 @@ fn provider_to_mcp_bridge() -> (
         attempt_id: "attempt.storyboard.open-mcp-after-provider.1".to_owned(),
         owner_id: "storyboard.provider-and-mcp".to_owned(),
         count: 1,
-        outcome: "mcp-opened-after-provider-return".to_owned(),
+        outcome: "mcp-opened-as-separate-capability-branch".to_owned(),
     };
     let effect = simulated_effect(
         "effect.storyboard.open-mcp-after-provider",
         "storyboard-navigation",
         "illustrative-detour",
-        "MCP opened only after an explicit separate action; provider success never owned a direct MCP edge",
+        "MCP opened only as an ordered illustrative detour with its own origin and task; provider success never owned a direct MCP edge",
     );
     (before, after, action, transition, attempt, effect)
 }

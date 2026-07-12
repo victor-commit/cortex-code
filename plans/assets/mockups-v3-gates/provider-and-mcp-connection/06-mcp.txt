@@ -1,10 +1,12 @@
                                                                                                                         
                                                                                                                         
     MCP · conversation capabilities                                                                                     
-    Conversation · current work                                                                                         
+    Fix the capabilities this conversation needs.                                                                       
+                                                                                                                        
+    Illustrative detour · separate capability branch                                                                    
                                                                                                                         
     MCP capabilities                                                                                                    
-                                                                                                                        
+    Not a continuation of the blocked-model provider connection.                                                        
     Capabilities that need attention come first. Healthy ones stay collapsed.                                           
                                                                                                                         
                                                                                                                         
@@ -23,14 +25,12 @@
                                                                                                                         
                                                                                                                         
     Connection details and raw tools stay under diagnostics.                                                            
-                                                                                                                        
-    This view is separate from provider sign-in.                                                                        
+    Return closes this branch to the conversation, not provider OAuth.                                                  
                                                                                                                         
                                                                                                                         
     › [enter] Fix setup                                                                                                 
       [d] Open diagnostics                                                                                              
       [esc] Return to conversation                                                                                      
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

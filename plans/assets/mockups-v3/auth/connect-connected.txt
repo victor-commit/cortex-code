@@ -2,6 +2,7 @@
                                                                                                                         
                                                                                                                         
     Provider connection · blocked model action                                                                          
+    Connect the model needed for this conversation.                                                                     
                                                                                                                         
     OpenAI is connected                                                                                                 
                                                                                                                         
@@ -9,12 +10,11 @@
                                                                                                                         
     GPT-5.2 Codex can use this provider now.                                                                            
                                                                                                                         
-    Return to the blocked model action to finish applying the choice.                                                   
+    Return to the blocked model action to finish applying GPT-5.2 Codex.                                                
                                                                                                                         
                                                                                                                         
-    Capability setup stays on its own path and is not the next step here.                                               
-                                                                                                                        
-                                                                                                                        
+    Capability setup stays on its own ordered path, not this return.                                                    
+    The ordered storyboard later opens that separate capability branch.                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Provider ready                                                                                                   │  
-  │ Your conversation draft and pending model remain exactly as left.                                                │  
+  │ Your conversation draft and pending GPT-5.2 Codex remain exactly as left.                                        │  
   │ › [enter] Return to model choices                                                                                │  
   │   [esc] Close                                                                                                    │  
-  │ Success cannot re-open sign-in or invent another connection handoff.                                             │  
+  │ Success returns to the blocked model origin, never into MCP.                                                     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

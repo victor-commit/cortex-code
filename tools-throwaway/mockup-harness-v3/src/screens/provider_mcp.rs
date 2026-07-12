@@ -774,9 +774,10 @@ fn render_connect_connected(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     canvas.write(3, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
-    canvas.write(5, 4, "OpenAI is connected", TextStyle::bright())?;
+    canvas.write(4, 4, FLOW4_PROVIDER_TASK, TextStyle::muted())?;
+    canvas.write(6, 4, "OpenAI is connected", TextStyle::bright())?;
     canvas.write(
-        7,
+        8,
         4,
         "✓ Connected",
         TextStyle {
@@ -786,21 +787,28 @@ fn render_connect_connected(
         },
     )?;
     canvas.write(
-        9,
+        10,
         4,
         "GPT-5.2 Codex can use this provider now.",
         TextStyle::text(),
     )?;
     canvas.write(
-        11,
+        12,
         4,
-        "Return to the blocked model action to finish applying the choice.",
+        "Return to the blocked model action to finish applying GPT-5.2 Codex.",
+        TextStyle::muted(),
+    )?;
+    // In-frame ordered-storyboard honesty: capability work is never the live return.
+    canvas.write(
+        15,
+        4,
+        "Capability setup stays on its own ordered path, not this return.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        14,
+        16,
         4,
-        "Capability setup stays on its own path and is not the next step here.",
+        "The ordered storyboard later opens that separate capability branch.",
         TextStyle::muted(),
     )?;
 
@@ -814,7 +822,7 @@ fn render_connect_connected(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "Your conversation draft and pending model remain exactly as left.",
+        "Your conversation draft and pending GPT-5.2 Codex remain exactly as left.",
         TextStyle::text(),
     )?;
     dock_line(
@@ -832,11 +840,11 @@ fn render_connect_connected(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Success cannot re-open sign-in or invent another connection handoff.",
+        "Success returns to the blocked model origin, never into MCP.",
         TextStyle::muted(),
     )?;
 
-    let pairs = [
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
@@ -849,9 +857,18 @@ fn render_connect_connected(
         semantic(
             screen_id,
             fixture_id,
+            "task",
+            "blocked-model-task",
+            reference(4, 4, FLOW4_PROVIDER_TASK.len() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
             "success",
             "openai-connected",
-            reference(5, 4, 23),
+            reference(6, 4, 23),
             "focused",
             None,
         ),
@@ -860,8 +877,17 @@ fn render_connect_connected(
             fixture_id,
             "outcome",
             "gpt-5-2-codex-unlocked",
-            reference(9, 4, 44),
+            reference(10, 4, 44),
             "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "ordered-capability-branch",
+            reference(15, 4, 66),
+            "summary",
             None,
         ),
         semantic(
@@ -900,28 +926,52 @@ fn render_connect_connected(
             None,
         ),
     ];
+    let mut transitions = vec![
+        transition(
+            "action.connect-connected.return",
+            "connect-connected",
+            "model-picker",
+            "direct",
+            "provider success returns to its blocked model origin before any MCP action",
+        ),
+        transition(
+            "action.connect-connected.close",
+            "connect-connected",
+            "model-picker",
+            "cancel",
+            "closing succeeds the same way and never routes into MCP",
+        ),
+    ];
+    // Named ordered-storyboard detour (not a live direct edge) for gate publication honesty.
+    if is_gate_fixture(fixture_id) {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "action.storyboard.open-mcp-after-provider",
+            reference(16, 4, 68),
+            "summary",
+            Some(action(
+                "action.storyboard.open-mcp-after-provider",
+                "Open MCP connections separately",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            "action.storyboard.open-mcp-after-provider",
+            "connect-connected",
+            "mcp",
+            "illustrative",
+            "provider success returns to its blocked model origin before an explicit MCP action",
+        ));
+    }
     Ok((
         pairs
             .iter()
             .map(|(candidate, _)| candidate.clone())
             .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
-        vec![
-            transition(
-                "action.connect-connected.return",
-                "connect-connected",
-                "model-picker",
-                "direct",
-                "provider success returns to its blocked model origin before any MCP action",
-            ),
-            transition(
-                "action.connect-connected.close",
-                "connect-connected",
-                "model-picker",
-                "cancel",
-                "closing succeeds the same way and never routes into MCP",
-            ),
-        ],
+        transitions,
     ))
 }
 
@@ -931,60 +981,90 @@ fn render_mcp(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     canvas.write(2, 4, FLOW4_MCP_ORIGIN, TextStyle::muted())?;
-    canvas.write(3, 4, "Conversation · current work", TextStyle::bright())?;
-    canvas.write(5, 4, "MCP capabilities", TextStyle::bright())?;
+    canvas.write(3, 4, FLOW4_MCP_TASK, TextStyle::bright())?;
     canvas.write(
-        7,
+        5,
+        4,
+        "Illustrative detour · separate capability branch",
+        TextStyle::muted(),
+    )?;
+    canvas.write(7, 4, "MCP capabilities", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Not a continuation of the blocked-model provider connection.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        9,
         4,
         "Capabilities that need attention come first. Healthy ones stay collapsed.",
         TextStyle::muted(),
     )?;
 
     // Attention-first ordering: setup, sign-in, then health summary.
-    canvas.write(10, 4, "› Browser automation · Needs setup", TextStyle::accent())?;
+    canvas.write(12, 4, "› Browser automation · Needs setup", TextStyle::accent())?;
     canvas.write(
-        11,
+        13,
         6,
         "Missing local tools needed for page checks.",
         TextStyle::muted(),
     )?;
-    canvas.write(12, 6, "[enter] Fix setup", TextStyle::bright())?;
+    canvas.write(14, 6, "[enter] Fix setup", TextStyle::bright())?;
 
-    canvas.write(15, 4, "  Project docs · Sign in needed", TextStyle::text())?;
+    canvas.write(17, 4, "  Project docs · Sign in needed", TextStyle::text())?;
     canvas.write(
-        16,
+        18,
         6,
         "This workspace library needs approval before use.",
         TextStyle::muted(),
     )?;
-    canvas.write(17, 6, "[enter] Sign in", TextStyle::bright())?;
+    canvas.write(19, 6, "[enter] Sign in", TextStyle::bright())?;
 
-    canvas.write(20, 4, "  ○ 1 ready connection collapsed", TextStyle::muted())?;
-    canvas.write(21, 6, "Code search · Ready", TextStyle::text())?;
+    canvas.write(22, 4, "  ○ 1 ready connection collapsed", TextStyle::muted())?;
+    canvas.write(23, 6, "Code search · Ready", TextStyle::text())?;
 
     canvas.write(
-        24,
+        26,
         4,
         "Connection details and raw tools stay under diagnostics.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        26,
+        27,
         4,
-        "This view is separate from provider sign-in.",
+        "Return closes this branch to the conversation, not provider OAuth.",
         TextStyle::muted(),
     )?;
-    canvas.write(29, 4, "› [enter] Fix setup", TextStyle::accent())?;
-    canvas.write(30, 4, "  [d] Open diagnostics", TextStyle::muted())?;
-    canvas.write(31, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+    canvas.write(30, 4, "› [enter] Fix setup", TextStyle::accent())?;
+    canvas.write(31, 4, "  [d] Open diagnostics", TextStyle::muted())?;
+    canvas.write(32, 4, "  [esc] Return to conversation", TextStyle::muted())?;
 
     let pairs = [
         semantic(
             screen_id,
             fixture_id,
             "origin",
-            "conversation-origin",
-            reference(2, 4, 34),
+            "mcp-origin",
+            reference(2, 4, FLOW4_MCP_ORIGIN.len() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "task",
+            "mcp-task",
+            reference(3, 4, FLOW4_MCP_TASK.len() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "illustrative-detour",
+            reference(5, 4, 50),
             "summary",
             None,
         ),
@@ -993,7 +1073,7 @@ fn render_mcp(
             fixture_id,
             "surface",
             "mcp-capabilities",
-            reference(5, 4, 20),
+            reference(7, 4, 20),
             "summary",
             None,
         ),
@@ -1002,7 +1082,7 @@ fn render_mcp(
             fixture_id,
             "capability-row",
             "browser-automation",
-            reference(10, 4, 38),
+            reference(12, 4, 38),
             "focused",
             None,
         ),
@@ -1011,7 +1091,7 @@ fn render_mcp(
             fixture_id,
             "capability-row",
             "project-docs",
-            reference(15, 4, 34),
+            reference(17, 4, 34),
             "summary",
             None,
         ),
@@ -1020,7 +1100,7 @@ fn render_mcp(
             fixture_id,
             "capability-row",
             "code-search-ready",
-            reference(21, 6, 24),
+            reference(23, 6, 24),
             "summary",
             None,
         ),
@@ -1029,7 +1109,7 @@ fn render_mcp(
             fixture_id,
             "primary-action",
             "action.mcp.fix-setup",
-            reference(29, 4, 22),
+            reference(30, 4, 22),
             "focused",
             Some(action("action.mcp.fix-setup", "Fix setup", false)),
         ),
@@ -1038,7 +1118,7 @@ fn render_mcp(
             fixture_id,
             "secondary-action",
             "action.mcp.diagnostics",
-            reference(30, 4, 25),
+            reference(31, 4, 25),
             "summary",
             Some(action("action.mcp.diagnostics", "Open diagnostics", false)),
         ),
@@ -1047,7 +1127,7 @@ fn render_mcp(
             fixture_id,
             "cancel-action",
             "action.mcp.return",
-            reference(31, 4, 33),
+            reference(32, 4, 33),
             "summary",
             Some(action("action.mcp.return", "Return to conversation", false)),
         ),
