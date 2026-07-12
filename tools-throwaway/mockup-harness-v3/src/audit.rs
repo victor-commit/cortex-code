@@ -489,10 +489,20 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
+    // VAL-V3-F3-003: onboarding complete/skip apply the recommended safe default into the
+    // destination empty conversation shell (statusline model + model_choice audit).
+    if screen_id == "empty"
+        && (fixture_id.contains("onboarding-complete") || fixture_id.contains("onboarding-skip"))
+    {
+        let document = empty_after_onboarding_audit(fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
 
     let (action, transition) = screen_action(screen_id);
-    let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;
-    ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
+    let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;    ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
     let action_row = if screen.surface == Surface::ActionDock {
         SurfaceLayout::for_surface(Surface::ActionDock)
             .action_dock()
@@ -619,6 +629,201 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
     Ok(document)
 }
 
+/// Usable empty conversation shell after onboarding Continue/Skip with the
+/// recommended safe default model already applied in the statusline and audit.
+fn empty_after_onboarding_audit(fixture_id: &str) -> Result<AuditDocument, String> {
+    let screen_id = "empty";
+    let applied_model = "Claude Sonnet 4.5";
+    let statusline = StatusLine::new("~/project", "main", applied_model)?;
+    ScreenComposition::new(screen_id, Surface::ConversationShell, statusline.clone())
+        .validate()?;
+    let mut canvas = Canvas::new();
+    let skipped = fixture_id.contains("onboarding-skip");
+    let setup_title = if skipped {
+        "Setup skipped. A safe default is ready."
+    } else {
+        "Setup complete. Your safe default is ready."
+    };
+    let setup_detail = if skipped {
+        "Claude Sonnet 4.5 is applied for your first conversation."
+    } else {
+        "Claude Sonnet 4.5 was applied for everyday coding conversations."
+    };
+    canvas.write(2, 4, "Work configuration · onboarding", TextStyle::muted())?;
+    canvas.write(3, 4, "Start a new conversation", TextStyle::bright())?;
+    canvas.write(6, 4, setup_title, TextStyle::bright())?;
+    canvas.write(8, 4, setup_detail, TextStyle::text())?;
+    canvas.write(
+        10,
+        4,
+        "Your draft and conversation stay available.",
+        TextStyle::muted(),
+    )?;
+
+    // Bottom composer shell matches conversation anatomy (usable origin).
+    const COMPOSER_TOP: u16 = 32;
+    const COMPOSER_BOTTOM: u16 = 37;
+    canvas.write(
+        COMPOSER_TOP,
+        2,
+        &format!("╭{}╮", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 1,
+        2,
+        "│ › Ask Code to start",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        COMPOSER_BOTTOM - 1,
+        4,
+        "[enter] Continue",
+        TextStyle::accent(),
+    )?;
+    canvas.write(
+        COMPOSER_BOTTOM,
+        2,
+        &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+
+    let statusline_text = statusline.text();
+    let status_end = 2 + statusline_text.chars().count() as u16;
+    let surface = candidate(
+        screen_id,
+        fixture_id,
+        "surface",
+        "conversation-shell",
+        RenderRef {
+            row: 3,
+            start: 4,
+            end: 4 + "Start a new conversation".chars().count() as u16,
+        },
+    );
+    let setup = candidate(
+        screen_id,
+        fixture_id,
+        "result-summary",
+        if skipped {
+            "safe-default-skipped"
+        } else {
+            "safe-default-applied"
+        },
+        RenderRef {
+            row: 6,
+            start: 4,
+            end: 4 + setup_title.chars().count() as u16,
+        },
+    );
+    let model_applied = candidate(
+        screen_id,
+        fixture_id,
+        "model-applied",
+        "claude-sonnet-4-5",
+        RenderRef {
+            row: 8,
+            start: 4,
+            end: 4 + applied_model.chars().count() as u16,
+        },
+    );
+    let composer = candidate(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.empty.start-request",
+        RenderRef {
+            row: COMPOSER_TOP + 1,
+            start: 4,
+            end: 4 + "Ask Code to start".chars().count() as u16,
+        },
+    );
+    let status = candidate(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        RenderRef {
+            row: CANVAS_ROWS - 1,
+            start: 2,
+            end: status_end,
+        },
+    );
+    let model_status = candidate(
+        screen_id,
+        fixture_id,
+        "model-statusline",
+        "claude-sonnet-4-5",
+        RenderRef {
+            row: CANVAS_ROWS - 1,
+            start: status_end - applied_model.chars().count() as u16,
+            end: status_end,
+        },
+    );
+    let candidates = vec![
+        surface,
+        setup,
+        model_applied,
+        composer,
+        status,
+        model_status,
+    ];
+    let start_action = ActionEvidence {
+        action_id: "action.empty.start-request".to_owned(),
+        label: "Continue".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let events: Vec<SemanticEvent> = candidates
+        .iter()
+        .map(|candidate| SemanticEvent {
+            identity: candidate.identity.clone(),
+            action: (candidate.identity.family == "primary-action")
+                .then(|| start_action.clone()),
+        })
+        .collect();
+    let transitions = vec![TransitionTrace {
+        action_id: start_action.action_id.clone(),
+        from_screen_id: screen_id.to_owned(),
+        to_screen_id: "chat-turn".to_owned(),
+        kind: "direct".to_owned(),
+        path: "the usable empty conversation starts the first request with the applied model"
+            .to_owned(),
+    }];
+    Ok(AuditDocument {
+        screen_id: screen_id.to_owned(),
+        fixture_id: fixture_id.to_owned(),
+        styled_cells: canvas.into_cells(),
+        candidates,
+        events,
+        transitions,
+        work_style: Some(WorkStyleEvidence {
+            applied: "Careful edits".to_owned(),
+            pending: None,
+            access_scope: "asks before editing project files".to_owned(),
+        }),
+        model_choice: Some(ModelChoiceEvidence {
+            applied: applied_model.to_owned(),
+            pending: None,
+            origin: "Onboarding".to_owned(),
+            pending_action: None,
+            return_policy: "Stay in conversation".to_owned(),
+        }),
+        conversation: Some(ConversationIdentity {
+            conversation_id: "conversation.first-run".to_owned(),
+            transcript_id: "transcript.first-run".to_owned(),
+            session_id: "session.first-run.1".to_owned(),
+            turn_id: "turn.first-run.0".to_owned(),
+            user_task: "Start a new conversation".to_owned(),
+            visible_origin: "Work configuration · onboarding".to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: Some("Ask Code to start".to_owned()),
+        }),
+    })
+}
+
 pub(crate) fn blocked_model_recovery_audit(
     fixture_id: &str,
     visible_origin: &str,
@@ -626,8 +831,7 @@ pub(crate) fn blocked_model_recovery_audit(
     return_policy: &str,
 ) -> Result<AuditDocument, String> {
     let screen_id = "connect-provider";
-    let statusline = StatusLine::new("~/project", "main", "Claude Sonnet 4.5")?;
-    ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
+    let statusline = StatusLine::new("~/project", "main", "Claude Sonnet 4.5")?;    ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
     let layout = SurfaceLayout::for_surface(Surface::ActionDock);
     let dock_row = layout
         .action_dock()

@@ -135,6 +135,59 @@ fn model_picker_compares_human_models_and_focuses_one_pending_change() {
 }
 
 #[test]
+fn onboarding_complete_and_skip_apply_safe_default_model_in_empty_shell() {
+    for case_id in ["onboarding-complete", "onboarding-skip"] {
+        let replay = replay_case(case_id, 1).unwrap_or_else(|error| {
+            panic!("{case_id} must replay after applying the safe default: {error}")
+        });
+        assert_eq!(replay.after.screen_id, "empty");
+        assert_eq!(replay.after.selection, "recommended-claude-sonnet-4-5");
+
+        let text = replay.audit.render_txt();
+        assert!(
+            text.contains("Claude Sonnet 4.5"),
+            "{case_id} destination statusline must show the applied safe default Claude Sonnet 4.5; got:\n{text}"
+        );
+        assert!(
+            !text.contains("Claude Opus 4.8"),
+            "{case_id} destination must not keep the pre-onboarding Claude Opus 4.8 model; got:\n{text}"
+        );
+        assert!(
+            text.lines()
+                .last()
+                .unwrap_or("")
+                .contains("~/project · main · Claude Sonnet 4.5"),
+            "{case_id} statusline field must be path · branch · Claude Sonnet 4.5"
+        );
+
+        let model_choice = replay
+            .audit
+            .model_choice
+            .as_ref()
+            .unwrap_or_else(|| panic!("{case_id} after-state must emit model_choice audit fields"));
+        assert_eq!(model_choice.applied, "Claude Sonnet 4.5");
+        assert_eq!(model_choice.pending, None);
+        assert!(
+            model_choice.origin.contains("Onboarding") || model_choice.origin.contains("onboarding"),
+            "{case_id} model_choice.origin must retain setup origin, got {}",
+            model_choice.origin
+        );
+        assert!(
+            replay.side_effects.iter().any(|effect| {
+                effect.status == "safe-default-applied" && effect.kind == "configuration"
+            }),
+            "{case_id} must record safe-default-applied configuration"
+        );
+        assert!(
+            text.contains("Start a new conversation")
+                || text.contains("safe default")
+                || text.contains("Ask Code to start"),
+            "{case_id} empty shell must read as a usable conversation origin"
+        );
+    }
+}
+
+#[test]
 fn onboarding_scenarios_preserve_origin_and_route_blocked_choices_safely() {
     let complete =
         replay_case("onboarding-complete", 1).expect("onboarding completion must replay");
