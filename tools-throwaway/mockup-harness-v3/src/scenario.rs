@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::audit::{
-    ActionEvidence, AuditDocument, TransitionTrace, action_json, audit_screen, field, quote,
-    sha256_hex, transition_json,
+    action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
+    AuditDocument, TransitionTrace,
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
@@ -115,6 +115,8 @@ pub struct DiffHunkEvidence {
     pub old_lines: u32,
     pub new_start: u32,
     pub new_lines: u32,
+    pub old_payload: Vec<String>,
+    pub new_payload: Vec<String>,
     pub state: String,
     pub content_hash: String,
 }
@@ -162,60 +164,240 @@ pub fn diff_index_fixture_bytes() -> &'static [u8] {
     b"index entry: src/net/retry_policy.rs\nmode: unchanged\n"
 }
 
-/// Apply the disclosed hunks to exact fixture bytes in a deterministic order.
-pub fn apply_diff_hunks(bytes: &[u8], hunk_ids: &[String]) -> Result<Vec<u8>, String> {
-    let mut lines = String::from_utf8(bytes.to_vec())
+#[derive(Clone, Copy)]
+struct DiffHunkDefinition {
+    hunk_id: &'static str,
+    old_payload: &'static [&'static str],
+    new_payload: &'static [&'static str],
+}
+
+const RETRY_GUARD_OLD: &[&str] = &["    return retry_after", "    backoff = backoff + 1"];
+const RETRY_GUARD_NEW: &[&str] = &[
+    "    return retry_after + jitter",
+    "    backoff = backoff + jitter",
+    "    log_retry_window(jitter)",
+];
+const RETRY_TEST_OLD: &[&str] = &["assert_eq!(wait, 4)", "assert_eq!(attempts, 1)"];
+const RETRY_TEST_NEW: &[&str] = &["assert_eq!(wait, 5)", "assert_eq!(attempts, 1)"];
+
+const DIFF_HUNK_DEFINITIONS: &[DiffHunkDefinition] = &[
+    DiffHunkDefinition {
+        hunk_id: "hunk.retry-guard",
+        old_payload: RETRY_GUARD_OLD,
+        new_payload: RETRY_GUARD_NEW,
+    },
+    DiffHunkDefinition {
+        hunk_id: "hunk.retry-test",
+        old_payload: RETRY_TEST_OLD,
+        new_payload: RETRY_TEST_NEW,
+    },
+];
+
+fn diff_lines(bytes: &[u8]) -> Result<Vec<String>, String> {
+    Ok(String::from_utf8(bytes.to_vec())
         .map_err(|_| "diff fixture bytes must be valid UTF-8".to_owned())?
         .lines()
         .map(str::to_owned)
+        .collect())
+}
+
+fn unique_payload_start(
+    lines: &[String],
+    payload: &[&str],
+    hunk_id: &str,
+) -> Result<usize, String> {
+    let matches = lines
+        .windows(payload.len())
+        .enumerate()
+        .filter_map(|(index, window)| {
+            window
+                .iter()
+                .map(String::as_str)
+                .eq(payload.iter().copied())
+                .then_some(index)
+        })
         .collect::<Vec<_>>();
-    for hunk_id in hunk_ids {
-        match hunk_id.as_str() {
-            "hunk.retry-guard" => {
-                let start = lines
-                    .windows(2)
-                    .position(|window| {
-                        window == ["    return retry_after", "    backoff = backoff + 1"]
-                    })
-                    .ok_or_else(|| "retry guard hunk is stale or already applied".to_owned())?;
-                lines.splice(
-                    start..start + 2,
-                    [
-                        "    return retry_after + jitter".to_owned(),
-                        "    backoff = backoff + jitter".to_owned(),
-                        "    log_retry_window(jitter)".to_owned(),
-                    ],
-                );
-            }
-            "hunk.retry-test" => {
-                let start = lines
-                    .windows(2)
-                    .position(|window| window == ["assert_eq!(wait, 4)", "assert_eq!(attempts, 1)"])
-                    .ok_or_else(|| "retry test hunk is stale or already applied".to_owned())?;
-                lines.splice(
-                    start..start + 2,
-                    [
-                        "assert_eq!(wait, 5)".to_owned(),
-                        "assert_eq!(attempts, 1)".to_owned(),
-                    ],
-                );
-            }
-            _ => return Err(format!("unknown disclosed hunk {hunk_id}")),
+    match matches.as_slice() {
+        [start] => Ok(*start),
+        [] => Err(format!(
+            "{hunk_id} exact preimage payload is missing from the original bytes"
+        )),
+        _ => Err(format!(
+            "{hunk_id} exact preimage payload is not unique in the original bytes"
+        )),
+    }
+}
+
+fn diff_hunk_payload_bytes(hunk: &DiffHunkEvidence) -> Vec<u8> {
+    let mut payload = format!("{}\n", hunk.hunk_id);
+    for line in &hunk.old_payload {
+        payload.push('-');
+        payload.push_str(line);
+        payload.push('\n');
+    }
+    for (index, line) in hunk.new_payload.iter().enumerate() {
+        payload.push('+');
+        payload.push_str(line);
+        if index + 1 < hunk.new_payload.len() {
+            payload.push('\n');
         }
+    }
+    payload.into_bytes()
+}
+
+pub(crate) fn diff_hunk_content_hash(hunk: &DiffHunkEvidence) -> String {
+    sha256_hex(&diff_hunk_payload_bytes(hunk))
+}
+
+fn derive_diff_hunks_from_bytes(
+    bytes: &[u8],
+    states: [String; 2],
+) -> Result<Vec<DiffHunkEvidence>, String> {
+    let lines = diff_lines(bytes)?;
+    let mut cumulative_line_delta = 0_i64;
+    let mut prior_old_end = 0_usize;
+    let mut hunks = Vec::with_capacity(DIFF_HUNK_DEFINITIONS.len());
+
+    for (definition, state) in DIFF_HUNK_DEFINITIONS.iter().zip(states) {
+        let old_index = unique_payload_start(&lines, definition.old_payload, definition.hunk_id)?;
+        if old_index < prior_old_end {
+            return Err(format!(
+                "{} is not ordered after the preceding exact payload",
+                definition.hunk_id
+            ));
+        }
+        let old_start =
+            u32::try_from(old_index + 1).map_err(|_| "diff old_start exceeds u32".to_owned())?;
+        let old_lines = u32::try_from(definition.old_payload.len())
+            .map_err(|_| "diff old_lines exceeds u32".to_owned())?;
+        let new_lines = u32::try_from(definition.new_payload.len())
+            .map_err(|_| "diff new_lines exceeds u32".to_owned())?;
+        let shifted_start = i64::from(old_start) + cumulative_line_delta;
+        let new_start = u32::try_from(shifted_start)
+            .map_err(|_| "diff cumulative new_start is out of range".to_owned())?;
+        let mut hunk = DiffHunkEvidence {
+            hunk_id: definition.hunk_id.to_owned(),
+            file_path: "src/net/retry_policy.rs".to_owned(),
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+            old_payload: definition
+                .old_payload
+                .iter()
+                .map(|line| (*line).to_owned())
+                .collect(),
+            new_payload: definition
+                .new_payload
+                .iter()
+                .map(|line| (*line).to_owned())
+                .collect(),
+            state,
+            content_hash: String::new(),
+        };
+        hunk.content_hash = diff_hunk_content_hash(&hunk);
+        cumulative_line_delta += i64::from(new_lines) - i64::from(old_lines);
+        prior_old_end = old_index + definition.old_payload.len();
+        hunks.push(hunk);
+    }
+    Ok(hunks)
+}
+
+fn validate_diff_hunk_contract(bytes: &[u8], hunks: &[DiffHunkEvidence]) -> Result<(), String> {
+    if hunks.len() != DIFF_HUNK_DEFINITIONS.len() {
+        return Err("diff hunk contract requires every ordered exact payload".to_owned());
+    }
+    let states = [hunks[0].state.clone(), hunks[1].state.clone()];
+    let expected = derive_diff_hunks_from_bytes(bytes, states)?;
+    for (actual, expected) in hunks.iter().zip(expected.iter()) {
+        if actual.hunk_id != expected.hunk_id || actual.file_path != expected.file_path {
+            return Err("diff hunk identity or ordering drifted from exact payloads".to_owned());
+        }
+        if actual.old_lines != actual.old_payload.len() as u32
+            || actual.new_lines != actual.new_payload.len() as u32
+        {
+            return Err("diff hunk line counts do not match exact payloads".to_owned());
+        }
+        if actual.old_payload != expected.old_payload || actual.new_payload != expected.new_payload
+        {
+            return Err("diff hunk payload drifted from the declared patch".to_owned());
+        }
+        if actual.old_start != expected.old_start {
+            return Err(format!(
+                "{} old coordinate does not match its exact preimage payload",
+                actual.hunk_id
+            ));
+        }
+        if actual.new_start != expected.new_start {
+            return Err(format!(
+                "{} cumulative new_start does not include preceding line deltas",
+                actual.hunk_id
+            ));
+        }
+        if actual.content_hash != diff_hunk_content_hash(actual) {
+            return Err("diff hunk content hash does not match exact payloads".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn apply_validated_diff_hunks(
+    bytes: &[u8],
+    hunks: &[DiffHunkEvidence],
+    hunk_ids: &[String],
+) -> Result<Vec<u8>, String> {
+    validate_diff_hunk_contract(&diff_fixture_file_bytes(), hunks)?;
+    let selected_positions = hunk_ids
+        .iter()
+        .map(|hunk_id| {
+            hunks
+                .iter()
+                .position(|hunk| hunk.hunk_id == *hunk_id)
+                .ok_or_else(|| format!("unknown disclosed hunk {hunk_id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if selected_positions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("selected hunks must be unique and follow validated patch order".to_owned());
+    }
+
+    let mut lines = diff_lines(bytes)?;
+    let mut selected_line_delta = 0_i64;
+    for position in selected_positions {
+        let hunk = &hunks[position];
+        let start = i64::from(hunk.old_start) - 1 + selected_line_delta;
+        let start = usize::try_from(start)
+            .map_err(|_| format!("{} apply coordinate is out of range", hunk.hunk_id))?;
+        let end = start
+            .checked_add(hunk.old_payload.len())
+            .ok_or_else(|| format!("{} apply range overflowed", hunk.hunk_id))?;
+        if lines.get(start..end) != Some(hunk.old_payload.as_slice()) {
+            return Err(format!(
+                "{} exact preimage bytes do not match its validated coordinate",
+                hunk.hunk_id
+            ));
+        }
+        lines.splice(start..end, hunk.new_payload.iter().cloned());
+        selected_line_delta += i64::from(hunk.new_lines).saturating_sub(i64::from(hunk.old_lines));
     }
     Ok(format!("{}\n", lines.join("\n")).into_bytes())
 }
 
-fn diff_hunk_bytes(hunk_id: &str) -> Option<&'static [u8]> {
-    match hunk_id {
-        "hunk.retry-guard" => Some(
-            b"hunk.retry-guard\n-    return retry_after\n-    backoff = backoff + 1\n+    return retry_after + jitter\n+    backoff = backoff + jitter\n+    log_retry_window(jitter)",
-        ),
-        "hunk.retry-test" => Some(
-            b"hunk.retry-test\n-assert_eq!(wait, 4)\n-assert_eq!(attempts, 1)\n+assert_eq!(wait, 5)\n+assert_eq!(attempts, 1)",
-        ),
-        _ => None,
-    }
+/// Apply selected hunks only after their ordered payloads, coordinates, and
+/// cumulative line deltas have been validated against the exact preimage.
+pub fn apply_diff_hunks(bytes: &[u8], hunk_ids: &[String]) -> Result<Vec<u8>, String> {
+    let hunks = derive_diff_hunks_from_bytes(
+        &diff_fixture_file_bytes(),
+        ["Included".to_owned(), "Included".to_owned()],
+    )?;
+    apply_validated_diff_hunks(bytes, &hunks, hunk_ids)
+}
+
+pub(crate) fn validated_diff_hunks_for_render() -> Result<Vec<DiffHunkEvidence>, String> {
+    let bytes = diff_fixture_file_bytes();
+    let hunks =
+        derive_diff_hunks_from_bytes(&bytes, ["Included".to_owned(), "Pending".to_owned()])?;
+    validate_diff_hunk_contract(&bytes, &hunks)?;
+    Ok(hunks)
 }
 
 /// Returns the staging state represented by a public diff scenario.
@@ -4198,8 +4380,6 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
             hunk.file_path != diff.file_path
                 || hunk.hunk_id.trim().is_empty()
                 || !matches!(hunk.state.as_str(), "Included" | "Excluded" | "Pending")
-                || diff_hunk_bytes(&hunk.hunk_id)
-                    .is_none_or(|bytes| sha256_hex(bytes) != hunk.content_hash)
         })
         || diff.included_count
             != diff
@@ -4213,6 +4393,7 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
         );
     }
     let before_bytes = diff_fixture_file_bytes();
+    validate_diff_hunk_contract(&before_bytes, &diff.hunks)?;
     let index_bytes = diff_index_fixture_bytes();
     if diff.working_tree_before != sha256_hex(&before_bytes)
         || diff.git_index_before != sha256_hex(index_bytes)
@@ -4250,7 +4431,7 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
     if diff.write_count > 1 {
         return Err("diff evidence exceeds one atomic write".to_owned());
     }
-    let applied_bytes = apply_diff_hunks(&before_bytes, &diff.applied_hunks)
+    let applied_bytes = apply_validated_diff_hunks(&before_bytes, &diff.hunks, &diff.applied_hunks)
         .map_err(|error| format!("diff evidence cannot apply disclosed hunks: {error}"))?;
     let expected_after = if diff.write_count == 1 {
         sha256_hex(&applied_bytes)
@@ -4450,29 +4631,9 @@ fn preserved_hashes(
     hashes
 }
 
-fn diff_hunks(states: [String; 2]) -> Vec<DiffHunkEvidence> {
-    vec![
-        DiffHunkEvidence {
-            hunk_id: "hunk.retry-guard".to_owned(),
-            file_path: "src/net/retry_policy.rs".to_owned(),
-            old_start: 42,
-            old_lines: 2,
-            new_start: 42,
-            new_lines: 3,
-            state: states[0].clone(),
-            content_hash: sha256_hex(diff_hunk_bytes("hunk.retry-guard").unwrap()),
-        },
-        DiffHunkEvidence {
-            hunk_id: "hunk.retry-test".to_owned(),
-            file_path: "src/net/retry_policy.rs".to_owned(),
-            old_start: 88,
-            old_lines: 2,
-            new_start: 88,
-            new_lines: 2,
-            state: states[1].clone(),
-            content_hash: sha256_hex(diff_hunk_bytes("hunk.retry-test").unwrap()),
-        },
-    ]
+pub(crate) fn diff_hunks(states: [String; 2]) -> Vec<DiffHunkEvidence> {
+    derive_diff_hunks_from_bytes(&diff_fixture_file_bytes(), states)
+        .expect("canonical diff payloads must derive exact ordered coordinates")
 }
 
 fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
@@ -4526,7 +4687,8 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
     let write_count = u32::from(matches!(case_id, "diff-apply-all" | "staging-finish"));
     let before_bytes = diff_fixture_file_bytes();
     let working_tree_before = sha256_hex(&before_bytes);
-    let applied_bytes = apply_diff_hunks(&before_bytes, &applied_hunks)
+    let hunks = diff_hunks(states.clone());
+    let applied_bytes = apply_validated_diff_hunks(&before_bytes, &hunks, &applied_hunks)
         .expect("public diff fixtures must apply their disclosed hunks");
     let working_tree_after = if write_count == 1 && !apply_failed {
         sha256_hex(&applied_bytes)
@@ -4537,7 +4699,7 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
     Some(DiffEvidence {
         patch_revision: "patch-retry-18".to_owned(),
         file_path: "src/net/retry_policy.rs".to_owned(),
-        hunks: diff_hunks(states.clone()),
+        hunks,
         focused_hunk,
         included_count: states
             .iter()
@@ -4800,6 +4962,8 @@ fn diff_json(output: &mut String, diff: &DiffEvidence) {
         output.push_str(&hunk.new_start.to_string());
         output.push_str(",\"new_lines\":");
         output.push_str(&hunk.new_lines.to_string());
+        string_array(output, "old_payload", &hunk.old_payload);
+        string_array(output, "new_payload", &hunk.new_payload);
         field(output, "state", &hunk.state);
         field(output, "content_hash", &hunk.content_hash);
         output.push('}');

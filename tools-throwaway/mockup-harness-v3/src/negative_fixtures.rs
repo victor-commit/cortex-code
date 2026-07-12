@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::audit::{
-    AuditDocument, SemanticCandidate, SemanticEvent, audit_screen, validate_visible_text,
-    validate_vision_hash,
+    audit_screen, validate_visible_text, validate_vision_hash, AuditDocument, SemanticCandidate,
+    SemanticEvent,
 };
 use crate::chrome::components::{
     validate_key_placement, validate_primary_actions, validate_status_copy,
 };
 use crate::chrome::layout::StatusLine;
 use crate::chrome::tokens::{
-    ColorToken, validate_glyphs, validate_text_safety, validate_token_hex,
+    validate_glyphs, validate_text_safety, validate_token_hex, ColorToken,
 };
 use crate::flows::validate_flow_manifests;
 use crate::registry::{
@@ -100,6 +100,10 @@ pub const REQUIRED_FIXTURE_IDS: &[&str] = &[
     "permission-pre-transition-render",
     "permission-request-execution-mismatch",
     "permission-stale-terminal-return",
+    "diff-stale-old-coordinate",
+    "diff-incorrect-new-start",
+    "diff-wrong-counts",
+    "diff-payload-coordinate-drift",
 ];
 
 const FIXTURE_MANIFEST: &[FixtureSpec] = &[
@@ -411,6 +415,34 @@ const FIXTURE_MANIFEST: &[FixtureSpec] = &[
         "action.permission.command-return",
         "completed permission-choice destination retains stale Return"
     ),
+    fixture!(
+        "diff-stale-old-coordinate",
+        "diff-coordinates",
+        "diff-viewer-staging",
+        "hunk.retry-test.old_start",
+        "old coordinate does not match its exact preimage payload"
+    ),
+    fixture!(
+        "diff-incorrect-new-start",
+        "diff-coordinates",
+        "diff-viewer-staging",
+        "hunk.retry-test.new_start",
+        "cumulative new_start does not include preceding line deltas"
+    ),
+    fixture!(
+        "diff-wrong-counts",
+        "diff-coordinates",
+        "diff-viewer-staging",
+        "hunk.retry-test.new_lines",
+        "line counts do not match exact payloads"
+    ),
+    fixture!(
+        "diff-payload-coordinate-drift",
+        "diff-coordinates",
+        "diff-viewer-staging",
+        "hunk.retry-test.content_hash",
+        "payload drifted from the declared patch"
+    ),
 ];
 
 /// Returns the complete matrix in deterministic contract order.
@@ -534,6 +566,10 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         "permission-pre-transition-render"
         | "permission-request-execution-mismatch"
         | "permission-stale-terminal-return" => run_permission_replay_fixture(spec.id),
+        "diff-stale-old-coordinate"
+        | "diff-incorrect-new-start"
+        | "diff-wrong-counts"
+        | "diff-payload-coordinate-drift" => run_diff_coordinate_fixture(spec.id),
         "duplicate-canonical-id" => {
             let mut inventory = canonical_inventory().to_vec();
             inventory[1].id = "home";
@@ -564,6 +600,21 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         "stale-vision-hash" => validate_vision_hash("vision-hash-old", "vision-hash-current"),
         other => Err(format!("unknown negative fixture: {other}")),
     }
+}
+
+fn run_diff_coordinate_fixture(id: &str) -> Result<(), String> {
+    let mut replay = crate::scenario::replay_case("diff-apply-all", 1)?;
+    let diff = replay.diff.as_mut().expect("diff evidence");
+    match id {
+        "diff-stale-old-coordinate" => diff.hunks[1].old_start = 87,
+        "diff-incorrect-new-start" => diff.hunks[1].new_start = 88,
+        "diff-wrong-counts" => diff.hunks[1].new_lines = 1,
+        "diff-payload-coordinate-drift" => {
+            diff.hunks[1].new_payload[0] = "assert_eq!(wait, 6)".to_owned();
+        }
+        other => return Err(format!("unknown diff coordinate fixture: {other}")),
+    }
+    replay.validate()
 }
 
 fn run_permission_paging_fixture(id: &str) -> Result<(), String> {

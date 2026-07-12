@@ -6,17 +6,19 @@
 //! visual continuation, so a wrapped display line is never mistaken for a
 //! newline the person entered.
 
-use crate::scenario::{diff_evidence_for_fixture, diff_stage_state_for_fixture};
+use crate::scenario::{
+    diff_evidence_for_fixture, diff_stage_state_for_fixture, validated_diff_hunks_for_render,
+};
 use crate::{
-    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
         tokens::TextStyle,
     },
+    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -121,6 +123,9 @@ fn render_diff_edit(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let hunks = validated_diff_hunks_for_render()?;
+    let guard = &hunks[0];
+    let test = &hunks[1];
     canvas.write(
         4,
         4,
@@ -141,43 +146,91 @@ fn render_diff_edit(
         TextStyle::text(),
     )?;
     canvas.write(12, 4, "Patch summary +4 -3 · 2 hunks", TextStyle::text())?;
-    canvas.write(13, 4, "Hunk @@ -42,2 +42,3", TextStyle::text())?;
-    canvas.write(14, 6, "42  42  -    return retry_after", TextStyle::text())?;
+    canvas.write(
+        13,
+        4,
+        &format!(
+            "Hunk @@ -{},{} +{},{}",
+            guard.old_start, guard.old_lines, guard.new_start, guard.new_lines
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start, guard.new_start, guard.old_payload[0]
+        ),
+        TextStyle::text(),
+    )?;
     canvas.write(
         15,
         6,
-        "43  43  -    backoff = backoff + 1",
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start + 1,
+            guard.new_start + 1,
+            guard.old_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
         16,
         6,
-        "    42  +    return retry_after + jitter",
+        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         17,
         6,
-        "    43  +    backoff = backoff + jitter",
+        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
         TextStyle::text(),
     )?;
     canvas.write(
         18,
         6,
-        "    44  +    log_retry_window(jitter)",
+        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
         TextStyle::text(),
     )?;
-    canvas.write(20, 4, "Hunk @@ -88,2 +88,2", TextStyle::text())?;
-    canvas.write(21, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
-    canvas.write(22, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
+    canvas.write(
+        20,
+        4,
+        &format!(
+            "Hunk @@ -{},{} +{},{}",
+            test.old_start, test.old_lines, test.new_start, test.new_lines
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        21,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            test.old_start, test.new_start, test.old_payload[0]
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        23,
+        6,
+        &format!("    {:>2}  +{}", test.new_start, test.new_payload[0]),
+        TextStyle::text(),
+    )?;
     canvas.write(
         24,
+        6,
+        &format!("    {:>2}  +{}", test.new_start + 1, test.new_payload[1]),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        26,
         4,
         "Why this change: keep retry timing from repeating the same failed window.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        26,
+        28,
         4,
         "The paused conversation and your draft stay unchanged until you decide.",
         TextStyle::muted(),
@@ -340,6 +393,9 @@ fn render_diff_staging(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let mut stage = diff_stage_state_for_fixture(fixture_id);
+    let hunks = validated_diff_hunks_for_render()?;
+    let guard = &hunks[0];
+    let test = &hunks[1];
     if let Some(diff) = diff_evidence_for_fixture(fixture_id) {
         stage.hunk_states = diff
             .hunks
@@ -409,51 +465,102 @@ fn render_diff_staging(
         10,
         4,
         &format!(
-            "{}{} · hunk.retry-guard · old 42-43 · new 42-44",
+            "{}{} · hunk.retry-guard · old {},{} -> new {},{}",
             focus_marker("hunk.retry-guard"),
-            guard_marker
+            guard_marker,
+            guard.old_start,
+            guard.old_lines,
+            guard.new_start,
+            guard.new_lines
         ),
         focus_style("hunk.retry-guard", guard_state),
     )?;
-    canvas.write(11, 6, "42  42  -    return retry_after", TextStyle::text())?;
+    canvas.write(
+        11,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start, guard.new_start, guard.old_payload[0]
+        ),
+        TextStyle::text(),
+    )?;
     canvas.write(
         12,
         6,
-        "43  43  -    backoff = backoff + 1",
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start + 1,
+            guard.new_start + 1,
+            guard.old_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
         13,
         6,
-        "    42  +    return retry_after + jitter",
+        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         14,
         6,
-        "    43  +    backoff = backoff + jitter",
+        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
         TextStyle::text(),
     )?;
     canvas.write(
         15,
         6,
-        "    44  +    log_retry_window(jitter)",
+        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
         TextStyle::text(),
     )?;
     canvas.write(
         17,
         4,
         &format!(
-            "{}{} · hunk.retry-test · old 88-89 · new 88-89",
+            "{}{} · hunk.retry-test · old {},{} -> new {},{}",
             focus_marker("hunk.retry-test"),
-            test_marker
+            test_marker,
+            test.old_start,
+            test.old_lines,
+            test.new_start,
+            test.new_lines
         ),
         focus_style("hunk.retry-test", test_state),
     )?;
-    canvas.write(18, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
-    canvas.write(19, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
+    canvas.write(
+        18,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            test.old_start, test.new_start, test.old_payload[0]
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        19,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            test.old_start + 1,
+            test.new_start + 1,
+            test.old_payload[1]
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        6,
+        &format!("    {:>2}  +{}", test.new_start, test.new_payload[0]),
+        TextStyle::text(),
+    )?;
     canvas.write(
         21,
+        6,
+        &format!("    {:>2}  +{}", test.new_start + 1, test.new_payload[1]),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        22,
         4,
         if stage.apply_failed {
             "Finish stopped before writing: the patch is stale and no partial change was made."
@@ -463,13 +570,13 @@ fn render_diff_staging(
         TextStyle::muted(),
     )?;
     canvas.write(
-        23,
+        25,
         4,
         "[i] Include  [x] Exclude  [a] Include all  [e] Edit",
         TextStyle::bright(),
     )?;
     canvas.write(
-        24,
+        26,
         4,
         "[enter] Finish  [esc] Cancel · Return to pending edit",
         TextStyle::accent(),
@@ -2056,11 +2163,9 @@ mod tests {
         let matches = fuzzy_file_matches("@retry");
         assert_eq!(matches.len(), 3);
         assert_eq!(matches[0].path, "src/net/retry_policy.rs");
-        assert!(
-            matches
-                .iter()
-                .all(|candidate| fuzzy_subsequence(candidate.path, "retry"))
-        );
+        assert!(matches
+            .iter()
+            .all(|candidate| fuzzy_subsequence(candidate.path, "retry")));
         assert!(fuzzy_file_matches("@zzq").is_empty());
     }
 }

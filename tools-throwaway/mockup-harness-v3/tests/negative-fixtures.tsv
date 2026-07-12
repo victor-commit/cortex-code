@@ -43,3 +43,7 @@ permission-page-fabricated-notation	mockup-harness-v3	negative-fixture permissio
 permission-pre-transition-render	mockup-harness-v3	negative-fixture permission-pre-transition-render	3	permission-replay	permission-shell	long-command-page-0	permission replay rendered pre-transition state
 permission-request-execution-mismatch	mockup-harness-v3	negative-fixture permission-request-execution-mismatch	3	permission-replay	permission-shell	requested-command-short	requested_command bytes do not equal permission execution_bytes
 permission-stale-terminal-return	mockup-harness-v3	negative-fixture permission-stale-terminal-return	3	permission-replay	permission-shell	action.permission.command-return	completed permission-choice destination retains stale Return
+diff-stale-old-coordinate	mockup-harness-v3	negative-fixture diff-stale-old-coordinate	3	diff-coordinates	diff-viewer-staging	hunk.retry-test.old_start	old coordinate does not match its exact preimage payload
+diff-incorrect-new-start	mockup-harness-v3	negative-fixture diff-incorrect-new-start	3	diff-coordinates	diff-viewer-staging	hunk.retry-test.new_start	cumulative new_start does not include preceding line deltas
+diff-wrong-counts	mockup-harness-v3	negative-fixture diff-wrong-counts	3	diff-coordinates	diff-viewer-staging	hunk.retry-test.new_lines	line counts do not match exact payloads
+diff-payload-coordinate-drift	mockup-harness-v3	negative-fixture diff-payload-coordinate-drift	3	diff-coordinates	diff-viewer-staging	hunk.retry-test.content_hash	payload drifted from the declared patch
