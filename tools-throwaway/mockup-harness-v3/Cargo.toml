@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "mockup-harness-v3"
 path = "src/main.rs"
 
+[[bin]]
+name = "check_gate_approval"
+path = "src/bin/check_gate_approval.rs"
+
 [dependencies]
 ratatui = "=0.29.0"
 crossterm = "=0.28.1"
