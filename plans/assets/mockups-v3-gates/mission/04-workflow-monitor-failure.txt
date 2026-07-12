@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Code                                                                                                                
+    I can run that as a small mission with three connected tasks.                                                       
+                                                                                                                        
+    Prepare the release safely and review the result.                                                                   
+    Needs attention · 1 complete · 2 remaining                                                                          
+    Needs attention: Publish path validation failed the safe release checks                                             
+                                                                                                                        
+    Needs attention                                                                                                     
+      ✗ Check the safe publish path                                                                                     
+        Publish path validation failed the safe release checks                                                          
+                                                                                                                        
+    Recently completed                                                                                                  
+      ✓ Review the release notes for open risks                                                                         
+                                                                                                                        
+    Completed work stays preserved. Create a fix task to repair.                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Repair the validation failure                                                                                    │  
+  │ Create planned fix work from this failure and re-run validation.                                                 │  
+  │ › [enter] Create a fix task                                                                                      │  
+  │   [d] Open evidence                                                                                              │  
+  │   [esc] Resume conversation                                                                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

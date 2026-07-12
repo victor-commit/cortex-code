@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Code                                                                                                                
+    I can run that as a small mission with three connected tasks.                                                       
+                                                                                                                        
+    Prepare the release safely and review the result.                                                                   
+    Running · 1 complete · 2 remaining                                                                                  
+    [enter] View progress                                                                                               
+                                                                                                                        
+                                                                                                                        
+    Progress stays calm until you ask for a task summary.                                                               
+    No blocker. Open progress only when you need the details.                                                           
+                                                                                                                        
+    › composer ready                                                                                                    
+      Keep the risk note short before we publish.                                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

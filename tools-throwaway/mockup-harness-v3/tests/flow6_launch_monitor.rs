@@ -399,7 +399,7 @@ fn mission_storyboard_declares_launch_through_monitor_path() {
         (
             "workflow-launch-blocked",
             "workflow-launch",
-            TransitionKind::Direct,
+            TransitionKind::Automatic,
         ),
         (
             "workflow-launch",
@@ -419,7 +419,7 @@ fn mission_storyboard_declares_launch_through_monitor_path() {
         (
             "reviewer-output",
             "reviewer-approved",
-            TransitionKind::Direct,
+            TransitionKind::Summarized,
         ),
         (
             "reviewer-approved",
