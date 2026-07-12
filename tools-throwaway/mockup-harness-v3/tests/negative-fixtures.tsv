@@ -40,3 +40,6 @@ permission-page-gap	mockup-harness-v3	negative-fixture permission-page-gap	3	per
 permission-page-overlap	mockup-harness-v3	negative-fixture permission-page-overlap	3	permission-paging	permission-shell	page-offset-43	gap or overlap
 permission-page-wrong-offset	mockup-harness-v3	negative-fixture permission-page-wrong-offset	3	permission-paging	permission-shell	previous-offset-0	incorrect adjacent previous or next offsets
 permission-page-fabricated-notation	mockup-harness-v3	negative-fixture permission-page-fabricated-notation	3	permission-paging	permission-shell	fabricated-page-notation	does not reconstruct exact execution bytes
+permission-pre-transition-render	mockup-harness-v3	negative-fixture permission-pre-transition-render	3	permission-replay	permission-shell	long-command-page-0	permission replay rendered pre-transition state
+permission-request-execution-mismatch	mockup-harness-v3	negative-fixture permission-request-execution-mismatch	3	permission-replay	permission-shell	requested-command-short	requested_command bytes do not equal permission execution_bytes
+permission-stale-terminal-return	mockup-harness-v3	negative-fixture permission-stale-terminal-return	3	permission-replay	permission-shell	action.permission.command-return	completed permission-choice destination retains stale Return

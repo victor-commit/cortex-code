@@ -190,9 +190,7 @@ pub fn apply_diff_hunks(bytes: &[u8], hunk_ids: &[String]) -> Result<Vec<u8>, St
             "hunk.retry-test" => {
                 let start = lines
                     .windows(2)
-                    .position(|window| {
-                        window == ["assert_eq!(wait, 4)", "assert_eq!(attempts, 1)"]
-                    })
+                    .position(|window| window == ["assert_eq!(wait, 4)", "assert_eq!(attempts, 1)"])
                     .ok_or_else(|| "retry test hunk is stale or already applied".to_owned())?;
                 lines.splice(
                     start..start + 2,
@@ -369,7 +367,9 @@ fn validate_permission_page(permission: &PermissionEvidence) -> Result<(), Strin
                 || permission.page_end == permission.visible_total_length)
         || (permission.page_end == permission.visible_total_length
             && permission.next_offset.is_some())
-        || permission.next_offset.is_some_and(|offset| offset != permission.page_end)
+        || permission
+            .next_offset
+            .is_some_and(|offset| offset != permission.page_end)
         || permission.previous_offset != expected_previous
     {
         return Err("permission page boundary evidence is inconsistent".to_owned());
@@ -390,14 +390,96 @@ fn validate_permission_page(permission: &PermissionEvidence) -> Result<(), Strin
     Ok(())
 }
 
+fn validate_permission_replay_binding(
+    case_id: &str,
+    after: &ScenarioState,
+    permission: &PermissionEvidence,
+    audit: &AuditDocument,
+) -> Result<(), String> {
+    if after.requested_command.as_bytes() != permission.execution_bytes {
+        return Err("requested_command bytes do not equal permission execution_bytes".to_owned());
+    }
+    if !case_id.starts_with("permission-shell-long") {
+        return Ok(());
+    }
+
+    if after.selection == "permission-choice" {
+        let stale_return_action = audit.events.iter().any(|event| {
+            event
+                .action
+                .as_ref()
+                .is_some_and(|action| action.action_id == "action.permission.command-return")
+        });
+        let stale_return_transition = audit
+            .transitions
+            .iter()
+            .any(|transition| transition.action_id == "action.permission.command-return");
+        let stale_command_detail = after.focus == "command-detail"
+            || audit
+                .events
+                .iter()
+                .any(|event| event.identity.family == "command-navigation")
+            || audit
+                .render_txt()
+                .contains("Command detail · focused disclosure")
+            || audit
+                .render_txt()
+                .contains("[r] Return to permission choices");
+        if after.focus != "permission-choice"
+            || stale_return_action
+            || stale_return_transition
+            || stale_command_detail
+        {
+            return Err(
+                "completed permission-choice destination retains stale Return or command detail"
+                    .to_owned(),
+            );
+        }
+        return Ok(());
+    }
+
+    let expected_offset = after
+        .selection
+        .strip_prefix("long-command-page-")
+        .and_then(|offset| offset.parse::<usize>().ok())
+        .ok_or_else(|| {
+            "permission replay rendered pre-transition state: resulting page selection is invalid"
+                .to_owned()
+        })?;
+    let rendered_offsets = audit
+        .events
+        .iter()
+        .filter(|event| event.identity.family == "command-navigation")
+        .filter_map(|event| {
+            event
+                .identity
+                .subject_id
+                .strip_prefix("page-")
+                .and_then(|offset| offset.parse::<usize>().ok())
+        })
+        .collect::<Vec<_>>();
+    if after.focus != "command-detail"
+        || permission.byte_offset != expected_offset
+        || rendered_offsets.as_slice() != [expected_offset]
+    {
+        return Err(format!(
+            "permission replay rendered pre-transition state: after offset {expected_offset}, evidence offset {}, rendered offsets {:?}",
+            permission.byte_offset, rendered_offsets
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn canonical_permission_pages() -> Vec<PermissionEvidence> {
     [
-        "permission-shell-long",
-        "permission-shell-long-page-44",
-        "permission-shell-long-final",
+        (0, "canonical-page-0"),
+        (44, "canonical-page-44"),
+        (88, "canonical-page-88"),
     ]
     .into_iter()
-    .map(|case_id| permission_evidence(case_id).expect("canonical permission page evidence"))
+    .map(|(offset, case_id)| {
+        permission_evidence_at_offset(case_id, offset).expect("canonical permission page evidence")
+    })
     .collect()
 }
 
@@ -598,6 +680,12 @@ impl CaseReplay {
         }
         if let Some(permission) = &self.permission {
             validate_permission_page(permission)?;
+            validate_permission_replay_binding(
+                &self.case_id,
+                &self.after,
+                permission,
+                &self.audit,
+            )?;
             if self.case_id.starts_with("permission-shell-long")
                 && self.case_id != "permission-shell-long-return"
                 && self.case_id != "permission-shell-long-final-to-return"
@@ -736,9 +824,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "permission-shell-long" | "permission-shell-long-page-0" => {
             permission_shell_long_page(0, 44)
         }
-        "permission-shell-long-page-44" => {
-            permission_shell_long_page(44, 88)
-        }
+        "permission-shell-long-page-44" => permission_shell_long_page(44, 88),
         "permission-shell-long-middle" | "permission-shell-long-middle-to-final" => {
             permission_shell_long_final()
         }
@@ -834,16 +920,21 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     }
     let audit_fixture = if case_id == "flow2-submit-bridge" {
         "flow2.input-and-approval.stable".to_owned()
-    } else if matches!(
-        case_id,
-        "permission-shell-long-middle" | "permission-shell-long-middle-to-final"
-    ) {
-        "case.permission-shell-long-middle-to-final.tick.1".to_owned()
-    } else if matches!(
-        case_id,
-        "permission-shell-long-final" | "permission-shell-long-page-88"
-    ) {
-        "case.permission-shell-long-final.tick.1".to_owned()
+    } else if case_id.starts_with("permission-shell-long") {
+        match after.selection.as_str() {
+            "long-command-page-44" => {
+                "case.permission-shell-long-after-offset-44.tick.1".to_owned()
+            }
+            "long-command-page-88" => {
+                "case.permission-shell-long-after-offset-88.tick.1".to_owned()
+            }
+            "permission-choice" => "case.permission-shell-long-final-to-return.tick.1".to_owned(),
+            selection => {
+                return Err(format!(
+                    "long permission replay has unknown resulting selection: {selection}"
+                ));
+            }
+        }
     } else if case_id == "staging-finish" {
         "case.staging-finish.tick.1.flow2.input-and-approval.stable".to_owned()
     } else if case_id == "model-to-work-style-bridge" {
@@ -2596,15 +2687,30 @@ fn permission_shell_long_page(
     before.selection = format!("long-command-page-{before_offset}");
     before.focus = "command-detail".to_owned();
     before.pending_action = Some("pending.shell.project-check".to_owned());
+    before.requested_command =
+        String::from_utf8(crate::screens::input_and_approval::LONG_SHELL_COMMAND.to_vec())
+            .expect("long permission command must be UTF-8");
     before.state_hash = state_hash(&before);
     let mut after = before.clone();
     after.selection = format!("long-command-page-{after_offset}");
     after.focus = "command-detail".to_owned();
     after.virtual_tick = 1;
     after.state_hash = state_hash(&after);
+    let opens_final_page = after_offset + PERMISSION_PAGE_SIZE
+        >= crate::screens::input_and_approval::LONG_SHELL_COMMAND.len();
     let action = ActionEvidence {
-        action_id: "action.permission.command-next".to_owned(),
-        label: "Next page".to_owned(),
+        action_id: if opens_final_page {
+            "action.permission.command-next-final"
+        } else {
+            "action.permission.command-next"
+        }
+        .to_owned(),
+        label: if opens_final_page {
+            "Open final page"
+        } else {
+            "Next page"
+        }
+        .to_owned(),
         enabled: true,
         automatic: false,
     };
@@ -2867,6 +2973,14 @@ fn permission_shell_unsafe_byte() -> (
         "return-to-paused-turn",
         1,
     );
+    let mut before = before;
+    before.requested_command =
+        String::from_utf8(crate::screens::input_and_approval::UNSAFE_SHELL_COMMAND.to_vec())
+            .expect("unsafe permission fixture bytes must remain valid UTF-8");
+    before.state_hash = state_hash(&before);
+    let mut after = after;
+    after.requested_command = before.requested_command.clone();
+    after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.permission.allow-once".to_owned(),
         label: "Allow once".to_owned(),
@@ -4105,8 +4219,7 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
         || diff.git_index_after != sha256_hex(index_bytes)
     {
         return Err(
-            "diff evidence must hash the exact working-tree and Git-index fixture bytes"
-                .to_owned(),
+            "diff evidence must hash the exact working-tree and Git-index fixture bytes".to_owned(),
         );
     }
     if diff.applied_hunks.iter().any(|hunk| {
@@ -4454,6 +4567,27 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
     if case_id.starts_with("session-") {
         return None;
     }
+    let byte_offset = if case_id.contains("page-88")
+        || case_id.contains("long-final")
+        || case_id == "permission-shell-long-return"
+        || case_id.contains("middle-to-final")
+        || case_id == "permission-shell-long-middle"
+        || case_id.contains("final-to-return")
+        || case_id == "permission-shell-long-page-44"
+    {
+        88
+    } else if case_id == "permission-shell-long" || case_id == "permission-shell-long-page-0" {
+        44
+    } else {
+        0
+    };
+    permission_evidence_at_offset(case_id, byte_offset)
+}
+
+fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<PermissionEvidence> {
+    if case_id.starts_with("session-") {
+        return None;
+    }
     use crate::screens::input_and_approval::{
         LONG_SHELL_COMMAND, SHORT_SHELL_COMMAND, UNSAFE_SHELL_COMMAND,
     };
@@ -4462,7 +4596,7 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
             UNSAFE_SHELL_COMMAND.to_vec(),
             command_notation(UNSAFE_SHELL_COMMAND, true),
         )
-    } else if case_id.contains("long") {
+    } else if case_id.contains("long") || case_id.starts_with("canonical-page-") {
         (
             LONG_SHELL_COMMAND.to_vec(),
             command_notation(LONG_SHELL_COMMAND, false),
@@ -4488,19 +4622,6 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
             child_cap: "read-only, same project root, same session".to_owned(),
         });
     let visible_total_length = execution_bytes.len();
-    let byte_offset = if case_id.contains("page-88")
-        || case_id.contains("long-final")
-        || case_id == "permission-shell-long-return"
-        || case_id.contains("middle-to-final")
-        || case_id == "permission-shell-long-middle"
-        || case_id.contains("final-to-return")
-    {
-        88
-    } else if case_id.contains("page-44") {
-        44
-    } else {
-        0
-    };
     let page_end = (byte_offset + PERMISSION_PAGE_SIZE).min(visible_total_length);
     let page_notation = command_notation(
         &execution_bytes[byte_offset..page_end],
@@ -4520,7 +4641,7 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
         } else {
             None
         },
-        next_offset: if case_id.contains("long") && page_end < visible_total_length {
+        next_offset: if page_end < visible_total_length {
             Some(page_end)
         } else {
             None

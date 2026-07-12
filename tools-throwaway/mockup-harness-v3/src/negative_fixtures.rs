@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::audit::{
-    audit_screen, validate_visible_text, validate_vision_hash, AuditDocument, SemanticCandidate,
-    SemanticEvent,
+    AuditDocument, SemanticCandidate, SemanticEvent, audit_screen, validate_visible_text,
+    validate_vision_hash,
 };
 use crate::chrome::components::{
     validate_key_placement, validate_primary_actions, validate_status_copy,
 };
 use crate::chrome::layout::StatusLine;
 use crate::chrome::tokens::{
-    validate_glyphs, validate_text_safety, validate_token_hex, ColorToken,
+    ColorToken, validate_glyphs, validate_text_safety, validate_token_hex,
 };
 use crate::flows::validate_flow_manifests;
 use crate::registry::{
@@ -97,6 +97,9 @@ pub const REQUIRED_FIXTURE_IDS: &[&str] = &[
     "permission-page-overlap",
     "permission-page-wrong-offset",
     "permission-page-fabricated-notation",
+    "permission-pre-transition-render",
+    "permission-request-execution-mismatch",
+    "permission-stale-terminal-return",
 ];
 
 const FIXTURE_MANIFEST: &[FixtureSpec] = &[
@@ -387,6 +390,27 @@ const FIXTURE_MANIFEST: &[FixtureSpec] = &[
         "fabricated-page-notation",
         "does not reconstruct exact execution bytes"
     ),
+    fixture!(
+        "permission-pre-transition-render",
+        "permission-replay",
+        "permission-shell",
+        "long-command-page-0",
+        "permission replay rendered pre-transition state"
+    ),
+    fixture!(
+        "permission-request-execution-mismatch",
+        "permission-replay",
+        "permission-shell",
+        "requested-command-short",
+        "requested_command bytes do not equal permission execution_bytes"
+    ),
+    fixture!(
+        "permission-stale-terminal-return",
+        "permission-replay",
+        "permission-shell",
+        "action.permission.command-return",
+        "completed permission-choice destination retains stale Return"
+    ),
 ];
 
 /// Returns the complete matrix in deterministic contract order.
@@ -507,6 +531,9 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         | "permission-page-overlap"
         | "permission-page-wrong-offset"
         | "permission-page-fabricated-notation" => run_permission_paging_fixture(spec.id),
+        "permission-pre-transition-render"
+        | "permission-request-execution-mismatch"
+        | "permission-stale-terminal-return" => run_permission_replay_fixture(spec.id),
         "duplicate-canonical-id" => {
             let mut inventory = canonical_inventory().to_vec();
             inventory[1].id = "home";
@@ -549,6 +576,55 @@ fn run_permission_paging_fixture(id: &str) -> Result<(), String> {
         other => return Err(format!("unknown permission paging fixture: {other}")),
     }
     crate::scenario::validate_permission_traversal(&pages)
+}
+
+fn run_permission_replay_fixture(id: &str) -> Result<(), String> {
+    let mut replay = match id {
+        "permission-pre-transition-render" => {
+            crate::scenario::replay_case("permission-shell-long", 1)?
+        }
+        "permission-request-execution-mismatch" => {
+            crate::scenario::replay_case("permission-shell-long-page-44", 1)?
+        }
+        "permission-stale-terminal-return" => {
+            crate::scenario::replay_case("permission-shell-long-final-to-return", 1)?
+        }
+        other => return Err(format!("unknown permission replay fixture: {other}")),
+    };
+    match id {
+        "permission-pre-transition-render" => {
+            replay.audit = crate::audit::audit_screen(
+                "permission-shell",
+                "flow2-permission-shell-long-offset-0",
+            )?;
+        }
+        "permission-request-execution-mismatch" => {
+            let short = crate::screens::input_and_approval::SHORT_SHELL_COMMAND.to_vec();
+            let notation =
+                String::from_utf8(short.clone()).expect("short permission fixture must be UTF-8");
+            let permission = replay.permission.as_mut().expect("permission evidence");
+            permission.execution_bytes = short.clone();
+            permission.display_notation = notation.clone();
+            permission.page_notation = notation;
+            permission.command_sha256 = crate::audit::sha256_hex(&short);
+            permission.page_sha256 = crate::audit::sha256_hex(&short);
+            permission.byte_offset = 0;
+            permission.page_end = short.len();
+            permission.visible_total_length = short.len();
+            permission.previous_offset = None;
+            permission.next_offset = None;
+            permission.at_boundary = true;
+        }
+        "permission-stale-terminal-return" => {
+            let stale = crate::audit::audit_screen(
+                "permission-shell",
+                "case.permission-shell-long-after-offset-88.tick.1",
+            )?;
+            replay.audit = stale;
+        }
+        _ => unreachable!(),
+    }
+    replay.validate()
 }
 
 fn audit_rejection(mutate: impl FnOnce(&mut AuditDocument)) -> Result<(), String> {

@@ -8,15 +8,15 @@
 
 use crate::scenario::{diff_evidence_for_fixture, diff_stage_state_for_fixture};
 use crate::{
+    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
-    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -671,7 +671,6 @@ fn render_permission_shell(
     let unsafe_bytes = fixture_id.contains("unsafe-byte");
     let return_to_choices =
         fixture_id.contains("long-return") || fixture_id.contains("final-to-return");
-    let middle_to_final = fixture_id.contains("middle-to-final");
     let long_command = fixture_id.contains("long") && !return_to_choices;
     let out_of_scope = fixture_id.contains("persistent-scope-outside");
     let command = if out_of_scope {
@@ -685,12 +684,14 @@ fn render_permission_shell(
     };
     let hash = crate::audit::sha256_hex(command);
     let offset = if !return_to_choices
-        && (fixture_id.contains("page-88")
-        || fixture_id.contains("long-final")
-        || fixture_id.contains("middle")
-        || fixture_id.contains("middle-to-final"))
+        && (fixture_id.contains("after-offset-88")
+            || fixture_id.contains("page-88")
+            || fixture_id.contains("long-final")
+            || fixture_id.contains("middle"))
     {
         88
+    } else if !return_to_choices && fixture_id.contains("after-offset-44") {
+        44
     } else if long_command {
         fixture_id
             .split("offset-")
@@ -805,28 +806,29 @@ fn render_permission_shell(
         || (fixture_id.contains("permission-persistent-scope") && !fixture_id.contains("outside"))
         || fixture_id.contains("flow2.input-and-approval.stable")
         || fixture_id.contains("canonical.permission-shell");
+    let persistent_row = if long_command { 20 } else { 19 };
     if persistent_supported {
         canvas.write(
-            19,
+            persistent_row,
             4,
             "Persistent scope · matcher: git diff -- src/net/* · duration: this session",
             TextStyle::muted(),
         )?;
         canvas.write(
-            20,
+            persistent_row + 1,
             4,
             "Project root: ~/project · work style: Careful edits",
             TextStyle::muted(),
         )?;
         canvas.write(
-            21,
+            persistent_row + 2,
             4,
             "Child actions: inherit only read-only checks · cap: same project root",
             TextStyle::muted(),
         )?;
     } else {
         canvas.write(
-            19,
+            persistent_row,
             4,
             if out_of_scope {
                 "Persistent Allow: unavailable for this command and directory"
@@ -836,7 +838,7 @@ fn render_permission_shell(
             TextStyle::muted(),
         )?;
         canvas.write(
-            20,
+            persistent_row + 1,
             4,
             "This request can run once only; no reusable rule will be offered.",
             TextStyle::muted(),
@@ -880,7 +882,7 @@ fn render_permission_shell(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        if long_command || return_to_choices {
+        if long_command {
             "[r] Return to permission choices · [esc] Cancel · keep request pending"
         } else {
             "[esc] Cancel · keep request pending"
@@ -921,7 +923,11 @@ fn render_permission_shell(
             fixture_id,
             "command",
             &format!("sha256-{hash}"),
-            reference(14, 4, 4 + notation.chars().count() as u16),
+            reference(
+                if long_command { 15 } else { 14 },
+                4,
+                4 + notation.chars().count() as u16,
+            ),
             "focused",
             None,
         ),
@@ -930,7 +936,7 @@ fn render_permission_shell(
             fixture_id,
             "execution-scope",
             "project-command-scope",
-            reference(15, 4, 71),
+            reference(if long_command { 19 } else { 15 }, 4, 71),
             "summary",
             None,
         ),
@@ -943,7 +949,7 @@ fn render_permission_shell(
             } else {
                 "persistent-allow-unavailable"
             },
-            reference(19, 4, 78),
+            reference(persistent_row, 4, 78),
             "focused",
             None,
         ),
@@ -979,6 +985,14 @@ fn render_permission_shell(
             )),
         ),
     ];
+    if return_to_choices {
+        pairs.retain(|(_, event)| {
+            !matches!(
+                event.identity.family.as_str(),
+                "command" | "execution-scope"
+            )
+        });
+    }
     if persistent_supported {
         pairs.push(semantic(
             screen_id,
@@ -994,7 +1008,7 @@ fn render_permission_shell(
             )),
         ));
     }
-    if long_command || return_to_choices {
+    if long_command {
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -1004,107 +1018,120 @@ fn render_permission_shell(
             "focused",
             None,
         ));
-        if return_to_choices || !middle_to_final {
-            pairs.push(semantic(
-                screen_id,
-                fixture_id,
-                "cancel-action",
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.permission.command-return",
+            reference(DOCK_TOP + 5, 4, 48),
+            "summary",
+            Some(action(
                 "action.permission.command-return",
-                reference(DOCK_TOP + 5, 4, 48),
-                "summary",
-                Some(action(
-                    "action.permission.command-return",
-                    "Return to permission choices",
-                    false,
-                )),
-            ));
-        }
+                "Return to permission choices",
+                false,
+            )),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.permission.command-previous",
+            reference(17, 4, 78),
+            "summary",
+            Some(action(
+                "action.permission.command-previous",
+                "Previous page",
+                false,
+            )),
+        ));
         if page_end < command.len() {
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
-                "secondary-action",
-                "action.permission.command-next",
+                if page_end + page_size >= command.len() {
+                    "page-transition"
+                } else {
+                    "secondary-action"
+                },
+                if page_end + page_size >= command.len() {
+                    "action.permission.command-next-final"
+                } else {
+                    "action.permission.command-next"
+                },
                 reference(17, 78, 96),
                 "summary",
-                Some(action("action.permission.command-next", "Next page", false)),
-            ));
-        }
-        if middle_to_final {
-            pairs.push(semantic(
-                screen_id,
-                fixture_id,
-                "page-transition",
-                "middle-to-final",
-                reference(18, 4, 74),
-                "summary",
                 Some(action(
-                    "action.permission.command-next-final",
-                    "Open final page",
-                    false,
-                )),
-            ));
-        }
-        if offset > 0 {
-            pairs.push(semantic(
-                screen_id,
-                fixture_id,
-                "secondary-action",
-                "action.permission.command-previous",
-                reference(17, 4, 78),
-                "summary",
-                Some(action(
-                    "action.permission.command-previous",
-                    "Previous page",
+                    if page_end + page_size >= command.len() {
+                        "action.permission.command-next-final"
+                    } else {
+                        "action.permission.command-next"
+                    },
+                    if page_end + page_size >= command.len() {
+                        "Open final page"
+                    } else {
+                        "Next page"
+                    },
                     false,
                 )),
             ));
         }
     }
     let transitions = if return_to_choices {
-        vec![transition(
+        vec![
+            transition(
+                "action.permission.allow-once",
+                "permission-shell",
+                "diff-edit",
+                "direct",
+                "allow once runs only the disclosed command and opens its pending edit in the paused activity",
+            ),
+            transition(
+                "action.permission.deny",
+                "permission-shell",
+                "permission-deny-reason",
+                "direct",
+                "denial records a textual verdict without executing the command",
+            ),
+            transition(
+                "action.permission.cancel",
+                "permission-shell",
+                "chat-turn",
+                "cancel",
+                "cancel leaves the request pending and restores the paused conversation",
+            ),
+        ]
+    } else if long_command {
+        let mut transitions = Vec::new();
+        transitions.push(transition(
             "action.permission.command-return",
             "permission-shell",
             "permission-shell",
             "cancel",
-            "Return closes command detail and restores the same permission choices and focus",
-        )]
-    } else if long_command {
-        let mut transitions = Vec::new();
-        if !middle_to_final {
+            "returning from command detail restores the same permission choices and command focus",
+        ));
+        transitions.push(transition(
+            "action.permission.command-previous",
+            "permission-shell",
+            "permission-shell",
+            "direct",
+            "previous page returns exactly one byte window without changing execution bytes",
+        ));
+        if page_end < command.len() {
+            let opens_final_page = page_end + page_size >= command.len();
             transitions.push(transition(
-                "action.permission.command-return",
-                "permission-shell",
-                "permission-shell",
-                "cancel",
-                "returning from command detail restores the same permission choices and command focus",
-            ));
-        }
-        if page_end < command.len() && !middle_to_final {
-            transitions.push(transition(
-                "action.permission.command-next",
+                if opens_final_page {
+                    "action.permission.command-next-final"
+                } else {
+                    "action.permission.command-next"
+                },
                 "permission-shell",
                 "permission-shell",
                 "direct",
-                "next page advances exactly one byte window without changing execution bytes",
-            ));
-        }
-        if middle_to_final {
-            transitions.push(transition(
-                "action.permission.command-next-final",
-                "permission-shell",
-                "permission-shell",
-                "direct",
-                "the middle-page transition opens the distinct final page at the exact adjacent offset",
-            ));
-        }
-        if offset > 0 {
-            transitions.push(transition(
-                "action.permission.command-previous",
-                "permission-shell",
-                "permission-shell",
-                "direct",
-                "previous page returns exactly one byte window without changing execution bytes",
+                if opens_final_page {
+                    "the middle-page transition opens the distinct final page at the exact adjacent offset"
+                } else {
+                    "next page advances exactly one byte window without changing execution bytes"
+                },
             ));
         }
         transitions
@@ -2029,9 +2056,11 @@ mod tests {
         let matches = fuzzy_file_matches("@retry");
         assert_eq!(matches.len(), 3);
         assert_eq!(matches[0].path, "src/net/retry_policy.rs");
-        assert!(matches
-            .iter()
-            .all(|candidate| fuzzy_subsequence(candidate.path, "retry")));
+        assert!(
+            matches
+                .iter()
+                .all(|candidate| fuzzy_subsequence(candidate.path, "retry"))
+        );
         assert!(fuzzy_file_matches("@zzq").is_empty());
     }
 }
