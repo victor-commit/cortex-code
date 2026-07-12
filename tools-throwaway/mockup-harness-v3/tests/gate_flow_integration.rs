@@ -10,7 +10,7 @@ use mockup_harness_v3::{
     gate_integration::{
         pilot_gate_artifacts, pilot_gate_bridges, pilot_gate_publications,
         validate_pilot_gate_integration, validate_pilot_gate_publications,
-        validate_pilot_transition_contracts,
+        validate_pilot_transition_contracts, validate_review_session_id,
     },
     scenario::render_audit_png,
 };
@@ -66,6 +66,33 @@ fn first_three_manifests_join_to_the_published_gate_contract() {
         !report.required_pilot_iteration,
         "every frame must have an exact path/role/hash/model-bound vision record"
     );
+}
+
+#[test]
+fn persisted_integration_report_is_current_and_matches_authoritative_inventory() {
+    ensure_published();
+    let report = validate_pilot_gate_integration(REPOSITORY, MISSION_DIRECTORY)
+        .expect("the persisted first-three integration report must be current");
+    assert_eq!(report.step_count, 18);
+    assert_eq!(report.artifact_count, 36);
+    assert_eq!(report.bridge_count, pilot_gate_bridges().len());
+    assert!(!report.required_pilot_iteration);
+}
+
+#[test]
+fn placeholder_reviewer_sessions_are_rejected() {
+    assert!(validate_review_session_id("dcc104c0-092e-4007-82ab-67cb01c8c76e").is_ok());
+    for placeholder in [
+        "unavailable-from-analyze-image-response",
+        "placeholder-review-session",
+        "unknown",
+        "n/a",
+    ] {
+        assert!(
+            validate_review_session_id(placeholder).is_err(),
+            "placeholder reviewer session must fail closed: {placeholder}"
+        );
+    }
 }
 
 #[test]

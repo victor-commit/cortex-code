@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::audit::{audit_screen, sha256_hex};
-use crate::flows::{FlowManifest, FlowStep, TransitionKind, flow_manifests};
+use crate::flows::{flow_manifests, FlowManifest, FlowStep, TransitionKind};
 use crate::registry::canonical_inventory;
 use crate::scenario::replay_case;
 
@@ -91,6 +91,33 @@ pub struct PilotGateReport {
     pub programmatic_checks_before_vision: bool,
     pub vision_findings: Vec<VisionFinding>,
     pub required_pilot_iteration: bool,
+}
+
+const INTEGRATION_REPORT_RELATIVE_PATH: &str =
+    "evidence/v3-gate-flows-1-3-integration/integration-report.md";
+
+pub fn validate_review_session_id(session_id: &str) -> Result<(), String> {
+    let value = session_id.trim();
+    if value.is_empty()
+        || matches!(
+            value.to_ascii_lowercase().as_str(),
+            "unavailable-from-analyze-image-response"
+                | "placeholder-review-session"
+                | "unknown"
+                | "n/a"
+                | "none"
+        )
+    {
+        return Err("review session ID is missing or a placeholder".to_owned());
+    }
+    let valid_shape = value.len() == 36
+        && value.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_hexdigit() || matches!(index, 8 | 13 | 18 | 23) && character == '-'
+        });
+    if !valid_shape {
+        return Err("review session ID must be a UUID".to_owned());
+    }
+    Ok(())
 }
 
 pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
@@ -470,8 +497,7 @@ pub fn validate_pilot_gate_integration(
     let required_pilot_iteration = vision_findings
         .iter()
         .any(|finding| !finding.record_is_current);
-
-    Ok(PilotGateReport {
+    let report = PilotGateReport {
         flow_names: PILOT_FLOWS.to_vec(),
         step_count: pilot_manifests.iter().map(|flow| flow.steps.len()).sum(),
         artifact_count: artifacts.len(),
@@ -479,7 +505,9 @@ pub fn validate_pilot_gate_integration(
         programmatic_checks_before_vision: true,
         vision_findings,
         required_pilot_iteration,
-    })
+    };
+    validate_persisted_report(repository, mission_directory, &report, &artifacts)?;
+    Ok(report)
 }
 
 fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
@@ -640,61 +668,143 @@ fn validate_destination(
             .ok_or_else(|| "terminal return was not declared".to_owned())?,
         _ => unreachable!("destination validation accepts only declared return fields"),
     };
-    if field == "cancel_return"
-        && target == step.origin
-        && (audit.conversation.is_some()
-            || audit
-                .events
-                .iter()
-                .any(|event| matches!(event.identity.family.as_str(), "transcript" | "origin")))
-    {
+    let required_kind = match field {
+        "success_return" => match (flow, step.screen_id) {
+            ("daily-work", "streaming" | "tool-running") => "automatic",
+            _ => "direct",
+        },
+        "cancel_return" => "cancel",
+        "terminal_return" => "direct",
+        _ => unreachable!(),
+    };
+    if target == step.origin && step.origin == step.cancel_return {
         return Ok(());
     }
-    let transition = audit.transitions.iter().find(|transition| {
-        transition.to_screen_id == target
-            && (field != "cancel_return" || transition.kind == "cancel")
+    let declared_action = declared_destination_action(flow, step.screen_id, field);
+    let exact_transition = audit.transitions.iter().any(|transition| {
+        transition.from_screen_id == step.screen_id
+            && transition.to_screen_id == target
+            && transition.kind == required_kind
+            && declared_action.is_some_and(|action| transition.action_id == action)
+            && audit.events.iter().any(|event| {
+                event
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| action.action_id == transition.action_id)
+            })
     });
-    if let Some(transition) = transition {
-        if !audit.events.iter().any(|event| {
-            event
-                .action
-                .as_ref()
-                .is_some_and(|action| action.action_id == transition.action_id)
-        }) {
-            return Err(format!(
-                "{flow} step {step_index} {field} {target} references an unrendered action"
-            ));
-        }
+    if exact_transition {
         return Ok(());
     }
 
-    if bridge_path_reaches(flow, step.screen_id, target) {
+    if exact_named_destination(flow, step.screen_id, target, field, declared_action) {
         return Ok(());
     }
 
     Err(format!(
-        "{flow} step {step_index} {field} {target} has no exact rendered action or named bridge"
+        "{flow} step {step_index} {field} {target} has no exact declared action or named bridge"
     ))
 }
 
-fn bridge_path_reaches(flow: &str, source: &str, target: &str) -> bool {
-    let mut pending = vec![source];
-    let mut visited = BTreeSet::new();
-    while let Some(current) = pending.pop() {
-        if !visited.insert(current) {
-            continue;
-        }
-        for bridge in pilot_gate_bridges()
-            .iter()
-            .filter(|bridge| bridge.flow == flow && bridge.expected_before == current)
-        {
-            if bridge.expected_after == target {
-                return true;
-            }
-            pending.push(bridge.expected_after);
-        }
+fn exact_named_destination(
+    flow: &str,
+    source: &str,
+    target: &str,
+    field: &str,
+    declared_action: Option<&str>,
+) -> bool {
+    let bridge_kind_is_valid = |kind: &str| {
+        (field == "cancel_return" && kind == "cancel")
+            || (field != "cancel_return"
+                && matches!(
+                    kind,
+                    "direct" | "automatic" | "summarized" | "illustrative_detour"
+                ))
+    };
+    let exact = |case_id: &str, action: &str, before: &str, after: &str| {
+        pilot_gate_bridges().iter().any(|bridge| {
+            bridge.case_id == case_id
+                && bridge.flow == flow
+                && bridge.expected_before == before
+                && bridge.expected_after == after
+                && bridge.expected_action == action
+                && bridge_kind_is_valid(bridge.expected_kind)
+        })
+    };
+    if source == "agent-picker"
+        && target == "chat-turn"
+        && field == "success_return"
+        && declared_action == Some("action.agent-picker.review-access")
+    {
+        return exact(
+            "work-style-access-pending",
+            "action.agent-picker.review-access",
+            "agent-picker",
+            "mode-switch",
+        ) && exact(
+            "work-style-access-confirm",
+            "action.mode-switch.confirm",
+            "mode-switch",
+            "chat-turn",
+        );
+    }
+    if source == "mode-switch"
+        && target == "chat-turn"
+        && field == "success_return"
+        && declared_action == Some("action.mode-switch.confirm")
+    {
+        return exact(
+            "work-style-access-confirm",
+            "action.mode-switch.confirm",
+            "mode-switch",
+            "chat-turn",
+        );
     }
     false
+}
+
+fn declared_destination_action(flow: &str, screen: &str, field: &str) -> Option<&'static str> {
+    match (flow, screen, field) {
+        ("daily-work", "streaming", "cancel_return") => Some("action.streaming.interrupt"),
+        ("daily-work", "tool-running", "cancel_return") => Some("action.tool-running.interrupt"),
+        ("input-and-approval", "file-mention", "cancel_return") => {
+            Some("action.file-mention.dismiss")
+        }
+        ("input-and-approval", "permission-shell", "cancel_return") => {
+            Some("action.permission.cancel")
+        }
+        ("input-and-approval", "diff-edit", "cancel_return") => Some("action.diff-edit.cancel"),
+        ("input-and-approval", "diff-viewer-staging", "cancel_return") => {
+            Some("action.staging.cancel")
+        }
+        ("work-configuration", "model-picker", "cancel_return") => {
+            Some("action.model-picker.cancel")
+        }
+        ("work-configuration", "agent-picker", "cancel_return") => {
+            Some("action.agent-picker.cancel")
+        }
+        ("work-configuration", "mode-switch", "cancel_return") => Some("action.mode-switch.cancel"),
+        ("work-configuration", "session-picker", "cancel_return") => {
+            Some("action.session-picker.back")
+        }
+        ("work-configuration", "timeline", "cancel_return") => Some("action.timeline.back"),
+        ("daily-work", "rich-response", "terminal_return") => Some("action.rich-response.continue"),
+        ("input-and-approval", "diff-viewer-staging", "success_return") => {
+            Some("action.staging.finish")
+        }
+        ("input-and-approval", "diff-viewer-staging", "terminal_return") => {
+            Some("action.staging.finish")
+        }
+        ("work-configuration", "timeline", "success_return") => Some("action.timeline.resume"),
+        ("work-configuration", "timeline", "terminal_return") => Some("action.timeline.resume"),
+        ("work-configuration", "session-picker", "success_return") => {
+            Some("action.session-picker.resume")
+        }
+        ("work-configuration", "session-picker", "terminal_return") => {
+            Some("action.session-picker.resume")
+        }
+        _ => declared_action_id(flow, screen).into(),
+    }
 }
 
 fn validate_bridges(mission_directory: &str) -> Result<(), String> {
@@ -776,7 +886,14 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
         require_review_field(&review, "verdict", "pass")?;
         if review
             .get("review_session_id")
-            .is_none_or(|value| value.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "bridge review lacks review session binding: {}",
+                    vision_path.display()
+                )
+            })
+            .and_then(|value| validate_review_session_id(value))
+            .is_err()
             || review
                 .get("response_sha256")
                 .is_none_or(|value| value.len() != 64)
@@ -896,15 +1013,24 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
                 return Err("PNG feature is required for gate integration validation".to_owned());
             }
         };
-        if expected_bytes != gate_bytes {
+        let has_fixture_variants = flow_manifests()
+            .iter()
+            .take(3)
+            .flat_map(|flow| flow.steps.iter())
+            .filter(|step| step.screen_id == artifact.screen_id)
+            .map(|step| step.fixture_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1;
+        if canonical_bytes != gate_bytes && !has_fixture_variants {
             return Err(format!(
-                "gate alias is not canonical-equivalent for its declared fixture: {}",
+                "canonical and gate alias bytes differ: {}",
                 artifact.gate_relative
             ));
         }
-        if canonical_bytes == gate_bytes && artifact.fixture_id.trim().is_empty() {
+        if expected_bytes != gate_bytes {
             return Err(format!(
-                "gate alias used an empty fixture fallback: {}",
+                "gate alias is not canonical-equivalent for its declared fixture: {}",
                 artifact.gate_relative
             ));
         }
@@ -977,7 +1103,7 @@ fn collect_vision_findings(
                     .is_ok()
                     && review
                         .get("review_session_id")
-                        .is_some_and(|value| !value.trim().is_empty())
+                        .is_some_and(|value| validate_review_session_id(value).is_ok())
                     && review
                         .get("response_sha256")
                         .is_some_and(|value| value.len() == 64);
@@ -992,4 +1118,74 @@ fn collect_vision_findings(
             })
         })
         .collect()
+}
+
+fn validate_persisted_report(
+    repository: &str,
+    mission_directory: &str,
+    report: &PilotGateReport,
+    artifacts: &[PilotGateArtifact],
+) -> Result<(), String> {
+    let path = Path::new(mission_directory).join(INTEGRATION_REPORT_RELATIVE_PATH);
+    let text = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "could not read persisted integration report {}: {error}",
+            path.display()
+        )
+    })?;
+    let expected_bridge_names = pilot_gate_bridges()
+        .iter()
+        .map(|bridge| bridge.case_id)
+        .collect::<Vec<_>>();
+    for flow in &report.flow_names {
+        if !text.contains(&format!("`{flow}`")) {
+            return Err(format!("persisted integration report omits flow {flow}"));
+        }
+    }
+    for required in [
+        format!("Ordered steps: {}", report.step_count),
+        format!("Published TXT/PNG artifacts: {}", report.artifact_count),
+        format!("Bridge cases: {} named replays", report.bridge_count),
+        "Stale-finding count: **0**".to_owned(),
+    ] {
+        if !text.contains(&required) {
+            return Err(format!(
+                "persisted integration report is stale: missing {required}"
+            ));
+        }
+    }
+    for bridge in expected_bridge_names {
+        if !text.contains(&format!("`{bridge}`")) {
+            return Err(format!(
+                "persisted integration report omits bridge {bridge}"
+            ));
+        }
+    }
+    for artifact in artifacts
+        .iter()
+        .filter(|artifact| artifact.extension == "png")
+    {
+        let gate = Path::new(repository)
+            .join("plans/assets/mockups-v3-gates")
+            .join(&artifact.gate_relative);
+        let hash = sha256_hex(&fs::read(&gate).map_err(|error| {
+            format!(
+                "could not read current gate PNG {}: {error}",
+                gate.display()
+            )
+        })?);
+        let frame = artifact
+            .gate_relative
+            .split_once('/')
+            .map(|(_, frame)| frame)
+            .ok_or_else(|| format!("invalid gate path {}", artifact.gate_relative))?;
+        let row = format!("| `{}` | `{}` | `{}` |", artifact.flow, frame, hash);
+        if !text.contains(&row) {
+            return Err(format!(
+                "persisted integration report has stale hash for {}",
+                artifact.gate_relative
+            ));
+        }
+    }
+    Ok(())
 }
