@@ -7,15 +7,15 @@
 //! newline the person entered.
 
 use crate::{
-    Surface,
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
         tokens::TextStyle,
     },
+    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
@@ -557,8 +557,12 @@ fn render_permission_shell(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let unsafe_bytes = fixture_id.contains("unsafe-byte");
-    let long_command = fixture_id.contains("long");
-    let command = if unsafe_bytes {
+    let return_to_choices = fixture_id.contains("long-return");
+    let long_command = fixture_id.contains("long") && !return_to_choices;
+    let out_of_scope = fixture_id.contains("persistent-scope-outside");
+    let command = if out_of_scope {
+        b"git diff -- src/docs/release_notes.md"
+    } else if unsafe_bytes {
         UNSAFE_SHELL_COMMAND
     } else if long_command {
         LONG_SHELL_COMMAND
@@ -566,7 +570,12 @@ fn render_permission_shell(
         SHORT_SHELL_COMMAND
     };
     let hash = crate::audit::sha256_hex(command);
-    let offset = if long_command {
+    let offset = if fixture_id.contains("page-88")
+        || fixture_id.contains("long-final")
+        || fixture_id.contains("middle")
+    {
+        88
+    } else if long_command {
         fixture_id
             .split("offset-")
             .nth(1)
@@ -594,7 +603,20 @@ fn render_permission_shell(
     };
 
     permission_transcript(canvas, unsafe_bytes)?;
-    if long_command {
+    if return_to_choices {
+        canvas.write(
+            13,
+            4,
+            "Command detail closed · permission choices restored",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "Return changed no command bytes and ran nothing.",
+            TextStyle::muted(),
+        )?;
+    } else if long_command {
         canvas.write(
             13,
             4,
@@ -630,7 +652,17 @@ fn render_permission_shell(
         canvas.write(
             18,
             4,
-            "Working directory: ~/project · Scope: this command only",
+            "Use Next page or Previous page to inspect every byte window.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            19,
+            4,
+            if out_of_scope {
+                "Working directory: ~/other-project · Scope: this command only"
+            } else {
+                "Working directory: ~/project · Scope: this command only"
+            },
             TextStyle::muted(),
         )?;
     } else {
@@ -639,7 +671,11 @@ fn render_permission_shell(
         canvas.write(
             15,
             4,
-            "Working directory: ~/project · Scope: this command only",
+            if out_of_scope {
+                "Working directory: ~/other-project · Scope: this command only"
+            } else {
+                "Working directory: ~/project · Scope: this command only"
+            },
             TextStyle::muted(),
         )?;
         canvas.write(
@@ -649,24 +685,47 @@ fn render_permission_shell(
             TextStyle::muted(),
         )?;
     }
-    canvas.write(
-        19,
-        4,
-        "Persistent scope · matcher: git diff -- src/net/* · duration: this session",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        20,
-        4,
-        "Project root: ~/project · work style: Careful edits",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        21,
-        4,
-        "Child actions: inherit only read-only checks · cap: same project root",
-        TextStyle::muted(),
-    )?;
+    let persistent_supported = fixture_id.contains("persistent-supported")
+        || (fixture_id.contains("permission-persistent-scope") && !fixture_id.contains("outside"))
+        || fixture_id.contains("flow2.input-and-approval.stable")
+        || fixture_id.contains("canonical.permission-shell");
+    if persistent_supported {
+        canvas.write(
+            19,
+            4,
+            "Persistent scope · matcher: git diff -- src/net/* · duration: this session",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            "Project root: ~/project · work style: Careful edits",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            21,
+            4,
+            "Child actions: inherit only read-only checks · cap: same project root",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            19,
+            4,
+            if out_of_scope {
+                "Persistent Allow: unavailable for this command and directory"
+            } else {
+                "Persistent Allow: unavailable for this command"
+            },
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            "This request can run once only; no reusable rule will be offered.",
+            TextStyle::muted(),
+        )?;
+    }
 
     write_dock_border(canvas)?;
     dock_line(
@@ -681,12 +740,21 @@ fn render_permission_shell(
         "› [enter] Allow once · run once, then open the pending edit",
         TextStyle::accent(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "  [p] Allow for this project · save the exact scope shown above",
-        TextStyle::text(),
-    )?;
+    if persistent_supported {
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "  [p] Allow for this project · save the exact scope shown above",
+            TextStyle::text(),
+        )?;
+    } else {
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "  Note · Persistent Allow unavailable; scope is not reusable",
+            TextStyle::muted(),
+        )?;
+    }
     dock_line(
         canvas,
         DOCK_TOP + 4,
@@ -696,7 +764,7 @@ fn render_permission_shell(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        if long_command {
+        if long_command || return_to_choices {
             "[r] Return to permission choices · [esc] Cancel · keep request pending"
         } else {
             "[esc] Cancel · keep request pending"
@@ -754,8 +822,12 @@ fn render_permission_shell(
             screen_id,
             fixture_id,
             "persistent-scope",
-            "exact-project-session-scope",
-            reference(18, 4, 78),
+            if persistent_supported {
+                "exact-project-session-scope"
+            } else {
+                "persistent-allow-unavailable"
+            },
+            reference(19, 4, 78),
             "focused",
             None,
         ),
@@ -767,19 +839,6 @@ fn render_permission_shell(
             reference(DOCK_TOP + 2, 4, 67),
             "focused",
             Some(action("action.permission.allow-once", "Allow once", false)),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "secondary-action",
-            "action.permission.allow-persistent",
-            reference(DOCK_TOP + 3, 4, 73),
-            "summary",
-            Some(action(
-                "action.permission.allow-persistent",
-                "Allow for this project",
-                false,
-            )),
         ),
         semantic(
             screen_id,
@@ -804,7 +863,22 @@ fn render_permission_shell(
             )),
         ),
     ];
-    if long_command {
+    if persistent_supported {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.permission.allow-persistent",
+            reference(DOCK_TOP + 3, 4, 73),
+            "summary",
+            Some(action(
+                "action.permission.allow-persistent",
+                "Allow for this project",
+                false,
+            )),
+        ));
+    }
+    if long_command || return_to_choices {
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -817,7 +891,7 @@ fn render_permission_shell(
         pairs.push(semantic(
             screen_id,
             fixture_id,
-            "secondary-action",
+            "cancel-action",
             "action.permission.command-return",
             reference(DOCK_TOP + 5, 4, 48),
             "summary",
@@ -827,30 +901,76 @@ fn render_permission_shell(
                 false,
             )),
         ));
+        if page_end < command.len() {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "action.permission.command-next",
+                reference(17, 78, 96),
+                "summary",
+                Some(action("action.permission.command-next", "Next page", false)),
+            ));
+        }
+        if offset > 0 {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "action.permission.command-previous",
+                reference(17, 4, 78),
+                "summary",
+                Some(action(
+                    "action.permission.command-previous",
+                    "Previous page",
+                    false,
+                )),
+            ));
+        }
     }
-    let transitions = if long_command {
+    let transitions = if return_to_choices {
         vec![transition(
             "action.permission.command-return",
             "permission-shell",
             "permission-shell",
-            "direct",
-            "returning from command detail restores the same permission choices and command focus",
+            "cancel",
+            "Return closes command detail and restores the same permission choices and focus",
         )]
+    } else if long_command {
+        let mut transitions = vec![transition(
+            "action.permission.command-return",
+            "permission-shell",
+            "permission-shell",
+            "cancel",
+            "returning from command detail restores the same permission choices and command focus",
+        )];
+        if page_end < command.len() {
+            transitions.push(transition(
+                "action.permission.command-next",
+                "permission-shell",
+                "permission-shell",
+                "direct",
+                "next page advances exactly one byte window without changing execution bytes",
+            ));
+        }
+        if offset > 0 {
+            transitions.push(transition(
+                "action.permission.command-previous",
+                "permission-shell",
+                "permission-shell",
+                "direct",
+                "previous page returns exactly one byte window without changing execution bytes",
+            ));
+        }
+        transitions
     } else {
-        vec![
+        let mut transitions = vec![
             transition(
                 "action.permission.allow-once",
                 "permission-shell",
                 "diff-edit",
                 "direct",
                 "allow once runs only the disclosed command and opens its pending edit in the paused activity",
-            ),
-            transition(
-                "action.permission.allow-persistent",
-                "permission-shell",
-                "chat-turn",
-                "direct",
-                "persistent allow stores only the disclosed bounded scope before resuming",
             ),
             transition(
                 "action.permission.deny",
@@ -866,7 +986,17 @@ fn render_permission_shell(
                 "cancel",
                 "cancel leaves the request pending and restores the paused conversation",
             ),
-        ]
+        ];
+        if persistent_supported {
+            transitions.push(transition(
+                "action.permission.allow-persistent",
+                "permission-shell",
+                "chat-turn",
+                "direct",
+                "persistent allow stores only the disclosed bounded scope before resuming",
+            ));
+        }
+        transitions
     };
     Ok((
         pairs
@@ -1754,11 +1884,9 @@ mod tests {
         let matches = fuzzy_file_matches("@retry");
         assert_eq!(matches.len(), 3);
         assert_eq!(matches[0].path, "src/net/retry_policy.rs");
-        assert!(
-            matches
-                .iter()
-                .all(|candidate| fuzzy_subsequence(candidate.path, "retry"))
-        );
+        assert!(matches
+            .iter()
+            .all(|candidate| fuzzy_subsequence(candidate.path, "retry")));
         assert!(fuzzy_file_matches("@zzq").is_empty());
     }
 }
