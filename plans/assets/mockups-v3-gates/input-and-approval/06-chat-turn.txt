@@ -3,7 +3,7 @@
     Input and approval · paused conversation                                                                            
     Check the retry path before we merge.                                                                               
                                                                                                                         
-    You · Submitted prompt                                                                                              
+    You · Check the retry path before we merge.                                                                         
                                                                                                                         
     Check the retry path in @src/net/retry_policy.rs                                                                    
     Then explain the failure path that still needs coverage before the merge;                                           

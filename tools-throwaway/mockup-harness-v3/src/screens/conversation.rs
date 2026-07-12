@@ -27,6 +27,8 @@ const DAILY_WORK_TASK: &str =
     "Find where the server applies the rate limit and explain the safe path.";
 const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
 const FLOW2_TASK: &str = "Check the retry path before we merge.";
+/// Continuous pause-window You-line: must match FLOW2_TASK (no synonym swaps).
+const FLOW2_YOU_LINE: &str = "You · Check the retry path before we merge.";
 const FLOW2_ORIGIN: &str = "Input and approval · paused conversation";
 const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
 Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
@@ -368,7 +370,8 @@ fn render_flow2_resumed_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(5, 4, "You · Submitted prompt", TextStyle::bright())?;
+    // Keep the continuous You-phrase (same as banner task), then the immutable body.
+    canvas.write(5, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(
         7,
         4,
@@ -434,7 +437,7 @@ fn render_flow2_resumed_turn(
             fixture_id,
             "transcript",
             "immutable-submitted-prompt",
-            reference(5, 4, 26),
+            reference(5, 4, FLOW2_YOU_LINE.chars().count() as u16),
             "summary",
             None,
         ),
@@ -538,12 +541,7 @@ fn render_diff_applied_turn(
 ) -> Result<ScreenEvidence, String> {
     let diff = diff_evidence_for_fixture(fixture_id)
         .ok_or_else(|| "applied diff result is missing exact file evidence".to_owned())?;
-    canvas.write(
-        4,
-        4,
-        "You · Check the project files before summarizing the retry result.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1042,12 +1040,7 @@ fn permission_outcome_transcript(
     detail_three: &str,
     composer_label: &str,
 ) -> Result<(), String> {
-    canvas.write(
-        4,
-        4,
-        "You · Check the project files before summarizing the retry result.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, heading, TextStyle::text())?;
     canvas.write(11, 4, result, TextStyle::text())?;

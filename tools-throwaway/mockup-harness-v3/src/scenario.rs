@@ -1523,7 +1523,7 @@ fn flow2_submit_bridge() -> (
     before.paused_activity_id = FLOW2_PAUSED_ACTIVITY_ID.to_owned();
     apply_flow2_identity(&mut before);
     before.transcript =
-        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
     before.state_hash = state_hash(&before);
 
     let after = flow2_state(
@@ -7265,7 +7265,7 @@ fn file_mention_insert() -> (
         0,
     );
     before.transcript =
-        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
     before.queued_follow_up =
         "After this review, summarize the result. [attachment: retry-notes.md]".to_owned();
     before.state_hash = state_hash(&before);
@@ -7334,7 +7334,7 @@ fn file_mention_dismiss() -> (
         0,
     );
     before.transcript =
-        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
     before.queued_follow_up =
         "After this review, summarize the result. [attachment: retry-notes.md]".to_owned();
     before.state_hash = state_hash(&before);
@@ -7403,7 +7403,7 @@ fn file_mention_no_results() -> (
         0,
     );
     before.transcript =
-        "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
     before.state_hash = state_hash(&before);
 
     let mut after = state(

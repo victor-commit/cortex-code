@@ -28,6 +28,9 @@ const DOCK_TOP: u16 = 31;
 const DOCK_BOTTOM: u16 = 37;
 const FLOW2_FIXTURE: &str = "flow2.input-and-approval.stable";
 const FLOW2_TASK: &str = "Check the retry path before we merge.";
+/// Continuous pause-window You-line: must match FLOW2_TASK verb/subject
+/// (no Check/Review synonym swaps, no silent mid-window task rewrite).
+const FLOW2_YOU_LINE: &str = "You · Check the retry path before we merge.";
 const FLOW2_ORIGIN: &str = "Input and approval · paused conversation";
 const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
 Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
@@ -126,12 +129,7 @@ fn render_diff_edit(
     let hunks = validated_diff_hunks_for_render()?;
     let guard = &hunks[0];
     let test = &hunks[1];
-    canvas.write(
-        4,
-        4,
-        "You · Check the project files before summarizing the retry result.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code · Pending edit", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1292,12 +1290,7 @@ fn render_permission_resume(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        "You · Check the project files before summarizing the retry result.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code · Permission accepted once", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1417,12 +1410,7 @@ fn render_permission_resume(
 }
 
 fn permission_transcript(canvas: &mut Canvas, unsafe_bytes: bool) -> Result<(), String> {
-    canvas.write(
-        4,
-        4,
-        "You · Check the project files before summarizing the retry result.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(
         7,
         4,
@@ -1995,12 +1983,7 @@ fn render_file_mention(
 }
 
 fn transcript(canvas: &mut Canvas) -> Result<(), String> {
-    canvas.write(
-        4,
-        4,
-        "You · Review the retry path before we merge.",
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,

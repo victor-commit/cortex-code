@@ -414,3 +414,106 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
         "Find where the server applies the rate limit and explain the safe path."
     ));
 }
+
+/// P0-3 / human-gate rejection: banner task, You-phrase, and submitted draft body
+/// must share one continuous identity for the input-and-approval pause window.
+/// Synonym swaps (Check vs Review) and mid-window task rewrites without a bridge fail.
+#[test]
+fn input_and_approval_pause_window_keeps_one_task_you_and_draft_chain() {
+    const TASK: &str = "Check the retry path before we merge.";
+    const YOU_LINE: &str = "You · Check the retry path before we merge.";
+    const STABLE: &str = "flow2.input-and-approval.stable";
+
+    let ordered = [
+        "composer-multiline",
+        "file-mention",
+        "permission-shell",
+        "diff-edit",
+        "diff-viewer-staging",
+        "chat-turn",
+    ];
+
+    for screen in ordered {
+        let audit = audit_screen(screen, STABLE)
+            .unwrap_or_else(|error| panic!("{screen} must render under the Flow 2 fixture: {error}"));
+        let text = audit.render_txt();
+        let identity = audit
+            .conversation
+            .as_ref()
+            .unwrap_or_else(|| panic!("{screen} must expose conversation identity"));
+
+        assert_eq!(identity.user_task, TASK);
+        assert_eq!(identity.visible_origin, "Input and approval · paused conversation");
+        assert_eq!(identity.session_id, "session.retry-review.18");
+        assert_eq!(identity.turn_id, "turn.retry-review.18");
+        assert_eq!(
+            identity.submitted_prompt.as_deref(),
+            Some(SUBMITTED_PROMPT),
+            "{screen} must keep the immutable submitted prompt identity"
+        );
+        assert!(
+            text.contains("Input and approval · paused conversation"),
+            "{screen} must keep the paused Input and approval origin chip"
+        );
+        assert!(
+            text.contains(TASK),
+            "{screen} must keep the stable banner task {TASK:?}"
+        );
+        // Continuous pause: no synonym swap or silent rewrite.
+        assert!(
+            !text.contains("You · Review the retry path before we merge."),
+            "{screen} must not use the Check vs Review synonym for the You-line"
+        );
+        assert!(
+            !text.contains("You · Check the project files before summarizing the retry result."),
+            "{screen} must not rewrite the pause-window You-line to a different task without a bridge"
+        );
+        assert!(
+            !text.contains("You · Submitted prompt"),
+            "{screen} must not hide the human task behind a generic 'Submitted prompt' label"
+        );
+
+        // Sticky You-line (or staging detail that keeps the banner without inventing a new one).
+        if screen != "diff-viewer-staging" {
+            assert!(
+                text.contains(YOU_LINE),
+                "{screen} must show the continuous You-line matching the banner task"
+            );
+        } else {
+            assert!(
+                text.contains("From pending edit in the paused retry conversation"),
+                "staging must bridge back to the same pause conversation without a new You-phrase"
+            );
+        }
+
+        // Draft / submitted body starts with the same verb and subject as the task.
+        if matches!(screen, "composer-multiline" | "file-mention") {
+            assert!(
+                text.contains("Check the retry path in @retry")
+                    || text.contains("Check the retry path in @src/net/retry_policy.rs"),
+                "{screen} draft body must start from the stable Check the retry path request"
+            );
+        }
+        if screen == "chat-turn" {
+            for submitted_line in [
+                "Check the retry path in @src/net/retry_policy.rs",
+                "Then explain the failure path that still needs coverage before the merge;",
+                "include a concise test plan with the visible recovery behavior.",
+                "Keep the summary short before we merge.",
+            ] {
+                assert!(
+                    text.contains(submitted_line),
+                    "terminal chat-turn must still show immutable submitted body line {submitted_line:?}"
+                );
+            }
+            assert!(
+                text.contains("session.retry-review.18"),
+                "terminal chat-turn must retain session.retry-review.18 continuity"
+            );
+            assert!(
+                text.find(YOU_LINE) < text.find("Check the retry path in @src/net/retry_policy.rs"),
+                "You-line must label the submitted body, not replace it"
+            );
+        }
+    }
+}

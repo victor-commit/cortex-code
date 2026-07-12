@@ -2,7 +2,7 @@
                                                                                                                         
     Input and approval · paused conversation                                                                            
     Check the retry path before we merge.                                                                               
-    You · Review the retry path before we merge.                                                                        
+    You · Check the retry path before we merge.                                                                         
                                                                                                                         
                                                                                                                         
     Code                                                                                                                

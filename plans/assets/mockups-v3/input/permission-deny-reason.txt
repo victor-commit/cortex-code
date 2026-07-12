@@ -2,7 +2,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Check the project files before summarizing the retry result.                                                  
+    You · Check the retry path before we merge.                                                                         
                                                                                                                         
                                                                                                                         
     Code paused · Shell command needs your approval                                                                     
