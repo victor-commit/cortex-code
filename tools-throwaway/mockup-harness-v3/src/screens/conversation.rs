@@ -66,6 +66,10 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         || fixture_id.starts_with("case.turn-error-retry")
         || fixture_id.starts_with("case.chat-turn-open-checkpoint-undo")
         || fixture_id.starts_with("case.network-backoff-race-retry");
+    let flow6_mission_return = fixture_id.contains("mission.cancel")
+        || fixture_id.starts_with("case.mission-")
+        || fixture_id.contains("mission.launch-cancel")
+        || fixture_id.contains("mission.blocked-cancel");
     let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
         (FLOW2_ORIGIN, FLOW2_TASK)
@@ -73,6 +77,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         (FLOW3_ORIGIN, FLOW3_TASK)
     } else if flow5_recovery {
         (FLOW5_ORIGIN, FLOW5_TASK)
+    } else if flow6_mission_return {
+        (
+            "Mission · current conversation",
+            "Prepare the release safely and review the result.",
+        )
     } else {
         (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
     };

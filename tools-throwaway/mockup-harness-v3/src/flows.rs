@@ -615,6 +615,8 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             flow4_fixture(step.screen_id)
                         } else if manifest.name == "recovery" {
                             flow5_fixture(step.screen_id)
+                        } else if manifest.name == "mission" {
+                            flow6_fixture(step.screen_id)
                         } else {
                             fixture_id
                         };
@@ -868,6 +870,23 @@ pub fn validate_flow_manifests(
                     step.screen_id
                 ));
             }
+            if manifest.name == "mission"
+                && (step.fixture_id != flow6_fixture(step.screen_id)
+                    || step.conversation_id != "conversation.mission"
+                    || step.transcript_id != "transcript.mission"
+                    || step.session_id != "session.mission.1"
+                    || step.turn_id != "turn.mission.1"
+                    || step.user_task != "Prepare the release safely and review the result."
+                    || step.visible_origin != "Mission · current conversation"
+                    || !["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"]
+                        .iter()
+                        .all(|field| step.preservation_fields.contains(field)))
+            {
+                return Err(format!(
+                    "mission fixture or origin continuity mismatch for {}",
+                    step.screen_id
+                ));
+            }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
                     if step.expected_next_frame != next_step.screen_id {
@@ -1036,6 +1055,18 @@ fn flow5_fixture(screen_id: &str) -> &'static str {
         "chat-turn" => "gate.recovery.chat-turn",
         "checkpoint-undo" => "gate.recovery.checkpoint-undo",
         _ => unreachable!("recovery contains only its five canonical frames"),
+    }
+}
+
+fn flow6_fixture(screen_id: &str) -> &'static str {
+    match screen_id {
+        "workflow-launch-blocked" => "gate.mission.workflow-launch-blocked",
+        "workflow-launch" => "gate.mission.workflow-launch",
+        "workflow-monitor" => "gate.mission.workflow-monitor",
+        "workflow-monitor-failure" => "gate.mission.workflow-monitor-failure",
+        "reviewer-output" => "gate.mission.reviewer-output",
+        "reviewer-approved" => "gate.mission.reviewer-approved",
+        _ => unreachable!("mission contains only its six canonical frames"),
     }
 }
 

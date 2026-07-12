@@ -1,0 +1,932 @@
+//! Flow 6 pilot states for goal-led mission proposal, preflight, launch, and monitoring.
+//!
+//! Missions stay conversation-originated and exception-first. The default mission card
+//! shows only the human goal, stage, completed/remaining counts, an optional blocker,
+//! and one primary action. Preflight runs automatically; internals stay undisclosed.
+
+use crate::{
+    Surface,
+    audit::{
+        ActionEvidence, AuditDocument, Canvas, ConversationIdentity, Identity, RenderRef,
+        SemanticCandidate, SemanticEvent, TransitionTrace,
+    },
+    chrome::{
+        components::{Component, MissionCard},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        tokens::TextStyle,
+    },
+};
+
+const PROJECT_PATH: &str = "~/project";
+const BRANCH: &str = "main";
+const MODEL: &str = "Claude Opus 4.8";
+const DOCK_TOP: u16 = 31;
+const MISSION_TASK: &str = "Prepare the release safely and review the result.";
+const MISSION_ORIGIN: &str = "Mission · current conversation";
+const MISSION_GOAL: &str = "Prepare the release safely and review the result.";
+const MISSION_OUTCOME: &str =
+    "Ship a reviewable release package with known risks and a clear next step.";
+const USER_PROMPT: &str = "You · Turn the release work into a mission and walk me through it.";
+const LATER_DRAFT: &str = "Keep the risk note short before we publish.";
+const MISSING_INPUT: &str = "Release checklist note is missing";
+const TASK_1: &str = "Review the release notes for open risks";
+const TASK_2: &str = "Update the next-step note after fixes";
+const TASK_3: &str = "Check the safe publish path";
+const DEP_LINE: &str = "Depends on · review notes and next-step note";
+const PROPOSAL_SUBJECT: &str = "mission.proposal.release";
+const MISSION_SUBJECT: &str = "mission.release.1";
+const PENDING_LAUNCH: &str = "pending.mission.launch";
+
+type ScreenEvidence = (
+    Vec<SemanticCandidate>,
+    Vec<SemanticEvent>,
+    Vec<TransitionTrace>,
+);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaunchVariant {
+    Ready,
+    Proposal,
+    PreflightRunning,
+}
+
+pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
+    let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
+    let surface = match screen_id {
+        "workflow-launch" | "workflow-launch-blocked" => Surface::ActionDock,
+        "workflow-monitor" => Surface::ConversationShell,
+        _ => return Err(format!("unknown Flow 6 mission screen: {screen_id}")),
+    };
+    ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
+    let mut canvas = Canvas::new();
+    let (candidates, events, transitions) = match screen_id {
+        "workflow-launch" => render_workflow_launch(&mut canvas, screen_id, fixture_id)?,
+        "workflow-launch-blocked" => {
+            render_workflow_launch_blocked(&mut canvas, screen_id, fixture_id)?
+        }
+        "workflow-monitor" => render_workflow_monitor(&mut canvas, screen_id, fixture_id)?,
+        _ => unreachable!(),
+    };
+    canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+    Ok(AuditDocument {
+        screen_id: screen_id.to_owned(),
+        fixture_id: fixture_id.to_owned(),
+        styled_cells: canvas.into_cells(),
+        candidates,
+        events,
+        transitions,
+        work_style: None,
+        model_choice: None,
+        conversation: Some(ConversationIdentity {
+            conversation_id: "conversation.mission".to_owned(),
+            transcript_id: "transcript.mission".to_owned(),
+            session_id: "session.mission.1".to_owned(),
+            turn_id: "turn.mission.1".to_owned(),
+            user_task: MISSION_TASK.to_owned(),
+            visible_origin: MISSION_ORIGIN.to_owned(),
+            submitted_prompt: Some(USER_PROMPT.trim_start_matches("You · ").to_owned()),
+            paused_activity_id: Some(PENDING_LAUNCH.to_owned()),
+            later_draft: Some(LATER_DRAFT.to_owned()),
+        }),
+    })
+}
+
+fn render_workflow_launch(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    match launch_variant(fixture_id) {
+        LaunchVariant::Proposal => render_proposal(canvas, screen_id, fixture_id),
+        LaunchVariant::PreflightRunning => render_preflight_running(canvas, screen_id, fixture_id),
+        LaunchVariant::Ready => render_launch_ready(canvas, screen_id, fixture_id),
+    }
+}
+
+fn render_proposal(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    write_conversation_header(canvas)?;
+    canvas.write(10, 4, "Mission proposal", TextStyle::muted())?;
+    canvas.write(12, 4, MISSION_GOAL, TextStyle::bright())?;
+    canvas.write(13, 4, MISSION_OUTCOME, TextStyle::text())?;
+    canvas.write(15, 4, "Plan", TextStyle::bright())?;
+    canvas.write(16, 4, &format!("1. {TASK_1}"), TextStyle::text())?;
+    canvas.write(17, 4, &format!("2. {TASK_2}"), TextStyle::text())?;
+    canvas.write(18, 4, &format!("3. {TASK_3}"), TextStyle::text())?;
+    canvas.write(19, 4, &format!("   {DEP_LINE}"), TextStyle::muted())?;
+    canvas.write(
+        21,
+        4,
+        "Accepting the plan starts automatic preflight before any launch decision.",
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(canvas, DOCK_TOP + 1, "Review the mission plan", TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Human tasks stay in this conversation. No generated files are shown.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Accept plan",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Keep discussing",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "No launch control is available yet.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-proposal",
+            PROPOSAL_SUBJECT,
+            reference(12, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-goal",
+            PROPOSAL_SUBJECT,
+            reference(12, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "task-plan",
+            "task.review-notes",
+            reference(16, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "task-dependency",
+            "task.check-publish",
+            reference(19, 4, 52),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "accept-plan",
+            reference(DOCK_TOP + 3, 4, 26),
+            "summary",
+            Some(action("action.mission.accept-plan", "Accept plan", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "keep-discussing",
+            reference(DOCK_TOP + 4, 4, 28),
+            "summary",
+            Some(action(
+                "action.mission.proposal-cancel",
+                "Keep discussing",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.accept-plan",
+            screen_id,
+            "workflow-launch",
+            "automatic",
+            "accepting the proposal starts automatic preflight before launch",
+        ),
+        transition(
+            "action.mission.proposal-cancel",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "leaving the proposal keeps the draft conversation ready to revise",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_preflight_running(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    write_conversation_header(canvas)?;
+    write_mission_summary(canvas, 10, "Preflight", 0, 3, None)?;
+    canvas.write(
+        14,
+        4,
+        "● Preflight is running automatically after the plan was accepted.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Launch stays unavailable until the automatic checks finish.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "Successful checks collapse. Only missing inputs expand.",
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(canvas, DOCK_TOP + 1, "Automatic preflight", TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Code is checking launch readiness. No manual preflight control.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "  Waiting for automatic checks…",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  No Start mission action yet",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "  [esc] Cancel · return to conversation",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preflight",
+            "preflight.auto.running",
+            reference(14, 4, 64),
+            "summary",
+            Some(action(
+                "action.mission.preflight-auto",
+                "Automatic preflight",
+                true,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "cancel-preflight",
+            reference(DOCK_TOP + 5, 4, 42),
+            "summary",
+            Some(action(
+                "action.mission.preflight-cancel",
+                "Cancel",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.preflight-auto",
+            screen_id,
+            "workflow-launch",
+            "automatic",
+            "automatic preflight resolves to ready or blocked without a manual start",
+        ),
+        transition(
+            "action.mission.preflight-cancel",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "cancel restores the proposing conversation before launch",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_launch_ready(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    write_conversation_header(canvas)?;
+    write_mission_summary(canvas, 10, "Ready to launch", 0, 3, None)?;
+    canvas.write(
+        13,
+        4,
+        "✓ Preflight passed. Detailed checks stay collapsed.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "No missing inputs. Starting will run the three planned tasks.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "Goal, stage, and counts are the only mission fields on the card.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "[d] View preflight evidence",
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(canvas, DOCK_TOP + 1, "Start this mission?", TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Start runs the planned tasks and opens compact progress monitoring.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Start mission",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Cancel · return to conversation",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Cancel keeps the proposal and starts no work.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-goal",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preflight-success",
+            "preflight.auto.passed",
+            reference(13, 4, 52),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "disclosure",
+            "preflight.evidence",
+            reference(17, 4, 32),
+            "summary",
+            Some(action(
+                "action.mission.view-preflight-evidence",
+                "View preflight evidence",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "start-mission",
+            reference(DOCK_TOP + 3, 4, 28),
+            "summary",
+            Some(action("action.mission.start", "Start mission", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "cancel-launch",
+            reference(DOCK_TOP + 4, 4, 42),
+            "summary",
+            Some(action("action.mission.launch-cancel", "Cancel", false)),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.start",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "explicit launch decision enters compact healthy monitoring",
+        ),
+        transition(
+            "action.mission.launch-cancel",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "cancel returns to the proposing conversation without starting the mission",
+        ),
+        transition(
+            "action.mission.view-preflight-evidence",
+            screen_id,
+            "workflow-launch",
+            "direct",
+            "preflight evidence discloses successfully collapsed checks only on request",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_workflow_launch_blocked(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    write_conversation_header(canvas)?;
+    write_mission_summary(canvas, 10, "Preflight", 0, 3, Some(MISSING_INPUT))?;
+    canvas.write(
+        14,
+        4,
+        "One missing input is blocking launch readiness.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Provide the release checklist note, then preflight reruns automatically.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "The launch decision stays unavailable until that automatic rerun passes.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "No manual preflight control is offered.",
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Resolve the missing input",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Add the release checklist note required by preflight.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Add release checklist",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Cancel · return to conversation",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Launch remains omitted while blocked.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-goal",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "blocker",
+            "blocker.release-checklist",
+            reference(12, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "add-release-checklist",
+            reference(DOCK_TOP + 3, 4, 36),
+            "summary",
+            Some(action(
+                "action.mission.resolve-missing-input",
+                "Add release checklist",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "cancel-blocked",
+            reference(DOCK_TOP + 4, 4, 42),
+            "summary",
+            Some(action(
+                "action.mission.blocked-cancel",
+                "Cancel",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.resolve-missing-input",
+            screen_id,
+            "workflow-launch",
+            "automatic",
+            "resolving the missing input reruns automatic preflight before launch",
+        ),
+        transition(
+            "action.mission.blocked-cancel",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "cancel returns to the proposing conversation without launching",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_workflow_monitor(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    write_conversation_header(canvas)?;
+    let expanded = fixture_id.to_ascii_lowercase().contains("progress");
+    let card = MissionCard::new(MISSION_GOAL, "Running", 1, 2, None, "View progress");
+    write_component(canvas, 10, 4, &card)?;
+    if expanded {
+        // Healthy expanded progress omits the empty Needs attention group.
+        canvas.write(15, 4, "Working", TextStyle::bright())?;
+        canvas.write(16, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
+        canvas.write(18, 4, "Recently completed", TextStyle::bright())?;
+        canvas.write(19, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+        canvas.write(
+            21,
+            4,
+            "[esc] Collapse progress",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            15,
+            4,
+            "Progress stays calm until you ask for a task summary.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            "No blocker. Open progress only when you need the details.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(19, 4, "  Keep the risk note short before we publish.", TextStyle::text())?;
+    }
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-goal",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "progress-stage",
+            "stage.running",
+            reference(11, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "view-progress",
+            reference(12, 4, 28),
+            "summary",
+            Some(action(
+                "action.mission.view-progress",
+                "View progress",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.mission.view-progress",
+        screen_id,
+        "workflow-monitor",
+        "direct",
+        "progress disclosure returns to the same compact monitor",
+    )];
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn write_conversation_header(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "I can run that as a small mission with three connected tasks.",
+        TextStyle::text(),
+    )?;
+    Ok(())
+}
+
+/// Compact mission payload without the card's action row.
+/// Dock screens keep the primary action in the bottom decision dock only.
+fn write_mission_summary(
+    canvas: &mut Canvas,
+    first_row: u16,
+    stage: &str,
+    completed: usize,
+    remaining: usize,
+    blocker: Option<&str>,
+) -> Result<(), String> {
+    canvas.write(first_row, 4, MISSION_GOAL, TextStyle::bright())?;
+    canvas.write(
+        first_row + 1,
+        4,
+        &format!("{stage} · {completed} complete · {remaining} remaining"),
+        TextStyle::text(),
+    )?;
+    if let Some(blocker) = blocker {
+        canvas.write(
+            first_row + 2,
+            4,
+            &format!("Needs attention: {blocker}"),
+            TextStyle::text(),
+        )?;
+    }
+    Ok(())
+}
+
+fn launch_variant(fixture_id: &str) -> LaunchVariant {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("proposal") {
+        LaunchVariant::Proposal
+    } else if lower.contains("preflight-running")
+        || lower.contains("preflight_running")
+        || lower.contains("preflight-run")
+    {
+        LaunchVariant::PreflightRunning
+    } else {
+        LaunchVariant::Ready
+    }
+}
+
+fn write_component(
+    canvas: &mut Canvas,
+    first_row: u16,
+    column: u16,
+    component: &impl Component,
+) -> Result<(), String> {
+    for (index, line) in component.lines().into_iter().enumerate() {
+        canvas.write(first_row + index as u16, column, &line.text, line.style)?;
+    }
+    Ok(())
+}
+
+fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(
+        DOCK_TOP,
+        2,
+        &format!("╭{}╮", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        DOCK_TOP + 6,
+        2,
+        &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    Ok(())
+}
+
+fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Result<(), String> {
+    canvas.write(row, 2, "│", TextStyle::muted())?;
+    canvas.write(row, 4, text, style)?;
+    canvas.write(row, 117, "│", TextStyle::muted())?;
+    Ok(())
+}
+
+fn action(action_id: &str, label: &str, automatic: bool) -> ActionEvidence {
+    ActionEvidence {
+        action_id: action_id.to_owned(),
+        label: label.to_owned(),
+        enabled: true,
+        automatic,
+    }
+}
+
+fn reference(row: u16, start: u16, end: u16) -> RenderRef {
+    RenderRef { row, start, end }
+}
+
+fn semantic(
+    screen_id: &str,
+    fixture_id: &str,
+    family: &str,
+    subject_id: &str,
+    render_ref: RenderRef,
+    detail_level: &str,
+    action: Option<ActionEvidence>,
+) -> (SemanticCandidate, SemanticEvent) {
+    let identity = Identity {
+        screen_id: screen_id.to_owned(),
+        fixture_id: fixture_id.to_owned(),
+        candidate_id: format!("candidate.{family}.{subject_id}"),
+        event_id: format!("event.{family}.{subject_id}"),
+        family: family.to_owned(),
+        subject_id: subject_id.to_owned(),
+        render_refs: vec![render_ref],
+        detail_level: detail_level.to_owned(),
+    };
+    (
+        SemanticCandidate {
+            identity: identity.clone(),
+        },
+        SemanticEvent { identity, action },
+    )
+}
+
+fn transition(
+    action_id: &str,
+    from_screen_id: &str,
+    to_screen_id: &str,
+    kind: &str,
+    path: &str,
+) -> TransitionTrace {
+    TransitionTrace {
+        action_id: action_id.to_owned(),
+        from_screen_id: from_screen_id.to_owned(),
+        to_screen_id: to_screen_id.to_owned(),
+        kind: kind.to_owned(),
+        path: path.to_owned(),
+    }
+}

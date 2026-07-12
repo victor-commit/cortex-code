@@ -861,7 +861,16 @@ impl CaseReplay {
                         || self.attempts[0].outcome == "no-op"
                         || self.attempts[0].outcome == "stale"
                         || self.attempts[0].outcome == "restored"
-                        || self.attempts[0].outcome == "redone")))
+                        || self.attempts[0].outcome == "redone"))
+                && !(self.case_id.starts_with("mission-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled"
+                        || self.attempts[0].outcome == "accepted"
+                        || self.attempts[0].outcome == "launch-ready"
+                        || self.attempts[0].outcome == "still-blocked"
+                        || self.attempts[0].outcome == "started"
+                        || self.attempts[0].outcome == "progress-open")))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -1116,6 +1125,13 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "checkpoint-redo-stale" => checkpoint_redo_stale(),
         "checkpoint-continue-chat" => checkpoint_continue_chat(),
         "chat-turn-open-checkpoint-undo" => chat_turn_open_checkpoint_undo(),
+        "mission-proposal-accept" => mission_proposal_accept(),
+        "mission-resolve-input-ready" => mission_resolve_input_ready(),
+        "mission-resolve-input-still-blocked" => mission_resolve_input_still_blocked(),
+        "mission-start" => mission_start(),
+        "mission-launch-cancel" => mission_launch_cancel(),
+        "mission-blocked-cancel" => mission_blocked_cancel(),
+        "mission-view-progress" => mission_view_progress(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1323,6 +1339,35 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("checkpoint-undo-noop", "checkpoint-undo") => "checkpoint-undo.noop".to_owned(),
             ("checkpoint-redo-stale", "checkpoint-undo") => "checkpoint-undo.stale".to_owned(),
+            (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if matches!(
+        case_id,
+        "mission-proposal-accept"
+            | "mission-resolve-input-ready"
+            | "mission-resolve-input-still-blocked"
+            | "mission-start"
+            | "mission-launch-cancel"
+            | "mission-blocked-cancel"
+            | "mission-view-progress"
+    ) {
+        match (case_id, after.screen_id.as_str()) {
+            ("mission-proposal-accept", "workflow-launch") => {
+                "workflow-launch.preflight-running".to_owned()
+            }
+            ("mission-resolve-input-ready", "workflow-launch") => {
+                "gate.mission.workflow-launch".to_owned()
+            }
+            ("mission-resolve-input-still-blocked", "workflow-launch-blocked") => {
+                "gate.mission.workflow-launch-blocked".to_owned()
+            }
+            ("mission-start", "workflow-monitor") => "gate.mission.workflow-monitor".to_owned(),
+            ("mission-launch-cancel", "chat-turn") | ("mission-blocked-cancel", "chat-turn") => {
+                "case.mission.cancel.after.chat-turn.tick.1".to_owned()
+            }
+            ("mission-view-progress", "workflow-monitor") => {
+                "gate.mission.workflow-monitor".to_owned()
+            }
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else {
@@ -1884,6 +1929,499 @@ fn apply_flow5_identity(state: &mut ScenarioState) {
     state.scroll_anchor = "turn-partial".to_owned();
     state.attachment = "rate-limit-notes.md".to_owned();
     state.state_hash = state_hash(state);
+}
+
+const FLOW6_TASK: &str = "Prepare the release safely and review the result.";
+const FLOW6_ORIGIN: &str = "Mission · current conversation";
+const FLOW6_DRAFT: &str = "Keep the risk note short before we publish.";
+const FLOW6_PENDING: &str = "pending.mission.launch";
+const FLOW6_SUBMITTED: &str = "Turn the release work into a mission and walk me through it.";
+fn apply_flow6_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.mission".to_owned();
+    state.transcript_id = "transcript.mission".to_owned();
+    state.session_id = "session.mission.1".to_owned();
+    state.turn_id = "turn.mission.1".to_owned();
+    state.user_task = FLOW6_TASK.to_owned();
+    state.visible_origin = FLOW6_ORIGIN.to_owned();
+    state.draft = FLOW6_DRAFT.to_owned();
+    state.transcript = format!(
+        "You · {FLOW6_SUBMITTED}\nI can run that as a small mission with three connected tasks."
+    );
+    state.partial_response = String::new();
+    state.paused_activity_id = FLOW6_PENDING.to_owned();
+    state.submitted_prompt = Some(FLOW6_SUBMITTED.to_owned());
+    state.queue = String::new();
+    state.queued_follow_up = String::new();
+    state.scroll_anchor = "mission-plan".to_owned();
+    state.attachment = String::new();
+    state.state_hash = state_hash(state);
+}
+
+fn copy_flow6_identity(from: &ScenarioState, to: &mut ScenarioState) {
+    to.conversation_id = from.conversation_id.clone();
+    to.transcript_id = from.transcript_id.clone();
+    to.session_id = from.session_id.clone();
+    to.turn_id = from.turn_id.clone();
+    to.user_task = from.user_task.clone();
+    to.visible_origin = from.visible_origin.clone();
+    to.draft = from.draft.clone();
+    to.transcript = from.transcript.clone();
+    to.partial_response = from.partial_response.clone();
+    to.paused_activity_id = from.paused_activity_id.clone();
+    to.submitted_prompt = from.submitted_prompt.clone();
+    to.queue = from.queue.clone();
+    to.queued_follow_up = from.queued_follow_up.clone();
+    to.scroll_anchor = from.scroll_anchor.clone();
+    to.attachment = from.attachment.clone();
+    to.return_policy = from.return_policy.clone();
+    to.state_hash = state_hash(to);
+}
+
+fn mission_proposal_accept() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-launch",
+        vec!["chat-turn", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "accept-plan",
+        "mission-proposal",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.selection = "accept-plan".to_owned();
+    before.focus = "mission-proposal".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "workflow-launch",
+        vec!["chat-turn", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "preflight-running",
+        "mission-preflight",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "preflight-running".to_owned();
+    after.focus = "mission-preflight".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mission.accept-plan".to_owned(),
+        label: "Accept plan".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "accepting the proposal starts automatic preflight before launch".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.preflight.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "accepted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.preflight-start",
+        "mission-preflight",
+        "running",
+        "accepting the plan begun automatic preflight without a manual check step",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_resolve_input_ready() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "workflow-launch-blocked"];
+    let mut before = state(
+        "workflow-launch-blocked",
+        origin.clone(),
+        FLOW6_DRAFT,
+        "mission-plan",
+        "missing-input",
+        "mission-blocker",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-launch",
+        vec!["chat-turn", "workflow-launch-blocked", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "start-mission",
+        "mission-launch",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "start-mission".to_owned();
+    after.focus = "mission-launch".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-launch-blocked".to_owned(),
+        "workflow-launch".to_owned(),
+    ];
+    // origin_stack preservation check requires before == after stacks
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mission.resolve-missing-input".to_owned(),
+        label: "Add release checklist".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "resolving the missing input reruns automatic preflight before launch".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.preflight-rerun.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "launch-ready".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.preflight-success",
+        "mission-preflight",
+        "passed",
+        "fresh automatic preflight succeeded after the missing input was supplied",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_resolve_input_still_blocked() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "workflow-launch-blocked"];
+    let mut before = state(
+        "workflow-launch-blocked",
+        origin.clone(),
+        FLOW6_DRAFT,
+        "mission-plan",
+        "missing-input",
+        "mission-blocker",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "missing-input".to_owned();
+    after.focus = "mission-blocker".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.resolve-missing-input".to_owned(),
+        label: "Add release checklist".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "automatic preflight still reports the current concrete missing input".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.preflight-rerun.2".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "still-blocked".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.preflight-still-blocked",
+        "mission-preflight",
+        "blocked",
+        "fresh automatic preflight failed again with the same concrete missing input",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_start() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-launch",
+        vec!["chat-turn", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "start-mission",
+        "mission-launch",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-running",
+        "view-progress",
+        "mission-monitor",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "view-progress".to_owned();
+    after.focus = "mission-monitor".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-launch".to_owned(),
+        "workflow-monitor".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.start".to_owned(),
+        label: "Start mission".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "explicit launch decision enters compact healthy monitoring".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.launch.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "started".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.started",
+        "mission-execution",
+        "running",
+        "mission started for the release goal with compact monitoring",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_launch_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-launch",
+        vec!["chat-turn", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "start-mission",
+        "mission-launch",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "workflow-launch"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "composer",
+        "composer",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.launch-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel returns to the proposing conversation without starting the mission"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.launch-cancel.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.launch-cancel",
+        "mission-launch",
+        "no-start",
+        "cancel preserved the conversation and started no mission work",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_blocked_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-launch-blocked",
+        vec!["chat-turn", "workflow-launch-blocked"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "missing-input",
+        "mission-blocker",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "workflow-launch-blocked"],
+        FLOW6_DRAFT,
+        "mission-plan",
+        "composer",
+        "composer",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.blocked-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel returns to the proposing conversation without launching".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.blocked-cancel.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.blocked-cancel",
+        "mission-launch",
+        "no-start",
+        "cancel left the blocked mission unstarted and restored the conversation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_view_progress() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-running",
+        "view-progress",
+        "mission-monitor",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mission-monitor".to_owned();
+    after.selection = "view-progress".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-progress".to_owned(),
+        label: "View progress".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "progress disclosure returns to the same compact monitor".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-progress.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "progress-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-progress",
+        "mission-monitor",
+        "disclosed",
+        "opening progress kept the mission identity and compact default state",
+    );
+    (before, after, action, transition, attempt, effect)
 }
 
 fn copy_flow5_identity(from: &ScenarioState, to: &mut ScenarioState) {

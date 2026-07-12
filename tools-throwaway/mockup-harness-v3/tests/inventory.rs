@@ -169,6 +169,9 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "error-network",
             "rate-limit",
             "checkpoint-undo",
+            "workflow-launch",
+            "workflow-launch-blocked",
+            "workflow-monitor",
         ]
         .contains(&screen.id)
         {
