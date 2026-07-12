@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Not applied · Careful edits remains active                                                                       │  
   │ Quick implementation keeps the same access and adds review at the end.                                           │  
-  │ › [enter] Choose Quick implementation · same access · [esc] Return to work                                       │  
-  │ Nothing was applied.                                                                                             │  
-  │ The previous work style remains the only applied choice.                                                         │  
+  │ › [enter] Choose Quick implementation · same access                                                              │  
+  │   [esc] Return to work                                                                                           │  
+  │ Nothing was applied; Careful edits remains the only applied choice.                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

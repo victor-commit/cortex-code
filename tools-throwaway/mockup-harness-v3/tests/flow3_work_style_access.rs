@@ -110,6 +110,18 @@ fn refusal_keeps_current_style_and_offers_one_safe_next_action() {
     assert!(text.contains("Quick implementation keeps the same access"));
     assert!(text.contains("[enter] Choose Quick implementation · same access"));
     assert!(text.contains("[esc] Return to work"));
+    let primary_line = text
+        .lines()
+        .find(|line| line.contains("[enter] Choose Quick implementation · same access"))
+        .expect("primary refusal recovery action must render");
+    let return_line = text
+        .lines()
+        .find(|line| line.contains("[esc] Return to work"))
+        .expect("secondary refusal return action must render");
+    assert_ne!(
+        primary_line, return_line,
+        "primary and secondary refusal actions need distinct visual rows"
+    );
     assert!(!text.contains("generic retry"));
     assert!(!text.contains("mode error"));
     assert_eq!(
@@ -228,6 +240,25 @@ fn cancel_and_refusal_preserve_old_configuration_with_safe_recovery() {
         refused.actions[0].label,
         "Choose Quick implementation · same access"
     );
+    assert_eq!(
+        refused.actions[0].action_id,
+        "action.mode-switch-refused.choose-unchanged"
+    );
+    assert_eq!(
+        refused.transitions[0].action_id,
+        "action.mode-switch-refused.choose-unchanged"
+    );
+    assert!(refused
+        .audit
+        .events
+        .iter()
+        .any(|event| event.action.as_ref().is_some_and(|action| {
+            action.action_id == "action.mode-switch-refused.choose-unchanged"
+        })));
+    assert!(refused.audit.transitions.iter().any(|transition| {
+        transition.action_id == "action.mode-switch-refused.choose-unchanged"
+    }));
+    assert!(!refused.to_json().contains("choose-safer"));
     assert_reconciled_hash(&refused, "work_style", true);
     assert_reconciled_hash(&refused, "pending_work_style", false);
     assert_reconciled_hash(&refused, "access_scope", true);
@@ -274,4 +305,19 @@ fn cancel_and_refusal_preserve_old_configuration_with_safe_recovery() {
     assert_reconciled_hash(&return_to_work, "work_style", true);
     assert_reconciled_hash(&return_to_work, "pending_work_style", true);
     assert_reconciled_hash(&return_to_work, "access_scope", true);
+}
+
+#[test]
+fn stale_refusal_action_identity_is_rejected_by_replay_validation() {
+    let mut replay =
+        replay_case("work-style-access-refused", 1).expect("refusal must replay safely");
+    replay.actions[0].action_id = "action.mode-switch-refused.choose-safer".to_owned();
+    replay.transitions[0].action_id = "action.mode-switch-refused.choose-safer".to_owned();
+
+    assert_eq!(
+        replay
+            .validate()
+            .expect_err("stale action ID must fail closed"),
+        "work-style refusal replay must use action.mode-switch-refused.choose-unchanged"
+    );
 }

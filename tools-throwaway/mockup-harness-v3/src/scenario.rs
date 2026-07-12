@@ -14,6 +14,7 @@ const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_pol
 Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
 Keep the summary short before we merge.";
 const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
+const REFUSAL_UNCHANGED_ACTION_ID: &str = "action.mode-switch-refused.choose-unchanged";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScenarioState {
@@ -545,6 +546,26 @@ impl CaseReplay {
         {
             return Err(
                 "case replay transition does not bind the exact action and states".to_owned(),
+            );
+        }
+        if self.case_id == "work-style-access-refused"
+            && (action.action_id != REFUSAL_UNCHANGED_ACTION_ID
+                || transition.action_id != REFUSAL_UNCHANGED_ACTION_ID
+                || !self.audit.events.iter().any(|event| {
+                    event
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.action_id == REFUSAL_UNCHANGED_ACTION_ID)
+                })
+                || !self
+                    .audit
+                    .transitions
+                    .iter()
+                    .any(|transition| transition.action_id == REFUSAL_UNCHANGED_ACTION_ID))
+        {
+            return Err(
+                "work-style refusal replay must use action.mode-switch-refused.choose-unchanged"
+                    .to_owned(),
             );
         }
         if self.preserved_field_hashes.is_empty()
@@ -1749,7 +1770,7 @@ fn work_style_access_refused() -> (
     after.virtual_tick = 1;
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
-        action_id: "action.mode-switch-refused.choose-safer".to_owned(),
+        action_id: REFUSAL_UNCHANGED_ACTION_ID.to_owned(),
         label: "Choose Quick implementation · same access".to_owned(),
         enabled: true,
         automatic: false,

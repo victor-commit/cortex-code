@@ -1213,19 +1213,19 @@ fn render_mode_switch_refused(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Choose Quick implementation · same access · [esc] Return to work",
+        "› [enter] Choose Quick implementation · same access",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "Nothing was applied.",
+        "  [esc] Return to work",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "The previous work style remains the only applied choice.",
+        "Nothing was applied; Careful edits remains the only applied choice.",
         TextStyle::muted(),
     )?;
 
@@ -1271,7 +1271,7 @@ fn render_mode_switch_refused(
             fixture_id,
             "primary-action",
             "action.mode-switch-refused.choose-unchanged",
-            reference(DOCK_TOP + 3, 4, 73),
+            reference(DOCK_TOP + 3, 4, 52),
             "focused",
             Some(action(
                 "action.mode-switch-refused.choose-unchanged",
@@ -1284,7 +1284,7 @@ fn render_mode_switch_refused(
             fixture_id,
             "secondary-action",
             "action.mode-switch-refused.return",
-            reference(DOCK_TOP + 3, 55, 83),
+            reference(DOCK_TOP + 4, 4, 25),
             "summary",
             Some(action(
                 "action.mode-switch-refused.return",
