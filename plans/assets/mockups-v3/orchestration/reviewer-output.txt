@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Mission review                                                                                                      
+    Review needs attention before completion. Mission card stays compact.                                               
+                                                                                                                        
+                                                                                                                        
+    Prepare the release safely and review the result.                                                                   
+    Review · 2 complete · 1 remaining                                                                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Changes requested                                                                                                   
+    Next-step note still omits the open risk and rollback order                                                         
+    Affected · Safe publish path                                                                                        
+    [enter] Create a fix task                                                                                           
+                                                                                                                        
+    Checklist and deeper evidence stay collapsed until you open them.                                                   
+                                                                                                                        
+    [d] View validation summary                                                                                         
+                                                                                                                        
+    [esc] Return to mission monitor                                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

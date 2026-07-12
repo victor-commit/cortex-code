@@ -679,7 +679,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "team-board",
@@ -693,14 +693,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "reviewer-approved",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "verification-ladder",

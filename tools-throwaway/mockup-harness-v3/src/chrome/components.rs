@@ -787,6 +787,10 @@ pub struct ReviewBlock {
     title: String,
     summary: String,
     primary_action: String,
+    affected_result: Option<String>,
+    secondary_action: Option<String>,
+    /// When false, actions live on a peer dock; the block is outcome-only.
+    include_actions: bool,
 }
 
 impl ReviewBlock {
@@ -795,24 +799,62 @@ impl ReviewBlock {
             title: title.to_owned(),
             summary: summary.to_owned(),
             primary_action: primary_action.to_owned(),
+            affected_result: None,
+            secondary_action: None,
+            include_actions: true,
         }
+    }
+
+    pub fn with_affected_result(mut self, result: &str) -> Self {
+        self.affected_result = Some(result.to_owned());
+        self
+    }
+
+    pub fn with_secondary(mut self, action: &str) -> Self {
+        self.secondary_action = Some(action.to_owned());
+        self
+    }
+
+    /// Outcome only; primary/secondary actions remain on the bottom dock.
+    pub fn outcome_only(mut self) -> Self {
+        self.include_actions = false;
+        self
     }
 }
 
 impl Component for ReviewBlock {
     fn lines(&self) -> Vec<ComponentLine> {
-        vec![
+        let mut lines = vec![
             ComponentLine::new(self.title.clone(), TextStyle::bright()),
             ComponentLine::new(self.summary.clone(), TextStyle::text()),
-            ComponentLine::new(
+        ];
+        if let Some(affected) = &self.affected_result {
+            lines.push(ComponentLine::new(
+                format!("Affected · {affected}"),
+                TextStyle::muted(),
+            ));
+        }
+        if self.include_actions {
+            lines.push(ComponentLine::new(
                 format!("[enter] {}", self.primary_action),
                 TextStyle::accent(),
-            ),
-        ]
+            ));
+            if let Some(secondary) = &self.secondary_action {
+                lines.push(ComponentLine::new(
+                    format!("[d] {secondary}"),
+                    TextStyle::muted(),
+                ));
+            }
+        }
+        lines
     }
 
     fn anatomy(&self) -> ComponentAnatomy {
-        ComponentAnatomy::actionable(0, 1)
+        if self.include_actions {
+            ComponentAnatomy::actionable(self.secondary_action.is_some() as usize, 1)
+        } else {
+            ComponentAnatomy::passive()
+        }
     }
 }
 

@@ -172,6 +172,9 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "workflow-launch",
             "workflow-launch-blocked",
             "workflow-monitor",
+            "workflow-monitor-failure",
+            "reviewer-output",
+            "reviewer-approved",
         ]
         .contains(&screen.id)
         {

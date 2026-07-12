@@ -1132,6 +1132,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-launch-cancel" => mission_launch_cancel(),
         "mission-blocked-cancel" => mission_blocked_cancel(),
         "mission-view-progress" => mission_view_progress(),
+        "mission-create-fix-task" => mission_create_fix_task(),
+        "mission-fix-working" => mission_fix_working(),
+        "mission-fix-validating" => mission_fix_validating(),
+        "mission-validation-success" => mission_validation_success(),
+        "mission-validation-failure" => mission_validation_failure(),
+        "mission-review-create-fix" => mission_review_create_fix(),
+        "mission-review-fix-validating" => mission_review_fix_validating(),
+        "mission-completion-validation" => mission_completion_validation(),
+        "mission-request-changes-open" => mission_request_changes_open(),
+        "mission-request-changes-submit" => mission_request_changes_submit(),
+        "mission-request-changes-cancel" => mission_request_changes_cancel(),
+        "mission-approve-completion" => mission_approve_completion(),
+        "mission-fix-loop-rerepair" => mission_fix_loop_rerepair(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1350,6 +1363,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-launch-cancel"
             | "mission-blocked-cancel"
             | "mission-view-progress"
+            | "mission-create-fix-task"
+            | "mission-fix-working"
+            | "mission-fix-validating"
+            | "mission-validation-success"
+            | "mission-validation-failure"
+            | "mission-review-create-fix"
+            | "mission-review-fix-validating"
+            | "mission-completion-validation"
+            | "mission-request-changes-open"
+            | "mission-request-changes-submit"
+            | "mission-request-changes-cancel"
+            | "mission-approve-completion"
+            | "mission-fix-loop-rerepair"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("mission-proposal-accept", "workflow-launch") => {
@@ -1367,6 +1393,35 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("mission-view-progress", "workflow-monitor") => {
                 "gate.mission.workflow-monitor".to_owned()
+            }
+            ("mission-create-fix-task", "workflow-monitor")
+            | ("mission-review-create-fix", "workflow-monitor")
+            | ("mission-request-changes-submit", "workflow-monitor") => {
+                "workflow-monitor.fix-planned".to_owned()
+            }
+            ("mission-fix-working", "workflow-monitor") => {
+                "workflow-monitor.fix-working".to_owned()
+            }
+            ("mission-fix-validating", "workflow-monitor")
+            | ("mission-review-fix-validating", "workflow-monitor") => {
+                "workflow-monitor.validating".to_owned()
+            }
+            ("mission-validation-success", "reviewer-output") => {
+                "gate.mission.reviewer-output".to_owned()
+            }
+            ("mission-validation-failure", "workflow-monitor-failure")
+            | ("mission-fix-loop-rerepair", "workflow-monitor-failure") => {
+                "gate.mission.workflow-monitor-failure".to_owned()
+            }
+            ("mission-completion-validation", "reviewer-approved")
+            | ("mission-request-changes-cancel", "reviewer-approved") => {
+                "gate.mission.reviewer-approved".to_owned()
+            }
+            ("mission-request-changes-open", "reviewer-approved") => {
+                "reviewer-approved.request-changes".to_owned()
+            }
+            ("mission-approve-completion", "chat-turn") => {
+                "case.mission.complete.after.chat-turn.tick.1".to_owned()
             }
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
@@ -2420,6 +2475,873 @@ fn mission_view_progress() -> (
         "mission-monitor",
         "disclosed",
         "opening progress kept the mission identity and compact default state",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+const FLOW6_FIX_TASK: &str = "Repair the safe publish path checks";
+const FLOW6_VALIDATION_RUN: &str = "validation.release.2";
+const FLOW6_COMPLETION_VALIDATION: &str = "validation.release.completion.1";
+const FLOW6_FEEDBACK: &str =
+    "Add the open risk and rollback order to the next-step note before completion.";
+
+fn mission_create_fix_task() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "create-fix-task",
+        "mission-failure",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "workflow-monitor",
+        ],
+        FLOW6_DRAFT,
+        "mission-fix-planned",
+        "view-progress",
+        "mission-fix-planned",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "fix-planned".to_owned();
+    after.focus = "mission-fix-planned".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-monitor-failure".to_owned(),
+        "workflow-monitor".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.create-fix-task".to_owned(),
+        label: "Create a fix task".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "creating a fix task records the failure as planned repair work".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.fix-plan.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "fix-planned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.fix-planned",
+        "mission-fix",
+        "planned",
+        &format!(
+            "fix task planned from publish path failure: {FLOW6_FIX_TASK}; completed work preserved"
+        ),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_fix_working() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-fix-planned",
+        "fix-planned",
+        "mission-fix-planned",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-fix-working",
+        "fix-working",
+        "mission-fix-working",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "fix-working".to_owned();
+    after.focus = "mission-fix-working".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.fix-start".to_owned(),
+        label: "Start fix work".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "planned fix work becomes visible Working without mutating completed tasks"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.fix-work.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "working".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.fix-working",
+        "mission-fix",
+        "working",
+        &format!("fix task {FLOW6_FIX_TASK} is working on the failed publish path"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_fix_validating() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-fix-working",
+        "fix-working",
+        "mission-fix-working",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "validating".to_owned();
+    after.focus = "mission-validating".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.fix-complete-validate".to_owned(),
+        label: "Enter validation".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "completing fix work always enters a visible fresh Validating stage".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("attempt.{FLOW6_VALIDATION_RUN}.start"),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "validating".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.validation-start",
+        "mission-validation",
+        "running",
+        &format!("fresh validation run {FLOW6_VALIDATION_RUN} started after repair"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_validation_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-output",
+        vec!["chat-turn", "workflow-monitor", "reviewer-output"],
+        FLOW6_DRAFT,
+        "mission-review",
+        "changes-requested",
+        "mission-review",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "create-fix-from-review".to_owned();
+    after.focus = "mission-review".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "reviewer-output".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.validation-finished".to_owned(),
+        label: "Validation finished".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "successful fresh validation advances the mission to review".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: FLOW6_VALIDATION_RUN.to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "passed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.validation-passed",
+        "mission-validation",
+        "passed",
+        &format!("validation run {FLOW6_VALIDATION_RUN} passed; review opened for remaining feedback"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_validation_failure() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "create-fix-task",
+        "mission-failure",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "create-fix-task".to_owned();
+    after.focus = "mission-failure".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-monitor-failure".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.validation-finished".to_owned(),
+        label: "Validation finished".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "failed fresh validation returns the mission to Needs attention".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("{FLOW6_VALIDATION_RUN}.fail"),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "failed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.validation-failed",
+        "mission-validation",
+        "failed",
+        &format!("validation run {FLOW6_VALIDATION_RUN} failed and reopened Needs attention"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_review_create_fix() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-output",
+        vec!["chat-turn", "workflow-monitor", "reviewer-output"],
+        FLOW6_DRAFT,
+        "mission-review",
+        "create-fix-from-review",
+        "mission-review",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "reviewer-output",
+            "workflow-monitor",
+        ],
+        FLOW6_DRAFT,
+        "mission-fix-planned",
+        "fix-planned",
+        "mission-fix-planned",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "fix-planned".to_owned();
+    after.focus = "mission-fix-planned".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "reviewer-output".to_owned(),
+        "workflow-monitor".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.review-create-fix".to_owned(),
+        label: "Create a fix task".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "requested changes become an explicit fix task followed by fresh validation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.review-fix.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "fix-planned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.review-fix-planned",
+        "mission-fix",
+        "planned",
+        &format!("reviewer feedback attached to fix task: {FLOW6_FIX_TASK}"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_review_fix_validating() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // After review-created fix work, completing it re-enters Validating.
+    mission_fix_validating()
+}
+
+fn mission_completion_validation() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "approve-completion",
+        "mission-human-gate",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "approve-completion".to_owned();
+    after.focus = "mission-human-gate".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "reviewer-approved".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.completion-validation".to_owned(),
+        label: "Completion validation".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "fresh completion validation on the post-repair revision opens human approval"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: FLOW6_COMPLETION_VALIDATION.to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "passed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.completion-validation",
+        "mission-validation",
+        "passed",
+        &format!(
+            "completion validation {FLOW6_COMPLETION_VALIDATION} passed against the final post-repair state"
+        ),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_request_changes_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "approve-completion",
+        "mission-human-gate",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "request-changes",
+        "mission-change-reason",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "request-changes".to_owned();
+    after.focus = "mission-change-reason".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.request-changes".to_owned(),
+        label: "Request changes".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "request changes opens an anchored reason dock on the same gate".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.request-changes.open".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "reason-dock-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.request-changes-open",
+        "mission-human-feedback",
+        "open",
+        "reason dock opened without completing the mission",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_request_changes_submit() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "request-changes",
+        "mission-change-reason",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "reviewer-approved",
+            "workflow-monitor",
+        ],
+        FLOW6_DRAFT,
+        "mission-fix-planned",
+        "fix-planned",
+        "mission-fix-planned",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "fix-planned".to_owned();
+    after.focus = "mission-fix-planned".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "reviewer-approved".to_owned(),
+        "workflow-monitor".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.request-changes-submit".to_owned(),
+        label: "Submit reason".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "submitted human feedback creates or updates a fix task then revalidation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.request-changes.submit".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "fix-planned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.human-feedback-fix",
+        "mission-fix",
+        "planned",
+        &format!("human feedback retained on fix task: {FLOW6_FEEDBACK}"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_request_changes_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "request-changes",
+        "mission-change-reason",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "approve-completion",
+        "mission-human-gate",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "approve-completion".to_owned();
+    after.focus = "mission-human-gate".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.request-changes-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the unchanged human approval gate".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.request-changes.cancel".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.request-changes-cancel",
+        "mission-human-feedback",
+        "cancelled",
+        "reason dock cancelled; Approve completion remains required",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_approve_completion() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-approved",
+        "approve-completion",
+        "mission-human-gate",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        FLOW6_DRAFT,
+        "mission-complete",
+        "composer",
+        "composer",
+        None,
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "composer".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.transcript = format!(
+        "You · {FLOW6_SUBMITTED}\nI can run that as a small mission with three connected tasks.\nMission complete · release is ready for the next conversation step."
+    );
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.approve-completion".to_owned(),
+        label: "Approve completion".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "explicit human approval marks the mission complete and returns to conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.approve-completion.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "completed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.completed",
+        "mission-completion",
+        "completed",
+        "human approval finished the mission and restored the originating conversation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_fix_loop_rerepair() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Second validation re-failure keeps goal, session, and dependency identity.
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "create-fix-task",
+        "mission-failure",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "create-fix-task".to_owned();
+    after.focus = "mission-failure".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-monitor-failure".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.validation-finished".to_owned(),
+        label: "Validation finished".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "second failed validation reopens Needs attention with stable identities".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("{FLOW6_VALIDATION_RUN}.retry.fail"),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "failed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.validation-refailed",
+        "mission-validation",
+        "failed",
+        "revalidation failed again; goal, completed work, and fix identity remained stable",
     );
     (before, after, action, transition, attempt, effect)
 }

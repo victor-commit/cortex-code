@@ -70,6 +70,9 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "workflow-launch",
     "workflow-launch-blocked",
     "workflow-monitor",
+    "workflow-monitor-failure",
+    "reviewer-output",
+    "reviewer-approved",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -1368,7 +1371,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 32);
+        assert_eq!(implemented.canonical_ids().count(), 35);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")

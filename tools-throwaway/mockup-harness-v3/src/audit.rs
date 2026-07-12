@@ -509,7 +509,12 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
     }
     if matches!(
         screen_id,
-        "workflow-launch" | "workflow-launch-blocked" | "workflow-monitor"
+        "workflow-launch"
+            | "workflow-launch-blocked"
+            | "workflow-monitor"
+            | "workflow-monitor-failure"
+            | "reviewer-output"
+            | "reviewer-approved"
     ) {
         let document = crate::screens::mission_workflow::render(screen_id, fixture_id)?;
         document.validate()?;

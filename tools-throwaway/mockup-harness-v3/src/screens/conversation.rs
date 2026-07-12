@@ -125,6 +125,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "chat-turn" if flow5_recovery => {
             render_recovery_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
+        "chat-turn" if flow6_mission_return => {
+            render_mission_return_chat_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" if fixture_id == "conversation-completed" => {
             render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
@@ -183,6 +186,20 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 ),
                 paused_activity_id: Some("pending.network.release-notes".to_owned()),
                 later_draft: Some(FLOW5_DRAFT.to_owned()),
+            }
+        } else if flow6_mission_return {
+            crate::audit::ConversationIdentity {
+                conversation_id: "conversation.mission".to_owned(),
+                transcript_id: "transcript.mission".to_owned(),
+                session_id: "session.mission.1".to_owned(),
+                turn_id: "turn.mission.1".to_owned(),
+                user_task: "Prepare the release safely and review the result.".to_owned(),
+                visible_origin: "Mission · current conversation".to_owned(),
+                submitted_prompt: Some(
+                    "Turn the release work into a mission and walk me through it.".to_owned(),
+                ),
+                paused_activity_id: Some("pending.mission.launch".to_owned()),
+                later_draft: Some("Keep the risk note short before we publish.".to_owned()),
             }
         } else {
             crate::audit::ConversationIdentity {
@@ -1039,6 +1056,126 @@ fn permission_outcome_transcript(
     canvas.write(17, 4, detail_three, TextStyle::muted())?;
     composer(canvas, composer_label, Some("Send reply"))?;
     Ok(())
+}
+
+fn render_mission_return_chat_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let completed = fixture_id.contains("mission.complete") || fixture_id.contains("approve");
+    canvas.write(
+        5,
+        4,
+        "You · Turn the release work into a mission and walk me through it.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "I can run that as a small mission with three connected tasks.",
+        TextStyle::text(),
+    )?;
+    if completed {
+        canvas.write(
+            10,
+            4,
+            "Mission complete · release is ready for the next conversation step.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            12,
+            4,
+            "A concise result summary stays in the transcript. Details stay available on request.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "[d] Inspect mission details",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            "The normal composer is restored. Continue whenever you are ready.",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            10,
+            4,
+            "Mission planning stayed in this conversation. Nothing started while cancelled.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            12,
+            4,
+            "Your draft and mission goal remain available.",
+            TextStyle::muted(),
+        )?;
+    }
+    composer(
+        canvas,
+        "Keep the risk note short before we publish.",
+        Some("Send reply"),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 2,
+        6,
+        "Keep the risk note short before we publish.",
+        TextStyle::text(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            if completed {
+                "mission-complete-summary"
+            } else {
+                "mission-cancel-summary"
+            },
+            reference(10, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "composer",
+            "restored-composer",
+            reference(COMPOSER_TOP + 1, 4, 48),
+            "summary",
+            Some(action("action.composer.send", "Send reply", false)),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.composer.send",
+        screen_id,
+        "streaming",
+        "direct",
+        "continuing the mission-origin conversation uses the restored composer",
+    )];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
 }
 
 fn render_recovery_chat_turn(
