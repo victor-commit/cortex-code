@@ -14,11 +14,11 @@
     Code · Same turn resumed                                                                                            
                                                                                                                         
     Applied 1 included hunk to src/net/retry_policy.rs.                                                                 
-    hunk.retry-test remains pending · Git index unchanged                                                               
+    One review hunk remains pending · Git index unchanged                                                               
                                                                                                                         
-    Paused activity · activity.retry-policy-edit.18                                                                     
-    Session · session.retry-review.18                                                                                   
-    Turn · turn.retry-review.18 · resumed                                                                               
+    Paused activity · retry-policy edit · still open                                                                    
+    Session · retry-path review · same paused turn                                                                      
+    Turn · same pause window · resumed                                                                                  
                                                                                                                         
                                                                                                                         
     Later draft · not sent                                                                                              

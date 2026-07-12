@@ -296,9 +296,30 @@ fn final_storyboard_frame_visibly_separates_submitted_prompt_later_draft_and_res
             "immutable transcript input must show {submitted_line:?}"
         );
     }
-    assert!(text.contains("Paused activity · activity.retry-policy-edit.18"));
-    assert!(text.contains("Session · session.retry-review.18"));
-    assert!(text.contains("Turn · turn.retry-review.18 · resumed"));
+    // Product surface is plain English; exact IDs remain in typed audit only (P1-1 density).
+    assert!(text.contains("Paused activity · retry-policy edit · still open"));
+    assert!(text.contains("Session · retry-path review · same paused turn"));
+    assert!(text.contains("Turn · same pause window · resumed"));
+    assert!(!text.contains("activity.retry-policy-edit.18"));
+    assert!(!text.contains("session.retry-review.18"));
+    assert!(!text.contains("turn.retry-review.18"));
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .expect("Flow2 terminal must expose identity")
+            .session_id,
+        "session.retry-review.18"
+    );
+    assert_eq!(
+        audit
+            .conversation
+            .as_ref()
+            .expect("Flow2 terminal must expose identity")
+            .paused_activity_id
+            .as_deref(),
+        Some("activity.retry-policy-edit.18")
+    );
     assert!(text.contains("Later draft · not sent"));
     assert!(text.contains("Add a short note about the remaining test hunk."));
     assert!(
@@ -394,13 +415,26 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
         finish.after.user_task,
         "Check the retry path before we merge."
     );
+    let finish_text = finish.audit.render_txt();
     assert!(
-        finish.audit.render_txt().contains("session.retry-review.18"),
-        "the after-state render must keep the paused retry session identity"
+        finish_text.contains("Session · retry-path review"),
+        "the after-state render must keep the paused retry session in plain English"
     );
     assert!(
-        !finish.audit.render_txt().contains("Daily work · current conversation"),
+        finish
+            .audit
+            .conversation
+            .as_ref()
+            .is_some_and(|identity| identity.session_id == "session.retry-review.18"),
+        "audit JSON must retain exact session.retry-review.18 continuity"
+    );
+    assert!(
+        !finish_text.contains("Daily work · current conversation"),
         "the Flow 2 terminal destination must not fall back to Daily work identity"
+    );
+    assert!(
+        !finish_text.contains("session.retry-review.18"),
+        "product surface must not dump the internal session ID"
     );
 
     let published = audit_screen("chat-turn", "flow2.input-and-approval.stable")
@@ -408,7 +442,16 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
     let published_text = published.render_txt();
     assert!(published_text.contains("Input and approval · paused conversation"));
     assert!(published_text.contains("Check the retry path before we merge."));
-    assert!(published_text.contains("session.retry-review.18"));
+    assert!(published_text.contains("Session · retry-path review · same paused turn"));
+    assert_eq!(
+        published
+            .conversation
+            .as_ref()
+            .expect("published Flow2 chat-turn must expose identity")
+            .session_id,
+        "session.retry-review.18"
+    );
+    assert!(!published_text.contains("session.retry-review.18"));
     assert!(!published_text.contains("Daily work · current conversation"));
     assert!(!published_text.contains(
         "Find where the server applies the rate limit and explain the safe path."
@@ -506,14 +549,158 @@ fn input_and_approval_pause_window_keeps_one_task_you_and_draft_chain() {
                     "terminal chat-turn must still show immutable submitted body line {submitted_line:?}"
                 );
             }
+            assert_eq!(
+                identity.session_id, "session.retry-review.18",
+                "terminal chat-turn must retain session.retry-review.18 continuity in audit identity"
+            );
             assert!(
-                text.contains("session.retry-review.18"),
-                "terminal chat-turn must retain session.retry-review.18 continuity"
+                text.contains("Session · retry-path review · same paused turn"),
+                "terminal chat-turn must retain plain-English session continuity"
+            );
+            assert!(
+                !text.contains("session.retry-review.18"),
+                "terminal chat-turn product surface must not dump the session ID"
             );
             assert!(
                 text.find(YOU_LINE) < text.find("Check the retry path in @src/net/retry_policy.rs"),
                 "You-line must label the submitted body, not replace it"
             );
         }
+    }
+}
+
+/// P1-1 hardening: shared chat-turn multi-fixture paths are fail-closed per journey.
+/// A wrong-journey fixture must not paint Daily work identity over Flow2/5 (or vice versa).
+#[test]
+fn chat_turn_fixture_parity_is_fail_closed_across_journeys() {
+    // Known journey fixtures keep their own origin/task/session identity.
+    let cases = [
+        (
+            "flow1.daily-work.stable",
+            "Daily work · current conversation",
+            "Find where the server applies the rate limit and explain the safe path.",
+            "session.daily-work.1",
+            "conversation.daily-work",
+        ),
+        (
+            "flow2.input-and-approval.stable",
+            "Input and approval · paused conversation",
+            "Check the retry path before we merge.",
+            "session.retry-review.18",
+            "conversation.retry-review",
+        ),
+        (
+            "gate.recovery.chat-turn",
+            "Recovery · paused conversation",
+            "Finish the release notes without losing the current work.",
+            "session.recovery.1",
+            "conversation.recovery",
+        ),
+        (
+            "case.mission.cancel.after.chat-turn.tick.1",
+            "Mission · current conversation",
+            "Prepare the release safely and review the result.",
+            "session.mission.1",
+            "conversation.mission",
+        ),
+    ];
+    for (fixture, origin, task, session, conversation) in cases {
+        let audit = audit_screen("chat-turn", fixture)
+            .unwrap_or_else(|error| panic!("{fixture} must render: {error}"));
+        let text = audit.render_txt();
+        let identity = audit
+            .conversation
+            .as_ref()
+            .unwrap_or_else(|| panic!("{fixture} must expose conversation identity"));
+        assert_eq!(identity.visible_origin, origin, "{fixture}");
+        assert_eq!(identity.user_task, task, "{fixture}");
+        assert_eq!(identity.session_id, session, "{fixture}");
+        assert_eq!(identity.conversation_id, conversation, "{fixture}");
+        assert!(text.contains(origin), "{fixture} origin must be visible");
+        assert!(text.contains(task), "{fixture} task must be visible");
+        // No cross-journey bleed on the shared screen.
+        for (other_fixture, other_origin, other_task, _, _) in cases {
+            if other_fixture == fixture {
+                continue;
+            }
+            if other_origin != origin {
+                assert!(
+                    !text.contains(other_origin),
+                    "{fixture} must not paint {other_origin}"
+                );
+            }
+            if other_task != task {
+                assert!(
+                    !text.contains(other_task),
+                    "{fixture} must not paint {other_task}"
+                );
+            }
+        }
+    }
+
+    // Hostile / unbound fixtures fail closed instead of falling through to Daily work.
+    for hostile in [
+        "hostile.wrong-journey.chat-turn",
+        "canonical.login",
+        "gate.provider-and-mcp.mcp",
+        "flow4.provider-and-mcp.stable",
+        "unbound.chat-turn.identity",
+    ] {
+        let err = audit_screen("chat-turn", hostile)
+            .expect_err("unknown chat-turn fixtures must fail closed");
+        assert!(
+            err.contains("fail-closed") || err.contains("not bound"),
+            "hostile fixture {hostile} must name fail-closed classification: {err}"
+        );
+        assert!(
+            !err.contains("Daily work · current conversation"),
+            "failure path must not silently claim Daily work success"
+        );
+    }
+}
+
+/// Publishing/gate for Flow1/2/5 chat-turn keeps the declared storyboard fixture identity
+/// and rejects any accidental Daily↔Input/Recovery identity permutation.
+#[test]
+fn declared_chat_turn_storyboard_fixtures_reject_cross_identity_bleed() {
+    let fixtures = [
+        (
+            "daily-work",
+            "flow1.daily-work.stable",
+            "Daily work · current conversation",
+        ),
+        (
+            "input-and-approval",
+            "flow2.input-and-approval.stable",
+            "Input and approval · paused conversation",
+        ),
+        (
+            "recovery",
+            "gate.recovery.chat-turn",
+            "Recovery · paused conversation",
+        ),
+    ];
+    for (flow_name, fixture, origin) in fixtures {
+        let step = flow_manifests()
+            .iter()
+            .find(|flow| flow.name == flow_name)
+            .expect("journey must exist")
+            .steps
+            .iter()
+            .find(|step| step.screen_id == "chat-turn")
+            .expect("journey must include chat-turn");
+        assert_eq!(
+            step.fixture_id, fixture,
+            "{flow_name} chat-turn must stay fixture-bound"
+        );
+        let audit = audit_screen("chat-turn", step.fixture_id).expect("fixture must render");
+        assert_eq!(audit.fixture_id, fixture);
+        let identity = audit.conversation.as_ref().expect("identity required");
+        assert_eq!(identity.visible_origin, origin);
+        assert_eq!(step.visible_origin, origin);
+        assert!(
+            audit.render_txt().contains(origin),
+            "{flow_name} TXT must keep declared origin"
+        );
     }
 }

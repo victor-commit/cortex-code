@@ -35,6 +35,12 @@ Then explain the failure path that still needs coverage before the merge; includ
 Keep the summary short before we merge.";
 const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
 const FLOW2_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
+/// Product copy for the paused edit (IDs stay audit-only).
+const FLOW2_PAUSED_ACTIVITY_PLAIN: &str = "Paused activity · retry-policy edit · still open";
+const FLOW2_SESSION_PLAIN: &str = "Session · retry-path review · same paused turn";
+const FLOW2_TURN_PLAIN: &str = "Turn · same pause window · resumed";
+const FLOW2_SESSION_TURN_PLAIN: &str =
+    "Session · retry-path review · same pause window · continuous";
 const FLOW3_RESUME_TASK: &str = "Resume a conversation or inspect its history.";
 const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
 const FLOW5_TASK: &str = "Finish the release notes without losing the current work.";
@@ -46,6 +52,8 @@ const FLOW5_PARTIAL: &str =
 const FLOW5_COMPLETED: &str =
     "Completed earlier · retry window copy accepted for the release branch.";
 const FLOW5_DRAFT: &str = "Keep the risk note short before we publish.";
+const FLOW6_TASK: &str = "Prepare the release safely and review the result.";
+const FLOW6_ORIGIN: &str = "Mission · current conversation";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -53,87 +61,314 @@ type ScreenEvidence = (
     Vec<TransitionTrace>,
 );
 
-pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
-    let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
-    let mut canvas = Canvas::new();
-    let flow2_storyboard = matches!(
-        fixture_id,
-        "flow2.input-and-approval.stable"
-            | "case.staging-finish.tick.1.flow2.input-and-approval.stable"
-    );
-    let flow3_session_return = fixture_id.starts_with("case.session-resume-latest");
-    let flow5_recovery = fixture_id == "gate.recovery.chat-turn"
+/// Fixture-bound chat-turn journey. Shared screen ID must never silently fall
+/// through to Daily work or another origin when the fixture is known for a
+/// different journey (F2-049 / P1-1 fail-closed).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChatTurnJourney {
+    Flow1Daily,
+    Flow2InputAndApproval,
+    Flow3SessionReturn,
+    Flow3WorkStyleReturn,
+    Flow5Recovery,
+    Flow6MissionReturn,
+    ToolInterrupt,
+    StreamingInterrupt,
+}
+
+/// Classifies a chat-turn fixture. Unknown fixtures fail closed instead of
+/// inheriting Daily-work origin/task/session identity by accident.
+fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, String> {
+    if fixture_id.trim().is_empty() {
+        return Err("chat-turn fixture identity is required".to_owned());
+    }
+
+    // Explicit permission / diff / staging after-states stay Input-and-approval.
+    if fixture_id.starts_with("case.permission-")
+        || fixture_id.starts_with("case.diff-")
+        || fixture_id.starts_with("case.staging-finish")
+        || fixture_id.starts_with("case.staging-apply")
+        || fixture_id.starts_with("case.staging-include")
+        || fixture_id.starts_with("case.staging-exclude")
+        || fixture_id.starts_with("case.staging-cancel")
+        || matches!(
+            fixture_id,
+            "flow2.input-and-approval.stable"
+                | "case.staging-finish.tick.1.flow2.input-and-approval.stable"
+        )
+        || fixture_id.starts_with("flow2-storyboard.")
+        || fixture_id.starts_with("flow2.")
+    {
+        return Ok(ChatTurnJourney::Flow2InputAndApproval);
+    }
+
+    if fixture_id.starts_with("case.session-resume-latest")
+        || fixture_id.starts_with("case.session-no-sessions-open")
+        || fixture_id.starts_with("case.session-") && fixture_id.contains("after.chat-turn")
+    {
+        return Ok(ChatTurnJourney::Flow3SessionReturn);
+    }
+
+    if work_style_for_fixture(fixture_id).is_some()
+        || fixture_id.starts_with("case.work-style-")
+    {
+        return Ok(ChatTurnJourney::Flow3WorkStyleReturn);
+    }
+
+    // Recovery returns: gate fixture, explicit rate-limit/checkpoint paths, and
+    // the deterministic automatic-retry case that restores the paused recovery turn.
+    if fixture_id == "gate.recovery.chat-turn"
         || fixture_id.starts_with("case.rate-limit-")
         || fixture_id.starts_with("case.checkpoint-")
         || fixture_id.starts_with("case.turn-error-retry")
         || fixture_id.starts_with("case.chat-turn-open-checkpoint-undo")
-        || fixture_id.starts_with("case.network-backoff-race-retry");
-    let flow6_mission_return = fixture_id.contains("mission.cancel")
-        || fixture_id.starts_with("case.mission-")
+        || fixture_id.starts_with("case.network-backoff-race-retry")
+        || fixture_id.starts_with("case.automatic-retry")
+        || fixture_id.starts_with("case.network-")
+            && fixture_id.contains("chat-turn")
+        || fixture_id.starts_with("flow5.")
+        || fixture_id.starts_with("gate.recovery.")
+    {
+        return Ok(ChatTurnJourney::Flow5Recovery);
+    }
+
+    if fixture_id.contains("mission.cancel")
+        || fixture_id.contains("mission.complete")
         || fixture_id.contains("mission.launch-cancel")
-        || fixture_id.contains("mission.blocked-cancel");
+        || fixture_id.contains("mission.blocked-cancel")
+        || fixture_id.contains("mission.approve")
+        || fixture_id.starts_with("case.mission-")
+        || fixture_id.starts_with("flow6.")
+        || fixture_id.starts_with("gate.mission.")
+    {
+        return Ok(ChatTurnJourney::Flow6MissionReturn);
+    }
+
+    if fixture_id.starts_with("case.tool-running-interrupt") {
+        return Ok(ChatTurnJourney::ToolInterrupt);
+    }
+
+    if fixture_id.starts_with("case.streaming-interrupt") {
+        return Ok(ChatTurnJourney::StreamingInterrupt);
+    }
+
+    // Daily work and explicit daily-origin return cases from configuration /
+    // provider / tool / onboarding cancel paths. These remain Daily only when
+    // the fixture string itself is declared for that journey (not silent default).
+    if matches!(
+        fixture_id,
+        "flow1.daily-work.stable"
+            | "canonical.chat-turn"
+            | "conversation-completed"
+            | "public-audit"
+    ) || fixture_id.starts_with("flow1-storyboard.")
+        || fixture_id.starts_with("flow1.")
+        || fixture_id.starts_with("case.tool-running-complete")
+        || fixture_id.starts_with("case.tool-success-continue")
+        || fixture_id.starts_with("case.model-picker-")
+        || fixture_id.starts_with("case.onboarding-existing-cancel")
+        || fixture_id.starts_with("case.onboarding-")
+            && fixture_id.contains("chat-turn")
+        || fixture_id.starts_with("case.mcp-return")
+        || fixture_id.starts_with("case.connect-connected-return")
+        || fixture_id.starts_with("case.login-cancel")
+    {
+        return Ok(ChatTurnJourney::Flow1Daily);
+    }
+
+    // Hostile / misbound fixtures must not silently become Daily work.
+    Err(format!(
+        "chat-turn fixture is not bound to a known journey identity (fail-closed): {fixture_id}"
+    ))
+}
+
+fn chat_turn_origin_and_task(journey: ChatTurnJourney) -> (&'static str, &'static str) {
+    match journey {
+        ChatTurnJourney::Flow1Daily
+        | ChatTurnJourney::ToolInterrupt
+        | ChatTurnJourney::StreamingInterrupt => (DAILY_WORK_ORIGIN, DAILY_WORK_TASK),
+        ChatTurnJourney::Flow2InputAndApproval => (FLOW2_ORIGIN, FLOW2_TASK),
+        ChatTurnJourney::Flow3SessionReturn => (FLOW3_CURRENT_ORIGIN, FLOW3_RESUME_TASK),
+        ChatTurnJourney::Flow3WorkStyleReturn => (
+            FLOW3_CURRENT_ORIGIN,
+            "Choose a model and how Code should work.",
+        ),
+        ChatTurnJourney::Flow5Recovery => (FLOW5_ORIGIN, FLOW5_TASK),
+        ChatTurnJourney::Flow6MissionReturn => (FLOW6_ORIGIN, FLOW6_TASK),
+    }
+}
+
+fn chat_turn_conversation_identity(
+    journey: ChatTurnJourney,
+    _fixture_id: &str,
+) -> crate::audit::ConversationIdentity {
+    match journey {
+        ChatTurnJourney::Flow2InputAndApproval => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.retry-review".to_owned(),
+            transcript_id: "transcript.retry-review".to_owned(),
+            session_id: "session.retry-review.18".to_owned(),
+            turn_id: "turn.retry-review.18".to_owned(),
+            user_task: FLOW2_TASK.to_owned(),
+            visible_origin: FLOW2_ORIGIN.to_owned(),
+            submitted_prompt: Some(FLOW2_SUBMITTED_PROMPT.to_owned()),
+            paused_activity_id: Some(FLOW2_ACTIVITY_ID.to_owned()),
+            later_draft: Some(FLOW2_LATER_DRAFT.to_owned()),
+        },
+        ChatTurnJourney::Flow3SessionReturn => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.configuration".to_owned(),
+            transcript_id: "transcript.configuration".to_owned(),
+            session_id: "session.retry-policy-review".to_owned(),
+            turn_id: "turn.configuration.1".to_owned(),
+            user_task: FLOW3_RESUME_TASK.to_owned(),
+            visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: Some("activity.retry-policy-review.latest".to_owned()),
+            later_draft: Some("Add the final review note.".to_owned()),
+        },
+        ChatTurnJourney::Flow3WorkStyleReturn => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.configuration".to_owned(),
+            transcript_id: "transcript.configuration".to_owned(),
+            session_id: "session.configuration.1".to_owned(),
+            turn_id: "turn.configuration.1".to_owned(),
+            user_task: "Choose a model and how Code should work.".to_owned(),
+            visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: Some("Continue the retry conversation.".to_owned()),
+        },
+        ChatTurnJourney::Flow5Recovery => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.recovery".to_owned(),
+            transcript_id: "transcript.recovery".to_owned(),
+            session_id: "session.recovery.1".to_owned(),
+            turn_id: "turn.recovery.1".to_owned(),
+            user_task: FLOW5_TASK.to_owned(),
+            visible_origin: FLOW5_ORIGIN.to_owned(),
+            submitted_prompt: Some(
+                "Summarize the remaining release notes and the still-open risks.".to_owned(),
+            ),
+            paused_activity_id: Some("pending.network.release-notes".to_owned()),
+            later_draft: Some(FLOW5_DRAFT.to_owned()),
+        },
+        ChatTurnJourney::Flow6MissionReturn => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.mission".to_owned(),
+            transcript_id: "transcript.mission".to_owned(),
+            session_id: "session.mission.1".to_owned(),
+            turn_id: "turn.mission.1".to_owned(),
+            user_task: FLOW6_TASK.to_owned(),
+            visible_origin: FLOW6_ORIGIN.to_owned(),
+            submitted_prompt: Some(
+                "Turn the release work into a mission and walk me through it.".to_owned(),
+            ),
+            paused_activity_id: Some("pending.mission.launch".to_owned()),
+            later_draft: Some("Keep the risk note short before we publish.".to_owned()),
+        },
+        ChatTurnJourney::Flow1Daily
+        | ChatTurnJourney::ToolInterrupt
+        | ChatTurnJourney::StreamingInterrupt => crate::audit::ConversationIdentity {
+            conversation_id: "conversation.daily-work".to_owned(),
+            transcript_id: "transcript.daily-work".to_owned(),
+            session_id: "session.daily-work.1".to_owned(),
+            turn_id: "turn.daily-work.18".to_owned(),
+            user_task: DAILY_WORK_TASK.to_owned(),
+            visible_origin: DAILY_WORK_ORIGIN.to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: None,
+        },
+    }
+}
+
+pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
+    let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
+    let mut canvas = Canvas::new();
     let work_style_return = work_style_for_fixture(fixture_id);
-    let (visible_origin, user_task) = if flow2_storyboard {
-        (FLOW2_ORIGIN, FLOW2_TASK)
-    } else if flow3_session_return {
-        (FLOW3_CURRENT_ORIGIN, FLOW3_RESUME_TASK)
-    } else if flow5_recovery {
-        (FLOW5_ORIGIN, FLOW5_TASK)
-    } else if flow6_mission_return {
-        (
-            "Mission · current conversation",
-            "Prepare the release safely and review the result.",
-        )
+
+    // For screens that share chat-turn, bind origin/task before content so a
+    // misclassified fixture cannot paint Daily work chrome over another journey.
+    let chat_turn_journey = if screen_id == "chat-turn" {
+        Some(classify_chat_turn_fixture(fixture_id)?)
     } else {
-        (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
+        None
+    };
+    let (visible_origin, user_task) = match chat_turn_journey {
+        Some(journey) => chat_turn_origin_and_task(journey),
+        None => {
+            // Non-chat-turn conversation screens stay on the daily journey frame.
+            (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
+        }
     };
     canvas.write(2, 4, visible_origin, TextStyle::muted())?;
     canvas.write(3, 4, user_task, TextStyle::bright())?;
+
     let (candidates, events, transitions) = match screen_id {
         "home" => render_home(&mut canvas, screen_id, fixture_id)?,
-        "chat-turn" if fixture_id.starts_with("case.tool-running-interrupt") => {
-            render_tool_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id.starts_with("case.streaming-interrupt") => {
-            render_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id.starts_with("case.permission-persistent-scope") => {
-            render_permission_persistent_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id.starts_with("case.permission-shell-unsafe-byte") => {
-            render_permission_unsafe_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id.starts_with("case.permission-cancel") => {
-            render_permission_cancel_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn"
-            if fixture_id.starts_with("case.staging-finish")
-                || fixture_id.starts_with("case.diff-apply-all") =>
-        {
-            render_diff_applied_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id.starts_with("case.diff-cancel") => {
-            render_diff_cancel_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if flow2_storyboard => {
-            render_flow2_resumed_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if flow3_session_return => {
-            render_session_resumed_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if work_style_return.is_some() => {
-            render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if flow5_recovery => {
-            render_recovery_chat_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if flow6_mission_return => {
-            render_mission_return_chat_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" if fixture_id == "conversation-completed" => {
-            render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
-        }
-        "chat-turn" => render_chat_turn(&mut canvas, screen_id, fixture_id)?,
+        "chat-turn" => match chat_turn_journey.expect("chat-turn journey classified") {
+            ChatTurnJourney::ToolInterrupt => {
+                render_tool_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::StreamingInterrupt => {
+                render_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-persistent-scope") =>
+            {
+                render_permission_persistent_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-shell-unsafe-byte") =>
+            {
+                render_permission_unsafe_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-cancel") =>
+            {
+                render_permission_cancel_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.staging-finish")
+                    || fixture_id.starts_with("case.diff-apply-all")
+                    || fixture_id.starts_with("case.staging-apply") =>
+            {
+                render_diff_applied_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.diff-cancel") =>
+            {
+                render_diff_cancel_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if matches!(
+                    fixture_id,
+                    "flow2.input-and-approval.stable"
+                        | "case.staging-finish.tick.1.flow2.input-and-approval.stable"
+                ) =>
+            {
+                render_flow2_resumed_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval => {
+                // Remaining flow2-storyboard / flow2.* aliases use the default
+                // resumed anatomy while keeping Input-and-approval identity.
+                render_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow3SessionReturn => {
+                render_session_resumed_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow3WorkStyleReturn => {
+                render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow5Recovery => {
+                render_recovery_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow6MissionReturn => {
+                render_mission_return_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow1Daily if fixture_id == "conversation-completed" => {
+                render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow1Daily => {
+                render_chat_turn(&mut canvas, screen_id, fixture_id)?
+            }
+        },
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
         "tool-success" => render_tool_success(&mut canvas, screen_id, fixture_id)?,
@@ -141,6 +376,21 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+
+    let conversation = match chat_turn_journey {
+        Some(journey) => Some(chat_turn_conversation_identity(journey, fixture_id)),
+        None => Some(crate::audit::ConversationIdentity {
+            conversation_id: "conversation.daily-work".to_owned(),
+            transcript_id: "transcript.daily-work".to_owned(),
+            session_id: "session.daily-work.1".to_owned(),
+            turn_id: "turn.daily-work.18".to_owned(),
+            user_task: DAILY_WORK_TASK.to_owned(),
+            visible_origin: DAILY_WORK_ORIGIN.to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: None,
+        }),
+    };
 
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
@@ -151,71 +401,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         transitions,
         work_style: work_style_return,
         model_choice: None,
-        conversation: Some(if flow2_storyboard {
-            crate::audit::ConversationIdentity {
-                conversation_id: "conversation.retry-review".to_owned(),
-                transcript_id: "transcript.retry-review".to_owned(),
-                session_id: "session.retry-review.18".to_owned(),
-                turn_id: "turn.retry-review.18".to_owned(),
-                user_task: FLOW2_TASK.to_owned(),
-                visible_origin: FLOW2_ORIGIN.to_owned(),
-                submitted_prompt: Some(FLOW2_SUBMITTED_PROMPT.to_owned()),
-                paused_activity_id: Some(FLOW2_ACTIVITY_ID.to_owned()),
-                later_draft: Some(FLOW2_LATER_DRAFT.to_owned()),
-            }
-        } else if flow3_session_return {
-            crate::audit::ConversationIdentity {
-                conversation_id: "conversation.configuration".to_owned(),
-                transcript_id: "transcript.configuration".to_owned(),
-                session_id: "session.retry-policy-review".to_owned(),
-                turn_id: "turn.configuration.1".to_owned(),
-                user_task: FLOW3_RESUME_TASK.to_owned(),
-                visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
-                submitted_prompt: None,
-                paused_activity_id: Some("activity.retry-policy-review.latest".to_owned()),
-                later_draft: Some("Add the final review note.".to_owned()),
-            }
-        } else if flow5_recovery {
-            crate::audit::ConversationIdentity {
-                conversation_id: "conversation.recovery".to_owned(),
-                transcript_id: "transcript.recovery".to_owned(),
-                session_id: "session.recovery.1".to_owned(),
-                turn_id: "turn.recovery.1".to_owned(),
-                user_task: FLOW5_TASK.to_owned(),
-                visible_origin: FLOW5_ORIGIN.to_owned(),
-                submitted_prompt: Some(
-                    "Summarize the remaining release notes and the still-open risks.".to_owned(),
-                ),
-                paused_activity_id: Some("pending.network.release-notes".to_owned()),
-                later_draft: Some(FLOW5_DRAFT.to_owned()),
-            }
-        } else if flow6_mission_return {
-            crate::audit::ConversationIdentity {
-                conversation_id: "conversation.mission".to_owned(),
-                transcript_id: "transcript.mission".to_owned(),
-                session_id: "session.mission.1".to_owned(),
-                turn_id: "turn.mission.1".to_owned(),
-                user_task: "Prepare the release safely and review the result.".to_owned(),
-                visible_origin: "Mission · current conversation".to_owned(),
-                submitted_prompt: Some(
-                    "Turn the release work into a mission and walk me through it.".to_owned(),
-                ),
-                paused_activity_id: Some("pending.mission.launch".to_owned()),
-                later_draft: Some("Keep the risk note short before we publish.".to_owned()),
-            }
-        } else {
-            crate::audit::ConversationIdentity {
-                conversation_id: "conversation.daily-work".to_owned(),
-                transcript_id: "transcript.daily-work".to_owned(),
-                session_id: "session.daily-work.1".to_owned(),
-                turn_id: "turn.daily-work.18".to_owned(),
-                user_task: DAILY_WORK_TASK.to_owned(),
-                visible_origin: DAILY_WORK_ORIGIN.to_owned(),
-                submitted_prompt: None,
-                paused_activity_id: None,
-                later_draft: None,
-            }
-        }),
+        conversation,
     })
 }
 
@@ -406,27 +592,13 @@ fn render_flow2_resumed_turn(
     canvas.write(
         16,
         4,
-        "hunk.retry-test remains pending · Git index unchanged",
+        "One review hunk remains pending · Git index unchanged",
         TextStyle::text(),
     )?;
-    canvas.write(
-        18,
-        4,
-        "Paused activity · activity.retry-policy-edit.18",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        19,
-        4,
-        "Session · session.retry-review.18",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        20,
-        4,
-        "Turn · turn.retry-review.18 · resumed",
-        TextStyle::muted(),
-    )?;
+    // Product surface uses plain English; exact session/turn/activity IDs stay in audit JSON.
+    canvas.write(18, 4, FLOW2_PAUSED_ACTIVITY_PLAIN, TextStyle::muted())?;
+    canvas.write(19, 4, FLOW2_SESSION_PLAIN, TextStyle::muted())?;
+    canvas.write(20, 4, FLOW2_TURN_PLAIN, TextStyle::muted())?;
     canvas.write(23, 4, "Later draft · not sent", TextStyle::bright())?;
     canvas.write(25, 4, FLOW2_LATER_DRAFT, TextStyle::text())?;
     composer(canvas, FLOW2_LATER_DRAFT, Some("Send reply"))?;
@@ -459,7 +631,7 @@ fn render_flow2_resumed_turn(
             fixture_id,
             "activity",
             FLOW2_ACTIVITY_ID,
-            reference(18, 4, 53),
+            reference(18, 4, FLOW2_PAUSED_ACTIVITY_PLAIN.chars().count() as u16 + 4),
             "focused",
             None,
         ),
@@ -468,7 +640,7 @@ fn render_flow2_resumed_turn(
             fixture_id,
             "session",
             "session.retry-review.18",
-            reference(19, 4, 37),
+            reference(19, 4, FLOW2_SESSION_PLAIN.chars().count() as u16 + 4),
             "summary",
             None,
         ),
@@ -477,7 +649,7 @@ fn render_flow2_resumed_turn(
             fixture_id,
             "turn",
             "turn.retry-review.18",
-            reference(20, 4, 42),
+            reference(20, 4, FLOW2_TURN_PLAIN.chars().count() as u16 + 4),
             "summary",
             None,
         ),
@@ -594,12 +766,7 @@ fn render_diff_applied_turn(
         &format!("After SHA-256: {}", diff.working_tree_after),
         TextStyle::muted(),
     )?;
-    canvas.write(
-        20,
-        4,
-        "Session · session.retry-review.18 · Turn · turn.retry-review.18",
-        TextStyle::muted(),
-    )?;
+    canvas.write(20, 4, FLOW2_SESSION_TURN_PLAIN, TextStyle::muted())?;
     canvas.write(
         22,
         4,
@@ -636,6 +803,15 @@ fn render_diff_applied_turn(
             },
             reference(11, 4, 53),
             "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "session",
+            "session.retry-review.18",
+            reference(20, 4, FLOW2_SESSION_TURN_PLAIN.chars().count() as u16 + 4),
+            "summary",
             None,
         ),
         semantic(
@@ -1321,11 +1497,18 @@ fn render_chat_turn(
     // claim a terminal answer or "next prompt" handoff for the open rate-limit request.
     let open_turn_prestream = fixture_id == "flow1.daily-work.stable"
         || fixture_id.starts_with("flow1-storyboard.chat-turn");
+    // Some Flow2 alias fixtures reuse this anatomy; their You-line must still match the
+    // continuous pause-window task (no Daily rate-limit bleed).
     let flow2_resume = matches!(
         fixture_id,
         "flow2-storyboard.chat-turn" | "flow2-storyboard.resumed"
-    );
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    ) || fixture_id.starts_with("flow2.");
+    let user_line = if flow2_resume {
+        FLOW2_YOU_LINE
+    } else {
+        daily_user_request(fixture_id)
+    };
+    canvas.write(4, 4, user_line, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
 
     if open_turn_prestream {
