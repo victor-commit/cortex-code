@@ -35,6 +35,15 @@ const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.
 const FLOW2_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
 const FLOW3_TASK: &str = "Choose a model and how Code should work.";
 const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
+const FLOW5_TASK: &str = "Finish the release notes without losing the current work.";
+const FLOW5_ORIGIN: &str = "Recovery · paused conversation";
+const FLOW5_USER_PROMPT: &str =
+    "You · Summarize the remaining release notes and the still-open risks.";
+const FLOW5_PARTIAL: &str =
+    "The release notes cover the auth race fix, the retry window change, and one open risk…";
+const FLOW5_COMPLETED: &str =
+    "Completed earlier · retry window copy accepted for the release branch.";
+const FLOW5_DRAFT: &str = "Keep the risk note short before we publish.";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -51,11 +60,18 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             | "case.staging-finish.tick.1.flow2.input-and-approval.stable"
     );
     let flow3_session_return = fixture_id.starts_with("case.session-resume-latest");
+    let flow5_recovery = fixture_id == "gate.recovery.chat-turn"
+        || fixture_id.starts_with("case.rate-limit-")
+        || fixture_id.starts_with("case.checkpoint-")
+        || fixture_id.starts_with("case.turn-error-retry")
+        || fixture_id.starts_with("case.network-backoff-race-retry");
     let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
         (FLOW2_ORIGIN, FLOW2_TASK)
     } else if flow3_session_return {
         (FLOW3_ORIGIN, FLOW3_TASK)
+    } else if flow5_recovery {
+        (FLOW5_ORIGIN, FLOW5_TASK)
     } else {
         (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
     };
@@ -95,6 +111,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         }
         "chat-turn" if work_style_return.is_some() => {
             render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if flow5_recovery => {
+            render_recovery_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
         "chat-turn" if fixture_id == "conversation-completed" => {
             render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
@@ -140,6 +159,20 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 submitted_prompt: None,
                 paused_activity_id: Some("activity.retry-policy-review.latest".to_owned()),
                 later_draft: Some("Add the final review note.".to_owned()),
+            }
+        } else if flow5_recovery {
+            crate::audit::ConversationIdentity {
+                conversation_id: "conversation.recovery".to_owned(),
+                transcript_id: "transcript.recovery".to_owned(),
+                session_id: "session.recovery.1".to_owned(),
+                turn_id: "turn.recovery.1".to_owned(),
+                user_task: FLOW5_TASK.to_owned(),
+                visible_origin: FLOW5_ORIGIN.to_owned(),
+                submitted_prompt: Some(
+                    "Summarize the remaining release notes and the still-open risks.".to_owned(),
+                ),
+                paused_activity_id: Some("pending.network.release-notes".to_owned()),
+                later_draft: Some(FLOW5_DRAFT.to_owned()),
             }
         } else {
             crate::audit::ConversationIdentity {
@@ -996,6 +1029,111 @@ fn permission_outcome_transcript(
     canvas.write(17, 4, detail_three, TextStyle::muted())?;
     composer(canvas, composer_label, Some("Send reply"))?;
     Ok(())
+}
+
+fn render_recovery_chat_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(5, 4, FLOW5_USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, FLOW5_PARTIAL, TextStyle::text())?;
+    canvas.write(11, 4, FLOW5_COMPLETED, TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "The provider attempt succeeded. Work stayed in this conversation.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "Draft, queue, and completed work are still available.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "Ready for your next release-note prompt.",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+    // Show the preserved later draft under the restored composer label.
+    canvas.write(COMPOSER_TOP + 2, 6, FLOW5_DRAFT, TextStyle::text())?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "release-notes-prompt",
+        reference(5, 4, 70),
+        "summary",
+        None,
+    );
+    let partial = semantic(
+        screen_id,
+        fixture_id,
+        "partial-reply",
+        "kept-answer",
+        reference(9, 4, 95),
+        "focused",
+        None,
+    );
+    let resume = semantic(
+        screen_id,
+        fixture_id,
+        "continuation",
+        "recovery-restored",
+        reference(13, 4, 68),
+        "focused",
+        None,
+    );
+    let composer_ready = semantic(
+        screen_id,
+        fixture_id,
+        "composer",
+        "restored-composer",
+        reference(COMPOSER_TOP + 1, 4, 28),
+        "summary",
+        Some(action(
+            "action.chat-turn.compose",
+            "Reply to Code",
+            false,
+        )),
+    );
+    let statusline = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    Ok((
+        vec![
+            request.0,
+            partial.0,
+            resume.0,
+            composer_ready.0,
+            statusline.0,
+        ],
+        vec![
+            request.1,
+            partial.1,
+            resume.1,
+            composer_ready.1,
+            statusline.1,
+        ],
+        vec![transition(
+            "action.chat-turn.compose",
+            "chat-turn",
+            "chat-turn",
+            "direct",
+            "the restored conversation remains available for the next prompt",
+        )],
+    ))
 }
 
 fn render_chat_turn(

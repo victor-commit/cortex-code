@@ -849,7 +849,19 @@ impl CaseReplay {
                     && (self.attempts[0].count == 0
                         || self.attempts[0].outcome == "exhausted"
                         || self.attempts[0].outcome == "none"
-                        || self.attempts[0].outcome == "cancelled")))
+                        || self.attempts[0].outcome == "cancelled"))
+                && !(self.case_id.starts_with("rate-limit-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled"))
+                && !(self.case_id.starts_with("checkpoint-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "conflict"
+                        || self.attempts[0].outcome == "no-op"
+                        || self.attempts[0].outcome == "stale"
+                        || self.attempts[0].outcome == "restored"
+                        || self.attempts[0].outcome == "redone")))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -1092,9 +1104,67 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "network-check-connection-return" => network_check_connection_return(),
         "network-backoff-snapshot" => network_backoff_snapshot(),
         "network-evidence-snapshot" => network_evidence_snapshot(),
+        "rate-limit-automatic-success" => rate_limit_automatic_success(),
+        "rate-limit-retry-now" => rate_limit_retry_now(),
+        "rate-limit-race-retry-wins" => rate_limit_race_retry_wins(),
+        "rate-limit-race-cancel-wins" => rate_limit_race_cancel_wins(),
+        "checkpoint-undo-success" => checkpoint_undo_success(),
+        "checkpoint-redo-success" => checkpoint_redo_success(),
+        "checkpoint-undo-conflict" => checkpoint_undo_conflict(),
+        "checkpoint-undo-noop" => checkpoint_undo_noop(),
+        "checkpoint-redo-stale" => checkpoint_redo_stale(),
+        "checkpoint-continue-chat" => checkpoint_continue_chat(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
+    match case_id {
+        "checkpoint-undo-success" => insert_checkpoint_file_hashes(
+            &mut preserved_field_hashes,
+            FLOW5_FILE_RELEASE_BEFORE,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RISKS_BEFORE,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_CHECKPOINT,
+            FLOW5_CHECKPOINT,
+        ),
+        "checkpoint-redo-success" => insert_checkpoint_file_hashes(
+            &mut preserved_field_hashes,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RELEASE_BEFORE,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_FILE_RISKS_BEFORE,
+            FLOW5_CHECKPOINT,
+            FLOW5_CHECKPOINT,
+        ),
+        "checkpoint-undo-conflict" => insert_checkpoint_file_hashes(
+            &mut preserved_field_hashes,
+            FLOW5_FILE_RELEASE_BEFORE,
+            FLOW5_FILE_RELEASE_BEFORE,
+            FLOW5_FILE_RISKS_CONFLICT,
+            FLOW5_FILE_RISKS_CONFLICT,
+            FLOW5_CHECKPOINT,
+            FLOW5_CHECKPOINT,
+        ),
+        "checkpoint-undo-noop" | "checkpoint-continue-chat" => insert_checkpoint_file_hashes(
+            &mut preserved_field_hashes,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_CHECKPOINT,
+            FLOW5_CHECKPOINT,
+        ),
+        "checkpoint-redo-stale" => insert_checkpoint_file_hashes(
+            &mut preserved_field_hashes,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RELEASE_AFTER,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_FILE_RISKS_AFTER,
+            FLOW5_CHECKPOINT,
+            FLOW5_CHECKPOINT,
+        ),
+        _ => {}
+    }
     if matches!(case_id, "onboarding-complete" | "onboarding-skip") {
         preserved_field_hashes.insert(
             "pending_configuration".to_owned(),
@@ -1197,9 +1267,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "network-check-connection-return"
             | "network-backoff-snapshot"
             | "network-evidence-snapshot"
+            | "rate-limit-automatic-success"
+            | "rate-limit-retry-now"
+            | "rate-limit-race-retry-wins"
+            | "rate-limit-race-cancel-wins"
+            | "checkpoint-undo-success"
+            | "checkpoint-redo-success"
+            | "checkpoint-undo-conflict"
+            | "checkpoint-undo-noop"
+            | "checkpoint-redo-stale"
+            | "checkpoint-continue-chat"
     ) {
         match (case_id, after.screen_id.as_str()) {
-            ("turn-error-retry", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("turn-error-retry", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
             ("turn-error-cancel", "turn-error") => "gate.recovery.turn-error".to_owned(),
             ("network-offline-review-setting", "connect-provider") => {
                 "gate.provider-and-mcp.connect-provider".to_owned()
@@ -1207,7 +1287,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("network-offline-resume", "error-network") => "error-network.offline".to_owned(),
             ("network-backoff-cancel", "error-network") => "error-network.exhausted".to_owned(),
             ("network-backoff-exhaust", "error-network") => "error-network.exhausted".to_owned(),
-            ("network-backoff-race-retry-wins", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("network-backoff-race-retry-wins", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
             ("network-backoff-race-cancel-wins", "error-network") => {
                 "error-network.exhausted".to_owned()
             }
@@ -1219,6 +1299,20 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("network-backoff-snapshot", "error-network") => "error-network.backoff".to_owned(),
             ("network-evidence-snapshot", "error-network") => "error-network.evidence".to_owned(),
+            ("rate-limit-automatic-success", "chat-turn")
+            | ("rate-limit-retry-now", "chat-turn")
+            | ("rate-limit-race-retry-wins", "chat-turn")
+            | ("checkpoint-redo-success", "chat-turn")
+            | ("checkpoint-continue-chat", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
+            ("rate-limit-race-cancel-wins", "rate-limit") => "rate-limit.cancelled".to_owned(),
+            ("checkpoint-undo-success", "checkpoint-undo") => {
+                "gate.recovery.checkpoint-undo".to_owned()
+            }
+            ("checkpoint-undo-conflict", "checkpoint-undo") => {
+                "checkpoint-undo.conflict".to_owned()
+            }
+            ("checkpoint-undo-noop", "checkpoint-undo") => "checkpoint-undo.noop".to_owned(),
+            ("checkpoint-redo-stale", "checkpoint-undo") => "checkpoint-undo.stale".to_owned(),
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else {
@@ -1750,6 +1844,15 @@ const FLOW5_PARTIAL: &str =
 const FLOW5_DRAFT: &str = "Keep the risk note short before we publish.";
 const FLOW5_PENDING: &str = "pending.network.release-notes";
 const FLOW5_TIMER_OWNER: &str = "timer.network.backoff";
+const FLOW5_RATE_TIMER: &str = "timer.rate-limit.wait";
+const FLOW5_CHECKPOINT: &str = "checkpoint.before-risk-note-expansion";
+const FLOW5_QUEUE: &str = "queued.follow-up.risk-summary";
+const FLOW5_FILE_RELEASE_BEFORE: &str = "# Release notes\n- auth race fix\n- retry window change\n- open risk: token refresh race\n";
+const FLOW5_FILE_RELEASE_AFTER: &str = "# Release notes\n- auth race fix\n- retry window change\n";
+const FLOW5_FILE_RISKS_BEFORE: &str = "# Risks\n- token refresh can race on reconnect\n";
+const FLOW5_FILE_RISKS_AFTER: &str = "# Risks\n";
+const FLOW5_FILE_UNAFFECTED: &str = "# Later note\nKeep the queue draft for the next turn.\n";
+const FLOW5_FILE_RISKS_CONFLICT: &str = "# Risks\n- token refresh can race on reconnect\n- new draft edit after checkpoint\n";
 
 fn apply_flow5_identity(state: &mut ScenarioState) {
     state.conversation_id = "conversation.recovery".to_owned();
@@ -1766,6 +1869,10 @@ fn apply_flow5_identity(state: &mut ScenarioState) {
     state.paused_activity_id = FLOW5_PENDING.to_owned();
     state.submitted_prompt =
         Some("Summarize the remaining release notes and the still-open risks.".to_owned());
+    state.queue = FLOW5_QUEUE.to_owned();
+    state.queued_follow_up = "Queue the short risk follow-up after restore.".to_owned();
+    state.scroll_anchor = "turn-partial".to_owned();
+    state.attachment = "rate-limit-notes.md".to_owned();
     state.state_hash = state_hash(state);
 }
 
@@ -1781,10 +1888,57 @@ fn copy_flow5_identity(from: &ScenarioState, to: &mut ScenarioState) {
     to.partial_response = from.partial_response.clone();
     to.paused_activity_id = from.paused_activity_id.clone();
     to.submitted_prompt = from.submitted_prompt.clone();
+    to.queue = from.queue.clone();
+    to.queued_follow_up = from.queued_follow_up.clone();
+    to.scroll_anchor = from.scroll_anchor.clone();
+    to.attachment = from.attachment.clone();
     to.selection = from.selection.clone();
     to.pending_action = from.pending_action.clone();
     to.return_policy = from.return_policy.clone();
     to.state_hash = state_hash(to);
+}
+
+fn flow5_file_hash(contents: &str) -> String {
+    sha256_hex(contents.as_bytes())
+}
+
+fn insert_checkpoint_file_hashes(
+    hashes: &mut BTreeMap<String, PreservedFieldHash>,
+    release_before: &str,
+    release_after: &str,
+    risks_before: &str,
+    risks_after: &str,
+    checkpoint_before: &str,
+    checkpoint_after: &str,
+) {
+    hashes.insert(
+        "file.affected.notes/release.md".to_owned(),
+        PreservedFieldHash {
+            before: flow5_file_hash(release_before),
+            after: flow5_file_hash(release_after),
+        },
+    );
+    hashes.insert(
+        "file.affected.notes/risks.md".to_owned(),
+        PreservedFieldHash {
+            before: flow5_file_hash(risks_before),
+            after: flow5_file_hash(risks_after),
+        },
+    );
+    hashes.insert(
+        "file.unaffected.drafts/later-note.md".to_owned(),
+        PreservedFieldHash {
+            before: flow5_file_hash(FLOW5_FILE_UNAFFECTED),
+            after: flow5_file_hash(FLOW5_FILE_UNAFFECTED),
+        },
+    );
+    hashes.insert(
+        "checkpoint".to_owned(),
+        PreservedFieldHash {
+            before: sha256_hex(checkpoint_before.as_bytes()),
+            after: sha256_hex(checkpoint_after.as_bytes()),
+        },
+    );
 }
 
 fn turn_error_retry() -> (
@@ -2533,6 +2687,569 @@ fn network_check_connection_return() -> (
         "connection-inspection",
         "no-submit",
         "return restored network recovery without submitting the paused request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn rate_limit_waiting_before(virtual_tick: u32) -> ScenarioState {
+    let mut before = state(
+        "rate-limit",
+        vec!["chat-turn", "error-network", "rate-limit"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "automatic-wait",
+        "recovery-wait",
+        Some(FLOW5_RATE_TIMER),
+        "return-to-paused-turn",
+        virtual_tick,
+    );
+    apply_flow5_identity(&mut before);
+    before.pending_action = Some(FLOW5_RATE_TIMER.to_owned());
+    before.state_hash = state_hash(&before);
+    before
+}
+
+fn rate_limit_chat_after(from: &ScenarioState) -> ScenarioState {
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "error-network", "rate-limit"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(from, &mut after);
+    after.pending_action = None;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    after
+}
+
+fn rate_limit_automatic_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = rate_limit_waiting_before(0);
+    let after = rate_limit_chat_after(&before);
+    let action = ActionEvidence {
+        action_id: "action.rate-limit.timer-tick".to_owned(),
+        label: "Automatic rate-limit wait".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "countdown completion triggers exactly one provider attempt and restores chat"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.rate-limit.timer.1".to_owned(),
+        owner_id: FLOW5_RATE_TIMER.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.rate-limit.timer.success",
+        "provider-attempt",
+        "one-attempt",
+        "automatic rate-limit wait completed with one provider resume",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn rate_limit_retry_now() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = rate_limit_waiting_before(0);
+    let after = rate_limit_chat_after(&before);
+    let action = ActionEvidence {
+        action_id: "action.rate-limit.retry-now".to_owned(),
+        label: "Retry now".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "optional manual retry interrupts the countdown once and restores chat".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.rate-limit.retry-now.1".to_owned(),
+        owner_id: FLOW5_RATE_TIMER.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.rate-limit.retry-now",
+        "provider-attempt",
+        "one-attempt",
+        "optional Retry now produced the only provider attempt",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn rate_limit_race_retry_wins() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = rate_limit_waiting_before(0);
+    let after = rate_limit_chat_after(&before);
+    let action = ActionEvidence {
+        action_id: "action.rate-limit.retry-now".to_owned(),
+        label: "Retry now".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "same-tick retry-now wins once; timer expiry becomes inert".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.rate-limit.race.retry".to_owned(),
+        owner_id: FLOW5_RATE_TIMER.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.rate-limit.race.retry",
+        "provider-attempt",
+        "one-winner",
+        "retry-now and timer expiry raced; only retry-now produced a successor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn rate_limit_race_cancel_wins() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = rate_limit_waiting_before(0);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.pending_action = None;
+    after.focus = "rate-limit-recovery".to_owned();
+    after.selection = "cancelled-wait".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.rate-limit.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "same-tick cancel wins once; timer expiry becomes inert".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.rate-limit.race.cancel".to_owned(),
+        owner_id: FLOW5_RATE_TIMER.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.rate-limit.race.cancel",
+        "provider-attempt",
+        "one-winner",
+        "cancel and timer expiry raced; only cancel produced a successor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_undo_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "chat-turn",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "checkpoint-menu",
+        "composer",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "composer".to_owned();
+    before.selection = "checkpoint-menu".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "redo-change",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "checkpoint-confirmation".to_owned();
+    after.selection = "redo-change".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.restore".to_owned(),
+        label: "Restore checkpoint".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "restore rewrites only the two checkpoint files and opens one inline confirmation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.restore.1".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.restore",
+        "file-restore",
+        "restored",
+        "exact restore of notes/release.md and notes/risks.md; later-note untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_redo_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "redo-change",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "checkpoint-confirmation".to_owned();
+    before.selection = "redo-change".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = None;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.redo".to_owned(),
+        label: "Redo change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "redo reapplies the same checkpoint and restores the chat composer".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.redo.1".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 1,
+        outcome: "redone".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.redo",
+        "file-restore",
+        "redone",
+        "symmetric redo rewrote only the same two affected files",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_undo_conflict() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "restore-conflict",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "checkpoint-confirmation".to_owned();
+    before.selection = "restore-conflict".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "review-conflict".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.restore".to_owned(),
+        label: "Restore checkpoint".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "conflict refuses restoration without writing any file and keeps the checkpoint"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.conflict.0".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 0,
+        outcome: "conflict".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.conflict",
+        "file-restore",
+        "conflict-refused",
+        "changed target files blocked restore; zero filesystem writes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_undo_noop() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "already-restored",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "checkpoint-confirmation".to_owned();
+    before.selection = "already-restored".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.restore".to_owned(),
+        label: "Restore checkpoint".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "repeating an already completed undo is an explicit no-op without rewrite".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.noop.0".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 0,
+        outcome: "no-op".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.noop",
+        "file-restore",
+        "no-op",
+        "already restored files and confirmation produced no further writes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_redo_stale() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "stale-redo",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "checkpoint-confirmation".to_owned();
+    before.selection = "stale-redo".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "continue-chat".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.invalidate-redo".to_owned(),
+        label: "Fresh mutation".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "a fresh mutation invalidates redo and removes the redo action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.stale.0".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 0,
+        outcome: "stale".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.stale-redo",
+        "file-restore",
+        "stale",
+        "later file mutation removed redo without changing unrelated work",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn checkpoint_continue_chat() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "checkpoint-undo",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "continue-chat",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "checkpoint-confirmation".to_owned();
+    before.selection = "continue-chat".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "checkpoint-undo"],
+        FLOW5_DRAFT,
+        "turn-partial",
+        "composer",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.pending_action = None;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.checkpoint-undo.continue".to_owned(),
+        label: "Continue in conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "continue returns to the exact prior chat position with a restored composer"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.continue.0".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.continue",
+        "navigation",
+        "returned",
+        "return restored the ordinary composer without rewriting files",
     );
     (before, after, action, transition, attempt, effect)
 }

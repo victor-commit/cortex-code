@@ -1,9 +1,12 @@
-//! Flow 5 pilot states for turn errors and network recovery.
+//! Flow 5 pilot states for turn, network, rate-limit, and checkpoint recovery.
 //!
 //! Turn failures keep partial replies inline with one adjacent primary recovery.
 //! Network failures preserve work, hide attempts behind evidence, distinguish
 //! automatic bounded backoff from manual retry, and route connection inspection
 //! without losing recovery origin or submitting more than once.
+//! Rate-limit owns one automatic countdown with optional secondary Retry now.
+//! Checkpoint undo names exact file effects, preserves unrelated work, and
+//! offers symmetric redo with conflict and no-op safety.
 
 use crate::{
     Surface,
@@ -35,7 +38,13 @@ const NETWORK_CAUSE_ENDED: &str = "The connection ended before the reply finishe
 const NETWORK_CAUSE_OFFLINE: &str = "Network access is off";
 const NETWORK_SAVED: &str = "Your work and partial output are saved.";
 const TIMER_OWNER: &str = "timer.network.backoff";
+const RATE_TIMER_OWNER: &str = "timer.rate-limit.wait";
 const PENDING_NETWORK: &str = "pending.network.release-notes";
+const CHECKPOINT_NAME: &str = "Before risk-note expansion";
+const AFFECTED_A: &str = "notes/release.md";
+const AFFECTED_B: &str = "notes/risks.md";
+const UNAFFECTED: &str = "drafts/later-note.md";
+const STALE_APPROVAL: &str = "Approval for the risks note · Stale · needs re-review";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -53,10 +62,25 @@ enum NetworkVariant {
     Exhausted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RateLimitVariant {
+    WaitingEarly,
+    WaitingLater,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckpointVariant {
+    Success,
+    Conflict,
+    Noop,
+    StaleRedo,
+}
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let surface = match screen_id {
-        "turn-error" | "error-network" => Surface::ActionDock,
+        "turn-error" | "error-network" | "rate-limit" | "checkpoint-undo" => Surface::ActionDock,
         _ => return Err(format!("unknown Flow 5 recovery screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
@@ -64,6 +88,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "turn-error" => render_turn_error(&mut canvas, screen_id, fixture_id)?,
         "error-network" => render_error_network(&mut canvas, screen_id, fixture_id)?,
+        "rate-limit" => render_rate_limit(&mut canvas, screen_id, fixture_id)?,
+        "checkpoint-undo" => render_checkpoint_undo(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -926,6 +952,793 @@ fn network_variant(fixture_id: &str) -> NetworkVariant {
         NetworkVariant::Backoff
     } else {
         NetworkVariant::Collapsed
+    }
+}
+
+fn render_rate_limit(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let variant = rate_limit_variant(fixture_id);
+    let countdown = match variant {
+        RateLimitVariant::WaitingEarly => "20s",
+        RateLimitVariant::WaitingLater => "12s",
+        RateLimitVariant::Cancelled => "0s",
+    };
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, PARTIAL_REPLY, TextStyle::text())?;
+    canvas.write(11, 4, COMPLETED_WORK, TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+
+    match variant {
+        RateLimitVariant::WaitingEarly | RateLimitVariant::WaitingLater => {
+            canvas.write(
+                15,
+                4,
+                &format!("○ Safe waiting window · retry in {countdown} remaining"),
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "Your work is saved. Code will retry automatically.",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                17,
+                4,
+                "Transcript, partial reply, draft, and completed work stay readable.",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "One timer owns this wait. No primary action is required.",
+                TextStyle::muted(),
+            )?;
+        }
+        RateLimitVariant::Cancelled => {
+            canvas.write(
+                15,
+                4,
+                "○ Automatic wait cancelled",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "Your work is still saved. No provider attempt was sent.",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                17,
+                4,
+                "Transcript, partial reply, draft, and completed work stay readable.",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "Choose a recovery later when you are ready.",
+                TextStyle::muted(),
+            )?;
+        }
+    }
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Automatic rate-limit wait",
+        TextStyle::bright(),
+    )?;
+    match variant {
+        RateLimitVariant::WaitingEarly | RateLimitVariant::WaitingLater => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "Code retries once when the safe window ends.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "  Waiting · no primary action while the timer runs",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [r] Retry now · optional",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "  [esc] Cancel · stop automatic wait",
+                TextStyle::muted(),
+            )?;
+        }
+        RateLimitVariant::Cancelled => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "The automatic wait was stopped without a provider attempt.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "  No countdown remains active",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [r] Retry now · optional",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "  [esc] Keep cancelled wait",
+                TextStyle::muted(),
+            )?;
+        }
+    }
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "partial-reply",
+            "interrupted-answer",
+            reference(9, 4, 95),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.rate-limit.retry-now",
+            reference(DOCK_TOP + 4, 4, 30),
+            "summary",
+            Some(action(
+                "action.rate-limit.retry-now",
+                "Retry now",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.rate-limit.cancel",
+            reference(DOCK_TOP + 5, 4, 36),
+            "summary",
+            Some(action("action.rate-limit.cancel", "Cancel", false)),
+        ),
+    ];
+    let mut transitions = vec![
+        transition(
+            "action.rate-limit.retry-now",
+            "rate-limit",
+            "chat-turn",
+            "direct",
+            "optional manual retry wins once and restores the paused conversation",
+        ),
+        transition(
+            "action.rate-limit.cancel",
+            "rate-limit",
+            "rate-limit",
+            "cancel",
+            "cancel stops the single countdown owner without a provider attempt",
+        ),
+    ];
+
+    if matches!(
+        variant,
+        RateLimitVariant::WaitingEarly | RateLimitVariant::WaitingLater
+    ) {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "timer-owner",
+            RATE_TIMER_OWNER,
+            reference(15, 4, 58),
+            "focused",
+            Some(action(
+                "action.rate-limit.timer-tick",
+                "Automatic rate-limit wait",
+                true,
+            )),
+        ));
+        transitions.push(transition(
+            "action.rate-limit.timer-tick",
+            "rate-limit",
+            "chat-turn",
+            "automatic",
+            "countdown completion triggers exactly one provider attempt and restores chat",
+        ));
+    } else {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "waiting-cancelled",
+            "rate-limit-cancelled",
+            reference(15, 4, 30),
+            "focused",
+            None,
+        ));
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn rate_limit_variant(fixture_id: &str) -> RateLimitVariant {
+    if fixture_id.contains("sample-later") {
+        RateLimitVariant::WaitingLater
+    } else if fixture_id.contains("cancel") {
+        RateLimitVariant::Cancelled
+    } else {
+        // gate fixture and sample-early share the early countdown snapshot.
+        RateLimitVariant::WaitingEarly
+    }
+}
+
+fn render_checkpoint_undo(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let variant = checkpoint_variant(fixture_id);
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, PARTIAL_REPLY, TextStyle::text())?;
+    canvas.write(11, 4, COMPLETED_WORK, TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+
+    match variant {
+        CheckpointVariant::Success => {
+            canvas.write(
+                15,
+                4,
+                &format!("✓ Restored checkpoint · {CHECKPOINT_NAME}"),
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "2 files were restored. Unrelated work stays untouched.",
+                TextStyle::text(),
+            )?;
+            canvas.write(18, 4, &format!("  {AFFECTED_A}"), TextStyle::muted())?;
+            canvas.write(19, 4, &format!("  {AFFECTED_B}"), TextStyle::muted())?;
+            canvas.write(
+                21,
+                4,
+                STALE_APPROVAL,
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                22,
+                4,
+                "Transcript, draft, queue, and later notes remain available.",
+                TextStyle::muted(),
+            )?;
+        }
+        CheckpointVariant::Conflict => {
+            canvas.write(
+                15,
+                4,
+                &format!("✗ Restore refused · {CHECKPOINT_NAME}"),
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "Target files changed after the checkpoint. No files were written.",
+                TextStyle::text(),
+            )?;
+            canvas.write(18, 4, &format!("  {AFFECTED_A} · conflict"), TextStyle::muted())?;
+            canvas.write(19, 4, &format!("  {AFFECTED_B} · conflict"), TextStyle::muted())?;
+            canvas.write(
+                21,
+                4,
+                "The checkpoint is still available. Review the conflict before retrying.",
+                TextStyle::muted(),
+            )?;
+        }
+        CheckpointVariant::Noop => {
+            canvas.write(
+                15,
+                4,
+                &format!("○ Already restored · {CHECKPOINT_NAME}"),
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "No further changes. 2 files already match the checkpoint.",
+                TextStyle::text(),
+            )?;
+            canvas.write(18, 4, &format!("  {AFFECTED_A}"), TextStyle::muted())?;
+            canvas.write(19, 4, &format!("  {AFFECTED_B}"), TextStyle::muted())?;
+            canvas.write(
+                21,
+                4,
+                "Unrelated work, draft, and queue remain exactly as they were.",
+                TextStyle::muted(),
+            )?;
+        }
+        CheckpointVariant::StaleRedo => {
+            canvas.write(
+                15,
+                4,
+                &format!("✓ Restored checkpoint · {CHECKPOINT_NAME}"),
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "2 files were restored. A later edit made redo unavailable.",
+                TextStyle::text(),
+            )?;
+            canvas.write(18, 4, &format!("  {AFFECTED_A}"), TextStyle::muted())?;
+            canvas.write(19, 4, &format!("  {AFFECTED_B}"), TextStyle::muted())?;
+            canvas.write(
+                21,
+                4,
+                "Redo was invalidated after a fresh mutation of a restored file.",
+                TextStyle::muted(),
+            )?;
+        }
+    }
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Checkpoint restore",
+        TextStyle::bright(),
+    )?;
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "confirmation",
+            "checkpoint-confirmation",
+            reference(15, 4, 56),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "affected-files",
+            "checkpoint-affected-paths",
+            reference(18, 4, 28),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    let mut transitions = Vec::new();
+
+    match variant {
+        CheckpointVariant::Success => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "Redo reapplies the same checkpoint file set.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "› [enter] Redo change",
+                TextStyle::accent(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [c] Continue in conversation",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "  [esc] Back · keep restoration",
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.checkpoint-undo.redo",
+                reference(DOCK_TOP + 3, 4, 28),
+                "focused",
+                Some(action(
+                    "action.checkpoint-undo.redo",
+                    "Redo change",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "action.checkpoint-undo.continue",
+                reference(DOCK_TOP + 4, 4, 34),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.continue",
+                    "Continue in conversation",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.checkpoint-undo.back",
+                reference(DOCK_TOP + 5, 4, 34),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.back",
+                    "Back",
+                    false,
+                )),
+            ));
+            transitions.extend([
+                transition(
+                    "action.checkpoint-undo.redo",
+                    "checkpoint-undo",
+                    "chat-turn",
+                    "direct",
+                    "redo reapplies the same checkpoint and restores the chat composer",
+                ),
+                transition(
+                    "action.checkpoint-undo.continue",
+                    "checkpoint-undo",
+                    "chat-turn",
+                    "direct",
+                    "continue returns to the exact prior chat position with a restored composer",
+                ),
+                transition(
+                    "action.checkpoint-undo.back",
+                    "checkpoint-undo",
+                    "checkpoint-undo",
+                    "cancel",
+                    "back keeps the inline confirmation without rewriting files",
+                ),
+            ]);
+        }
+        CheckpointVariant::Conflict => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "Review the changed files before another restore.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "› [enter] Review conflict",
+                TextStyle::accent(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [c] Continue in conversation",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "  [esc] Back · keep current files",
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.checkpoint-undo.review-conflict",
+                reference(DOCK_TOP + 3, 4, 30),
+                "focused",
+                Some(action(
+                    "action.checkpoint-undo.review-conflict",
+                    "Review conflict",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "action.checkpoint-undo.continue",
+                reference(DOCK_TOP + 4, 4, 34),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.continue",
+                    "Continue in conversation",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.checkpoint-undo.back",
+                reference(DOCK_TOP + 5, 4, 34),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.back",
+                    "Back",
+                    false,
+                )),
+            ));
+            transitions.extend([
+                transition(
+                    "action.checkpoint-undo.review-conflict",
+                    "checkpoint-undo",
+                    "checkpoint-undo",
+                    "direct",
+                    "review conflict stays with the checkpoint and writes no files",
+                ),
+                transition(
+                    "action.checkpoint-undo.continue",
+                    "checkpoint-undo",
+                    "chat-turn",
+                    "direct",
+                    "continue returns to chat without applying a refused restore",
+                ),
+                transition(
+                    "action.checkpoint-undo.back",
+                    "checkpoint-undo",
+                    "checkpoint-undo",
+                    "cancel",
+                    "back keeps the conflict confirmation without writing files",
+                ),
+            ]);
+        }
+        CheckpointVariant::Noop => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "The selected checkpoint is already current.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "› [enter] Continue in conversation",
+                TextStyle::accent(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [esc] Stay on confirmation",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "No extra writes or duplicate toasts were created.",
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.checkpoint-undo.continue",
+                reference(DOCK_TOP + 3, 4, 40),
+                "focused",
+                Some(action(
+                    "action.checkpoint-undo.continue",
+                    "Continue in conversation",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.checkpoint-undo.back",
+                reference(DOCK_TOP + 4, 4, 32),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.back",
+                    "Back",
+                    false,
+                )),
+            ));
+            transitions.extend([
+                transition(
+                    "action.checkpoint-undo.continue",
+                    "checkpoint-undo",
+                    "chat-turn",
+                    "direct",
+                    "continue leaves the already-restored files and opens the composer",
+                ),
+                transition(
+                    "action.checkpoint-undo.back",
+                    "checkpoint-undo",
+                    "checkpoint-undo",
+                    "cancel",
+                    "back keeps the single no-op confirmation without rewrite",
+                ),
+            ]);
+        }
+        CheckpointVariant::StaleRedo => {
+            dock_line(
+                canvas,
+                DOCK_TOP + 2,
+                "Redo is unavailable after a later file change.",
+                TextStyle::text(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 3,
+                "› [enter] Continue in conversation",
+                TextStyle::accent(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 4,
+                "  [esc] Stay on confirmation",
+                TextStyle::muted(),
+            )?;
+            dock_line(
+                canvas,
+                DOCK_TOP + 5,
+                "No automatic rewrite runs while redo remains stale.",
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.checkpoint-undo.continue",
+                reference(DOCK_TOP + 3, 4, 40),
+                "focused",
+                Some(action(
+                    "action.checkpoint-undo.continue",
+                    "Continue in conversation",
+                    false,
+                )),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.checkpoint-undo.back",
+                reference(DOCK_TOP + 4, 4, 32),
+                "summary",
+                Some(action(
+                    "action.checkpoint-undo.back",
+                    "Back",
+                    false,
+                )),
+            ));
+            transitions.extend([
+                transition(
+                    "action.checkpoint-undo.continue",
+                    "checkpoint-undo",
+                    "chat-turn",
+                    "direct",
+                    "continue returns to chat after redo was invalidated",
+                ),
+                transition(
+                    "action.checkpoint-undo.back",
+                    "checkpoint-undo",
+                    "checkpoint-undo",
+                    "cancel",
+                    "back keeps the structured confirmation without a redo action",
+                ),
+            ]);
+        }
+    }
+
+    // Prevent unused-constant warnings while still documenting the exclusion rule.
+    let _ = UNAFFECTED;
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn checkpoint_variant(fixture_id: &str) -> CheckpointVariant {
+    if fixture_id.contains("conflict") {
+        CheckpointVariant::Conflict
+    } else if fixture_id.contains("noop") || fixture_id.contains("no-op") {
+        CheckpointVariant::Noop
+    } else if fixture_id.contains("stale") {
+        CheckpointVariant::StaleRedo
+    } else {
+        CheckpointVariant::Success
     }
 }
 

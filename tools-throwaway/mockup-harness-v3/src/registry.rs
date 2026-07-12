@@ -609,7 +609,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "interrupt",
@@ -630,7 +630,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "share",

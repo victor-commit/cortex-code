@@ -167,6 +167,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "mcp",
             "turn-error",
             "error-network",
+            "rate-limit",
+            "checkpoint-undo",
         ]
         .contains(&screen.id)
         {
