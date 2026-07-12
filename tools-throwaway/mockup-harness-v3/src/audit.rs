@@ -650,7 +650,7 @@ pub(crate) fn blocked_model_recovery_audit(
     let dock = DecisionDock::new(
         Surface::ActionDock,
         "Connect this model provider?",
-        "Connection setup returns to the same model choice.",
+        "Connection setup returns to the model picker.",
         "Connect provider",
     )?;
     for (offset, line) in dock.render()?.into_iter().enumerate() {

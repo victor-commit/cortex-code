@@ -1209,7 +1209,7 @@ fn onboarding_unusable_model() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "direct".to_owned(),
-        path: "the unavailable onboarding choice opens connection without losing setup state"
+        path: "the unavailable onboarding choice opens connection, then returns to model-picker without losing setup state"
             .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -1386,7 +1386,7 @@ fn model_picker_connect() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "direct".to_owned(),
-        path: "the unavailable model opens connection while retaining the pending model and draft"
+        path: "the unavailable model opens connection and returns to model-picker while retaining the pending model and draft"
             .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -1475,16 +1475,17 @@ fn blocked_model_recovery_audit(
     } else {
         "Current conversation"
     };
-    let return_policy = if case_id == "onboarding-unusable-model" {
-        "Return to onboarding"
-    } else {
-        "Return to model choices"
-    };
+    if state.return_policy != "return-to-model-picker" {
+        return Err(format!(
+            "blocked-model recovery must return-to-model-picker, got {}",
+            state.return_policy
+        ));
+    }
     crate::audit::blocked_model_recovery_audit(
         &fixture_id,
         &state.visible_origin,
         origin,
-        return_policy,
+        "Return to model choices",
     )
 }
 

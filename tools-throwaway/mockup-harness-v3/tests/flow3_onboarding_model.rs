@@ -248,4 +248,15 @@ fn onboarding_scenarios_preserve_origin_and_route_blocked_choices_safely() {
         .expect("the onboarding recovery frame must retain its model choice");
     assert_eq!(continuation.origin, "Onboarding");
     assert_eq!(continuation.pending.as_deref(), Some("GPT-5.2 Codex"));
+    assert_eq!(
+        continuation.return_policy, "Return to model choices",
+        "typed blocked-model recovery must return to the model picker"
+    );
+    assert!(
+        unusable
+            .audit
+            .render_txt()
+            .contains("Connection setup returns to the model picker."),
+        "rendered recovery copy must name the model-picker return"
+    );
 }

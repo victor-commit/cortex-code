@@ -83,19 +83,15 @@ fn publication_records_bind_every_alias_to_its_declared_fixture_and_origin() {
 
     let mut fallback = publications.clone();
     fallback[0].fixture_id = "canonical.home".to_owned();
-    assert!(
-        validate_pilot_gate_publications(&fallback)
-            .expect_err("canonical fixture fallback must fail")
-            .contains("fixture")
-    );
+    assert!(validate_pilot_gate_publications(&fallback)
+        .expect_err("canonical fixture fallback must fail")
+        .contains("fixture"));
 
     let mut wrong_origin = publications;
     wrong_origin[0].origin = "chat-turn".to_owned();
-    assert!(
-        validate_pilot_gate_publications(&wrong_origin)
-            .expect_err("an alias with the wrong declared origin must fail")
-            .contains("origin")
-    );
+    assert!(validate_pilot_gate_publications(&wrong_origin)
+        .expect_err("an alias with the wrong declared origin must fail")
+        .contains("origin"));
 }
 
 #[test]
@@ -133,6 +129,23 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
             expected_bytes,
             fs::read(&gate).expect("gate artifact must be readable"),
             "gate alias must be canonical-equivalent for its declared fixture: {gate:?}"
+        );
+    }
+}
+
+#[test]
+fn model_picker_canonical_and_gate_alias_compare_actual_on_disk_bytes() {
+    ensure_published();
+    for extension in ["txt", "png"] {
+        let canonical = fs::read(format!("{CANONICAL_ROOT}/input/model-picker.{extension}"))
+            .expect("published canonical model-picker artifact must be readable");
+        let gate = fs::read(format!(
+            "{GATE_ROOT}/work-configuration/02-model-picker.{extension}"
+        ))
+        .expect("published gate model-picker artifact must be readable");
+        assert_eq!(
+            canonical, gate,
+            "canonical and gate model-picker {extension} must be byte-identical on disk"
         );
     }
 }
