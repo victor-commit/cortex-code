@@ -36,3 +36,7 @@ alias-normalization-mismatch	mockup-harness-v3	negative-fixture alias-normalizat
 stale-vision-hash	mockup-harness-v3	negative-fixture stale-vision-hash	3	vision-evidence	home	vision-hash-old	stale vision hash
 unsafe-cleanup	mockup-harness-v3	negative-fixture unsafe-cleanup	3	renderer-cleanup	home	outside-staging	unsafe renderer cleanup path
 publication-failure	mockup-harness-v3	negative-fixture publication-failure	3	renderer-publication	home	published	injected staged validation failure
+permission-page-gap	mockup-harness-v3	negative-fixture permission-page-gap	3	permission-paging	permission-shell	page-offset-45	gap or overlap
+permission-page-overlap	mockup-harness-v3	negative-fixture permission-page-overlap	3	permission-paging	permission-shell	page-offset-43	gap or overlap
+permission-page-wrong-offset	mockup-harness-v3	negative-fixture permission-page-wrong-offset	3	permission-paging	permission-shell	previous-offset-0	incorrect adjacent previous or next offsets
+permission-page-fabricated-notation	mockup-harness-v3	negative-fixture permission-page-fabricated-notation	3	permission-paging	permission-shell	fabricated-page-notation	does not reconstruct exact execution bytes

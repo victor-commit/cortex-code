@@ -651,7 +651,9 @@ fn render_permission_shell(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let unsafe_bytes = fixture_id.contains("unsafe-byte");
-    let return_to_choices = fixture_id.contains("long-return");
+    let return_to_choices =
+        fixture_id.contains("long-return") || fixture_id.contains("final-to-return");
+    let middle_to_final = fixture_id.contains("middle-to-final");
     let long_command = fixture_id.contains("long") && !return_to_choices;
     let out_of_scope = fixture_id.contains("persistent-scope-outside");
     let command = if out_of_scope {
@@ -664,9 +666,11 @@ fn render_permission_shell(
         SHORT_SHELL_COMMAND
     };
     let hash = crate::audit::sha256_hex(command);
-    let offset = if fixture_id.contains("page-88")
+    let offset = if !return_to_choices
+        && (fixture_id.contains("page-88")
         || fixture_id.contains("long-final")
         || fixture_id.contains("middle")
+        || fixture_id.contains("middle-to-final"))
     {
         88
     } else if long_command {
@@ -982,19 +986,21 @@ fn render_permission_shell(
             "focused",
             None,
         ));
-        pairs.push(semantic(
-            screen_id,
-            fixture_id,
-            "cancel-action",
-            "action.permission.command-return",
-            reference(DOCK_TOP + 5, 4, 48),
-            "summary",
-            Some(action(
+        if return_to_choices || !middle_to_final {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
                 "action.permission.command-return",
-                "Return to permission choices",
-                false,
-            )),
-        ));
+                reference(DOCK_TOP + 5, 4, 48),
+                "summary",
+                Some(action(
+                    "action.permission.command-return",
+                    "Return to permission choices",
+                    false,
+                )),
+            ));
+        }
         if page_end < command.len() {
             pairs.push(semantic(
                 screen_id,
@@ -1004,6 +1010,21 @@ fn render_permission_shell(
                 reference(17, 78, 96),
                 "summary",
                 Some(action("action.permission.command-next", "Next page", false)),
+            ));
+        }
+        if middle_to_final {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "page-transition",
+                "middle-to-final",
+                reference(18, 4, 74),
+                "summary",
+                Some(action(
+                    "action.permission.command-next-final",
+                    "Open final page",
+                    false,
+                )),
             ));
         }
         if offset > 0 {
@@ -1031,20 +1052,32 @@ fn render_permission_shell(
             "Return closes command detail and restores the same permission choices and focus",
         )]
     } else if long_command {
-        let mut transitions = vec![transition(
-            "action.permission.command-return",
-            "permission-shell",
-            "permission-shell",
-            "cancel",
-            "returning from command detail restores the same permission choices and command focus",
-        )];
-        if page_end < command.len() {
+        let mut transitions = Vec::new();
+        if !middle_to_final {
+            transitions.push(transition(
+                "action.permission.command-return",
+                "permission-shell",
+                "permission-shell",
+                "cancel",
+                "returning from command detail restores the same permission choices and command focus",
+            ));
+        }
+        if page_end < command.len() && !middle_to_final {
             transitions.push(transition(
                 "action.permission.command-next",
                 "permission-shell",
                 "permission-shell",
                 "direct",
                 "next page advances exactly one byte window without changing execution bytes",
+            ));
+        }
+        if middle_to_final {
+            transitions.push(transition(
+                "action.permission.command-next-final",
+                "permission-shell",
+                "permission-shell",
+                "direct",
+                "the middle-page transition opens the distinct final page at the exact adjacent offset",
             ));
         }
         if offset > 0 {

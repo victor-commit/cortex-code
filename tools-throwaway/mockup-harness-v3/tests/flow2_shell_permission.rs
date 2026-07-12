@@ -88,6 +88,86 @@ fn public_long_page_boundaries_cover_middle_final_and_return_transitions() {
 }
 
 #[test]
+fn every_public_page_reconstructs_its_exact_window_and_adjacent_offsets() {
+    let command =
+        b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
+    let pages = [
+        ("permission-shell-long", 44, None, Some(44)),
+        ("permission-shell-long-page-44", 88, Some(0), Some(88)),
+        ("permission-shell-long-final", 119, Some(44), None),
+    ];
+
+    for (case_id, expected_end, expected_previous, expected_next) in pages {
+        let replay = replay_case(case_id, 1).expect("page replay must render");
+        replay.validate().expect("page replay must validate");
+        let permission = replay.permission.as_ref().expect("page evidence");
+        assert_eq!(
+            permission.byte_offset + permission.reconstructed_page_bytes().len(),
+            expected_end
+        );
+        assert_eq!(
+            permission.reconstructed_page_bytes(),
+            command[permission.byte_offset..expected_end],
+            "{case_id} must show the exact execution byte slice"
+        );
+        assert_eq!(permission.previous_offset, expected_previous);
+        assert_eq!(permission.next_offset, expected_next);
+    }
+
+    let first = replay_case("permission-shell-long", 1)
+        .unwrap()
+        .permission
+        .unwrap();
+    let middle = replay_case("permission-shell-long-page-44", 1)
+        .unwrap()
+        .permission
+        .unwrap();
+    let final_page = replay_case("permission-shell-long-final", 1)
+        .unwrap()
+        .permission
+        .unwrap();
+    mockup_harness_v3::scenario::validate_permission_traversal(&[first, middle, final_page])
+        .expect("all three pages must reconstruct one contiguous command");
+}
+
+#[test]
+fn final_page_and_final_return_are_distinct_public_replays() {
+    let middle =
+        replay_case("permission-shell-long-middle-to-final", 1).expect("middle-to-final replay");
+    let final_page = replay_case("permission-shell-long-final", 1).expect("final page replay");
+    let final_return =
+        replay_case("permission-shell-long-final-to-return", 1).expect("final return replay");
+
+    assert_ne!(middle.case_id, final_page.case_id);
+    assert_eq!(middle.after.selection, "long-command-page-88");
+    assert_eq!(final_page.after.selection, "long-command-page-88");
+    assert_eq!(
+        final_page.permission.as_ref().unwrap().previous_offset,
+        Some(44)
+    );
+    assert_eq!(
+        final_return.transitions[0].action_id,
+        "action.permission.command-return"
+    );
+    assert_eq!(final_return.before.selection, "long-command-page-88");
+    assert_eq!(final_return.after.selection, "permission-choice");
+    assert!(final_return.audit.render_txt().contains("Permission choices"));
+}
+
+#[test]
+fn permission_paging_rejects_gaps_overlaps_wrong_offsets_and_fabricated_notation() {
+    for fixture in [
+        "permission-page-gap",
+        "permission-page-overlap",
+        "permission-page-wrong-offset",
+        "permission-page-fabricated-notation",
+    ] {
+        let result = mockup_harness_v3::negative_fixtures::run_public_negative_fixture(fixture);
+        assert!(result.is_err(), "{fixture} must reject invalid paging evidence");
+    }
+}
+
+#[test]
 fn unsafe_permission_bytes_use_reversible_escaping_bound_to_exact_hash() {
     let replay = replay_case("permission-shell-unsafe-byte", 1)
         .expect("unsafe-byte permission replay must render");

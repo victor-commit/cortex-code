@@ -93,6 +93,10 @@ pub const REQUIRED_FIXTURE_IDS: &[&str] = &[
     "stale-vision-hash",
     "unsafe-cleanup",
     "publication-failure",
+    "permission-page-gap",
+    "permission-page-overlap",
+    "permission-page-wrong-offset",
+    "permission-page-fabricated-notation",
 ];
 
 const FIXTURE_MANIFEST: &[FixtureSpec] = &[
@@ -355,6 +359,34 @@ const FIXTURE_MANIFEST: &[FixtureSpec] = &[
         "published",
         "injected staged validation failure"
     ),
+    fixture!(
+        "permission-page-gap",
+        "permission-paging",
+        "permission-shell",
+        "page-offset-45",
+        "gap or overlap"
+    ),
+    fixture!(
+        "permission-page-overlap",
+        "permission-paging",
+        "permission-shell",
+        "page-offset-43",
+        "gap or overlap"
+    ),
+    fixture!(
+        "permission-page-wrong-offset",
+        "permission-paging",
+        "permission-shell",
+        "previous-offset-0",
+        "incorrect adjacent previous or next offsets"
+    ),
+    fixture!(
+        "permission-page-fabricated-notation",
+        "permission-paging",
+        "permission-shell",
+        "fabricated-page-notation",
+        "does not reconstruct exact execution bytes"
+    ),
 ];
 
 /// Returns the complete matrix in deterministic contract order.
@@ -471,6 +503,10 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         | "renderer-outside-inventory"
         | "unsafe-cleanup"
         | "publication-failure" => run_renderer_negative_fixture(spec.id, root),
+        "permission-page-gap"
+        | "permission-page-overlap"
+        | "permission-page-wrong-offset"
+        | "permission-page-fabricated-notation" => run_permission_paging_fixture(spec.id),
         "duplicate-canonical-id" => {
             let mut inventory = canonical_inventory().to_vec();
             inventory[1].id = "home";
@@ -501,6 +537,18 @@ fn run_fixture(spec: &FixtureSpec, root: &Path) -> Result<(), String> {
         "stale-vision-hash" => validate_vision_hash("vision-hash-old", "vision-hash-current"),
         other => Err(format!("unknown negative fixture: {other}")),
     }
+}
+
+fn run_permission_paging_fixture(id: &str) -> Result<(), String> {
+    let mut pages = crate::scenario::canonical_permission_pages();
+    match id {
+        "permission-page-gap" => pages[1].byte_offset = 45,
+        "permission-page-overlap" => pages[1].byte_offset = 43,
+        "permission-page-wrong-offset" => pages[2].previous_offset = Some(0),
+        "permission-page-fabricated-notation" => pages[1].page_notation = "fabricated".to_owned(),
+        other => return Err(format!("unknown permission paging fixture: {other}")),
+    }
+    crate::scenario::validate_permission_traversal(&pages)
 }
 
 fn audit_rejection(mutate: impl FnOnce(&mut AuditDocument)) -> Result<(), String> {

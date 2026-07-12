@@ -104,6 +104,8 @@ pub struct PermissionEvidence {
     pub persistent_scope: Option<PersistentPermissionScope>,
 }
 
+const PERMISSION_PAGE_SIZE: usize = 44;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiffHunkEvidence {
     pub hunk_id: String,
@@ -209,6 +211,115 @@ impl PermissionEvidence {
     pub fn reconstructed_page_bytes(&self) -> Vec<u8> {
         decode_escaped_bytes(&self.page_notation)
     }
+}
+
+/// Validates an ordered page walk against the command bytes it discloses.
+///
+/// The caller supplies pages in traversal order. This deliberately checks
+/// both the bytes and the adjacent offsets so a plausible-looking page label
+/// cannot hide a gap, overlap, or fabricated notation.
+pub fn validate_permission_traversal(pages: &[PermissionEvidence]) -> Result<(), String> {
+    let Some(first) = pages.first() else {
+        return Err("permission page traversal must contain at least one page".to_owned());
+    };
+    let execution_bytes = &first.execution_bytes;
+    let mut reconstructed = Vec::with_capacity(execution_bytes.len());
+    for (index, page) in pages.iter().enumerate() {
+        if page.execution_bytes != *execution_bytes {
+            return Err("permission page traversal changes execution bytes".to_owned());
+        }
+        if index == 0 {
+            if page.byte_offset != 0 || page.previous_offset.is_some() {
+                return Err("permission page traversal must start at byte offset 0".to_owned());
+            }
+        } else {
+            let previous = &pages[index - 1];
+            if previous.page_end != page.byte_offset {
+                return Err(
+                    "permission page traversal contains a gap or overlap between adjacent windows"
+                        .to_owned(),
+                );
+            }
+            if page.previous_offset != Some(previous.byte_offset)
+                || previous.next_offset != Some(page.byte_offset)
+            {
+                return Err(
+                    "permission page traversal has incorrect adjacent previous or next offsets"
+                        .to_owned(),
+                );
+            }
+        }
+        validate_permission_page(page)?;
+        reconstructed.extend(page.reconstructed_page_bytes());
+    }
+    let final_page = pages.last().expect("first page guarantees a final page");
+    if final_page.page_end != execution_bytes.len() || final_page.next_offset.is_some() {
+        return Err(
+            "permission page traversal does not end at the execution byte boundary".to_owned(),
+        );
+    }
+    if reconstructed != *execution_bytes {
+        return Err(
+            "permission page traversal does not fully reconstruct execution_bytes".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_permission_page(permission: &PermissionEvidence) -> Result<(), String> {
+    let page_length = permission.reconstructed_page_bytes().len();
+    let expected_previous = (permission.byte_offset > 0)
+        .then_some(permission.byte_offset.saturating_sub(PERMISSION_PAGE_SIZE));
+    if permission.command_sha256 != sha256_hex(&permission.execution_bytes)
+        || permission.reconstructed_bytes() != permission.execution_bytes
+        || permission.page_sha256 != sha256_hex(&permission.reconstructed_page_bytes())
+    {
+        return Err("permission evidence does not reconstruct exact execution bytes".to_owned());
+    }
+    if permission.byte_offset > permission.visible_total_length
+        || permission.visible_total_length != permission.execution_bytes.len()
+        || permission.page_end < permission.byte_offset
+        || permission.page_end > permission.visible_total_length
+        || permission.page_end
+            != permission.byte_offset + permission.reconstructed_page_bytes().len()
+        || page_length == 0
+        || page_length > PERMISSION_PAGE_SIZE
+        || (permission.next_offset.is_some() && page_length != PERMISSION_PAGE_SIZE)
+        || permission.at_boundary
+            != (permission.byte_offset == 0
+                || permission.page_end == permission.visible_total_length)
+        || (permission.page_end == permission.visible_total_length
+            && permission.next_offset.is_some())
+        || permission.next_offset.is_some_and(|offset| offset != permission.page_end)
+        || permission.previous_offset != expected_previous
+    {
+        return Err("permission page boundary evidence is inconsistent".to_owned());
+    }
+    if permission.reconstructed_page_bytes()
+        != permission.execution_bytes[permission.byte_offset..permission.page_end]
+    {
+        return Err("permission evidence does not reconstruct exact execution bytes".to_owned());
+    }
+    if permission.execution_working_directory != "~/project"
+        && permission.execution_working_directory != "~/other-project"
+    {
+        return Err("permission evidence must name the canonical working directory".to_owned());
+    }
+    if permission.invocation_count > 1 || permission.persisted_rule_count > 1 {
+        return Err("permission evidence exceeds single invocation or rule bounds".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) fn canonical_permission_pages() -> Vec<PermissionEvidence> {
+    [
+        "permission-shell-long",
+        "permission-shell-long-page-44",
+        "permission-shell-long-final",
+    ]
+    .into_iter()
+    .map(|case_id| permission_evidence(case_id).expect("canonical permission page evidence"))
+    .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -387,13 +498,12 @@ impl CaseReplay {
             return Err("case audit must describe the resulting rendered state".to_owned());
         }
         if let Some(permission) = &self.permission {
-            if permission.command_sha256 != sha256_hex(&permission.execution_bytes)
-                || permission.reconstructed_bytes() != permission.execution_bytes
-                || permission.page_sha256 != sha256_hex(&permission.reconstructed_page_bytes())
+            validate_permission_page(permission)?;
+            if self.case_id.starts_with("permission-shell-long")
+                && self.case_id != "permission-shell-long-return"
+                && self.case_id != "permission-shell-long-final-to-return"
             {
-                return Err(
-                    "permission evidence does not reconstruct exact execution bytes".to_owned(),
-                );
+                validate_permission_traversal(&canonical_permission_pages())?;
             }
             if permission.execution_working_directory != "~/project"
                 && permission.execution_working_directory != "~/other-project"
@@ -406,18 +516,6 @@ impl CaseReplay {
                 return Err(
                     "permission evidence exceeds single invocation or rule bounds".to_owned(),
                 );
-            }
-            if permission.byte_offset > permission.visible_total_length
-                || permission.visible_total_length != permission.execution_bytes.len()
-                || permission.page_end < permission.byte_offset
-                || permission.page_end > permission.visible_total_length
-                || permission.page_end
-                    != permission.byte_offset + permission.reconstructed_page_bytes().len()
-                || permission.at_boundary
-                    != (permission.byte_offset == 0
-                        || permission.page_end == permission.visible_total_length)
-            {
-                return Err("permission page boundary evidence is inconsistent".to_owned());
             }
             if permission.verdict == "denied" && permission.invocation_count != 0 {
                 return Err("denied permission evidence contains an invocation".to_owned());
@@ -523,13 +621,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "permission-shell-long" | "permission-shell-long-page-0" => {
             permission_shell_long_page(0, 44)
         }
-        "permission-shell-long-page-44" | "permission-shell-long-middle" => {
+        "permission-shell-long-page-44" => {
             permission_shell_long_page(44, 88)
+        }
+        "permission-shell-long-middle" | "permission-shell-long-middle-to-final" => {
+            permission_shell_long_final()
         }
         "permission-shell-long-page-88" | "permission-shell-long-final" => {
-            permission_shell_long_page(44, 88)
+            permission_shell_long_final()
         }
-        "permission-shell-long-return" => permission_shell_long_return(),
+        "permission-shell-long-return" | "permission-shell-long-final-to-return" => {
+            permission_shell_long_return()
+        }
         "permission-persistent-scope" => permission_persistent_scope(),
         "permission-persistent-scope-outside" => permission_persistent_scope_outside(),
         "permission-shell-unsafe-byte" => permission_shell_unsafe_byte(),
@@ -614,6 +717,16 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     }
     let audit_fixture = if case_id == "flow2-submit-bridge" {
         "flow2.input-and-approval.stable".to_owned()
+    } else if matches!(
+        case_id,
+        "permission-shell-long-middle" | "permission-shell-long-middle-to-final"
+    ) {
+        "case.permission-shell-long-middle-to-final.tick.1".to_owned()
+    } else if matches!(
+        case_id,
+        "permission-shell-long-final" | "permission-shell-long-page-88"
+    ) {
+        "case.permission-shell-long-final.tick.1".to_owned()
     } else if case_id == "staging-finish" {
         "case.staging-finish.tick.1.flow2.input-and-approval.stable".to_owned()
     } else if case_id == "model-to-work-style-bridge" {
@@ -2399,7 +2512,7 @@ fn permission_shell_long_page(
     (before, after, action, transition, attempt, effect)
 }
 
-fn permission_shell_long_return() -> (
+fn permission_shell_long_final() -> (
     ScenarioState,
     ScenarioState,
     ActionEvidence,
@@ -2408,6 +2521,52 @@ fn permission_shell_long_return() -> (
     SideEffectEvidence,
 ) {
     let (mut before, _, _, _, _, _) = permission_shell_long_page(44, 88);
+    before.selection = "long-command-page-44".to_owned();
+    before.focus = "command-detail".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "long-command-page-88".to_owned();
+    after.focus = "command-detail".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.command-next-final".to_owned(),
+        label: "Open final page".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the final-page transition opens bytes 88 through the exact command boundary and disables Next page"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.long-page.final.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 1,
+        outcome: "final-page-inspected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.long-page.final",
+        "permission-disclosure",
+        "no-execution",
+        "final command page navigation did not execute the command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_shell_long_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (mut before, _, _, _, _, _) = permission_shell_long_final();
     before.selection = "long-command-page-88".to_owned();
     before.state_hash = state_hash(&before);
     let mut after = before.clone();
@@ -4172,7 +4331,9 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
     let byte_offset = if case_id.contains("page-88")
         || case_id.contains("long-final")
         || case_id == "permission-shell-long-return"
-        || case_id.contains("middle")
+        || case_id.contains("middle-to-final")
+        || case_id == "permission-shell-long-middle"
+        || case_id.contains("final-to-return")
     {
         88
     } else if case_id.contains("page-44") {
@@ -4180,7 +4341,7 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
     } else {
         0
     };
-    let page_end = (byte_offset + 44).min(visible_total_length);
+    let page_end = (byte_offset + PERMISSION_PAGE_SIZE).min(visible_total_length);
     let page_notation = command_notation(
         &execution_bytes[byte_offset..page_end],
         case_id.contains("unsafe-byte"),
@@ -4194,7 +4355,11 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
         byte_offset,
         page_end,
         visible_total_length,
-        previous_offset: if byte_offset > 0 { Some(0) } else { None },
+        previous_offset: if byte_offset > 0 {
+            Some(byte_offset.saturating_sub(PERMISSION_PAGE_SIZE))
+        } else {
+            None
+        },
         next_offset: if case_id.contains("long") && page_end < visible_total_length {
             Some(page_end)
         } else {
@@ -4234,7 +4399,7 @@ fn command_notation(bytes: &[u8], escape_unsafe: bool) -> String {
     bytes
         .iter()
         .map(|byte| {
-            if escape_unsafe && (*byte < 0x20 || *byte == 0x7f) {
+            if *byte >= 0x80 || (escape_unsafe && (*byte < 0x20 || *byte == 0x7f)) {
                 format!("\\x{byte:02x}")
             } else {
                 char::from(*byte).to_string()
