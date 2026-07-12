@@ -6,6 +6,7 @@
 //! visual continuation, so a wrapped display line is never mistaken for a
 //! newline the person entered.
 
+use crate::scenario::{diff_evidence_for_fixture, diff_stage_state_for_fixture};
 use crate::{
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
@@ -316,6 +317,34 @@ fn render_diff_staging(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let mut stage = diff_stage_state_for_fixture(fixture_id);
+    if let Some(diff) = diff_evidence_for_fixture(fixture_id) {
+        stage.hunk_states = diff
+            .hunks
+            .iter()
+            .map(|hunk| hunk.state.clone())
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "staging evidence must contain exactly two hunks".to_owned())?;
+        stage.focused_hunk = diff.focused_hunk;
+    }
+    let included_count = stage
+        .hunk_states
+        .iter()
+        .filter(|state| state.as_str() == "Included")
+        .count();
+    let guard_state = &stage.hunk_states[0];
+    let test_state = &stage.hunk_states[1];
+    let guard_marker = match guard_state.as_str() {
+        "Included" => "✓ Included",
+        "Excluded" => "✗ Excluded",
+        _ => "○ Pending",
+    };
+    let test_marker = match test_state.as_str() {
+        "Included" => "✓ Included",
+        "Excluded" => "✗ Excluded",
+        _ => "○ Pending",
+    };
     canvas.write(
         3,
         4,
@@ -337,14 +366,18 @@ fn render_diff_staging(
     canvas.write(
         7,
         4,
-        "Included 1 of 2 hunks · Git index unchanged",
+        &format!("Included {included_count} of 2 hunks · Git index unchanged"),
         TextStyle::accent(),
     )?;
     canvas.write(
         9,
         4,
-        "› ✓ Included · hunk.retry-guard · old 42-43 · new 42-44",
-        TextStyle::bright(),
+        &format!("› {guard_marker} · hunk.retry-guard · old 42-43 · new 42-44"),
+        if guard_state == "Excluded" {
+            TextStyle::text()
+        } else {
+            TextStyle::bright()
+        },
     )?;
     canvas.write(10, 6, "42  42  -    return retry_after", TextStyle::text())?;
     canvas.write(
@@ -374,7 +407,7 @@ fn render_diff_staging(
     canvas.write(
         16,
         4,
-        "○ Pending · hunk.retry-test · old 88-89 · new 88-89",
+        &format!("{test_marker} · hunk.retry-test · old 88-89 · new 88-89"),
         TextStyle::text(),
     )?;
     canvas.write(17, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
@@ -382,7 +415,11 @@ fn render_diff_staging(
     canvas.write(
         20,
         4,
-        "Each action changes only the focused hunk. No file is written until Finish.",
+        if stage.apply_failed {
+            "Finish stopped before writing: the patch is stale and no partial change was made."
+        } else {
+            "Each action changes only the focused hunk. No file is written until Finish."
+        },
         TextStyle::muted(),
     )?;
     canvas.write(
@@ -420,7 +457,7 @@ fn render_diff_staging(
             screen_id,
             fixture_id,
             "included-count",
-            "included-1-of-2",
+            &format!("included-{included_count}-of-2"),
             reference(7, 4, 43),
             "focused",
             None,
@@ -431,14 +468,26 @@ fn render_diff_staging(
             "hunk",
             "hunk.retry-guard",
             reference(9, 4, 60),
-            "focused",
-            Some(action("action.staging.include-hunk", "Include", false)),
+            if stage.focused_hunk == "hunk.retry-guard" {
+                "focused"
+            } else {
+                "summary"
+            },
+            Some(action(
+                "action.staging.include-hunk",
+                if guard_state == "Included" {
+                    "Include"
+                } else {
+                    "Exclude"
+                },
+                false,
+            )),
         ),
         semantic(
             screen_id,
             fixture_id,
             "focused-hunk",
-            "hunk.retry-guard",
+            &stage.focused_hunk,
             reference(9, 4, 60),
             "focused",
             None,
@@ -448,9 +497,21 @@ fn render_diff_staging(
             fixture_id,
             "hunk",
             "hunk.retry-test",
-            reference(13, 4, 60),
-            "summary",
-            Some(action("action.staging.exclude-hunk", "Exclude", false)),
+            reference(16, 4, 60),
+            if stage.focused_hunk == "hunk.retry-test" {
+                "focused"
+            } else {
+                "summary"
+            },
+            Some(action(
+                "action.staging.exclude-hunk",
+                if test_state == "Included" {
+                    "Include"
+                } else {
+                    "Exclude"
+                },
+                false,
+            )),
         ),
         semantic(
             screen_id,
@@ -498,6 +559,23 @@ fn render_diff_staging(
             None,
         ),
     ];
+    let finish_transition = if stage.apply_failed {
+        transition(
+            "action.staging.finish",
+            "diff-viewer-staging",
+            "diff-viewer-staging",
+            "direct",
+            "Finish stopped before writing because the patch is stale; the review remains open",
+        )
+    } else {
+        transition(
+            "action.staging.finish",
+            "diff-viewer-staging",
+            "chat-turn",
+            "direct",
+            "Finish applies only included hunks atomically and resumes the paused activity",
+        )
+    };
     Ok((
         pairs
             .iter()
@@ -533,13 +611,7 @@ fn render_diff_staging(
                 "direct",
                 "Edit opens only from staging detail and does not approve the patch",
             ),
-            transition(
-                "action.staging.finish",
-                "diff-viewer-staging",
-                "chat-turn",
-                "direct",
-                "Finish applies only included hunks atomically and resumes the paused activity",
-            ),
+            finish_transition,
             transition(
                 "action.staging.cancel",
                 "diff-viewer-staging",

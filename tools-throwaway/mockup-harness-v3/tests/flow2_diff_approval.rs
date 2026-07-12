@@ -181,3 +181,65 @@ fn cancel_and_back_write_nothing_and_restore_the_immediate_origin() {
         );
     }
 }
+
+#[test]
+fn staging_replays_render_their_derived_focus_and_hunk_state() {
+    let include = replay_case("staging-include-hunk", 1).expect("include must replay");
+    let exclude = replay_case("staging-exclude-hunk", 1).expect("exclude must replay");
+    let include_all = replay_case("staging-include-all", 1).expect("include all must replay");
+
+    assert_eq!(include.after.focus, "staging-detail");
+    assert_eq!(include.after.selection, "include");
+    assert_eq!(include.diff.as_ref().unwrap().hunks[0].state, "Included");
+    assert_eq!(include.diff.as_ref().unwrap().hunks[1].state, "Included");
+    assert_eq!(exclude.diff.as_ref().unwrap().hunks[0].state, "Excluded");
+    assert_eq!(exclude.diff.as_ref().unwrap().hunks[1].state, "Pending");
+    assert_eq!(
+        include_all.diff.as_ref().unwrap().included_count,
+        include_all
+            .diff
+            .as_ref()
+            .unwrap()
+            .hunks
+            .iter()
+            .filter(|hunk| hunk.state == "Included")
+            .count()
+    );
+
+    let rendered = audit_screen("diff-viewer-staging", "case.staging-exclude-hunk.tick.1")
+        .expect("excluded staging result must render");
+    let text = rendered.render_txt();
+    assert!(text.contains("Included 0 of 2 hunks"));
+    assert!(text.contains("✗ Excluded · hunk.retry-guard"));
+    assert!(text.contains("○ Pending · hunk.retry-test"));
+    let included = audit_screen("diff-viewer-staging", "case.staging-include-hunk.tick.1")
+        .expect("included staging result must render");
+    assert!(included.render_txt().contains("Included 2 of 2 hunks"));
+    let all = audit_screen("diff-viewer-staging", "case.staging-include-all.tick.1")
+        .expect("include-all staging result must render");
+    assert!(all.render_txt().contains("Included 2 of 2 hunks"));
+}
+
+#[test]
+fn apply_evidence_uses_exact_file_hashes_and_atomic_failure_preserves_bytes() {
+    let finish = replay_case("staging-finish", 1).expect("finish must replay");
+    let diff = finish.diff.as_ref().unwrap();
+    assert_eq!(diff.working_tree_before.len(), 64);
+    assert_eq!(diff.working_tree_after.len(), 64);
+    assert_ne!(diff.working_tree_before, diff.working_tree_after);
+    assert_eq!(diff.git_index_before, diff.git_index_after);
+    assert_eq!(diff.excluded_hunks, vec!["hunk.retry-test"]);
+    assert!(finish.audit.render_txt().contains("Before SHA-256:"));
+    assert!(finish.audit.render_txt().contains("After SHA-256:"));
+
+    let failed = replay_case("staging-apply-partial-failure", 1).expect("failed apply must replay");
+    let failed_diff = failed.diff.as_ref().unwrap();
+    assert_eq!(failed.after.screen_id, "diff-viewer-staging");
+    assert_eq!(failed_diff.write_count, 0);
+    assert_eq!(
+        failed_diff.working_tree_before,
+        failed_diff.working_tree_after
+    );
+    assert_eq!(failed_diff.git_index_before, failed_diff.git_index_after);
+    assert_eq!(failed.side_effects[0].status, "apply-failed-no-write");
+}

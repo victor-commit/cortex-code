@@ -1792,3 +1792,18 @@ fn transition(
         path: path.to_owned(),
     }
 }
+use crate::scenario::diff_evidence_for_fixture;
+    let diff = diff_evidence_for_fixture(fixture_id)
+        .ok_or_else(|| "applied diff result is missing exact file evidence".to_owned())?;
+    canvas.write(
+        17,
+        4,
+        &format!("Before SHA-256: {}", diff.working_tree_before),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        &format!("After SHA-256: {}", diff.working_tree_after),
+        TextStyle::muted(),
+    )?;
