@@ -141,6 +141,84 @@ pub struct DiffStageState {
     pub apply_failed: bool,
 }
 
+/// The deterministic file bytes used by every public diff-application replay.
+///
+/// Keeping this fixture as bytes, rather than a descriptive tree label, makes
+/// the before/after evidence independently reproducible by validators.
+pub fn diff_fixture_file_bytes() -> Vec<u8> {
+    let mut lines = (1..=90)
+        .map(|line| format!("// retry policy fixture line {line}"))
+        .collect::<Vec<_>>();
+    lines[41] = "    return retry_after".to_owned();
+    lines[42] = "    backoff = backoff + 1".to_owned();
+    lines[87] = "assert_eq!(wait, 4)".to_owned();
+    lines[88] = "assert_eq!(attempts, 1)".to_owned();
+    format!("{}\n", lines.join("\n")).into_bytes()
+}
+
+/// The index bytes remain unchanged for all diff scenarios.
+pub fn diff_index_fixture_bytes() -> &'static [u8] {
+    b"index entry: src/net/retry_policy.rs\nmode: unchanged\n"
+}
+
+/// Apply the disclosed hunks to exact fixture bytes in a deterministic order.
+pub fn apply_diff_hunks(bytes: &[u8], hunk_ids: &[String]) -> Result<Vec<u8>, String> {
+    let mut lines = String::from_utf8(bytes.to_vec())
+        .map_err(|_| "diff fixture bytes must be valid UTF-8".to_owned())?
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for hunk_id in hunk_ids {
+        match hunk_id.as_str() {
+            "hunk.retry-guard" => {
+                let start = lines
+                    .windows(2)
+                    .position(|window| {
+                        window == ["    return retry_after", "    backoff = backoff + 1"]
+                    })
+                    .ok_or_else(|| "retry guard hunk is stale or already applied".to_owned())?;
+                lines.splice(
+                    start..start + 2,
+                    [
+                        "    return retry_after + jitter".to_owned(),
+                        "    backoff = backoff + jitter".to_owned(),
+                        "    log_retry_window(jitter)".to_owned(),
+                    ],
+                );
+            }
+            "hunk.retry-test" => {
+                let start = lines
+                    .windows(2)
+                    .position(|window| {
+                        window == ["assert_eq!(wait, 4)", "assert_eq!(attempts, 1)"]
+                    })
+                    .ok_or_else(|| "retry test hunk is stale or already applied".to_owned())?;
+                lines.splice(
+                    start..start + 2,
+                    [
+                        "assert_eq!(wait, 5)".to_owned(),
+                        "assert_eq!(attempts, 1)".to_owned(),
+                    ],
+                );
+            }
+            _ => return Err(format!("unknown disclosed hunk {hunk_id}")),
+        }
+    }
+    Ok(format!("{}\n", lines.join("\n")).into_bytes())
+}
+
+fn diff_hunk_bytes(hunk_id: &str) -> Option<&'static [u8]> {
+    match hunk_id {
+        "hunk.retry-guard" => Some(
+            b"hunk.retry-guard\n-    return retry_after\n-    backoff = backoff + 1\n+    return retry_after + jitter\n+    backoff = backoff + jitter\n+    log_retry_window(jitter)",
+        ),
+        "hunk.retry-test" => Some(
+            b"hunk.retry-test\n-assert_eq!(wait, 4)\n-assert_eq!(attempts, 1)\n+assert_eq!(wait, 5)\n+assert_eq!(attempts, 1)",
+        ),
+        _ => None,
+    }
+}
+
 /// Returns the staging state represented by a public diff scenario.
 ///
 /// Rendering consumes this projection so a replay and its TXT/PNG evidence
@@ -523,6 +601,22 @@ impl CaseReplay {
         }
         if let Some(diff) = &self.diff {
             validate_diff(diff)?;
+            if matches!(
+                self.case_id.as_str(),
+                "staging-apply-partial-failure"
+                    | "staging-apply-failure"
+                    | "staging-finish-failed"
+                    | "staging-partial-apply-failure"
+                    | "staging-partial-failure"
+                    | "apply-partial-failure"
+            ) && (self.after.screen_id != "diff-viewer-staging"
+                || self.transitions[0].to_screen_id != "diff-viewer-staging"
+                || self.side_effects[0].status != "apply-failed-no-write")
+            {
+                return Err(
+                    "stale diff apply must remain open and report one no-write failure".to_owned(),
+                );
+            }
         }
         Ok(())
     }
@@ -656,7 +750,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "staging-apply-partial-failure"
         | "staging-apply-failure"
         | "staging-finish-failed"
-        | "staging-partial-apply-failure" => staging_apply_partial_failure(),
+        | "staging-partial-apply-failure"
+        | "staging-partial-failure"
+        | "apply-partial-failure" => staging_apply_partial_failure(),
         "staging-cancel" | "staging-back" => staging_cancel(),
         "onboarding-complete" => onboarding_complete(),
         "onboarding-skip" => onboarding_skip(),
@@ -761,6 +857,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "staging-apply-failure"
             | "staging-finish-failed"
             | "staging-partial-apply-failure"
+            | "staging-partial-failure"
+            | "apply-partial-failure"
     ) {
         "case.staging-apply-partial-failure.tick.1".to_owned()
     } else {
@@ -3956,13 +4054,16 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
     if diff.patch_revision != "patch-retry-18"
         || diff.file_path != "src/net/retry_policy.rs"
         || diff.hunks.len() != 2
+        || diff.hunks[0].hunk_id != "hunk.retry-guard"
+        || diff.hunks[1].hunk_id != "hunk.retry-test"
         || diff.focused_hunk.trim().is_empty()
         || diff.git_index_before != diff.git_index_after
         || diff.hunks.iter().any(|hunk| {
             hunk.file_path != diff.file_path
                 || hunk.hunk_id.trim().is_empty()
                 || !matches!(hunk.state.as_str(), "Included" | "Excluded" | "Pending")
-                || hunk.content_hash.len() != 64
+                || diff_hunk_bytes(&hunk.hunk_id)
+                    .is_none_or(|bytes| sha256_hex(bytes) != hunk.content_hash)
         })
         || diff.included_count
             != diff
@@ -3975,13 +4076,15 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
             "diff evidence has incomplete identity, state, or index preservation".to_owned(),
         );
     }
-    if diff.working_tree_before.len() != 64
-        || diff.working_tree_after.len() != 64
-        || diff.git_index_before.len() != 64
-        || diff.git_index_after.len() != 64
+    let before_bytes = diff_fixture_file_bytes();
+    let index_bytes = diff_index_fixture_bytes();
+    if diff.working_tree_before != sha256_hex(&before_bytes)
+        || diff.git_index_before != sha256_hex(index_bytes)
+        || diff.git_index_after != sha256_hex(index_bytes)
     {
         return Err(
-            "diff evidence must use exact SHA-256 working-tree and Git-index hashes".to_owned(),
+            "diff evidence must hash the exact working-tree and Git-index fixture bytes"
+                .to_owned(),
         );
     }
     if diff.applied_hunks.iter().any(|hunk| {
@@ -4000,8 +4103,46 @@ fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
     }) {
         return Err("diff evidence loses an excluded hunk".to_owned());
     }
+    let expected_excluded = diff
+        .hunks
+        .iter()
+        .filter(|hunk| hunk.state != "Included")
+        .map(|hunk| hunk.hunk_id.clone())
+        .collect::<Vec<_>>();
+    if diff.excluded_hunks != expected_excluded {
+        return Err("diff evidence does not reconcile pending/excluded hunks".to_owned());
+    }
     if diff.write_count > 1 {
         return Err("diff evidence exceeds one atomic write".to_owned());
+    }
+    let applied_bytes = apply_diff_hunks(&before_bytes, &diff.applied_hunks)
+        .map_err(|error| format!("diff evidence cannot apply disclosed hunks: {error}"))?;
+    let expected_after = if diff.write_count == 1 {
+        sha256_hex(&applied_bytes)
+    } else {
+        sha256_hex(&before_bytes)
+    };
+    if diff.working_tree_after != expected_after {
+        return Err(
+            "diff evidence after hash does not match the disclosed applied hunks".to_owned(),
+        );
+    }
+    if diff.write_count == 0 && !diff.applied_hunks.is_empty() {
+        return Err("diff evidence reports applied hunks without a write".to_owned());
+    }
+    if diff.write_count == 1 && diff.applied_hunks.is_empty() {
+        return Err("diff evidence reports a write without applied hunks".to_owned());
+    }
+    if diff.write_count == 1 {
+        let expected_applied = diff
+            .hunks
+            .iter()
+            .filter(|hunk| hunk.state == "Included")
+            .map(|hunk| hunk.hunk_id.clone())
+            .collect::<Vec<_>>();
+        if diff.applied_hunks != expected_applied {
+            return Err("diff evidence does not reconcile applied hunks".to_owned());
+        }
     }
     Ok(())
 }
@@ -4184,9 +4325,7 @@ fn diff_hunks(states: [String; 2]) -> Vec<DiffHunkEvidence> {
             new_start: 42,
             new_lines: 3,
             state: states[0].clone(),
-            content_hash: sha256_hex(
-                b"hunk.retry-guard\n-    return retry_after\n+    return retry_after + jitter",
-            ),
+            content_hash: sha256_hex(diff_hunk_bytes("hunk.retry-guard").unwrap()),
         },
         DiffHunkEvidence {
             hunk_id: "hunk.retry-test".to_owned(),
@@ -4196,9 +4335,7 @@ fn diff_hunks(states: [String; 2]) -> Vec<DiffHunkEvidence> {
             new_start: 88,
             new_lines: 2,
             state: states[1].clone(),
-            content_hash: sha256_hex(
-                b"hunk.retry-test\n-assert_eq!(wait, 4)\n+assert_eq!(wait, 5)",
-            ),
+            content_hash: sha256_hex(diff_hunk_bytes("hunk.retry-test").unwrap()),
         },
     ]
 }
@@ -4217,6 +4354,8 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             | "staging-apply-failure"
             | "staging-finish-failed"
             | "staging-partial-apply-failure"
+            | "staging-partial-failure"
+            | "apply-partial-failure"
             | "staging-cancel"
             | "staging-back"
     ) {
@@ -4250,17 +4389,16 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
         })
         .collect::<Vec<_>>();
     let write_count = u32::from(matches!(case_id, "diff-apply-all" | "staging-finish"));
-    let working_tree_before = sha256_hex(b"retry_policy.rs before patch\n");
+    let before_bytes = diff_fixture_file_bytes();
+    let working_tree_before = sha256_hex(&before_bytes);
+    let applied_bytes = apply_diff_hunks(&before_bytes, &applied_hunks)
+        .expect("public diff fixtures must apply their disclosed hunks");
     let working_tree_after = if write_count == 1 && !apply_failed {
-        if case_id == "diff-apply-all" {
-            sha256_hex(b"retry_policy.rs after both hunks\n")
-        } else {
-            sha256_hex(b"retry_policy.rs after retry guard\n")
-        }
+        sha256_hex(&applied_bytes)
     } else {
         working_tree_before.clone()
     };
-    let git_index = sha256_hex(b"git index unchanged\n");
+    let git_index = sha256_hex(diff_index_fixture_bytes());
     Some(DiffEvidence {
         patch_revision: "patch-retry-18".to_owned(),
         file_path: "src/net/retry_policy.rs".to_owned(),

@@ -367,6 +367,20 @@ fn render_diff_staging(
         "Excluded" => "✗ Excluded",
         _ => "○ Pending",
     };
+    let focus_marker = |hunk_id: &str| {
+        if stage.focused_hunk == hunk_id {
+            "› "
+        } else {
+            ""
+        }
+    };
+    let focus_style = |hunk_id: &str, state: &str| {
+        if stage.focused_hunk == hunk_id && state != "Excluded" {
+            TextStyle::bright()
+        } else {
+            TextStyle::text()
+        }
+    };
     canvas.write(
         5,
         4,
@@ -394,12 +408,12 @@ fn render_diff_staging(
     canvas.write(
         10,
         4,
-        &format!("› {guard_marker} · hunk.retry-guard · old 42-43 · new 42-44"),
-        if guard_state == "Excluded" {
-            TextStyle::text()
-        } else {
-            TextStyle::bright()
-        },
+        &format!(
+            "{}{} · hunk.retry-guard · old 42-43 · new 42-44",
+            focus_marker("hunk.retry-guard"),
+            guard_marker
+        ),
+        focus_style("hunk.retry-guard", guard_state),
     )?;
     canvas.write(11, 6, "42  42  -    return retry_after", TextStyle::text())?;
     canvas.write(
@@ -429,8 +443,12 @@ fn render_diff_staging(
     canvas.write(
         17,
         4,
-        &format!("{test_marker} · hunk.retry-test · old 88-89 · new 88-89"),
-        TextStyle::text(),
+        &format!(
+            "{}{} · hunk.retry-test · old 88-89 · new 88-89",
+            focus_marker("hunk.retry-test"),
+            test_marker
+        ),
+        focus_style("hunk.retry-test", test_state),
     )?;
     canvas.write(18, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
     canvas.write(19, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
@@ -440,7 +458,7 @@ fn render_diff_staging(
         if stage.apply_failed {
             "Finish stopped before writing: the patch is stale and no partial change was made."
         } else {
-            "Each action changes only the focused hunk. No file is written until Finish."
+            "Include or Exclude changes the focused hunk; Include all selects both. No file is written until Finish."
         },
         TextStyle::muted(),
     )?;

@@ -19,7 +19,7 @@
       88  88  -assert_eq!(wait, 4)                                                                                      
           89  +assert_eq!(wait, 5)                                                                                      
                                                                                                                         
-    Each action changes only the focused hunk. No file is written until Finish.                                         
+    Include or Exclude changes the focused hunk; Include all selects both. No file is written until Finish.             
                                                                                                                         
     [i] Include  [x] Exclude  [a] Include all  [e] Edit                                                                 
     [enter] Finish  [esc] Cancel · Return to pending edit                                                               

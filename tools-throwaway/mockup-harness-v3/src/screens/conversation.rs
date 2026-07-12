@@ -488,15 +488,30 @@ fn render_diff_applied_turn(
     canvas.write(
         9,
         4,
-        "Applied 1 hunk to src/net/retry_policy.rs.",
+        &format!(
+            "Applied {} {} to src/net/retry_policy.rs.",
+            diff.applied_hunks.len(),
+            if diff.applied_hunks.len() == 1 {
+                "hunk"
+            } else {
+                "hunks"
+            }
+        ),
         TextStyle::text(),
     )?;
-    canvas.write(
-        11,
-        4,
-        "hunk.retry-test remains pending and was not written.",
-        TextStyle::text(),
-    )?;
+    if diff.excluded_hunks.is_empty() {
+        canvas.write(11, 4, "No hunks remain pending.", TextStyle::text())?;
+    } else {
+        canvas.write(
+            11,
+            4,
+            &format!(
+                "{} remains pending and was not written.",
+                diff.excluded_hunks.join(", ")
+            ),
+            TextStyle::text(),
+        )?;
+    }
     canvas.write(
         13,
         4,
@@ -530,7 +545,11 @@ fn render_diff_applied_turn(
     canvas.write(
         22,
         4,
-        "Later draft · Add a short note about the remaining test hunk.",
+        if diff.excluded_hunks.is_empty() {
+            "Later draft · Add a short note about the completed retry changes."
+        } else {
+            "Later draft · Add a short note about the remaining test hunk."
+        },
         TextStyle::muted(),
     )?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
@@ -547,8 +566,16 @@ fn render_diff_applied_turn(
         semantic(
             screen_id,
             fixture_id,
-            "pending-hunk",
-            "hunk.retry-test",
+            if diff.excluded_hunks.is_empty() {
+                "applied-hunks"
+            } else {
+                "pending-hunk"
+            },
+            &if diff.excluded_hunks.is_empty() {
+                "no-pending-hunks".to_owned()
+            } else {
+                diff.excluded_hunks.join(",")
+            },
             reference(11, 4, 53),
             "focused",
             None,
