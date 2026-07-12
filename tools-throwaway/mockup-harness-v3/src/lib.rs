@@ -13,6 +13,7 @@ pub mod flows;
 pub mod gate_integration;
 pub mod gate_programmatic_publication;
 pub mod gate_remaining_integration;
+pub mod gate_vision_review;
 pub mod registry;
 
 pub use flows::{
