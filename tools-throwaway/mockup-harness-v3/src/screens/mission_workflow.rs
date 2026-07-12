@@ -652,7 +652,7 @@ fn render_workflow_launch_blocked(
             Some(action(
                 "action.mission.resolve-missing-input",
                 "Add release checklist",
-                false,
+                true,
             )),
         ),
         semantic(
@@ -903,13 +903,38 @@ fn render_workflow_monitor(
                 )),
             ),
         ];
-        let transitions = vec![transition(
+        let mut pairs = pairs.to_vec();
+        let mut transitions = vec![transition(
             "action.mission.view-progress",
             screen_id,
             "workflow-monitor",
             "direct",
             "progress disclosure returns to the same compact monitor",
         )];
+        if fixture_id.contains("gate.mission.workflow-monitor")
+            && !fixture_id.contains("failure")
+        {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "bridge-note",
+                "action.storyboard.open-mission-failure",
+                reference(19, 4, 48),
+                "summary",
+                Some(action(
+                    "action.storyboard.open-mission-failure",
+                    "Open the validation failure",
+                    false,
+                )),
+            ));
+            transitions.push(transition(
+                "action.storyboard.open-mission-failure",
+                screen_id,
+                "workflow-monitor-failure",
+                "illustrative",
+                "a summarized visible validation stage surfaces only the actionable failure for review",
+            ));
+        }
         return Ok((
             pairs
                 .iter()
@@ -1177,7 +1202,8 @@ fn render_workflow_monitor_failure(
             )),
         ),
     ];
-    let transitions = vec![
+    let mut pairs = pairs.to_vec();
+    let mut transitions = vec![
         transition(
             "action.mission.create-fix-task",
             screen_id,
@@ -1193,6 +1219,28 @@ fn render_workflow_monitor_failure(
             "evidence disclosure returns to the same failure state",
         ),
     ];
+    if fixture_id.contains("gate.mission.workflow-monitor-failure") {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "action.storyboard.summarize-fix-to-review",
+            reference(19, 4, 48),
+            "summary",
+            Some(action(
+                "action.storyboard.summarize-fix-to-review",
+                "Create a fix task",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            "action.storyboard.summarize-fix-to-review",
+            screen_id,
+            "reviewer-output",
+            "summarized",
+            "fix planning, fix working, and fresh revalidation complete before the review outcome opens",
+        ));
+    }
     Ok((
         pairs
             .iter()
@@ -1310,7 +1358,8 @@ fn render_reviewer_output(
             )),
         ),
     ];
-    let transitions = vec![
+    let mut pairs = pairs.to_vec();
+    let mut transitions = vec![
         transition(
             "action.mission.review-create-fix",
             screen_id,
@@ -1326,6 +1375,28 @@ fn render_reviewer_output(
             "leaving review returns to the originating monitor without approving",
         ),
     ];
+    if fixture_id.contains("gate.mission.reviewer-output") {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "action.storyboard.summarize-review-to-approval",
+            reference(19, 4, 48),
+            "summary",
+            Some(action(
+                "action.storyboard.summarize-review-to-approval",
+                "Continue through review until human completion is ready",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            "action.storyboard.summarize-review-to-approval",
+            screen_id,
+            "reviewer-approved",
+            "summarized",
+            "requested changes re-enter fix and revalidation; once review is ready, the approval frame opens for human completion",
+        ));
+    }
     Ok((
         pairs
             .iter()

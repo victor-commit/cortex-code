@@ -1145,6 +1145,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-request-changes-cancel" => mission_request_changes_cancel(),
         "mission-approve-completion" => mission_approve_completion(),
         "mission-fix-loop-rerepair" => mission_fix_loop_rerepair(),
+        "login-choose-provider" => login_choose_provider(),
+        "connect-method-oauth" => connect_method_oauth(),
+        "connect-oauth-finish" => connect_oauth_finish(),
+        "provider-to-mcp-bridge" => provider_to_mcp_bridge(),
+        "error-network-to-rate-limit-bridge" => error_network_to_rate_limit_bridge(),
+        "mission-monitor-to-failure-bridge" => mission_monitor_to_failure_bridge(),
+        "mission-failure-to-review-bridge" => mission_failure_to_review_bridge(),
+        "mission-review-to-approved-bridge" => mission_review_to_approved_bridge(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1272,6 +1280,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "connect-method-back"
             | "connect-connected-return"
             | "mcp-return"
+            | "login-choose-provider"
+            | "connect-method-oauth"
+            | "connect-oauth-finish"
+            | "provider-to-mcp-bridge"
     ) {
         match after.screen_id.as_str() {
             "login" => "gate.provider-and-mcp.login".to_owned(),
@@ -1289,6 +1301,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "turn-error-retry"
             | "turn-error-cancel"
             | "turn-error-inspect-connection"
+            | "error-network-to-rate-limit-bridge"
             | "network-offline-review-setting"
             | "network-offline-resume"
             | "network-backoff-cancel"
@@ -1319,6 +1332,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("chat-turn-open-checkpoint-undo", "checkpoint-undo") => {
                 "gate.recovery.checkpoint-undo".to_owned()
+            }
+            ("error-network-to-rate-limit-bridge", "rate-limit") => {
+                "gate.recovery.rate-limit".to_owned()
             }
             ("network-offline-review-setting", "connect-provider") => {
                 "gate.provider-and-mcp.connect-provider".to_owned()
@@ -1376,6 +1392,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-request-changes-cancel"
             | "mission-approve-completion"
             | "mission-fix-loop-rerepair"
+            | "mission-monitor-to-failure-bridge"
+            | "mission-failure-to-review-bridge"
+            | "mission-review-to-approved-bridge"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("mission-proposal-accept", "workflow-launch") => {
@@ -1422,6 +1441,15 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("mission-approve-completion", "chat-turn") => {
                 "case.mission.complete.after.chat-turn.tick.1".to_owned()
+            }
+            ("mission-monitor-to-failure-bridge", "workflow-monitor-failure") => {
+                "gate.mission.workflow-monitor-failure".to_owned()
+            }
+            ("mission-failure-to-review-bridge", "reviewer-output") => {
+                "gate.mission.reviewer-output".to_owned()
+            }
+            ("mission-review-to-approved-bridge", "reviewer-approved") => {
+                "gate.mission.reviewer-approved".to_owned()
             }
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
@@ -8819,4 +8847,571 @@ pub fn validate_png_destination(destination: &std::path::Path) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+
+fn login_choose_provider() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "login",
+        vec!["model-picker", "login"],
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "connect-provider",
+        vec!["model-picker", "login", "connect-provider"],
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.login.choose-provider".to_owned(),
+        label: "Choose a provider".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the blocked model action opens provider selection".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.login.choose-provider.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "provider-catalogue-opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.login.choose-provider",
+        "provider-connection",
+        "provider-choice-opened",
+        "login advanced to the provider catalogue without authentication",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_method_oauth() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["model-picker", "login", "connect-provider", "connect-method"];
+    let mut before = state(
+        "connect-method",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "browser-sign-in",
+        "method-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "connect-oauth",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.connect-method.oauth".to_owned(),
+        label: "Continue with browser sign-in".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the provider branch opens the selected sign-in method".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-method.oauth.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "oauth-wait-opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-method.oauth",
+        "provider-connection",
+        "browser-sign-in-started",
+        "browser sign-in started without writing credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_finish() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+    ];
+    let mut before = state(
+        "connect-oauth",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "connect-connected",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.connect-oauth.finish".to_owned(),
+        label: "I've authorized".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "successful authentication records the connected provider".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.finish.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 1,
+        outcome: "provider-connected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.finish",
+        "provider-connection",
+        "provider-connected",
+        "OpenAI connection succeeded and restored the blocked-model origin",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn provider_to_mcp_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "connect-connected",
+        vec![
+            "model-picker",
+            "login",
+            "connect-provider",
+            "connect-method",
+            "connect-oauth",
+            "connect-connected",
+        ],
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = before.clone();
+    after.screen_id = "mcp".to_owned();
+    after.selection = "browser-automation".to_owned();
+    after.focus = "capability-list".to_owned();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "return-to-chat-turn".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.storyboard.open-mcp-after-provider".to_owned(),
+        label: "Open MCP connections separately".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "illustrative_detour".to_owned(),
+        path: "provider success returns to its blocked model origin before an explicit separate MCP action opens capabilities"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.open-mcp-after-provider.1".to_owned(),
+        owner_id: "storyboard.provider-and-mcp".to_owned(),
+        count: 1,
+        outcome: "mcp-opened-after-provider-return".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.open-mcp-after-provider",
+        "storyboard-navigation",
+        "illustrative-detour",
+        "MCP opened only after an explicit separate action; provider success never owned a direct MCP edge",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn error_network_to_rate_limit_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-network",
+        vec!["chat-turn", "turn-error", "error-network"],
+        "Keep drafting the open risk note.",
+        "recovery-pause",
+        "composer",
+        "recovery-network",
+        Some("pending.recovery.retry"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = state(
+        "rate-limit",
+        vec!["chat-turn", "rate-limit"],
+        "Keep drafting the open risk note.",
+        "recovery-pause",
+        "composer",
+        "rate-limit-wait",
+        Some("pending.recovery.retry"),
+        "return-to-chat-turn",
+        1,
+    );
+    apply_flow5_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.error-network.storyboard-rate-window".to_owned(),
+        label: "Review the automatic wait that follows diagnosis".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "illustrative_detour".to_owned(),
+        path: "connection diagnosis is reviewed first; the ordered storyboard next opens the automatic rate-limit wait as an illustrative adjacency, not a silent live navigation from this retry attempt"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.error-network.storyboard-rate-window.1".to_owned(),
+        owner_id: "storyboard.recovery".to_owned(),
+        count: 1,
+        outcome: "rate-limit-reviewed-after-diagnosis".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.error-network.storyboard-rate-window",
+        "storyboard-navigation",
+        "illustrative-detour",
+        "automatic waiting was reviewed as a separate recovery motif after connection diagnosis",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_monitor_to_failure_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-monitor",
+        Some("pending.mission.monitor"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor-failure",
+        vec!["chat-turn", "workflow-monitor", "workflow-monitor-failure"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-failure",
+        Some("pending.mission.fix"),
+        "return-to-chat-turn",
+        1,
+    );
+    apply_flow6_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.storyboard.open-mission-failure".to_owned(),
+        label: "Open the validation failure".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "illustrative_detour".to_owned(),
+        path: "a summarized visible validation stage surfaces only the actionable failure for review"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.open-mission-failure.1".to_owned(),
+        owner_id: "storyboard.mission".to_owned(),
+        count: 1,
+        outcome: "failure-reviewed-after-compact-monitor".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.open-mission-failure",
+        "storyboard-navigation",
+        "illustrative-detour",
+        "orderly storyboard adjacency opened Needs attention without inventing a live silent navigation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_failure_to_review_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor-failure",
+        vec!["chat-turn", "workflow-monitor", "workflow-monitor-failure"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-failure",
+        Some("pending.mission.fix"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-output",
+        vec!["chat-turn", "workflow-monitor", "reviewer-output"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-review",
+        Some("pending.mission.review"),
+        "return-to-chat-turn",
+        1,
+    );
+    apply_flow6_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.storyboard.summarize-fix-to-review".to_owned(),
+        label: "Create a fix task".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "summarized".to_owned(),
+        path: "fix planning, fix working, and fresh revalidation complete before the review outcome opens"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.summarize-fix-to-review.1".to_owned(),
+        owner_id: "storyboard.mission".to_owned(),
+        count: 1,
+        outcome: "review-reached-after-summarized-fix-loop".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.summarize-fix-to-review",
+        "storyboard-navigation",
+        "summarized-path",
+        "the ordered storyboard summarized fix work and revalidation before review",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_review_to_approved_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-output",
+        vec!["chat-turn", "workflow-monitor", "reviewer-output"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-review",
+        Some("pending.mission.review"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "reviewer-approved",
+        vec!["chat-turn", "workflow-monitor", "reviewer-approved"],
+        "Follow the release mission.",
+        "mission-running",
+        "mission-card",
+        "mission-approval",
+        Some("pending.mission.approval"),
+        "return-to-chat-turn",
+        1,
+    );
+    apply_flow6_identity(&mut after);
+        after.origin_stack = before.origin_stack.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+let action = ActionEvidence {
+        action_id: "action.storyboard.summarize-review-to-approval".to_owned(),
+        label: "Continue through review until human completion is ready".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "summarized".to_owned(),
+        path: "requested changes re-enter fix and revalidation; once review is ready, the approval frame opens for human completion"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.summarize-review-to-approval.1".to_owned(),
+        owner_id: "storyboard.mission".to_owned(),
+        count: 1,
+        outcome: "approval-ready-after-summarized-review-loop".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.summarize-review-to-approval",
+        "storyboard-navigation",
+        "summarized-path",
+        "the ordered storyboard summarized review and fix loops until human completion was ready",
+    );
+    (before, after, action, transition, attempt, effect)
 }
