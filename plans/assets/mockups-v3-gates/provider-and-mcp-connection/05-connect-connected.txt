@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+                                                                                                                        
+    OpenAI is connected                                                                                                 
+                                                                                                                        
+    ✓ Connected                                                                                                         
+                                                                                                                        
+    GPT-5.2 Codex can use this provider now.                                                                            
+                                                                                                                        
+    Return to the blocked model action to finish applying the choice.                                                   
+                                                                                                                        
+                                                                                                                        
+    Capability setup stays on its own path and is not the next step here.                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Provider ready                                                                                                   │  
+  │ Your conversation draft and pending model remain exactly as left.                                                │  
+  │ › [enter] Return to model choices                                                                                │  
+  │   [esc] Close                                                                                                    │  
+  │ Success cannot re-open sign-in or invent another connection handoff.                                             │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

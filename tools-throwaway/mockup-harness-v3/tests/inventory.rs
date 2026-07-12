@@ -159,6 +159,12 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "mode-switch-refused",
             "session-picker",
             "timeline",
+            "login",
+            "connect-provider",
+            "connect-method",
+            "connect-oauth",
+            "connect-connected",
+            "mcp",
         ]
         .contains(&screen.id)
         {

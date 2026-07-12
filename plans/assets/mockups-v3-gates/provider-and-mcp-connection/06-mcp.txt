@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    MCP · conversation capabilities                                                                                     
+    Conversation · current work                                                                                         
+                                                                                                                        
+    MCP capabilities                                                                                                    
+                                                                                                                        
+    Capabilities that need attention come first. Healthy ones stay collapsed.                                           
+                                                                                                                        
+                                                                                                                        
+    › Browser automation · Needs setup                                                                                  
+      Missing local tools needed for page checks.                                                                       
+      [enter] Fix setup                                                                                                 
+                                                                                                                        
+                                                                                                                        
+      Project docs · Sign in needed                                                                                     
+      This workspace library needs approval before use.                                                                 
+      [enter] Sign in                                                                                                   
+                                                                                                                        
+                                                                                                                        
+      ○ 1 ready connection collapsed                                                                                    
+      Code search · Ready                                                                                               
+                                                                                                                        
+                                                                                                                        
+    Connection details and raw tools stay under diagnostics.                                                            
+                                                                                                                        
+    This view is separate from provider sign-in.                                                                        
+                                                                                                                        
+                                                                                                                        
+    › [enter] Fix setup                                                                                                 
+      [d] Open diagnostics                                                                                              
+      [esc] Return to conversation                                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

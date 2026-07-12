@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+     ██████              ██                                                                                             
+    ██                   ██                                                                                             
+    ██        ████    █████   ████                                                                                      
+    ██       ██  ██  ██  ██  ██████                                                                                     
+    ██       ██  ██  ██  ██  ██                                                                                         
+     ██████   ████    █████   █████                                                                                     
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+                                                                                                                        
+    Connect a model provider                                                                                            
+                                                                                                                        
+    Code needs a provider before it can use the models in this project.                                                 
+                                                                                                                        
+    Your blocked model choice and conversation stay paused while you connect.                                           
+                                                                                                                        
+                                                                                                                        
+    This path only unlocks the model provider for the paused choice.                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Next step                                                                                                        │  
+  │ Choose a provider that can run GPT-5.2 Codex.                                                                    │  
+  │ › [enter] Choose a provider                                                                                      │  
+  │   [esc] Cancel · return to model choices                                                                         │  
+  │ Cancel does not attempt a connection.                                                                            │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

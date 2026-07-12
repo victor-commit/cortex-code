@@ -57,6 +57,12 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "mode-switch-refused",
     "session-picker",
     "timeline",
+    "login",
+    "connect-provider",
+    "connect-method",
+    "connect-oauth",
+    "connect-connected",
+    "mcp",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -1355,7 +1361,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 19);
+        assert_eq!(implemented.canonical_ids().count(), 25);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")

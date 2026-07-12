@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+    Sign in to OpenAI                                                                                                   
+                                                                                                                        
+    Only the methods this provider supports are shown.                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    › Browser sign-in                                                                                                   
+      authorize in your browser, then return here.                                                                      
+                                                                                                                        
+                                                                                                                        
+      Use an API key                                                                                                    
+      paste a key stored only on this machine.                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Browser sign-in                                                                                       │  
+  │ You keep control of the browser steps. Your keystroke never leaves this device.                                  │  
+  │ › [enter] Continue with browser sign-in                                                                          │  
+  │   [esc] Back                                                                                                     │  
+  │ Back keeps the OpenAI provider choice.                                                                           │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

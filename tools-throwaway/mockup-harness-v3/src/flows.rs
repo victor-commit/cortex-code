@@ -611,21 +611,59 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                     for step in &mut manifest.steps {
                         step.fixture_id = if manifest.name == "work-configuration" {
                             flow3_fixture(step.screen_id)
+                        } else if manifest.name == "provider-and-mcp-connection" {
+                            flow4_fixture(step.screen_id)
                         } else {
                             fixture_id
                         };
-                        step.conversation_id = conversation_id;
-                        step.transcript_id = transcript_id;
-                        step.session_id = session_id;
-                        step.turn_id = turn_id;
-                        step.user_task = user_task;
+                        step.conversation_id = if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "conversation.mcp-capabilities"
+                        } else {
+                            conversation_id
+                        };
+                        step.transcript_id = if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "transcript.mcp-capabilities"
+                        } else {
+                            transcript_id
+                        };
+                        step.session_id = if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "session.mcp-capabilities.1"
+                        } else {
+                            session_id
+                        };
+                        step.turn_id = if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "turn.mcp-capabilities.1"
+                        } else {
+                            turn_id
+                        };
+                        step.user_task = if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "Fix the capabilities this conversation needs."
+                        } else {
+                            user_task
+                        };
                         step.visible_origin = if manifest.name == "work-configuration" {
                             "Work configuration · onboarding"
+                        } else if manifest.name == "provider-and-mcp-connection"
+                            && step.screen_id == "mcp"
+                        {
+                            "MCP · conversation capabilities"
                         } else {
                             visible_origin
                         };
                         step.preservation_fields = if manifest.name == "work-configuration" {
                             WORK_CONFIGURATION_FIELDS
+                        } else if manifest.name == "provider-and-mcp-connection" {
+                            PROVIDER_AND_MCP_FIELDS
                         } else {
                             preservation_fields
                         };
@@ -792,6 +830,24 @@ pub fn validate_flow_manifests(
                     step.screen_id
                 ));
             }
+            if manifest.name == "provider-and-mcp-connection" {
+                let expected_origin = if step.screen_id == "mcp" {
+                    "MCP · conversation capabilities"
+                } else {
+                    "Provider connection · blocked model action"
+                };
+                if step.fixture_id != flow4_fixture(step.screen_id)
+                    || step.visible_origin != expected_origin
+                    || !PROVIDER_AND_MCP_FIELDS
+                        .iter()
+                        .all(|field| step.preservation_fields.contains(field))
+                {
+                    return Err(format!(
+                        "provider-and-mcp-connection fixture or origin continuity mismatch for {}",
+                        step.screen_id
+                    ));
+                }
+            }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
                     if step.expected_next_frame != next_step.screen_id {
@@ -904,6 +960,17 @@ const WORK_CONFIGURATION_FIELDS: &[&str] = &[
     "pending_action",
     "return_policy",
 ];
+const PROVIDER_AND_MCP_FIELDS: &[&str] = &[
+    "conversation_id",
+    "transcript_id",
+    "session_id",
+    "turn_id",
+    "user_task",
+    "visible_origin",
+    "return_policy",
+    "pending_action",
+    "draft",
+];
 
 fn flow3_fixture(screen_id: &str) -> &'static str {
     match screen_id {
@@ -914,6 +981,18 @@ fn flow3_fixture(screen_id: &str) -> &'static str {
         "session-picker" => "gate.work-configuration.session-picker",
         "timeline" => "gate.work-configuration.timeline",
         _ => unreachable!("work-configuration contains only its six canonical frames"),
+    }
+}
+
+fn flow4_fixture(screen_id: &str) -> &'static str {
+    match screen_id {
+        "login" => "gate.provider-and-mcp.login",
+        "connect-provider" => "gate.provider-and-mcp.connect-provider",
+        "connect-method" => "gate.provider-and-mcp.connect-method",
+        "connect-oauth" => "gate.provider-and-mcp.connect-oauth",
+        "connect-connected" => "gate.provider-and-mcp.connect-connected",
+        "mcp" => "gate.provider-and-mcp.mcp",
+        _ => unreachable!("provider-and-mcp-connection contains only its six canonical frames"),
     }
 }
 
@@ -985,13 +1064,7 @@ fn storyboard_identity(
             "turn.provider-connection.1",
             "Connect the model needed for this conversation.",
             "Provider connection · blocked model action",
-            &[
-                "conversation_id",
-                "transcript_id",
-                "session_id",
-                "turn_id",
-                "user_task",
-            ],
+            PROVIDER_AND_MCP_FIELDS,
         ),
         "recovery" => (
             "flow5.recovery.stable",

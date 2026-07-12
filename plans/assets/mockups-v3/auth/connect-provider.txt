@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+    GPT-5.2 Codex is waiting for a provider connection.                                                                 
+                                                                                                                        
+    Choose a provider                                                                                                   
+                                                                                                                        
+    Each row shows whether a provider is ready, connected, or still needs sign-in.                                      
+                                                                                                                        
+                                                                                                                        
+      OpenRouter                                                                                                        
+      Unified access to many models · Connected · in use                                                                
+                                                                                                                        
+      Anthropic                                                                                                         
+      Claude models for everyday coding · Connected                                                                     
+                                                                                                                        
+    › OpenAI                                                                                                            
+      GPT-5.2 Codex and related models · Not connected                                                                  
+                                                                                                                        
+      Google                                                                                                            
+      Gemini models for broad tasks · Not connected                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · OpenAI · Not connected                                                                                │  
+  │ Connecting unlocks GPT-5.2 Codex for the paused model choice.                                                    │  
+  │ › [enter] Connect OpenAI                                                                                         │  
+  │   [esc] Back                                                                                                     │  
+  │ Back keeps provider choice and drafts unchanged.                                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

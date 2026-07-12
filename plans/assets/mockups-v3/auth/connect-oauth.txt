@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+    Authorize OpenAI                                                                                                    
+                                                                                                                        
+    Finish these browser steps, then return to Code.                                                                    
+                                                                                                                        
+                                                                                                                        
+    1  Open this sign-in page in your browser                                                                           
+       https://auth.openai.com/device                                                                                   
+                                                                                                                        
+    2  Enter this one-time code                                                                                         
+       WDJB-MJHT                                                                                                        
+       Code expires in 14m                                                                                              
+                                                                                                                        
+                                                                                                                        
+    ● Waiting for authorization                                                                                         
+      Code is watching for a successful browser approval.                                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Browser sign-in in progress                                                                                      │  
+  │ Cancel stops the wait and does not connect the provider.                                                         │  
+  │ › [enter] I've authorized                                                                                        │  
+  │   [esc] Cancel sign-in                                                                                           │  
+  │ Nothing is stored until authorization succeeds.                                                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

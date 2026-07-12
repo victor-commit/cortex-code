@@ -1070,6 +1070,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "session-no-sessions" => session_no_sessions(),
         "session-no-matches-filter" => session_no_matches_filter(),
         "session-no-matches" => session_no_matches(),
+        "login-cancel" => login_cancel(),
+        "connect-provider-select" => connect_provider_select(),
+        "connect-method-back" => connect_method_back(),
+        "connect-connected-return" => connect_connected_return(),
+        "mcp-return" => mcp_return(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1142,6 +1147,25 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "gate.work-configuration.{}.case.{case_id}.tick.{tick}",
             after.screen_id
         )
+    } else if matches!(
+        case_id,
+        "login-cancel"
+            | "connect-provider-select"
+            | "connect-method-back"
+            | "connect-connected-return"
+            | "mcp-return"
+    ) {
+        match after.screen_id.as_str() {
+            "login" => "gate.provider-and-mcp.login".to_owned(),
+            "connect-provider" => "gate.provider-and-mcp.connect-provider".to_owned(),
+            "connect-method" => "gate.provider-and-mcp.connect-method".to_owned(),
+            "connect-oauth" => "gate.provider-and-mcp.connect-oauth".to_owned(),
+            "connect-connected" => "gate.provider-and-mcp.connect-connected".to_owned(),
+            "mcp" => "gate.provider-and-mcp.mcp".to_owned(),
+            "model-picker" => "gate.work-configuration.model-picker".to_owned(),
+            "chat-turn" => "flow1.daily-work.stable".to_owned(),
+            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
     } else {
         format!("case.{case_id}.tick.{tick}")
     };
@@ -1635,6 +1659,374 @@ fn model_picker_cancel() -> (
         "configuration",
         "no-change",
         "model cancellation changed no applied configuration",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn apply_flow4_provider_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.provider-connection".to_owned();
+    state.transcript_id = "transcript.provider-connection".to_owned();
+    state.session_id = "session.provider-connection.1".to_owned();
+    state.turn_id = "turn.provider-connection.1".to_owned();
+    state.user_task = "Connect the model needed for this conversation.".to_owned();
+    state.visible_origin = "Provider connection · blocked model action".to_owned();
+    state.draft = "Continue the paused conversation.".to_owned();
+    state.transcript = "The blocked model choice remains available.".to_owned();
+    state.paused_activity_id = "pending.model.gpt-5-2-codex".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn apply_flow4_mcp_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.mcp-capabilities".to_owned();
+    state.transcript_id = "transcript.mcp-capabilities".to_owned();
+    state.session_id = "session.mcp-capabilities.1".to_owned();
+    state.turn_id = "turn.mcp-capabilities.1".to_owned();
+    state.user_task = "Fix the capabilities this conversation needs.".to_owned();
+    state.visible_origin = "MCP · conversation capabilities".to_owned();
+    state.draft = "Continue the paused conversation.".to_owned();
+    state.transcript = "The conversation is waiting for MCP capabilities.".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn login_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "login",
+        vec!["model-picker", "login"],
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "model-picker",
+        vec!["model-picker", "login"],
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = before.selection.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.submitted_prompt = before.submitted_prompt.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.login.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the blocked model origin without starting authentication".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.login.cancel.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.login.cancel",
+        "provider-connection",
+        "no-change",
+        "login cancel changed no provider credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_provider_select() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["model-picker", "login", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "connect-method",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "browser-sign-in",
+        "method-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.connect".to_owned(),
+        label: "Connect OpenAI".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the chosen provider exposes its applicable methods".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-provider.select.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "method-choice-opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-provider.select",
+        "provider-connection",
+        "provider-selected",
+        "OpenAI was selected without connecting yet",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_method_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["model-picker", "login", "connect-provider", "connect-method"];
+    let mut before = state(
+        "connect-method",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "browser-sign-in",
+        "method-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai",
+        "provider-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    let action = ActionEvidence {
+        action_id: "action.connect-method.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "back preserves the chosen OpenAI provider without discarding the origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-method.back.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "returned-to-provider-catalogue".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-method.back",
+        "provider-connection",
+        "no-change",
+        "method back kept provider selection and credentials unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_connected_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+        "connect-connected",
+    ];
+    let mut before = state(
+        "connect-connected",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "model-picker",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.submitted_prompt = before.submitted_prompt.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-connected.return".to_owned(),
+        label: "Return to model choices".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "provider success returns to its blocked model origin before any MCP action"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-connected.return.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 1,
+        outcome: "returned-to-blocked-model".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-connected.return",
+        "provider-connection",
+        "provider-connected",
+        "success restored the blocked model action without opening MCP",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "browser-automation",
+        "capability-list",
+        Some("pending.capability.browser-automation"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    let mut after = state(
+        "chat-turn",
+        origin,
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "composer",
+        "composer",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.submitted_prompt = before.submitted_prompt.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mcp.return".to_owned(),
+        label: "Return to conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the capability view closes to its recorded conversation origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.return.1".to_owned(),
+        owner_id: "pending.capability.browser-automation".to_owned(),
+        count: 0,
+        outcome: "returned-to-conversation".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.return",
+        "mcp-capability",
+        "no-change",
+        "closing MCP restored the conversation without provider adjacency",
     );
     (before, after, action, transition, attempt, effect)
 }
