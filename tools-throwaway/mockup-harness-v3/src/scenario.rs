@@ -1094,6 +1094,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mcp-return" => mcp_return(),
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
+        "turn-error-inspect-connection" => turn_error_inspect_connection(),
         "network-offline-review-setting" => network_offline_review_setting(),
         "network-offline-resume" => network_offline_resume(),
         "network-backoff-cancel" => network_backoff_cancel(),
@@ -1114,6 +1115,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "checkpoint-undo-noop" => checkpoint_undo_noop(),
         "checkpoint-redo-stale" => checkpoint_redo_stale(),
         "checkpoint-continue-chat" => checkpoint_continue_chat(),
+        "chat-turn-open-checkpoint-undo" => chat_turn_open_checkpoint_undo(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -1257,6 +1259,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         case_id,
         "turn-error-retry"
             | "turn-error-cancel"
+            | "turn-error-inspect-connection"
             | "network-offline-review-setting"
             | "network-offline-resume"
             | "network-backoff-cancel"
@@ -1277,10 +1280,17 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "checkpoint-undo-noop"
             | "checkpoint-redo-stale"
             | "checkpoint-continue-chat"
+            | "chat-turn-open-checkpoint-undo"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("turn-error-retry", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
             ("turn-error-cancel", "turn-error") => "gate.recovery.turn-error".to_owned(),
+            ("turn-error-inspect-connection", "error-network") => {
+                "gate.recovery.error-network".to_owned()
+            }
+            ("chat-turn-open-checkpoint-undo", "checkpoint-undo") => {
+                "gate.recovery.checkpoint-undo".to_owned()
+            }
             ("network-offline-review-setting", "connect-provider") => {
                 "gate.provider-and-mcp.connect-provider".to_owned()
             }
@@ -2053,6 +2063,70 @@ fn turn_error_cancel() -> (
         "turn-recovery",
         "cancelled-without-retry",
         "cancel preserved the interrupted turn without a second request",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn turn_error_inspect_connection() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "turn-error", "error-network"];
+    let mut before = state(
+        "turn-error",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "turn-partial",
+        "inspect-connection",
+        "turn-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    let mut after = state(
+        "error-network",
+        origin,
+        FLOW5_DRAFT,
+        "turn-partial",
+        "retry-or-wait",
+        "network-recovery",
+        Some(FLOW5_PENDING),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "network-recovery".to_owned();
+    after.selection = "retry-or-wait".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.turn-error.inspect-connection".to_owned(),
+        label: "Inspect the connection problem".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "inspecting the connection problem opens the network recovery state".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.turn.inspect.1".to_owned(),
+        owner_id: FLOW5_PENDING.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.turn.inspect-connection",
+        "network-diagnosis",
+        "opened",
+        "connection diagnosis opens without rewriting transcript, draft, or partial reply",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -3250,6 +3324,74 @@ fn checkpoint_continue_chat() -> (
         "navigation",
         "returned",
         "return restored the ordinary composer without rewriting files",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn chat_turn_open_checkpoint_undo() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "checkpoint-undo"];
+    let mut before = state(
+        "chat-turn",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "turn-partial",
+        "open-checkpoint-undo",
+        "composer",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "composer".to_owned();
+    before.selection = "open-checkpoint-undo".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "checkpoint-undo",
+        origin,
+        FLOW5_DRAFT,
+        "turn-partial",
+        "redo-change",
+        "checkpoint-confirmation",
+        Some(FLOW5_CHECKPOINT),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "checkpoint-confirmation".to_owned();
+    after.selection = "redo-change".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.chat-turn.open-checkpoint-undo".to_owned(),
+        label: "Undo last checkpoint".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the reversible checkpoint action opens beside the same recovered conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.checkpoint.open.0".to_owned(),
+        owner_id: FLOW5_CHECKPOINT.to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.checkpoint.open",
+        "navigation",
+        "opened",
+        "opening checkpoint undo preserves draft, transcript, and completed work",
     );
     (before, after, action, transition, attempt, effect)
 }

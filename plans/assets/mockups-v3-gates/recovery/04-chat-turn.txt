@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    The provider attempt succeeded. Work stayed in this conversation.                                                   
+                                                                                                                        
+    Draft, queue, and completed work are still available.                                                               
+                                                                                                                        
+    Ready for your next release-note prompt.                                                                            
+                                                                                                                        
+    Checkpoint · Before risk-note expansion remains reversible.                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Reply to Code                                                                                                     
+      Keep the risk note short before we publish.                                                                       
+      [u] Undo last checkpoint                                                                                          
+    [enter] Send reply                                                                                                  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

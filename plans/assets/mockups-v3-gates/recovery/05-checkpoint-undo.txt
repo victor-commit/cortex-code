@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✓ Restored checkpoint · Before risk-note expansion                                                                  
+    2 files were restored. Unrelated work stays untouched.                                                              
+                                                                                                                        
+      notes/release.md                                                                                                  
+      notes/risks.md                                                                                                    
+                                                                                                                        
+    Approval for the risks note · Stale · needs re-review                                                               
+    Transcript, draft, queue, and later notes remain available.                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Checkpoint restore                                                                                               │  
+  │ Redo reapplies the same checkpoint file set.                                                                     │  
+  │ › [enter] Redo change                                                                                            │  
+  │   [c] Continue in conversation                                                                                   │  
+  │   [esc] Back · keep restoration                                                                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

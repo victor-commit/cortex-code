@@ -64,6 +64,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         || fixture_id.starts_with("case.rate-limit-")
         || fixture_id.starts_with("case.checkpoint-")
         || fixture_id.starts_with("case.turn-error-retry")
+        || fixture_id.starts_with("case.chat-turn-open-checkpoint-undo")
         || fixture_id.starts_with("case.network-backoff-race-retry");
     let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
@@ -1058,9 +1059,21 @@ fn render_recovery_chat_turn(
         "Ready for your next release-note prompt.",
         TextStyle::muted(),
     )?;
+    canvas.write(
+        19,
+        4,
+        "Checkpoint · Before risk-note expansion remains reversible.",
+        TextStyle::muted(),
+    )?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
     // Show the preserved later draft under the restored composer label.
     canvas.write(COMPOSER_TOP + 2, 6, FLOW5_DRAFT, TextStyle::text())?;
+    canvas.write(
+        COMPOSER_TOP + 3,
+        6,
+        "[u] Undo last checkpoint",
+        TextStyle::muted(),
+    )?;
 
     let request = semantic(
         screen_id,
@@ -1102,6 +1115,19 @@ fn render_recovery_chat_turn(
             false,
         )),
     );
+    let undo = semantic(
+        screen_id,
+        fixture_id,
+        "secondary-action",
+        "action.chat-turn.open-checkpoint-undo",
+        reference(COMPOSER_TOP + 3, 6, 28),
+        "summary",
+        Some(action(
+            "action.chat-turn.open-checkpoint-undo",
+            "Undo last checkpoint",
+            false,
+        )),
+    );
     let statusline = semantic(
         screen_id,
         fixture_id,
@@ -1117,6 +1143,7 @@ fn render_recovery_chat_turn(
             partial.0,
             resume.0,
             composer_ready.0,
+            undo.0,
             statusline.0,
         ],
         vec![
@@ -1124,15 +1151,25 @@ fn render_recovery_chat_turn(
             partial.1,
             resume.1,
             composer_ready.1,
+            undo.1,
             statusline.1,
         ],
-        vec![transition(
-            "action.chat-turn.compose",
-            "chat-turn",
-            "chat-turn",
-            "direct",
-            "the restored conversation remains available for the next prompt",
-        )],
+        vec![
+            transition(
+                "action.chat-turn.compose",
+                "chat-turn",
+                "chat-turn",
+                "direct",
+                "the restored conversation remains available for the next prompt",
+            ),
+            transition(
+                "action.chat-turn.open-checkpoint-undo",
+                "chat-turn",
+                "checkpoint-undo",
+                "direct",
+                "the reversible checkpoint action opens beside the same recovered conversation",
+            ),
+        ],
     ))
 }
 

@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✗ The reply stopped before it finished                                                                              
+    The partial reply was kept                                                                                          
+    Draft, transcript, and completed work stay readable.                                                                
+    Inspect the connection problem when the provider path looks broken.                                                 
+    Retry starts a new reply and replaces the partial text.                                                             
+    Continue keeps the partial reply and restores the composer.                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Recover the interrupted turn                                                                                     │  
+  │ Pick whether to replace or keep the partial reply.                                                               │  
+  │ › [enter] Retry reply                                                                                            │  
+  │   [c] Continue from partial reply                                                                                │  
+  │   [esc] Cancel · keep failure record                                                                             │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

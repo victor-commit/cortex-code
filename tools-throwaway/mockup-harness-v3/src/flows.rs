@@ -469,7 +469,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "turn-error",
                             "Inspect the connection problem",
                             TransitionKind::Direct,
-                            "the interrupted turn keeps its work while showing the recovery cause",
+                            "the interrupted turn keeps its work while the user opens connection recovery",
                             "error-network",
                             "chat-turn",
                             "error-network",
@@ -479,12 +479,12 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         ),
                         step(
                             "error-network",
-                            "Wait for the retry window",
-                            TransitionKind::Direct,
-                            "a bounded automatic wait moves to the rate limit state",
+                            "Review the automatic wait that follows diagnosis",
+                            TransitionKind::IllustrativeDetour,
+                            "connection diagnosis is reviewed first; the ordered storyboard next opens the automatic rate-limit wait as an illustrative adjacency, not a silent live navigation from this retry attempt",
                             "rate-limit",
                             "chat-turn",
-                            "rate-limit",
+                            "chat-turn",
                             "chat-turn",
                             None,
                             RECOVERY_CHECK,
@@ -493,7 +493,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "rate-limit",
                             "Resume after the automatic retry",
                             TransitionKind::Automatic,
-                            "the successful retry restores the paused conversation",
+                            "the single countdown owner retries once and restores the paused conversation",
                             "chat-turn",
                             "chat-turn",
                             "chat-turn",
@@ -505,7 +505,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "chat-turn",
                             "Undo the last checkpoint",
                             TransitionKind::Direct,
-                            "the reversible checkpoint action opens beside the same conversation",
+                            "the reversible checkpoint action opens beside the same recovered conversation",
                             "checkpoint-undo",
                             "chat-turn",
                             "checkpoint-undo",
@@ -517,7 +517,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "checkpoint-undo",
                             "Return to the recovered conversation",
                             TransitionKind::Direct,
-                            "the checkpoint result restores the preserved conversation",
+                            "the reversible restoration keeps the prior conversation and restores the composer",
                             "chat-turn",
                             "chat-turn",
                             "chat-turn",
@@ -850,6 +850,24 @@ pub fn validate_flow_manifests(
                     ));
                 }
             }
+            if manifest.name == "recovery"
+                && (step.fixture_id != flow5_fixture(step.screen_id)
+                    || step.conversation_id != "conversation.recovery"
+                    || step.transcript_id != "transcript.recovery"
+                    || step.session_id != "session.recovery.1"
+                    || step.turn_id != "turn.recovery.1"
+                    || step.user_task
+                        != "Finish the release notes without losing the current work."
+                    || step.visible_origin != "Recovery · paused conversation"
+                    || !RECOVERY_FIELDS
+                        .iter()
+                        .all(|field| step.preservation_fields.contains(field)))
+            {
+                return Err(format!(
+                    "recovery fixture or origin continuity mismatch for {}",
+                    step.screen_id
+                ));
+            }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
                     if step.expected_next_frame != next_step.screen_id {
@@ -973,6 +991,18 @@ const PROVIDER_AND_MCP_FIELDS: &[&str] = &[
     "pending_action",
     "draft",
 ];
+const RECOVERY_FIELDS: &[&str] = &[
+    "conversation_id",
+    "transcript_id",
+    "session_id",
+    "turn_id",
+    "user_task",
+    "visible_origin",
+    "draft",
+    "partial_response",
+    "completed_work",
+    "scroll_anchor",
+];
 
 fn flow3_fixture(screen_id: &str) -> &'static str {
     match screen_id {
@@ -1087,13 +1117,7 @@ fn storyboard_identity(
             "turn.recovery.1",
             "Finish the release notes without losing the current work.",
             "Recovery · paused conversation",
-            &[
-                "conversation_id",
-                "transcript_id",
-                "session_id",
-                "turn_id",
-                "user_task",
-            ],
+            RECOVERY_FIELDS,
         ),
         "mission" => (
             "flow6.mission.stable",

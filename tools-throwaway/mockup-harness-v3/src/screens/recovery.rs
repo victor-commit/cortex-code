@@ -631,39 +631,31 @@ fn render_error_network(
                 pairs.push(semantic(
                     screen_id,
                     fixture_id,
-                    "secondary-action",
-                    "action.error-network.wait-retry",
+                    "bridge-note",
+                    "action.error-network.storyboard-rate-window",
                     reference(19, 4, 48),
                     "summary",
                     Some(action(
-                        "action.error-network.wait-retry",
-                        "Wait for the retry window",
+                        "action.error-network.storyboard-rate-window",
+                        "Review the automatic wait that follows diagnosis",
                         false,
                     )),
                 ));
                 transitions.push(transition(
-                    "action.error-network.wait-retry",
+                    "action.error-network.storyboard-rate-window",
                     "error-network",
                     "rate-limit",
-                    "direct",
-                    "a bounded automatic wait moves to the rate limit state",
-                ));
-                transitions.push(transition(
-                    "action.error-network.backoff-tick",
-                    "error-network",
-                    "error-network",
-                    "automatic",
-                    "the single backoff owner advances one deterministic attempt",
-                ));
-            } else {
-                transitions.push(transition(
-                    "action.error-network.backoff-tick",
-                    "error-network",
-                    "error-network",
-                    "automatic",
-                    "the single backoff owner advances one deterministic attempt",
+                    "illustrative",
+                    "connection diagnosis is reviewed first; the ordered storyboard next opens the automatic rate-limit wait as an illustrative adjacency",
                 ));
             }
+            transitions.push(transition(
+                "action.error-network.backoff-tick",
+                "error-network",
+                "error-network",
+                "automatic",
+                "the single backoff owner advances one deterministic attempt",
+            ));
             transitions.push(transition(
                 "action.error-network.cancel-backoff",
                 "error-network",

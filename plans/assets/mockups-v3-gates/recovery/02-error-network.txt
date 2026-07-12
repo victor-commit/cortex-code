@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✗ Cortex could not reach the provider                                                                               
+    Your work and partial output are saved.                                                                             
+    Transcript, draft, and completed work stay readable.                                                                
+                                                                                                                        
+    ○ Trying again automatically · attempt 2 of 3 · next in 4s                                                          
+    One timer owns this wait. Cancel stops future attempts.                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Automatic network wait                                                                                           │  
+  │ One bounded backoff timer owns the next attempt.                                                                 │  
+  │   Waiting · no primary action while the timer runs                                                               │  
+  │   [esc] Cancel                                                                                                   │  
+  │ Cancel stops future attempts and keeps this origin.                                                              │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    
