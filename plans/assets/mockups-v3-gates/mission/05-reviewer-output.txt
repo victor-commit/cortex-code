@@ -1,13 +1,15 @@
                                                                                                                         
                                                                                                                         
     Mission · current conversation                                                                                      
-    Mission review                                                                                                      
-    Review needs attention before completion. Mission card stays compact.                                               
+    Prepare the release safely and review the result.                                                                   
                                                                                                                         
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Mission review                                                                                                      
+    Review outcome ready. Mission card stays compact.                                                                   
                                                                                                                         
     Prepare the release safely and review the result.                                                                   
     Review · 2 complete · 1 remaining                                                                                   
-                                                                                                                        
                                                                                                                         
                                                                                                                         
     Changes requested                                                                                                   
@@ -20,8 +22,6 @@
     [d] View validation summary                                                                                         
                                                                                                                         
     [esc] Return to mission monitor                                                                                     
-                                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

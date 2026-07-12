@@ -247,6 +247,115 @@ fn validating_success_advances_to_review_and_failure_returns_needs_attention() {
 }
 
 #[test]
+fn reviewer_output_keeps_mission_task_and_you_continuity() {
+    // P1-3: monitor → reviewer-output → approved must keep the stable task banner and
+    // You-line, or explicitly label a surface change. "Mission review" must not replace
+    // the task header as an unlabeled second journey title.
+    const USER_PROMPT: &str = "You · Turn the release work into a mission and walk me through it.";
+    let failure = audit_screen(
+        "workflow-monitor-failure",
+        "gate.mission.workflow-monitor-failure",
+    )
+    .expect("failure monitor must render");
+    let review = audit_screen("reviewer-output", "gate.mission.reviewer-output")
+        .expect("reviewer-output must render");
+    let approved = audit_screen("reviewer-approved", "gate.mission.reviewer-approved")
+        .expect("reviewer-approved must render");
+
+    for (name, audit) in [
+        ("workflow-monitor-failure", &failure),
+        ("reviewer-output", &review),
+        ("reviewer-approved", &approved),
+    ] {
+        audit
+            .validate()
+            .unwrap_or_else(|error| panic!("{name} audit must stay bijective: {error}"));
+        let conversation = audit
+            .conversation
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} must carry conversation identity"));
+        assert_eq!(
+            conversation.user_task, MISSION_TASK,
+            "{name} conversation identity must keep the stable mission task"
+        );
+        assert_eq!(
+            conversation.visible_origin, MISSION_ORIGIN,
+            "{name} conversation identity must keep Mission · current conversation"
+        );
+        assert!(
+            conversation
+                .submitted_prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.contains("Turn the release work into a mission")),
+            "{name} submitted_prompt must keep the release symptom line"
+        );
+
+        let text = audit.render_txt();
+        assert!(
+            text.contains(MISSION_ORIGIN),
+            "{name} must show the journey origin chip"
+        );
+        assert!(
+            text.contains(MISSION_TASK),
+            "{name} must keep the stable mission task band visible"
+        );
+        assert!(
+            text.contains(USER_PROMPT)
+                || (text.contains("You ·")
+                    && text.contains("Turn the release work into a mission")),
+            "{name} must preserve the You-line or an explicit You-line bridge"
+        );
+    }
+
+    let review_text = review.render_txt();
+    let lines: Vec<&str> = review_text.lines().collect();
+    let origin = lines
+        .iter()
+        .position(|line| line.contains(MISSION_ORIGIN))
+        .expect("reviewer-output origin chip");
+    // Stable mission task must remain in the top identity band (not only later as card body).
+    let band = lines
+        .iter()
+        .skip(origin)
+        .take(6)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        band.contains(MISSION_TASK),
+        "reviewer-output identity band must include the stable mission task under the origin:\n{band}"
+    );
+    assert!(
+        band.contains("You ·")
+            && (band.contains("Turn the release work into a mission")
+                || band.contains("Review outcome ready")),
+        "reviewer-output identity band must keep or bridge the You-line:\n{band}"
+    );
+    // If "Mission review" appears, it is a section/surface label under continuous identity —
+    // not the sole bright task substitute for the mission goal.
+    if let Some(mission_review_row) = lines
+        .iter()
+        .position(|line| line.contains("Mission review"))
+    {
+        assert!(
+            mission_review_row > origin,
+            "Mission review must not precede the origin chip"
+        );
+        let has_task_before_or_at_review = lines[origin..=mission_review_row]
+            .iter()
+            .any(|line| line.contains(MISSION_TASK));
+        assert!(
+            has_task_before_or_at_review,
+            "stable mission task must remain visible when Mission review is shown"
+        );
+    }
+    assert!(
+        review_text.contains("Changes requested"),
+        "reviewer-output must still surface the Changes requested outcome"
+    );
+}
+
+#[test]
 fn reviewer_output_prioritizes_changes_requested_outcome() {
     let audit = audit_screen("reviewer-output", "gate.mission.reviewer-output")
         .expect("reviewer-output must render");

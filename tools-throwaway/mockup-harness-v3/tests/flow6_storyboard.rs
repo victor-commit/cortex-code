@@ -388,12 +388,41 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     let review_text = review.render_txt();
     assert!(review_text.contains(MISSION_ORIGIN));
     assert!(
+        review_text.contains(MISSION_TASK),
+        "reviewer-output must keep the stable mission task banner across monitor→review"
+    );
+    assert!(
+        review_text.contains("You · Turn the release work into a mission and walk me through it.")
+            || (review_text.contains("You ·")
+                && review_text.contains("Turn the release work into a mission")),
+        "reviewer-output must preserve You-line continuity or an explicit You-line bridge"
+    );
+    assert!(
         review_text.contains("Changes requested") || review_text.contains("Create a fix task")
     );
     assert!(
         review_text.contains("Safe publish path") || review_text.contains("validation")
     );
     // Review may add a separate concise outcome block; MissionCard stays compact.
+    // "Mission review" is allowed only as a section label under continuous task/You identity.
+    if review_text.contains("Mission review") {
+        let origin = review_text
+            .lines()
+            .position(|line| line.contains(MISSION_ORIGIN))
+            .expect("origin on review");
+        let review_label = review_text
+            .lines()
+            .position(|line| line.contains("Mission review"))
+            .expect("mission review label");
+        let task_row = review_text
+            .lines()
+            .position(|line| line.contains(MISSION_TASK))
+            .expect("stable task must appear");
+        assert!(
+            origin < task_row && task_row <= review_label + 2,
+            "Mission review must not replace the mission task as the unlabeled journey title"
+        );
+    }
     assert_compact_mission_card(&review_text, "reviewer-output");
     forbidden_internals(&review_text, "reviewer-output");
     assert_eq!(

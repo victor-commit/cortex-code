@@ -1257,16 +1257,21 @@ fn render_reviewer_output(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     // Temporary detail view for verdict-first review that needs attention.
+    // Keep the stable mission task band and You-line continuous with monitor and
+    // approved frames. "Mission review" is a labeled surface section under that
+    // identity, never an unlabeled second journey title that drops task/You.
     canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
-    canvas.write(3, 4, "Mission review", TextStyle::bright())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Mission review", TextStyle::muted())?;
     canvas.write(
+        8,
         4,
-        4,
-        "Review needs attention before completion. Mission card stays compact.",
+        "Review outcome ready. Mission card stays compact.",
         TextStyle::muted(),
     )?;
 
-    write_mission_summary(canvas, 7, "Review", 2, 1, None)?;
+    write_mission_summary(canvas, 10, "Review", 2, 1, None)?;
 
     let review = ReviewBlock::new(
         "Changes requested",
@@ -1274,21 +1279,21 @@ fn render_reviewer_output(
         "Create a fix task",
     )
     .with_affected_result(AFFECTED_RESULT);
-    write_component(canvas, 12, 4, &review)?;
+    write_component(canvas, 14, 4, &review)?;
     canvas.write(
-        17,
+        19,
         4,
         "Checklist and deeper evidence stay collapsed until you open them.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        19,
+        21,
         4,
         "[d] View validation summary",
         TextStyle::muted(),
     )?;
     canvas.write(
-        21,
+        23,
         4,
         "[esc] Return to mission monitor",
         TextStyle::muted(),
@@ -1307,9 +1312,27 @@ fn render_reviewer_output(
         semantic(
             screen_id,
             fixture_id,
+            "mission-task",
+            "mission-conversation",
+            reference(3, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-turn",
+            "mission-conversation",
+            reference(5, 4, 72),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
             "mission-card",
             MISSION_SUBJECT,
-            reference(7, 4, 56),
+            reference(10, 4, 56),
             "summary",
             None,
         ),
@@ -1318,7 +1341,7 @@ fn render_reviewer_output(
             fixture_id,
             "mission-goal",
             MISSION_SUBJECT,
-            reference(7, 4, 56),
+            reference(10, 4, 56),
             "summary",
             None,
         ),
@@ -1327,7 +1350,7 @@ fn render_reviewer_output(
             fixture_id,
             "review-outcome",
             "review.changes-requested",
-            reference(12, 4, 48),
+            reference(14, 4, 48),
             "summary",
             None,
         ),
@@ -1336,7 +1359,7 @@ fn render_reviewer_output(
             fixture_id,
             "primary-action",
             "create-fix-from-review",
-            reference(14, 4, 32),
+            reference(16, 4, 32),
             "summary",
             Some(action(
                 "action.mission.review-create-fix",
@@ -1349,7 +1372,7 @@ fn render_reviewer_output(
             fixture_id,
             "secondary-action",
             "return-monitor",
-            reference(21, 4, 36),
+            reference(23, 4, 36),
             "summary",
             Some(action(
                 "action.mission.review-return",
@@ -1381,7 +1404,7 @@ fn render_reviewer_output(
             fixture_id,
             "bridge-note",
             "action.storyboard.summarize-review-to-approval",
-            reference(19, 4, 48),
+            reference(21, 4, 48),
             "summary",
             Some(action(
                 "action.storyboard.summarize-review-to-approval",
