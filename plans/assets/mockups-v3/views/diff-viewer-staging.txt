@@ -1,12 +1,13 @@
                                                                                                                         
                                                                                                                         
+    Input and approval · paused conversation                                                                            
+    Check the retry path before we merge.                                                                               
                                                                                                                         
     Review changes · temporary detail                                                                                   
     From pending edit in the paused retry conversation                                                                  
                                                                                                                         
-    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
     Included 1 of 2 hunks · Git index unchanged                                                                         
-                                                                                                                        
+    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
     › ✓ Included · hunk.retry-guard · old 42-43 · new 42-44                                                             
       42  42  -    return retry_after                                                                                   
       43  43  -    backoff = backoff + 1                                                                                
@@ -22,7 +23,6 @@
                                                                                                                         
     [i] Include  [x] Exclude  [a] Include all  [e] Edit                                                                 
     [enter] Finish  [esc] Cancel · Return to pending edit                                                               
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -169,7 +169,15 @@ fn explicit_submit_and_approvals_keep_one_session_prompt_and_paused_activity() {
         &finish.after,
     ];
     for state in states {
+        assert_eq!(state.conversation_id, "conversation.retry-review");
+        assert_eq!(state.transcript_id, "transcript.retry-review");
         assert_eq!(state.session_id, "session.retry-review.18");
+        assert_eq!(state.turn_id, "turn.retry-review.18");
+        assert_eq!(state.user_task, "Check the retry path before we merge.");
+        assert_eq!(
+            state.visible_origin,
+            "Input and approval · paused conversation"
+        );
         assert_eq!(state.paused_activity_id, "activity.retry-policy-edit.18");
     }
     for state in [
@@ -192,6 +200,11 @@ fn explicit_submit_and_approvals_keep_one_session_prompt_and_paused_activity() {
     assert_eq!(finish.after.scroll_anchor, "turn-18");
     assert_eq!(finish.after.return_policy, "return-to-paused-turn");
     assert_eq!(finish.diff.as_ref().unwrap().write_count, 1);
+    assert_eq!(
+        finish.after.draft,
+        "Add a short note about the remaining test hunk."
+    );
+    assert_ne!(finish.after.draft, SUBMITTED_PROMPT);
 
     for replay in [&permission, &review, &finish] {
         for field in [
@@ -211,6 +224,87 @@ fn explicit_submit_and_approvals_keep_one_session_prompt_and_paused_activity() {
             );
         }
     }
+}
+
+#[test]
+fn public_storyboard_audits_bind_the_exact_flow2_fixture_and_same_turn_identity() {
+    let flow = flow_manifests()
+        .iter()
+        .find(|flow| flow.name == "input-and-approval")
+        .expect("input and approval must be a public flow");
+
+    for step in &flow.steps {
+        let audit = audit_screen(step.screen_id, step.fixture_id)
+            .unwrap_or_else(|error| panic!("{} must render: {error}", step.screen_id));
+        let identity = audit
+            .conversation
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} must expose Flow 2 identity", step.screen_id));
+        assert_eq!(audit.fixture_id, "flow2.input-and-approval.stable");
+        assert_eq!(identity.conversation_id, "conversation.retry-review");
+        assert_eq!(identity.transcript_id, "transcript.retry-review");
+        assert_eq!(identity.session_id, "session.retry-review.18");
+        assert_eq!(identity.turn_id, "turn.retry-review.18");
+        assert_eq!(
+            identity.paused_activity_id.as_deref(),
+            Some("activity.retry-policy-edit.18")
+        );
+        assert_eq!(identity.submitted_prompt.as_deref(), Some(SUBMITTED_PROMPT));
+        assert_eq!(
+            identity.later_draft.as_deref(),
+            Some("Add a short note about the remaining test hunk.")
+        );
+    }
+
+    let output = harness()
+        .args(["--audit-json", "--flow", "input-and-approval"])
+        .output()
+        .expect("the public Flow 2 audit selector must run");
+    assert!(
+        output.status.success(),
+        "public Flow 2 audit failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = String::from_utf8(output.stdout).expect("audit JSON must be UTF-8");
+    assert_eq!(
+        json.matches("\"document_type\":\"typed-render-audit\"")
+            .count(),
+        6
+    );
+    assert_eq!(json.matches("\"conversation\":{").count(), 6);
+    assert_eq!(
+        json.matches("\"turn_id\":\"turn.retry-review.18\"").count(),
+        6
+    );
+    assert!(!json.contains("public-audit.input-and-approval"));
+}
+
+#[test]
+fn final_storyboard_frame_visibly_separates_submitted_prompt_later_draft_and_resumption() {
+    let audit = audit_screen("chat-turn", "flow2.input-and-approval.stable")
+        .expect("the Flow 2 resumed turn must render");
+    let text = audit.render_txt();
+
+    for submitted_line in [
+        "Check the retry path in @src/net/retry_policy.rs",
+        "Then explain the failure path that still needs coverage before the merge;",
+        "include a concise test plan with the visible recovery behavior.",
+        "Keep the summary short before we merge.",
+    ] {
+        assert!(
+            text.contains(submitted_line),
+            "immutable transcript input must show {submitted_line:?}"
+        );
+    }
+    assert!(text.contains("Paused activity · activity.retry-policy-edit.18"));
+    assert!(text.contains("Session · session.retry-review.18"));
+    assert!(text.contains("Turn · turn.retry-review.18 · resumed"));
+    assert!(text.contains("Later draft · not sent"));
+    assert!(text.contains("Add a short note about the remaining test hunk."));
+    assert!(
+        text.find("Keep the summary short before we merge.") < text.find("Later draft · not sent"),
+        "submitted transcript input must remain above the later unsent draft"
+    );
 }
 
 #[test]
@@ -260,11 +354,18 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
             );
             assert!(Path::new(&canonical).is_file(), "missing {canonical}");
             assert!(Path::new(&gate).is_file(), "missing {gate}");
+            let expected = audit_screen(screen, "flow2.input-and-approval.stable").unwrap();
+            let expected_bytes = if extension == "txt" {
+                expected.render_txt().into_bytes()
+            } else {
+                mockup_harness_v3::scenario::render_audit_png(&expected).unwrap()
+            };
             assert_eq!(
-                fs::read(&canonical).unwrap(),
+                expected_bytes,
                 fs::read(&gate).unwrap(),
-                "{gate} must be a byte-identical canonical alias"
+                "{gate} must be canonical-equivalent for the declared Flow 2 fixture"
             );
+            assert!(Path::new(&canonical).is_file());
         }
     }
 }

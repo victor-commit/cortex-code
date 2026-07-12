@@ -265,6 +265,10 @@ impl CaseReplay {
                 | "tool-running-interrupt"
                 | "tool-running-complete"
                 | "tool-success-continue"
+                | "flow2-submit-bridge"
+                | "permission-allow-once"
+                | "diff-review"
+                | "staging-finish"
         ) {
             for (name, before, after) in [
                 (
@@ -292,7 +296,7 @@ impl CaseReplay {
             ] {
                 if before != after {
                     return Err(format!(
-                        "Flow 1 identity changed without a declared bridge: {name}"
+                        "storyboard identity changed without a bridge: {name}"
                     ));
                 }
             }
@@ -578,7 +582,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             },
         );
     }
-    let audit_fixture = if case_id.starts_with("work-style-") {
+    let audit_fixture = if case_id == "flow2-submit-bridge" {
+        "flow2.input-and-approval.stable".to_owned()
+    } else if case_id == "staging-finish" {
+        "case.staging-finish.tick.1.flow2.input-and-approval.stable".to_owned()
+    } else if case_id.starts_with("work-style-") {
         match case_id {
             "work-style-unchanged" => "flow3-work-style-unchanged",
             "work-style-access-pending" => "flow3-work-style-access",
@@ -586,8 +594,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "work-style-access-refused" => "flow3-work-style-refused",
             _ => unreachable!(),
         }
+        .to_owned()
     } else {
-        &format!("case.{case_id}.tick.{tick}")
+        format!("case.{case_id}.tick.{tick}")
     };
     let audit_fixture = if matches!(
         case_id,
@@ -598,7 +607,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     ) {
         "case.staging-apply-partial-failure.tick.1".to_owned()
     } else {
-        audit_fixture.to_owned()
+        audit_fixture
     };
     let audit = audit_screen(&after.screen_id, &audit_fixture)?;
     let diff = diff_evidence(case_id, &after);
@@ -644,6 +653,7 @@ fn flow2_submit_bridge() -> (
     );
     before.session_id = FLOW2_SESSION_ID.to_owned();
     before.paused_activity_id = FLOW2_PAUSED_ACTIVITY_ID.to_owned();
+    apply_flow2_identity(&mut before);
     before.transcript =
         "Review the retry path before we merge. Code is paused beside the draft.".to_owned();
     before.state_hash = state_hash(&before);
@@ -3298,12 +3308,21 @@ fn flow2_state(
     state.session_id = FLOW2_SESSION_ID.to_owned();
     state.submitted_prompt = Some(FLOW2_SUBMITTED_PROMPT.to_owned());
     state.paused_activity_id = FLOW2_PAUSED_ACTIVITY_ID.to_owned();
+    apply_flow2_identity(&mut state);
     let staging = diff_stage_state(selection);
     state.staging_hunk_states = staging.hunk_states;
     state.focused_hunk = staging.focused_hunk;
     state.transcript = format!("You · {FLOW2_SUBMITTED_PROMPT}");
     state.state_hash = state_hash(&state);
     state
+}
+
+fn apply_flow2_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.retry-review".to_owned();
+    state.transcript_id = "transcript.retry-review".to_owned();
+    state.turn_id = "turn.retry-review.18".to_owned();
+    state.user_task = "Check the retry path before we merge.".to_owned();
+    state.visible_origin = "Input and approval · paused conversation".to_owned();
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -5,6 +5,7 @@
 //! and streaming adds exactly one compact live owner without replacing either
 //! the transcript or the bottom composer.
 
+use crate::scenario::diff_evidence_for_fixture;
 use crate::{
     audit::{
         ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
@@ -25,6 +26,13 @@ const COMPOSER_BOTTOM: u16 = 37;
 const DAILY_WORK_TASK: &str =
     "Find where the server applies the rate limit and explain the safe path.";
 const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
+const FLOW2_TASK: &str = "Check the retry path before we merge.";
+const FLOW2_ORIGIN: &str = "Input and approval · paused conversation";
+const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
+Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
+Keep the summary short before we merge.";
+const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
+const FLOW2_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -35,8 +43,14 @@ type ScreenEvidence = (
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let mut canvas = Canvas::new();
-    canvas.write(2, 4, DAILY_WORK_ORIGIN, TextStyle::muted())?;
-    canvas.write(3, 4, DAILY_WORK_TASK, TextStyle::bright())?;
+    let flow2_storyboard = fixture_id.contains("flow2.input-and-approval.stable");
+    let (visible_origin, user_task) = if flow2_storyboard {
+        (FLOW2_ORIGIN, FLOW2_TASK)
+    } else {
+        (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
+    };
+    canvas.write(2, 4, visible_origin, TextStyle::muted())?;
+    canvas.write(3, 4, user_task, TextStyle::bright())?;
     let (candidates, events, transitions) = match screen_id {
         "home" => render_home(&mut canvas, screen_id, fixture_id)?,
         "chat-turn" if fixture_id.starts_with("case.tool-running-interrupt") => {
@@ -62,6 +76,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         }
         "chat-turn" if fixture_id.starts_with("case.diff-cancel") => {
             render_diff_cancel_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if flow2_storyboard => {
+            render_flow2_resumed_turn(&mut canvas, screen_id, fixture_id)?
         }
         "chat-turn" if fixture_id == "conversation-completed" => {
             render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
@@ -97,16 +114,200 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 access_scope: access_scope.to_owned(),
             }
         }),
-        conversation: Some(crate::audit::ConversationIdentity {
-            conversation_id: "conversation.daily-work".to_owned(),
-            transcript_id: "transcript.daily-work".to_owned(),
-            session_id: "session.daily-work.1".to_owned(),
-            turn_id: "turn.daily-work.18".to_owned(),
-            user_task: "Find where the server applies the rate limit and explain the safe path."
-                .to_owned(),
-            visible_origin: "Daily work · current conversation".to_owned(),
+        conversation: Some(if flow2_storyboard {
+            crate::audit::ConversationIdentity {
+                conversation_id: "conversation.retry-review".to_owned(),
+                transcript_id: "transcript.retry-review".to_owned(),
+                session_id: "session.retry-review.18".to_owned(),
+                turn_id: "turn.retry-review.18".to_owned(),
+                user_task: FLOW2_TASK.to_owned(),
+                visible_origin: FLOW2_ORIGIN.to_owned(),
+                submitted_prompt: Some(FLOW2_SUBMITTED_PROMPT.to_owned()),
+                paused_activity_id: Some(FLOW2_ACTIVITY_ID.to_owned()),
+                later_draft: Some(FLOW2_LATER_DRAFT.to_owned()),
+            }
+        } else {
+            crate::audit::ConversationIdentity {
+                conversation_id: "conversation.daily-work".to_owned(),
+                transcript_id: "transcript.daily-work".to_owned(),
+                session_id: "session.daily-work.1".to_owned(),
+                turn_id: "turn.daily-work.18".to_owned(),
+                user_task: DAILY_WORK_TASK.to_owned(),
+                visible_origin: DAILY_WORK_ORIGIN.to_owned(),
+                submitted_prompt: None,
+                paused_activity_id: None,
+                later_draft: None,
+            }
         }),
     })
+}
+
+fn render_flow2_resumed_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(5, 4, "You · Submitted prompt", TextStyle::bright())?;
+    canvas.write(
+        7,
+        4,
+        "Check the retry path in @src/net/retry_policy.rs",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        8,
+        4,
+        "Then explain the failure path that still needs coverage before the merge;",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        9,
+        6,
+        "include a concise test plan with the visible recovery behavior.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Keep the summary short before we merge.",
+        TextStyle::text(),
+    )?;
+    canvas.write(13, 4, "Code · Same turn resumed", TextStyle::bright())?;
+    canvas.write(
+        15,
+        4,
+        "Applied 1 included hunk to src/net/retry_policy.rs.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "hunk.retry-test remains pending · Git index unchanged",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "Paused activity · activity.retry-policy-edit.18",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        19,
+        4,
+        "Session · session.retry-review.18",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "Turn · turn.retry-review.18 · resumed",
+        TextStyle::muted(),
+    )?;
+    canvas.write(23, 4, "Later draft · not sent", TextStyle::bright())?;
+    canvas.write(25, 4, FLOW2_LATER_DRAFT, TextStyle::text())?;
+    composer(canvas, FLOW2_LATER_DRAFT, Some("Send reply"))?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "immutable-submitted-prompt",
+            reference(5, 4, 26),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "resume",
+            "action.chat-turn.resume-request",
+            reference(13, 4, 28),
+            "summary",
+            Some(action(
+                "action.chat-turn.resume-request",
+                "Resume the paused conversation",
+                true,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "activity",
+            FLOW2_ACTIVITY_ID,
+            reference(18, 4, 53),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "session",
+            "session.retry-review.18",
+            reference(19, 4, 37),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "turn",
+            "turn.retry-review.18",
+            reference(20, 4, 42),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "later-unsent-draft",
+            reference(23, 4, 26),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 62),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.chat-turn.resume-request",
+                "chat-turn",
+                "chat-turn",
+                "summarized",
+                "the exact paused activity resumes in the same turn with the submitted prompt immutable and the later draft unsent",
+            ),
+            transition(
+                "action.chat-turn.send-reply",
+                "chat-turn",
+                "streaming",
+                "direct",
+                "the later draft begins a new response without changing the completed request",
+            ),
+        ],
+    ))
 }
 
 fn render_diff_applied_turn(
@@ -114,6 +315,8 @@ fn render_diff_applied_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let diff = diff_evidence_for_fixture(fixture_id)
+        .ok_or_else(|| "applied diff result is missing exact file evidence".to_owned())?;
     canvas.write(
         4,
         4,
@@ -143,6 +346,30 @@ fn render_diff_applied_turn(
         15,
         4,
         "Working tree updated once · Git index unchanged",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        &format!("Before SHA-256: {}", diff.working_tree_before),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        &format!("After SHA-256: {}", diff.working_tree_after),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "Session · session.retry-review.18 · Turn · turn.retry-review.18",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "Later draft · Add a short note about the remaining test hunk.",
         TextStyle::muted(),
     )?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
@@ -185,7 +412,10 @@ fn render_diff_applied_turn(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -250,7 +480,10 @@ fn render_diff_cancel_turn(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -333,7 +566,10 @@ fn render_home(
     );
     let pairs = [surface, recent_work, branding, composer, status];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.home.start-request",
@@ -398,7 +634,10 @@ fn render_permission_persistent_turn(
         ),
     ];
     Ok((
-        pairs.iter().map(|(candidate, _)| candidate.clone()).collect(),
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![transition(
             "action.chat-turn.send-reply",
@@ -576,12 +815,7 @@ fn render_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, "Updated retry_policy.rs.", TextStyle::text())?;
     canvas.write(
@@ -806,12 +1040,7 @@ fn render_daily_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -910,12 +1139,7 @@ fn render_streaming(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1035,12 +1259,7 @@ fn render_interrupted_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1162,12 +1381,7 @@ fn render_tool_running(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1298,12 +1512,7 @@ fn render_tool_success(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1392,12 +1601,7 @@ fn render_rich_response(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1533,12 +1737,7 @@ fn render_tool_interrupted_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        daily_user_request(fixture_id),
-        TextStyle::bright(),
-    )?;
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     let completed = ActivityRow::new(
         "Checked session rules",
@@ -1792,18 +1991,3 @@ fn transition(
         path: path.to_owned(),
     }
 }
-use crate::scenario::diff_evidence_for_fixture;
-    let diff = diff_evidence_for_fixture(fixture_id)
-        .ok_or_else(|| "applied diff result is missing exact file evidence".to_owned())?;
-    canvas.write(
-        17,
-        4,
-        &format!("Before SHA-256: {}", diff.working_tree_before),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        18,
-        4,
-        &format!("After SHA-256: {}", diff.working_tree_after),
-        TextStyle::muted(),
-    )?;

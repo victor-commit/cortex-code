@@ -13,11 +13,7 @@ use crate::flows::{flow_manifests, FlowManifest, TransitionKind};
 use crate::registry::canonical_inventory;
 use crate::scenario::replay_case;
 
-const PILOT_FLOWS: [&str; 3] = [
-    "daily-work",
-    "input-and-approval",
-    "work-configuration",
-];
+const PILOT_FLOWS: [&str; 3] = ["daily-work", "input-and-approval", "work-configuration"];
 
 const ACCEPTANCE_CHECKS: [&str; 13] = [
     "screen-is-canonical",
@@ -40,6 +36,7 @@ pub struct PilotGateArtifact {
     pub flow: &'static str,
     pub step_index: usize,
     pub screen_id: &'static str,
+    pub fixture_id: &'static str,
     pub canonical_relative: String,
     pub gate_relative: String,
     pub extension: &'static str,
@@ -90,10 +87,18 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "rich-response",
             expected_kind: "direct",
             expected_action: "action.tool-success.continue",
-            evidence_txt: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.txt"),
-            evidence_png: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.png"),
-            audit_json: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.json"),
-            vision_evidence: Some("evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1-vision.md"),
+            evidence_txt: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.txt",
+            ),
+            evidence_png: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.png",
+            ),
+            audit_json: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.json",
+            ),
+            vision_evidence: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1-vision.md",
+            ),
         },
         PilotGateBridge {
             flow: "daily-work",
@@ -103,10 +108,18 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.streaming.interrupt",
-            evidence_txt: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.txt"),
-            evidence_png: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.png"),
-            audit_json: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.json"),
-            vision_evidence: Some("evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1-vision.md"),
+            evidence_txt: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.txt",
+            ),
+            evidence_png: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.png",
+            ),
+            audit_json: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.json",
+            ),
+            vision_evidence: Some(
+                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1-vision.md",
+            ),
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -155,10 +168,16 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.staging.finish",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            evidence_txt: Some(
+                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.txt",
+            ),
+            evidence_png: Some(
+                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.png",
+            ),
+            audit_json: Some(
+                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.json",
+            ),
+            vision_evidence: Some("evidence/v3-fix-flow2-storyboard-resumption/vision-evidence.md"),
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -260,6 +279,7 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
+                            fixture_id: step.fixture_id,
                             canonical_relative: format!("{category}/{}.txt", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.txt",
@@ -273,6 +293,7 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
+                            fixture_id: step.fixture_id,
                             canonical_relative: format!("{category}/{}.png", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.png",
@@ -339,23 +360,26 @@ pub fn validate_pilot_gate_integration(
 
 fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
     for (index, step) in flow.steps.iter().enumerate() {
-        if step.acceptance_checks.iter().any(|check| {
-            !ACCEPTANCE_CHECKS.contains(check)
-        }) {
+        if step
+            .acceptance_checks
+            .iter()
+            .any(|check| !ACCEPTANCE_CHECKS.contains(check))
+        {
             return Err(format!(
                 "{} step {} has an unknown acceptance check",
                 flow.name,
                 index + 1
             ));
         }
-        let audit = audit_screen(
-            step.screen_id,
-            step.fixture_id,
-        )?;
+        let audit = audit_screen(step.screen_id, step.fixture_id)?;
         audit.validate()?;
-        if flow.name == "daily-work" {
+        if matches!(flow.name, "daily-work" | "input-and-approval") {
             let identity = audit.conversation.as_ref().ok_or_else(|| {
-                format!("{} step {} lacks conversation identity", flow.name, index + 1)
+                format!(
+                    "{} step {} lacks conversation identity",
+                    flow.name,
+                    index + 1
+                )
             })?;
             let expected = crate::audit::ConversationIdentity {
                 conversation_id: step.conversation_id.to_owned(),
@@ -364,12 +388,26 @@ fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
                 turn_id: step.turn_id.to_owned(),
                 user_task: step.user_task.to_owned(),
                 visible_origin: step.visible_origin.to_owned(),
+                submitted_prompt: (flow.name == "input-and-approval").then(|| {
+                    "Check the retry path in @src/net/retry_policy.rs\n\
+Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
+Keep the summary short before we merge."
+                        .to_owned()
+                }),
+                paused_activity_id: (flow.name == "input-and-approval")
+                    .then(|| "activity.retry-policy-edit.18".to_owned()),
+                later_draft: (flow.name == "input-and-approval")
+                    .then(|| "Add a short note about the remaining test hunk.".to_owned()),
             };
-            crate::audit::validate_conversation_identity(
-                identity,
-                &expected,
-                &audit.render_txt(),
-            )?;
+            crate::audit::validate_conversation_identity(identity, &expected, &audit.render_txt())
+                .map_err(|error| {
+                    format!(
+                        "{} step {} ({}) identity validation failed: {error}",
+                        flow.name,
+                        index + 1,
+                        step.screen_id
+                    )
+                })?;
         }
         if step.transition_kind == TransitionKind::Direct {
             let expected_kind = "direct";
@@ -385,8 +423,7 @@ fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
                 ));
             }
         } else if !audit.transitions.iter().any(|transition| {
-            transition.kind == "cancel"
-                || transition.to_screen_id == step.success_return
+            transition.kind == "cancel" || transition.to_screen_id == step.success_return
         }) {
             return Err(format!(
                 "{} step {} illustrative/automatic return is not rendered",
@@ -435,7 +472,10 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
                 || !txt.ends_with('\n')
                 || txt.lines().any(|line| line.chars().count() != 120)
             {
-                return Err(format!("invalid bridge TXT dimensions: {}", txt_path.display()));
+                return Err(format!(
+                    "invalid bridge TXT dimensions: {}",
+                    txt_path.display()
+                ));
             }
             let png_bytes = fs::read(&png_path)
                 .map_err(|error| format!("missing bridge PNG {}: {error}", png_path.display()))?;
@@ -455,7 +495,10 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
                 ));
             }
             let vision = fs::read_to_string(&vision_path).map_err(|error| {
-                format!("missing bridge vision evidence {}: {error}", vision_path.display())
+                format!(
+                    "missing bridge vision evidence {}: {error}",
+                    vision_path.display()
+                )
             })?;
             if !vision.contains("anthropic/claude-opus-4.8-fast")
                 || !vision.contains(&png_path.display().to_string())
@@ -492,7 +535,10 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
     let mut paths = BTreeSet::new();
     for artifact in artifacts {
         if !paths.insert(&artifact.gate_relative) {
-            return Err(format!("duplicate gate artifact: {}", artifact.gate_relative));
+            return Err(format!(
+                "duplicate gate artifact: {}",
+                artifact.gate_relative
+            ));
         }
         let canonical = canonical_root.join(&artifact.canonical_relative);
         let gate = gate_root.join(&artifact.gate_relative);
@@ -500,9 +546,28 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
             .map_err(|error| format!("could not read {}: {error}", canonical.display()))?;
         let gate_bytes = fs::read(&gate)
             .map_err(|error| format!("could not read {}: {error}", gate.display()))?;
-        if canonical_bytes != gate_bytes {
+        let expected = audit_screen(artifact.screen_id, artifact.fixture_id)?;
+        let expected_bytes = if artifact.extension == "txt" {
+            expected.render_txt().into_bytes()
+        } else {
+            #[cfg(feature = "png")]
+            {
+                crate::scenario::render_audit_png(&expected)?
+            }
+            #[cfg(not(feature = "png"))]
+            {
+                return Err("PNG feature is required for gate integration validation".to_owned());
+            }
+        };
+        if expected_bytes != gate_bytes {
             return Err(format!(
-                "gate alias is not byte-identical to canonical artifact: {}",
+                "gate alias is not canonical-equivalent for its declared fixture: {}",
+                artifact.gate_relative
+            ));
+        }
+        if canonical_bytes == gate_bytes && artifact.fixture_id.trim().is_empty() {
+            return Err(format!(
+                "gate alias used an empty fixture fallback: {}",
                 artifact.gate_relative
             ));
         }
@@ -513,7 +578,10 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
                 || !text.ends_with('\n')
                 || text.lines().any(|line| line.chars().count() != 120)
             {
-                return Err(format!("invalid gate TXT dimensions: {}", artifact.gate_relative));
+                return Err(format!(
+                    "invalid gate TXT dimensions: {}",
+                    artifact.gate_relative
+                ));
             }
         } else if artifact.extension == "png" {
             #[cfg(feature = "png")]
@@ -524,7 +592,10 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
                     || image.height() != 840
                     || image.color() != image::ColorType::Rgb8
                 {
-                    return Err(format!("invalid gate PNG dimensions: {}", artifact.gate_relative));
+                    return Err(format!(
+                        "invalid gate PNG dimensions: {}",
+                        artifact.gate_relative
+                    ));
                 }
             }
         }
@@ -568,9 +639,8 @@ fn collect_vision_findings(
                 .map(|(_, path)| *path)
                 .ok_or_else(|| format!("missing vision evidence mapping for {}", artifact.flow))?;
             let evidence_path = Path::new(mission_directory).join(evidence_relative);
-            let evidence_text = fs::read_to_string(&evidence_path).map_err(|error| {
-                format!("could not read {}: {error}", evidence_path.display())
-            })?;
+            let evidence_text = fs::read_to_string(&evidence_path)
+                .map_err(|error| format!("could not read {}: {error}", evidence_path.display()))?;
             Ok(VisionFinding {
                 flow: artifact.flow,
                 gate_png: artifact.gate_relative.clone(),

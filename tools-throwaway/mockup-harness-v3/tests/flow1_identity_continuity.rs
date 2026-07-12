@@ -19,7 +19,11 @@ fn daily_work_declares_one_fixture_and_one_conversation_identity() {
         .iter()
         .find(|flow| flow.name == "daily-work")
         .expect("daily-work must be declared");
-    let fixture_ids = flow.steps.iter().map(|step| step.fixture_id).collect::<Vec<_>>();
+    let fixture_ids = flow
+        .steps
+        .iter()
+        .map(|step| step.fixture_id)
+        .collect::<Vec<_>>();
     assert_eq!(fixture_ids.len(), DAILY_SCREENS.len());
     assert!(fixture_ids.iter().all(|fixture| *fixture == fixture_ids[0]));
 
@@ -33,7 +37,7 @@ fn daily_work_declares_one_fixture_and_one_conversation_identity() {
                 .unwrap()
                 .fixture_id,
         )
-            .unwrap_or_else(|error| panic!("{screen} must render: {error}"));
+        .unwrap_or_else(|error| panic!("{screen} must render: {error}"));
         let identity = audit
             .conversation
             .as_ref()
@@ -46,6 +50,9 @@ fn daily_work_declares_one_fixture_and_one_conversation_identity() {
             user_task: "Find where the server applies the rate limit and explain the safe path."
                 .to_owned(),
             visible_origin: "Daily work · current conversation".to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: None,
         };
         validate_conversation_identity(identity, &expected, &audit.render_txt())
             .unwrap_or_else(|error| panic!("{screen} identity must be visible: {error}"));

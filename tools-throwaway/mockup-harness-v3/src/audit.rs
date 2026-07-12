@@ -83,6 +83,9 @@ pub struct ConversationIdentity {
     pub turn_id: String,
     pub user_task: String,
     pub visible_origin: String,
+    pub submitted_prompt: Option<String>,
+    pub paused_activity_id: Option<String>,
+    pub later_draft: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,6 +300,17 @@ impl AuditDocument {
                 field(&mut output, "turn_id", &identity.turn_id);
                 field(&mut output, "user_task", &identity.user_task);
                 field(&mut output, "visible_origin", &identity.visible_origin);
+                optional_field(
+                    &mut output,
+                    "submitted_prompt",
+                    identity.submitted_prompt.as_deref(),
+                );
+                optional_field(
+                    &mut output,
+                    "paused_activity_id",
+                    identity.paused_activity_id.as_deref(),
+                );
+                optional_field(&mut output, "later_draft", identity.later_draft.as_deref());
                 output.push('}');
             }
             None => output.push_str("null"),
@@ -534,6 +548,9 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         user_task: "Find where the server applies the rate limit and explain the safe path."
             .to_owned(),
         visible_origin: "Daily work · current conversation".to_owned(),
+        submitted_prompt: None,
+        paused_activity_id: None,
+        later_draft: None,
     });
     let document = AuditDocument {
         screen_id: screen_id.to_owned(),
@@ -792,7 +809,9 @@ pub fn validate_conversation_identity(
         ("visible_origin", identity.visible_origin.as_str()),
     ] {
         if value.trim().is_empty() || !rendered_text.contains(value) {
-            return Err(format!("{name} is not visible in the rendered conversation"));
+            return Err(format!(
+                "{name} is not visible in the rendered conversation"
+            ));
         }
     }
     Ok(())
@@ -878,6 +897,16 @@ pub(crate) fn transition_json(output: &mut String, transition: &TransitionTrace)
 pub(crate) fn field(output: &mut String, name: &str, value: &str) {
     output.push(',');
     raw_field(output, name, value);
+}
+
+fn optional_field(output: &mut String, name: &str, value: Option<&str>) {
+    output.push(',');
+    quote(output, name);
+    output.push(':');
+    match value {
+        Some(value) => quote(output, value),
+        None => output.push_str("null"),
+    }
 }
 
 fn raw_field(output: &mut String, name: &str, value: &str) {

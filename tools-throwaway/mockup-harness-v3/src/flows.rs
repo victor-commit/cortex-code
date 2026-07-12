@@ -740,6 +740,34 @@ pub fn validate_flow_manifests(
                     step.screen_id
                 ));
             }
+            if manifest.name == "input-and-approval"
+                && (step.fixture_id != "flow2.input-and-approval.stable"
+                    || step.conversation_id != "conversation.retry-review"
+                    || step.transcript_id != "transcript.retry-review"
+                    || step.session_id != "session.retry-review.18"
+                    || step.turn_id != "turn.retry-review.18"
+                    || step.user_task != "Check the retry path before we merge."
+                    || step.visible_origin != "Input and approval · paused conversation"
+                    || ![
+                        "conversation_id",
+                        "transcript_id",
+                        "session_id",
+                        "turn_id",
+                        "user_task",
+                        "visible_origin",
+                        "submitted_prompt",
+                        "paused_activity_id",
+                        "draft",
+                        "scroll_anchor",
+                    ]
+                    .iter()
+                    .all(|field| step.preservation_fields.contains(field)))
+            {
+                return Err(format!(
+                    "input-and-approval identity continuity mismatch for {}",
+                    step.screen_id
+                ));
+            }
             if step.transition_kind == TransitionKind::Direct {
                 if let Some(next_step) = manifest.steps.get(index + 1) {
                     if step.expected_next_frame != next_step.screen_id {
@@ -873,7 +901,18 @@ fn storyboard_identity(
             "turn.retry-review.18",
             "Check the retry path before we merge.",
             "Input and approval · paused conversation",
-            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+            &[
+                "conversation_id",
+                "transcript_id",
+                "session_id",
+                "turn_id",
+                "user_task",
+                "visible_origin",
+                "submitted_prompt",
+                "paused_activity_id",
+                "draft",
+                "scroll_anchor",
+            ],
         ),
         "work-configuration" => (
             "flow3.work-configuration.stable",
@@ -883,7 +922,13 @@ fn storyboard_identity(
             "turn.configuration.1",
             "Choose a model and how Code should work.",
             "Work configuration · current conversation",
-            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+            &[
+                "conversation_id",
+                "transcript_id",
+                "session_id",
+                "turn_id",
+                "user_task",
+            ],
         ),
         "provider-and-mcp-connection" => (
             "flow4.provider-and-mcp.stable",
@@ -893,7 +938,13 @@ fn storyboard_identity(
             "turn.provider-connection.1",
             "Connect the model needed for this conversation.",
             "Provider connection · blocked model action",
-            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+            &[
+                "conversation_id",
+                "transcript_id",
+                "session_id",
+                "turn_id",
+                "user_task",
+            ],
         ),
         "recovery" => (
             "flow5.recovery.stable",
@@ -903,7 +954,13 @@ fn storyboard_identity(
             "turn.recovery.1",
             "Finish the release notes without losing the current work.",
             "Recovery · paused conversation",
-            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+            &[
+                "conversation_id",
+                "transcript_id",
+                "session_id",
+                "turn_id",
+                "user_task",
+            ],
         ),
         "mission" => (
             "flow6.mission.stable",
@@ -913,7 +970,13 @@ fn storyboard_identity(
             "turn.mission.1",
             "Prepare the release safely and review the result.",
             "Mission · current conversation",
-            &["conversation_id", "transcript_id", "session_id", "turn_id", "user_task"],
+            &[
+                "conversation_id",
+                "transcript_id",
+                "session_id",
+                "turn_id",
+                "user_task",
+            ],
         ),
         _ => unreachable!("flow names are validated before identity binding"),
     }

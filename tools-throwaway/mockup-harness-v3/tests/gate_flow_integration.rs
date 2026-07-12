@@ -5,8 +5,10 @@ use std::process::Command;
 use std::sync::Once;
 
 use mockup_harness_v3::{
+    audit::audit_screen,
     flow_manifests,
     gate_integration::{pilot_gate_artifacts, pilot_gate_bridges, validate_pilot_gate_integration},
+    scenario::render_audit_png,
 };
 
 const REPOSITORY: &str = "/projects/cortex-code";
@@ -89,10 +91,17 @@ fn gate_aliases_are_exactly_the_canonical_artifacts_for_first_three_flows() {
             "missing canonical artifact: {canonical:?}"
         );
         assert!(gate.is_file(), "missing gate artifact: {gate:?}");
+        let expected = audit_screen(artifact.screen_id, artifact.fixture_id)
+            .expect("the declared canonical renderer and fixture must resolve");
+        let expected_bytes = if artifact.extension == "txt" {
+            expected.render_txt().into_bytes()
+        } else {
+            render_audit_png(&expected).expect("the declared canonical fixture must rasterize")
+        };
         assert_eq!(
-            fs::read(&canonical).expect("canonical artifact must be readable"),
+            expected_bytes,
             fs::read(&gate).expect("gate artifact must be readable"),
-            "gate alias must be byte-identical: {gate:?}"
+            "gate alias must be canonical-equivalent for its declared fixture: {gate:?}"
         );
     }
 }

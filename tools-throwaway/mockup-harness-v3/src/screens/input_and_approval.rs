@@ -24,6 +24,13 @@ const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
 const DOCK_TOP: u16 = 31;
 const DOCK_BOTTOM: u16 = 37;
+const FLOW2_FIXTURE: &str = "flow2.input-and-approval.stable";
+const FLOW2_TASK: &str = "Check the retry path before we merge.";
+const FLOW2_ORIGIN: &str = "Input and approval · paused conversation";
+const FLOW2_SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
+Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
+Keep the summary short before we merge.";
+const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
 
 pub(crate) const MENTION_FRAGMENT: &str = "@retry";
 pub(crate) const INSERTED_FILE: &str = "@src/net/retry_policy.rs";
@@ -66,6 +73,10 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
 
     let mut canvas = Canvas::new();
+    if fixture_id == FLOW2_FIXTURE {
+        canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+        canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
+    }
     let (candidates, events, transitions) = match screen_id {
         "composer-multiline" => render_multiline_composer(&mut canvas, screen_id, fixture_id)?,
         "file-mention" => render_file_mention(&mut canvas, screen_id, fixture_id)?,
@@ -90,7 +101,17 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
         work_style: None,
-        conversation: None,
+        conversation: (fixture_id == FLOW2_FIXTURE).then(|| crate::audit::ConversationIdentity {
+            conversation_id: "conversation.retry-review".to_owned(),
+            transcript_id: "transcript.retry-review".to_owned(),
+            session_id: "session.retry-review.18".to_owned(),
+            turn_id: "turn.retry-review.18".to_owned(),
+            user_task: FLOW2_TASK.to_owned(),
+            visible_origin: FLOW2_ORIGIN.to_owned(),
+            submitted_prompt: Some(FLOW2_SUBMITTED_PROMPT.to_owned()),
+            paused_activity_id: Some("activity.retry-policy-edit.18".to_owned()),
+            later_draft: Some(FLOW2_LATER_DRAFT.to_owned()),
+        }),
     })
 }
 
@@ -346,31 +367,31 @@ fn render_diff_staging(
         _ => "○ Pending",
     };
     canvas.write(
-        3,
+        5,
         4,
         "Review changes · temporary detail",
         TextStyle::bright(),
     )?;
     canvas.write(
-        4,
+        6,
         4,
         "From pending edit in the paused retry conversation",
         TextStyle::muted(),
     )?;
     canvas.write(
-        6,
+        9,
         4,
         "File: src/net/retry_policy.rs · revision: patch-retry-18",
         TextStyle::text(),
     )?;
     canvas.write(
-        7,
+        8,
         4,
         &format!("Included {included_count} of 2 hunks · Git index unchanged"),
         TextStyle::accent(),
     )?;
     canvas.write(
-        9,
+        10,
         4,
         &format!("› {guard_marker} · hunk.retry-guard · old 42-43 · new 42-44"),
         if guard_state == "Excluded" {
@@ -379,41 +400,41 @@ fn render_diff_staging(
             TextStyle::bright()
         },
     )?;
-    canvas.write(10, 6, "42  42  -    return retry_after", TextStyle::text())?;
+    canvas.write(11, 6, "42  42  -    return retry_after", TextStyle::text())?;
     canvas.write(
-        11,
+        12,
         6,
         "43  43  -    backoff = backoff + 1",
         TextStyle::text(),
     )?;
     canvas.write(
-        12,
+        13,
         6,
         "    42  +    return retry_after + jitter",
         TextStyle::text(),
     )?;
     canvas.write(
-        13,
+        14,
         6,
         "    43  +    backoff = backoff + jitter",
         TextStyle::text(),
     )?;
     canvas.write(
-        14,
+        15,
         6,
         "    44  +    log_retry_window(jitter)",
         TextStyle::text(),
     )?;
     canvas.write(
-        16,
+        17,
         4,
         &format!("{test_marker} · hunk.retry-test · old 88-89 · new 88-89"),
         TextStyle::text(),
     )?;
-    canvas.write(17, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
-    canvas.write(18, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
+    canvas.write(18, 6, "88  88  -assert_eq!(wait, 4)", TextStyle::text())?;
+    canvas.write(19, 6, "    89  +assert_eq!(wait, 5)", TextStyle::text())?;
     canvas.write(
-        20,
+        21,
         4,
         if stage.apply_failed {
             "Finish stopped before writing: the patch is stale and no partial change was made."
@@ -423,13 +444,13 @@ fn render_diff_staging(
         TextStyle::muted(),
     )?;
     canvas.write(
-        22,
+        23,
         4,
         "[i] Include  [x] Exclude  [a] Include all  [e] Edit",
         TextStyle::bright(),
     )?;
     canvas.write(
-        23,
+        24,
         4,
         "[enter] Finish  [esc] Cancel · Return to pending edit",
         TextStyle::accent(),
@@ -440,7 +461,7 @@ fn render_diff_staging(
             fixture_id,
             "detail-origin",
             "pending.edit.patch-retry-18",
-            reference(4, 4, 60),
+            reference(6, 4, 60),
             "summary",
             None,
         ),
@@ -449,7 +470,7 @@ fn render_diff_staging(
             fixture_id,
             "file",
             "src/net/retry_policy.rs",
-            reference(6, 4, 52),
+            reference(9, 4, 62),
             "focused",
             None,
         ),
@@ -458,7 +479,7 @@ fn render_diff_staging(
             fixture_id,
             "included-count",
             &format!("included-{included_count}-of-2"),
-            reference(7, 4, 43),
+            reference(8, 4, 55),
             "focused",
             None,
         ),
@@ -467,7 +488,7 @@ fn render_diff_staging(
             fixture_id,
             "hunk",
             "hunk.retry-guard",
-            reference(9, 4, 60),
+            reference(10, 4, 70),
             if stage.focused_hunk == "hunk.retry-guard" {
                 "focused"
             } else {
@@ -488,7 +509,7 @@ fn render_diff_staging(
             fixture_id,
             "focused-hunk",
             &stage.focused_hunk,
-            reference(9, 4, 60),
+            reference(10, 4, 70),
             "focused",
             None,
         ),
@@ -497,7 +518,7 @@ fn render_diff_staging(
             fixture_id,
             "hunk",
             "hunk.retry-test",
-            reference(16, 4, 60),
+            reference(17, 4, 70),
             if stage.focused_hunk == "hunk.retry-test" {
                 "focused"
             } else {
@@ -518,7 +539,7 @@ fn render_diff_staging(
             fixture_id,
             "include-all-action",
             "include-all-hunks",
-            reference(19, 4, 50),
+            reference(23, 4, 50),
             "summary",
             Some(action("action.staging.include-all", "Include all", false)),
         ),
@@ -527,7 +548,7 @@ fn render_diff_staging(
             fixture_id,
             "edit-action",
             "edit-focused-hunk",
-            reference(19, 52, 62),
+            reference(23, 52, 62),
             "summary",
             Some(action("action.staging.edit", "Edit", false)),
         ),
@@ -536,7 +557,7 @@ fn render_diff_staging(
             fixture_id,
             "primary-action",
             "finish-included-hunks",
-            reference(21, 4, 23),
+            reference(24, 4, 23),
             "focused",
             Some(action("action.staging.finish", "Finish", false)),
         ),
@@ -545,7 +566,7 @@ fn render_diff_staging(
             fixture_id,
             "cancel-action",
             "return-pending-edit",
-            reference(21, 25, 55),
+            reference(24, 25, 60),
             "summary",
             Some(action("action.staging.cancel", "Cancel", false)),
         ),

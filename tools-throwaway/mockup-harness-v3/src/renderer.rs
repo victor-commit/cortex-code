@@ -414,10 +414,9 @@ pub fn audit_json(selector: Option<&PublicSelector>) -> Result<String, String> {
                 .ok_or_else(|| format!("unknown flow manifest: {name}"))?;
             flow.steps
                 .iter()
-                .enumerate()
-                .map(|(index, step)| {
+                .map(|step| {
                     let screen = canonical_screen(step.screen_id)?;
-                    Ok((screen, format!("public-audit.{}.{}", flow.name, index + 1)))
+                    Ok((screen, step.fixture_id.to_owned()))
                 })
                 .collect::<Result<Vec<_>, String>>()?
         }
@@ -645,7 +644,12 @@ fn require_selected_implemented(screens: &[&ScreenSpec]) -> Result<(), String> {
 fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> {
     let mut canonical = BTreeMap::new();
     for screen in &plan.canonical {
-        let fixture_id = if screen.flow.as_str() == "daily-work" {
+        let fixture_id = if plan
+            .flow
+            .is_some_and(|flow| flow.name == "input-and-approval")
+        {
+            "flow2.input-and-approval.stable"
+        } else if screen.flow.as_str() == "daily-work" {
             "flow1.daily-work.stable"
         } else {
             // Canonical artifacts outside the repaired storyboard retain their
@@ -657,8 +661,7 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
         } else {
             fixture_id.to_owned()
         };
-        let audit = audit_screen(screen.id, &fixture_id)
-            .map_err(RenderFailure::validation)?;
+        let audit = audit_screen(screen.id, &fixture_id).map_err(RenderFailure::validation)?;
         insert_audit_artifacts(
             &mut canonical,
             format!("{}/{}", screen.category.as_str(), screen.id),
@@ -677,11 +680,8 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     if let Some(flow) = plan.flow {
         let mut gate = BTreeMap::new();
         for (index, step) in flow.steps.iter().enumerate() {
-            let audit = audit_screen(
-                step.screen_id,
-                step.fixture_id,
-            )
-            .map_err(RenderFailure::validation)?;
+            let audit =
+                audit_screen(step.screen_id, step.fixture_id).map_err(RenderFailure::validation)?;
             insert_audit_artifacts(
                 &mut gate,
                 format!("{}/{:02}-{}", flow.name, index + 1, step.screen_id),
